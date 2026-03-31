@@ -34,7 +34,29 @@ _DEFAULTS = {
     "hook_semantic_threshold": 0.35,    # min embedding similarity to trigger LLM classify
                                         # lower = more messages reach LLM (more sensitive)
                                         # raise to 0.5+ if you get too many false positives
+    "hook_max_message_length": 400,     # messages longer than this skip LLM classify entirely
     "token_profiling": True,            # track estimated token savings per interception
+
+    # Task command examples — used to build the semantic centroid for the
+    # embedding prefilter. Add your own phrases in any language.
+    # The centroid is recomputed whenever the list changes.
+    "hook_task_command_examples": [
+        "save to memory",
+        "save this task",
+        "park this for later",
+        "remember this discussion",
+        "save and close",
+        "close task",
+        "done with this",
+        "mark as done",
+        "I'm done here",
+        "what was I working on",
+        "show my open tasks",
+        "list tasks",
+        "what did we discuss about",
+        "find my previous work on",
+        "search my past work",
+    ],
 
     # Search defaults
     "search_top_k": 3,                  # default number of results

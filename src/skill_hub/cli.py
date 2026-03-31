@@ -15,37 +15,27 @@ from .embeddings import embed, compact, ollama_available, EMBED_MODEL, RERANK_MO
 from .store import SkillStore
 
 
-_TASK_COMMAND_EXAMPLES = [
-    "save to memory",
-    "save this task",
-    "park this for later",
-    "remember this discussion",
-    "save and close",
-    "close task",
-    "done with this",
-    "mark as done",
-    "I'm done here",
-    "what was I working on",
-    "show my open tasks",
-    "list tasks",
-    "what did we discuss about",
-    "find my previous work on",
-    "search my past work",
-]
-
 # Cached embedding of task command examples (computed once per process)
 _task_command_vector: list[float] | None = None
+_task_command_hash: int | None = None  # tracks config changes
+
+
+def _get_task_examples() -> list[str]:
+    """Load task command examples from config (editable at runtime)."""
+    from . import config as _cfg
+    return _cfg.get("hook_task_command_examples") or []
 
 
 def _task_similarity(message: str) -> float:
     """
     Fast embedding-based similarity check (~100ms).
-    Compares the message against canonical task command phrases.
+    Compares the message against canonical task command phrases from config.
+    Recomputes centroid if the config list changes.
     Returns cosine similarity 0.0–1.0.
     """
     import math
 
-    global _task_command_vector
+    global _task_command_vector, _task_command_hash
 
     def cosine(a: list[float], b: list[float]) -> float:
         dot = sum(x * y for x, y in zip(a, b))
@@ -54,10 +44,13 @@ def _task_similarity(message: str) -> float:
         return dot / (na * nb) if na and nb else 0.0
 
     try:
-        if _task_command_vector is None:
-            # Embed a representative centroid of all task command examples
-            centroid_text = " | ".join(_TASK_COMMAND_EXAMPLES)
+        examples = _get_task_examples()
+        current_hash = hash(tuple(examples))
+
+        if _task_command_vector is None or _task_command_hash != current_hash:
+            centroid_text = " | ".join(examples)
             _task_command_vector = embed(centroid_text)
+            _task_command_hash = current_hash
 
         msg_vec = embed(message)
         return cosine(msg_vec, _task_command_vector)
@@ -87,7 +80,8 @@ def _classify_intent(message: str) -> dict:
     from .embeddings import OLLAMA_BASE, RERANK_MODEL
 
     # Stage 1a: length guard — long messages are almost never task commands
-    if len(message) > 400:
+    max_len = int(_cfg.get("hook_max_message_length") or 400)
+    if len(message) > max_len:
         return {"intent": "none"}
 
     # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
