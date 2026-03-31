@@ -155,6 +155,90 @@ def rewrite_query(message: str, context: str = "",
     return message
 
 
+_OPTIMIZE_CONTEXT_PROMPT = """\
+You are a memory-optimization assistant for an AI coding tool. You are reviewing \
+memory files that are loaded into context each session, consuming tokens.
+
+Your job: analyze each memory entry and classify it as one of:
+- KEEP — still valuable, well-written
+- PRUNE — stale, completed, or no longer relevant (explain why)
+- COMPACT — too verbose, can be shortened significantly (provide compacted version)
+- MERGE — duplicate or overlapping with another entry (name which one)
+
+For each entry, output a JSON object on its own line:
+{{"file": "<filename>", "action": "KEEP|PRUNE|COMPACT|MERGE", "reason": "<why>", \
+"compacted": "<shortened content, only if action=COMPACT>"}}
+
+After all entries, output a summary line:
+{{"summary": true, "total": <N>, "keep": <N>, "prune": <N>, "compact": <N>, \
+"merge": <N>, "est_tokens_saved": <N>}}
+
+Be aggressive about pruning completed projects and compacting verbose entries. \
+Each token saved here is saved on EVERY future session.
+
+Memory entries to review:
+{content}
+"""
+
+
+def optimize_context(entries: list[dict],
+                     model: str = RERANK_MODEL) -> list[dict]:
+    """
+    Use local LLM to evaluate memory entries and recommend pruning/compaction.
+
+    Args:
+        entries: list of {"file": str, "category": str, "tokens": int, "content": str}
+        model: reasoning model to use
+
+    Returns:
+        list of recommendation dicts from the LLM
+    """
+    # Format entries for the prompt
+    formatted = []
+    for e in entries:
+        formatted.append(
+            f"--- {e['file']} ({e['category']}, ~{e['tokens']} tokens) ---\n"
+            f"{e['content'][:2000]}"
+        )
+    content = "\n\n".join(formatted)
+
+    # Respect compact_max_input_chars but allow more for this use case
+    max_chars = int(_cfg.get("compact_max_input_chars")) * 4  # 16k chars
+    prompt = _OPTIMIZE_CONTEXT_PROMPT.format(content=content[:max_chars])
+
+    results = []
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=300.0,  # longer timeout for many entries
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+        # Extract all JSON objects from the response
+        for match in re.finditer(r"\{[^{}]+\}", raw):
+            try:
+                obj = json.loads(match.group())
+                results.append(obj)
+            except json.JSONDecodeError:
+                continue
+    except Exception as exc:
+        results.append({
+            "error": str(exc),
+            "summary": True,
+            "total": len(entries),
+            "keep": len(entries),
+            "prune": 0,
+            "compact": 0,
+            "merge": 0,
+            "est_tokens_saved": 0,
+        })
+
+    return results
+
+
 def ollama_available(model: str = EMBED_MODEL) -> bool:
     """Check whether the required Ollama model is available."""
     try:

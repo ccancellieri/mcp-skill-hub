@@ -87,6 +87,52 @@ _DEFAULTS = {
     # Each entry: {"path": "/abs/path", "source": "label", "description": "...", "enabled": true}
     # If omitted, extra_skill_dirs entries are auto-registered as plugin sources too.
     "extra_plugin_dirs": [],
+
+    # Session profiles — predefined plugin sets per work context.
+    # Each profile lists the plugins to ENABLE; everything else is disabled.
+    # Use short names (before @); the system resolves to full keys.
+    # /profile <name> to activate, /profile save <name> to capture current state.
+    "profiles": {
+        "minimal": {
+            "description": "Bare minimum — just git and code quality",
+            "plugins": ["superpowers", "commit-commands", "code-review"]
+        },
+        "backend": {
+            "description": "Python/FastAPI backend development",
+            "plugins": [
+                "superpowers", "commit-commands", "code-review",
+                "code-simplifier", "feature-dev", "github",
+                "security-guidance"
+            ]
+        },
+        "frontend": {
+            "description": "Frontend/UI development with browser tools",
+            "plugins": [
+                "superpowers", "commit-commands", "code-review",
+                "frontend-design", "chrome-devtools-mcp", "feature-dev",
+                "github"
+            ]
+        },
+        "mcp-dev": {
+            "description": "MCP server and plugin development",
+            "plugins": [
+                "superpowers", "commit-commands", "code-review",
+                "mcp-server-dev", "plugin-dev", "skill-creator",
+                "feature-dev", "github"
+            ]
+        },
+        "data": {
+            "description": "Data engineering and pipelines",
+            "plugins": [
+                "superpowers", "commit-commands", "code-review",
+                "data", "feature-dev", "github"
+            ]
+        },
+        "full": {
+            "description": "All plugins enabled",
+            "plugins": "__all__"
+        },
+    },
 }
 
 

@@ -380,6 +380,42 @@ Disable profiling to skip the DB write per hook call:
 configure(key="token_profiling", value="false")
 ```
 
+### 10. Session Profiles
+
+Switch entire plugin sets per work context — instantly toggle only the plugins you need:
+
+```
+/profile              # list available profiles
+/profile backend      # activate backend profile (7 plugins)
+/profile minimal      # just essentials (3 plugins)
+/profile auto build MCP server  # LLM recommends best match
+```
+
+**Built-in profiles:**
+
+| Profile | Plugins | Description |
+|---------|---------|-------------|
+| `minimal` | 3 | superpowers, commit-commands, code-review |
+| `backend` | 7 | + code-simplifier, feature-dev, github, security-guidance |
+| `frontend` | 7 | + frontend-design, chrome-devtools-mcp, feature-dev, github |
+| `mcp-dev` | 8 | + mcp-server-dev, plugin-dev, skill-creator, feature-dev, github |
+| `data` | 6 | + data, feature-dev, github |
+| `full` | all | Every plugin enabled |
+
+Save your current state as a custom profile:
+
+```
+/profile save my-setup "My custom plugin set"
+```
+
+Delete a custom profile:
+
+```
+/profile delete my-setup
+```
+
+Profiles modify `~/.claude/settings.json` — restart Claude Code for changes to take effect.
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
@@ -408,21 +444,30 @@ All settings have sensible defaults. Override only what you need.
 | `embed_model` | `nomic-embed-text` | Embedding model |
 | `reason_model` | `deepseek-r1:1.5b` | Reasoning model (re-rank, compact, classify) |
 | `hook_enabled` | `true` | Enable UserPromptSubmit hook |
-| `hook_keyword_prefilter` | `true` | Skip LLM for obvious non-commands |
 | `hook_timeout_seconds` | `45` | Max hook execution time |
 | `token_profiling` | `true` | Track estimated token savings |
 | `search_top_k` | `3` | Default search results count |
 | `search_similarity_threshold` | `0.3` | Minimum cosine similarity |
 | `extra_skill_dirs` | `[{skills-archive}]` | Extra skill directories to index |
 | `extra_plugin_dirs` | `[]` | Extra plugin directories to index |
+| `hook_semantic_threshold` | `0.45` | Min embedding similarity for LLM classify |
+| `hook_max_message_length` | `400` | Messages longer than this skip LLM classify |
+| `hook_task_command_examples` | `[15 phrases]` | Canonical task phrases for semantic centroid |
+| `hook_context_injection` | `true` | Auto-enrich context with RAG + memory |
+| `hook_context_max_chars` | `2000` | Max chars injected as systemMessage |
+| `hook_precompact_threshold` | `1500` | Messages longer than this get LLM pre-compaction |
+| `profiles` | `{6 built-in}` | Session profile definitions |
 
 ## Roadmap
 
-- [ ] Session profiles — predefined plugin sets per work context
-- [ ] Auto-profile — predict needed plugins before session start
+- [x] Session profiles — predefined plugin sets per work context
+- [x] Auto-profile — LLM recommends best profile for task description
+- [x] RAG context injection — auto-enrich Claude's context with relevant skills/tasks/memory
+- [ ] Auto-eviction — dynamically unload unused skills mid-session
+- [ ] Context compaction — local LLM summarizes growing context
+- [ ] Exhaustion fallback — use local LLM when Claude quota is exhausted
 - [ ] Conversation digest enrichment — embed full conversation summaries
 - [ ] OpenSearch backend — for scaling beyond local use
-- [ ] Auto-search on every message — UserPromptSubmit hook that also searches skills
 
 ## License
 

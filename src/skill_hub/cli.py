@@ -607,6 +607,11 @@ Slash commands (intercepted locally, 0 Claude tokens):
   /list-teachings      Teaching rules
   /list-models         Installed Ollama models
   /configure [K] [V]   View/set config
+  /profile              List session profiles
+  /profile <name>       Activate a profile (toggle plugins)
+  /profile save <name>  Save current plugin state as profile
+  /profile delete <name>Remove a profile
+  /profile auto <task>  LLM recommends best profile for task
 
 These run via local LLM or SQLite — Claude never sees them.
 
@@ -716,6 +721,172 @@ def _cmd_list_skills() -> str:
     return "\n".join(lines)
 
 
+def _cmd_profile(args_str: str) -> str:
+    """
+    Session profiles — switch plugin sets per work context.
+
+    /profile              — list available profiles
+    /profile <name>       — activate a profile (toggle plugins, user must restart)
+    /profile save <name>  — save current plugin state as a new profile
+    /profile delete <name>— remove a profile
+    /profile auto <task>  — LLM suggests the best profile for a task description
+    """
+    from . import config as _cfg
+    from pathlib import Path
+
+    SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+    args = args_str.strip().split(None, 1)
+    subcmd = args[0].lower() if args else ""
+    rest = args[1].strip() if len(args) > 1 else ""
+
+    cfg = _cfg.load_config()
+    profiles: dict = cfg.get("profiles", {})
+
+    # /profile — list profiles
+    if not subcmd:
+        if not profiles:
+            return "No profiles defined. Use /profile save <name> to create one."
+        lines = ["=== Session Profiles ===\n"]
+        for name, prof in sorted(profiles.items()):
+            desc = prof.get("description", "")
+            plugins = prof.get("plugins", [])
+            if plugins == "__all__":
+                count = "all"
+            else:
+                count = str(len(plugins))
+            lines.append(f"  {name:<15} {count:>3} plugins — {desc}")
+        lines.append(f"\nUsage: /profile <name> to activate (requires restart)")
+        lines.append(f"       /profile save <name> to save current state")
+        lines.append(f"       /profile auto <task description>")
+        return "\n".join(lines)
+
+    # /profile save <name> [description]
+    if subcmd == "save":
+        parts = rest.split(None, 1)
+        name = parts[0] if parts else ""
+        desc = parts[1] if len(parts) > 1 else ""
+        if not name:
+            return "Usage: /profile save <name> [description]"
+
+        if not SETTINGS_PATH.exists():
+            return "Settings file not found."
+        settings = json.loads(SETTINGS_PATH.read_text())
+        enabled_plugins = settings.get("enabledPlugins", {})
+
+        # Capture currently enabled plugins (short names)
+        active = [k.split("@")[0] for k, v in enabled_plugins.items() if v]
+
+        profiles[name] = {
+            "description": desc or f"Saved from current session ({len(active)} plugins)",
+            "plugins": active,
+        }
+        cfg["profiles"] = profiles
+        _cfg.save_config(cfg)
+
+        return (f"Profile '{name}' saved with {len(active)} plugins:\n"
+                f"  {', '.join(active)}")
+
+    # /profile delete <name>
+    if subcmd == "delete":
+        if not rest:
+            return "Usage: /profile delete <name>"
+        if rest not in profiles:
+            return f"Profile '{rest}' not found."
+        del profiles[rest]
+        cfg["profiles"] = profiles
+        _cfg.save_config(cfg)
+        return f"Profile '{rest}' deleted."
+
+    # /profile auto <task description>
+    if subcmd == "auto":
+        if not rest:
+            return "Usage: /profile auto <describe your task>"
+        # Use embedding similarity to find the best profile
+        try:
+            task_vec = embed(rest)
+        except Exception:
+            return "Ollama not available for auto-profile."
+
+        import math
+
+        best_name = ""
+        best_sim = 0.0
+        for name, prof in profiles.items():
+            desc = prof.get("description", "")
+            plugins = prof.get("plugins", [])
+            text = f"{name}: {desc}. Plugins: {', '.join(plugins) if isinstance(plugins, list) else 'all'}"
+            try:
+                prof_vec = embed(text)
+                dot = sum(a * b for a, b in zip(task_vec, prof_vec))
+                na = math.sqrt(sum(x * x for x in task_vec))
+                nb = math.sqrt(sum(x * x for x in prof_vec))
+                sim = dot / (na * nb) if na and nb else 0.0
+                if sim > best_sim:
+                    best_sim = sim
+                    best_name = name
+            except Exception:
+                continue
+
+        if best_name:
+            prof = profiles[best_name]
+            plugins = prof.get("plugins", [])
+            count = "all" if plugins == "__all__" else str(len(plugins))
+            return (f"Recommended profile: {best_name} (sim={best_sim:.2f})\n"
+                    f"  {prof.get('description', '')}\n"
+                    f"  {count} plugins: {', '.join(plugins) if isinstance(plugins, list) else 'all enabled'}\n\n"
+                    f"To activate: /profile {best_name}")
+        return "No matching profile found. Create one with /profile save <name>."
+
+    # /profile <name> — activate
+    name = subcmd
+    if name not in profiles:
+        available = ", ".join(sorted(profiles.keys()))
+        return f"Profile '{name}' not found. Available: {available}"
+
+    prof = profiles[name]
+    target_plugins = prof.get("plugins", [])
+
+    if not SETTINGS_PATH.exists():
+        return "Settings file not found."
+
+    settings = json.loads(SETTINGS_PATH.read_text())
+    enabled_plugins = settings.get("enabledPlugins", {})
+
+    if target_plugins == "__all__":
+        # Enable everything
+        changes = []
+        for key in enabled_plugins:
+            if not enabled_plugins[key]:
+                enabled_plugins[key] = True
+                changes.append(f"  ✓ enabled {key.split('@')[0]}")
+    else:
+        # Enable target plugins, disable everything else
+        changes = []
+        for key in enabled_plugins:
+            short = key.split("@")[0]
+            should_enable = short in target_plugins
+            was_enabled = enabled_plugins[key]
+            if should_enable != was_enabled:
+                enabled_plugins[key] = should_enable
+                symbol = "✓" if should_enable else "✗"
+                action = "enabled" if should_enable else "disabled"
+                changes.append(f"  {symbol} {action} {short}")
+
+    settings["enabledPlugins"] = enabled_plugins
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
+
+    lines = [f"=== Profile '{name}' activated ===\n"]
+    lines.append(prof.get("description", ""))
+    if changes:
+        lines.append(f"\nChanges ({len(changes)}):")
+        lines.extend(changes)
+    else:
+        lines.append("\nNo changes needed — already matching.")
+    lines.append(f"\n⚠  Restart Claude Code for changes to take effect.")
+
+    return "\n".join(lines)
+
+
 # Map of slash command prefixes → local handlers
 _SLASH_COMMANDS: dict[str, str] = {
     "/hub-status": "status",
@@ -733,6 +904,7 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/search-context": "search_context",
     "/index-skills": "index_skills",
     "/index-plugins": "index_plugins",
+    "/profile": "profile",
 }
 
 
@@ -793,6 +965,8 @@ def _handle_slash_command(message: str) -> dict | None:
         elif action == "index_plugins":
             # Plugin indexing is heavier — let Claude handle via MCP
             return None
+        elif action == "profile":
+            return {"decision": "block", "message": _cmd_profile(args_str)}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
@@ -804,7 +978,7 @@ def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: skill-hub-cli <command> [args...]")
         print("Commands: classify, status, help, token_stats, list_models,")
-        print("          list_skills, list_teachings, configure,")
+        print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context")
         sys.exit(1)
 
@@ -870,6 +1044,9 @@ def main() -> None:
         query = " ".join(args)
         result = _execute_intent({"intent": "search_context", "summary": query}, query)
         print(result or "No results.")
+
+    elif cmd == "profile":
+        print(_cmd_profile(" ".join(args)))
 
     else:
         print(f"Unknown command: {cmd}")

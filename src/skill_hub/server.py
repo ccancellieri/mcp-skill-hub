@@ -46,7 +46,7 @@ from fastmcp import FastMCP
 
 from . import config as _cfg
 from .embeddings import (
-    embed, rerank, compact, rewrite_query,
+    embed, rerank, compact, rewrite_query, optimize_context,
     EMBED_MODEL, RERANK_MODEL, ollama_available,
 )
 from .indexer import index_all
@@ -815,6 +815,132 @@ def configure(key: str = "", value: str = "") -> str:
         embeddings.OLLAMA_BASE = str(parsed)
 
     return f"Config updated: {key} = {parsed}\nRestart MCP server for full effect."
+
+
+@mcp.tool()
+def optimize_memory(dry_run: bool = True) -> str:
+    """
+    Use the local LLM to analyze all memory files and recommend pruning.
+
+    Reads every .md file in the Claude auto-memory directory, sends them
+    to the local reasoning model, and returns a report with recommendations:
+    KEEP, PRUNE (stale/done), COMPACT (too verbose), or MERGE (duplicates).
+
+    Args:
+        dry_run: If True (default), only report recommendations.
+                 If False, apply PRUNE actions (delete files + update MEMORY.md).
+    """
+    reason_model = str(_cfg.get("reason_model"))
+    if not ollama_available(reason_model):
+        return (
+            f"Reason model '{reason_model}' not available.\n"
+            f"Run: ollama pull {reason_model}"
+        )
+
+    mem_path = Path.home() / ".claude" / "projects" / \
+               "-Users-ccancellieri-work-code" / "memory"
+    if not mem_path.exists():
+        return f"Memory directory not found: {mem_path}"
+
+    index_path = mem_path / "MEMORY.md"
+
+    # Collect all detail files
+    entries: list[dict] = []
+    for mf in sorted(mem_path.glob("*.md")):
+        if mf.name == "MEMORY.md":
+            continue
+        content = mf.read_text(encoding="utf-8", errors="replace")
+        tokens = max(1, len(content) // 4)
+        prefix = mf.stem.split("_")[0]
+        entries.append({
+            "file": mf.name,
+            "category": prefix,
+            "tokens": tokens,
+            "content": content,
+        })
+
+    if not entries:
+        return "No memory detail files found."
+
+    total_tokens = sum(e["tokens"] for e in entries)
+    lines = [
+        f"=== Memory Optimization Report ===\n",
+        f"Analyzing {len(entries)} files (~{total_tokens:,} tokens total) "
+        f"with {reason_model}...\n",
+    ]
+
+    # Call local LLM
+    results = optimize_context(entries, model=reason_model)
+
+    # Separate recommendations from summary
+    recs = [r for r in results if not r.get("summary")]
+    summary = next((r for r in results if r.get("summary")), None)
+
+    # Group by action
+    by_action: dict[str, list[dict]] = {}
+    for r in recs:
+        action = r.get("action", "UNKNOWN")
+        by_action.setdefault(action, []).append(r)
+
+    for action in ["PRUNE", "COMPACT", "MERGE", "KEEP"]:
+        items = by_action.get(action, [])
+        if not items:
+            continue
+        lines.append(f"\n{'─' * 40}")
+        lines.append(f"  {action} ({len(items)} files):")
+        for r in items:
+            fname = r.get("file", "?")
+            reason = r.get("reason", "")
+            tok = next((e["tokens"] for e in entries if e["file"] == fname), 0)
+            lines.append(f"    • {fname} (~{tok} tokens)")
+            lines.append(f"      {reason}")
+            if action == "COMPACT" and r.get("compacted"):
+                preview = r["compacted"][:200].replace("\n", " ")
+                lines.append(f"      → {preview}...")
+
+    # Summary
+    if summary and not summary.get("error"):
+        saved = summary.get("est_tokens_saved", 0)
+        lines.append(f"\n{'═' * 40}")
+        lines.append(f"  Total files: {summary.get('total', len(entries))}")
+        lines.append(f"  Keep: {summary.get('keep', '?')}  "
+                     f"Prune: {summary.get('prune', '?')}  "
+                     f"Compact: {summary.get('compact', '?')}  "
+                     f"Merge: {summary.get('merge', '?')}")
+        lines.append(f"  Estimated tokens saved: ~{saved:,}")
+        lines.append(f"  (~{saved:,} tokens × every session)")
+    elif summary and summary.get("error"):
+        lines.append(f"\n⚠ LLM error: {summary['error']}")
+
+    # Apply pruning if not dry_run
+    pruned_files: list[str] = []
+    if not dry_run and "PRUNE" in by_action:
+        lines.append(f"\n{'─' * 40}")
+        lines.append("  Applying PRUNE actions...")
+        for r in by_action["PRUNE"]:
+            fname = r.get("file", "")
+            fpath = mem_path / fname
+            if fpath.exists() and fpath.name != "MEMORY.md":
+                fpath.unlink()
+                pruned_files.append(fname)
+                lines.append(f"    ✓ Deleted {fname}")
+
+        # Update MEMORY.md index — remove lines referencing pruned files
+        if pruned_files and index_path.exists():
+            index_text = index_path.read_text(encoding="utf-8", errors="replace")
+            new_lines = []
+            for line in index_text.splitlines():
+                if any(pf in line for pf in pruned_files):
+                    continue
+                new_lines.append(line)
+            index_path.write_text("\n".join(new_lines) + "\n",
+                                 encoding="utf-8")
+            lines.append(f"    ✓ Updated MEMORY.md (removed {len(pruned_files)} entries)")
+
+    if dry_run and "PRUNE" in by_action:
+        lines.append(f"\n💡 To apply pruning: optimize_memory(dry_run=False)")
+
+    return "\n".join(lines)
 
 
 @mcp.tool()
