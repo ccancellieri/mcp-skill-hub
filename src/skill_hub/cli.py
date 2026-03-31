@@ -92,14 +92,24 @@ def _classify_intent(message: str) -> dict:
 
     # Stage 2: LLM classification
     prompt = f"""\
-You are a command classifier. Given a user message, determine if it is a task/memory command.
+You are a strict command classifier. Classify ONLY explicit task management commands.
 
-Possible intents:
-- "save_task": user wants to save current work/discussion for later (e.g. "save to memory", "park this", "save task", "remember this")
-- "close_task": user wants to close/finish a task (e.g. "close task", "done with this", "mark as done", "save and close")
-- "list_tasks": user wants to see open tasks (e.g. "what was I working on?", "show tasks", "open tasks")
-- "search_context": user wants to find past work (e.g. "what did we discuss about X?", "find my previous work on Y")
-- "none": not a task command, just a normal message
+IMPORTANT: Most messages are normal coding/work requests — classify them as "none".
+Only classify as a task command if the user is EXPLICITLY managing their task list.
+
+Intents (classify as these ONLY if the user is clearly doing task management):
+- "save_task": user says to save/park/remember the current discussion (e.g. "save to memory", "park this for later")
+- "close_task": user says to close/finish/mark-done a task (e.g. "close task 3", "done with this task")
+- "list_tasks": user asks to see their task list (e.g. "show my open tasks", "list tasks")
+- "search_context": user asks to find past discussions/work (e.g. "what did we discuss about auth?")
+- "none": ANYTHING ELSE — coding questions, bug reports, feature requests, explanations, etc.
+
+Examples of "none" (do NOT classify these as task commands):
+- "fix the pagination bug" → none (coding request)
+- "add a new endpoint" → none (feature request)
+- "explain how this works" → none (question)
+- "refactor the query executor" → none (coding request)
+- "debug the failing test" → none (coding request)
 
 Reply with ONLY a JSON object:
 {{"intent": "<intent>", "title": "<extracted title if any>", "summary": "<extracted summary if any>", "task_id": <number or null>}}
@@ -212,15 +222,163 @@ _TOKEN_ESTIMATES: dict[str, int] = {
 }
 
 
+def _build_context_injection(message: str, msg_vector: list[float]) -> str | None:
+    """
+    Strategy #1 (RAG) + #5 (Auto-Memory): Build a systemMessage with relevant
+    context from skills, tasks, teachings, and memory files.
+
+    Returns a context string or None if nothing relevant found.
+    """
+    from . import config as _cfg
+    from pathlib import Path
+    import re
+
+    max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+    budget = max_chars
+    parts: list[str] = []
+
+    try:
+        store = SkillStore()
+
+        # Search skills
+        skills = store.search(msg_vector, top_k=2, similarity_threshold=0.4)
+        for s in skills:
+            if budget <= 0:
+                break
+            desc = s.get("description", "")[:150]
+            # Include truncated content for the top hit
+            content_preview = ""
+            if skills.index(s) == 0 and s.get("content"):
+                content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
+            snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
+            parts.append(snippet)
+            budget -= len(snippet)
+
+        # Search past tasks
+        tasks = store.search_tasks(msg_vector, top_k=2, min_sim=0.4)
+        for t in tasks:
+            if budget <= 0:
+                break
+            compact_info = ""
+            if t.get("compact"):
+                try:
+                    digest = json.loads(t["compact"])
+                    decisions = ", ".join(digest.get("decisions", [])[:3])
+                    if decisions:
+                        compact_info = f" | Decisions: {decisions}"
+                except Exception:
+                    pass
+            snippet = (f"Past work #{t['id']} [{t['status']}]: {t['title']} "
+                       f"— {t['summary'][:150]}{compact_info}")
+            parts.append(snippet)
+            budget -= len(snippet)
+
+        # Search teaching rules
+        teachings = store.search_teachings(msg_vector, min_sim=0.5)
+        for t in teachings[:3]:
+            if budget <= 0:
+                break
+            snippet = f"Suggestion: when \"{t['rule']}\" → use {t['target_id']}"
+            parts.append(snippet)
+            budget -= len(snippet)
+
+        store.close()
+
+        # Strategy #5: Auto-memory — find relevant memory files
+        memory_dir = (Path.home() / ".claude" / "projects" /
+                      "-Users-ccancellieri-work-code" / "memory")
+        memory_index = memory_dir / "MEMORY.md"
+        if memory_index.exists() and budget > 200:
+            index_text = memory_index.read_text(encoding="utf-8", errors="replace")
+            # Parse entries: - [file.md](file.md) — description
+            entries: list[tuple[str, str, str]] = []
+            for match in re.finditer(
+                r"-\s*\[([^\]]+)\]\(([^)]+)\)\s*—\s*(.+)$",
+                index_text, re.MULTILINE
+            ):
+                name, filepath, description = match.groups()
+                entries.append((filepath.strip(), name.strip(), description.strip()))
+
+            if entries:
+                # Embed each description and find the most relevant
+                scored: list[tuple[float, str, str, str]] = []
+                for filepath, name, desc in entries:
+                    try:
+                        desc_vec = embed(desc[:200])
+                        sim = sum(a * b for a, b in zip(msg_vector, desc_vec))
+                        import math
+                        na = math.sqrt(sum(x * x for x in msg_vector))
+                        nb = math.sqrt(sum(x * x for x in desc_vec))
+                        sim = sim / (na * nb) if na and nb else 0.0
+                        if sim > 0.4:
+                            scored.append((sim, filepath, name, desc))
+                    except Exception:
+                        continue
+
+                scored.sort(key=lambda x: x[0], reverse=True)
+
+                for sim, filepath, name, desc in scored[:2]:
+                    if budget <= 0:
+                        break
+                    mem_file = memory_dir / filepath
+                    if mem_file.exists():
+                        content = mem_file.read_text(
+                            encoding="utf-8", errors="replace"
+                        )[:500]
+                        snippet = f"Memory [{name}] (sim={sim:.2f}): {content}"
+                        parts.append(snippet)
+                        budget -= len(snippet)
+
+    except Exception:
+        pass
+
+    if not parts:
+        return None
+
+    header = ("[Skill Hub — auto-injected context relevant to this message. "
+              "Use this as background knowledge, do not repeat it verbatim.]\n\n")
+    return header + "\n\n".join(parts)
+
+
+def _precompact_hint(message: str) -> str | None:
+    """
+    Strategy #4: Pre-compact long messages.
+    If the message is very long, use local LLM to extract key points
+    so Claude can focus on what matters.
+    """
+    from . import config as _cfg
+
+    threshold = int(_cfg.get("hook_precompact_threshold") or 1500)
+    if len(message) <= threshold:
+        return None
+
+    try:
+        digest = compact(message)
+        summary = digest.get("summary", "")
+        if summary:
+            return (f"[Skill Hub — pre-compacted summary of the long input below]\n"
+                    f"Key points: {summary}\n"
+                    f"Decisions: {', '.join(digest.get('decisions', []))}\n"
+                    f"Open questions: {', '.join(digest.get('open_questions', []))}")
+    except Exception:
+        pass
+    return None
+
+
 def hook_classify_and_execute(message: str) -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
-    Returns a hook response dict:
+
+    Pipeline:
+    1. Slash commands → instant local handling (0ms)
+    2. Task commands → semantic prefilter + LLM classify → local execution
+    3. Normal messages → context injection + pre-compact → allow to Claude
+       with enriched systemMessage
+
+    Returns:
       - {"decision": "block", "message": "..."} if handled locally
       - {"decision": "allow"} if Claude should handle it
-
-    Fast-path: /slash-commands are routed directly to local handlers
-    without any LLM call (~0ms).
+      - {"decision": "allow", "systemMessage": "..."} if injecting context
     """
     from . import config as _cfg
 
@@ -244,27 +402,61 @@ def hook_classify_and_execute(message: str) -> dict:
     intent = _classify_intent(message)
     action = intent.get("intent", "none")
 
-    if action == "none":
+    if action != "none":
+        result = _execute_intent(intent, message)
+        if result:
+            if _cfg.get("token_profiling"):
+                try:
+                    store = SkillStore()
+                    store.log_interception(
+                        command_type=action,
+                        message_preview=message,
+                        estimated_tokens=_TOKEN_ESTIMATES.get(action, 400),
+                    )
+                    store.close()
+                except Exception:
+                    pass
+            return {"decision": "block", "message": result}
+
+    # ── Context enrichment for messages going to Claude ──
+    if not _cfg.get("hook_context_injection"):
         return {"decision": "allow"}
 
-    result = _execute_intent(intent, message)
-    if result:
-        # Log interception for token profiling (if profiling enabled)
+    system_parts: list[str] = []
+
+    # Strategy #4: Pre-compact long input
+    precompact = _precompact_hint(message)
+    if precompact:
+        system_parts.append(precompact)
+
+    # Strategy #1 + #5: RAG context injection + memory-aware context
+    try:
+        msg_vector = embed(message[:500])  # truncate for embedding
+        context = _build_context_injection(message, msg_vector)
+        if context:
+            system_parts.append(context)
+    except Exception:
+        pass
+
+    if system_parts:
+        combined = "\n\n".join(system_parts)
+        # Log context injection stats
         if _cfg.get("token_profiling"):
             try:
                 store = SkillStore()
-                store.log_interception(
-                    command_type=action,
+                store.log_context_injection(
                     message_preview=message,
-                    estimated_tokens=_TOKEN_ESTIMATES.get(action, 400),
+                    skills=1 if context and "Skill [" in context else 0,
+                    tasks=1 if context and "Past work #" in context else 0,
+                    teachings=1 if context and "Suggestion:" in context else 0,
+                    memory=1 if context and "Memory [" in context else 0,
+                    precompacted=bool(precompact),
+                    chars=len(combined),
                 )
                 store.close()
             except Exception:
                 pass
-        return {
-            "decision": "block",
-            "message": result,
-        }
+        return {"decision": "allow", "systemMessage": combined}
 
     return {"decision": "allow"}
 
@@ -349,23 +541,53 @@ def _cmd_token_stats() -> str:
     """Token savings report — runs locally."""
     store = SkillStore()
     totals = store.get_interception_totals()
-    if not totals or not totals["total_interceptions"]:
-        store.close()
-        return "No interceptions recorded yet."
-
-    stats = store.get_interception_stats()
-    total_saved = totals["total_tokens_saved"] or 0
-    total_count = totals["total_interceptions"] or 0
+    ctx_stats = store.get_context_injection_stats()
     store.close()
 
-    lines = [
-        f"=== Token Savings ===\n",
-        f"Total intercepted: {total_count}",
-        f"Tokens saved:      ~{total_saved:,}\n",
-    ]
-    for row in stats:
-        avg = (row["total_tokens_saved"] or 0) // max(row["intercept_count"], 1)
-        lines.append(f"  {row['command_type']:<20} {row['intercept_count']:>4}x  ~{row['total_tokens_saved'] or 0:,} tokens")
+    lines: list[str] = []
+
+    # Interception stats
+    if totals and totals["total_interceptions"]:
+        total_saved = totals["total_tokens_saved"] or 0
+        total_count = totals["total_interceptions"] or 0
+        lines.append("=== Token Savings (blocked commands) ===\n")
+        lines.append(f"Total intercepted: {total_count}")
+        lines.append(f"Tokens saved:      ~{total_saved:,}\n")
+
+        stats = store.get_interception_stats()
+        for row in stats:
+            avg = (row["total_tokens_saved"] or 0) // max(row["intercept_count"], 1)
+            lines.append(f"  {row['command_type']:<20} {row['intercept_count']:>4}x  ~{row['total_tokens_saved'] or 0:,} tokens")
+    else:
+        lines.append("No interceptions recorded yet.\n")
+
+    # Context injection stats
+    if ctx_stats and ctx_stats.get("total", 0) > 0:
+        total = ctx_stats["total"]
+        lines.append(f"\n=== Context Injection (enriched messages) ===\n")
+        lines.append(f"Total messages enriched: {total}")
+        lines.append(f"Avg context injected:   ~{int(ctx_stats.get('avg_chars', 0)) // 4} tokens "
+                      f"({int(ctx_stats.get('avg_chars', 0))} chars)\n")
+        lines.append("Context sources used:")
+
+        def _pct(n: int) -> str:
+            return f"{n / total * 100:.0f}%" if total else "0%"
+
+        w_skills = ctx_stats.get("with_skills", 0) or 0
+        w_tasks = ctx_stats.get("with_tasks", 0) or 0
+        w_teach = ctx_stats.get("with_teachings", 0) or 0
+        w_mem = ctx_stats.get("with_memory", 0) or 0
+        w_pre = ctx_stats.get("precompacted", 0) or 0
+
+        lines.append(f"  Skills matched:    {w_skills:>4}x  ({_pct(w_skills)} of messages)")
+        lines.append(f"  Tasks matched:     {w_tasks:>4}x  ({_pct(w_tasks)} of messages)")
+        lines.append(f"  Teachings matched: {w_teach:>4}x  ({_pct(w_teach)} of messages)")
+        lines.append(f"  Memory loaded:     {w_mem:>4}x  ({_pct(w_mem)} of messages)")
+        lines.append(f"  Pre-compacted:     {w_pre:>4}x  ({_pct(w_pre)} of messages)")
+        lines.append(f"\n  Total context:     ~{(ctx_stats.get('total_chars', 0) or 0) // 4:,} tokens injected")
+    else:
+        lines.append("\nNo context injections recorded yet.")
+
     return "\n".join(lines)
 
 

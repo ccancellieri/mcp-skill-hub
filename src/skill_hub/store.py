@@ -136,6 +136,18 @@ class SkillStore:
             );
 
             CREATE INDEX IF NOT EXISTS idx_interceptions_type ON interceptions (command_type);
+
+            CREATE TABLE IF NOT EXISTS context_injections (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_preview TEXT,
+                skills_found    INTEGER NOT NULL DEFAULT 0,
+                tasks_found     INTEGER NOT NULL DEFAULT 0,
+                teachings_found INTEGER NOT NULL DEFAULT 0,
+                memory_found    INTEGER NOT NULL DEFAULT 0,
+                precompacted    INTEGER NOT NULL DEFAULT 0,
+                chars_injected  INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
         """)
         self._conn.commit()
 
@@ -535,6 +547,35 @@ class SkillStore:
                    SUM(estimated_tokens) as total_tokens_saved
             FROM interceptions
         """).fetchone()
+
+    # ------------------------------------------------------------------
+    # Context injection stats
+
+    def log_context_injection(self, message_preview: str, skills: int,
+                              tasks: int, teachings: int, memory: int,
+                              precompacted: bool, chars: int) -> None:
+        self._conn.execute("""
+            INSERT INTO context_injections
+                (message_preview, skills_found, tasks_found, teachings_found,
+                 memory_found, precompacted, chars_injected)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (message_preview[:100], skills, tasks, teachings, memory,
+              1 if precompacted else 0, chars))
+        self._conn.commit()
+
+    def get_context_injection_stats(self) -> dict:
+        row = self._conn.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN skills_found > 0 THEN 1 ELSE 0 END) as with_skills,
+                   SUM(CASE WHEN tasks_found > 0 THEN 1 ELSE 0 END) as with_tasks,
+                   SUM(CASE WHEN teachings_found > 0 THEN 1 ELSE 0 END) as with_teachings,
+                   SUM(CASE WHEN memory_found > 0 THEN 1 ELSE 0 END) as with_memory,
+                   SUM(precompacted) as precompacted,
+                   SUM(chars_injected) as total_chars,
+                   AVG(chars_injected) as avg_chars
+            FROM context_injections
+        """).fetchone()
+        return dict(row) if row else {}
 
     def close(self) -> None:
         self._conn.close()

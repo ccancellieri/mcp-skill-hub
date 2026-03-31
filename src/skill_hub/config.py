@@ -31,9 +31,9 @@ _DEFAULTS = {
     # Hook behavior
     "hook_timeout_seconds": 45,         # max time for hook LLM classification
     "hook_enabled": True,               # enable/disable UserPromptSubmit hook
-    "hook_semantic_threshold": 0.35,    # min embedding similarity to trigger LLM classify
+    "hook_semantic_threshold": 0.45,    # min embedding similarity to trigger LLM classify
                                         # lower = more messages reach LLM (more sensitive)
-                                        # raise to 0.5+ if you get too many false positives
+                                        # raise to 0.55+ if you get false positives with small models
     "hook_max_message_length": 400,     # messages longer than this skip LLM classify entirely
     "token_profiling": True,            # track estimated token savings per interception
 
@@ -57,6 +57,11 @@ _DEFAULTS = {
         "find my previous work on",
         "search my past work",
     ],
+
+    # Context injection — auto-enrich Claude's context with relevant skills/tasks/memory
+    "hook_context_injection": True,     # enable RAG + auto-memory injection
+    "hook_context_max_chars": 2000,     # max chars injected as systemMessage (~500 tokens)
+    "hook_precompact_threshold": 1500,  # messages longer than this get LLM pre-compaction
 
     # Search defaults
     "search_top_k": 3,                  # default number of results
