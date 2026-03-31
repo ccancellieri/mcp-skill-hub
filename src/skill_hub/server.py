@@ -50,6 +50,7 @@ from .embeddings import (
     EMBED_MODEL, RERANK_MODEL, ollama_available,
 )
 from .indexer import index_all
+from .activity_log import log_tool, log_llm
 from .store import SkillStore
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
@@ -109,6 +110,7 @@ def search_skills(
         use_rerank: If True, use deepseek-r1:1.5b to re-rank results for higher
                     precision (slower, ~2-5s extra per candidate).
     """
+    log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
     if not ollama_available(EMBED_MODEL):
         return (
             f"Ollama model '{EMBED_MODEL}' not found. "
@@ -167,6 +169,7 @@ def suggest_plugins(query: str = "") -> str:
     Args:
         query: Task description. Leave empty to reuse the last search query.
     """
+    log_tool("suggest_plugins", query=query)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
 
@@ -226,6 +229,7 @@ def record_feedback(
         helpful:  True if it guided useful work; False if it was a mismatch.
         query:    The original search query. Leave empty to reuse the last search.
     """
+    log_tool("record_feedback", skill_id=skill_id, helpful=helpful)
     used_query = query or _last_search_state.get("query", "")
     used_vector = _last_search_state.get("vector", [])
 
@@ -256,6 +260,7 @@ def teach(rule: str, suggest: str) -> str:
         rule:    Natural language description of when this suggestion applies.
         suggest: Plugin short name or skill id to suggest.
     """
+    log_tool("teach", rule=rule, suggest=suggest)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
 
@@ -291,6 +296,7 @@ def forget_teaching(teaching_id: int) -> str:
     Args:
         teaching_id: The teaching ID (shown by list_teachings).
     """
+    log_tool("forget_teaching", teaching_id=teaching_id)
     if _store.remove_teaching(teaching_id):
         return f"Teaching #{teaching_id} removed."
     return f"Teaching #{teaching_id} not found."
@@ -319,6 +325,7 @@ def log_session(tool_name: str, plugin_id: str = "") -> str:
         tool_name: The MCP tool that was called (e.g. "take_screenshot").
         plugin_id: The plugin that owns the tool (e.g. "chrome-devtools-mcp@...").
     """
+    log_tool("log_session", tool_name=tool_name, plugin_id=plugin_id)
     _store.log_session_tool(
         session_id=_session["id"],
         query=_session.get("topic", ""),
@@ -350,6 +357,7 @@ def save_task(
         context: Extra context — plans, key decisions, file paths, etc.
         tags:    Comma-separated tags for filtering (e.g. "mcp,ollama,sqlite").
     """
+    log_tool("save_task", title=title, tags=tags)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
 
@@ -371,6 +379,7 @@ def close_task(task_id: int, summary: str = "") -> str:
         task_id: Task ID from list_tasks().
         summary: Optional final summary. If empty, compacts the existing summary.
     """
+    log_tool("close_task", task_id=task_id)
     task = _store.get_task(task_id)
     if not task:
         return f"Task #{task_id} not found."
@@ -411,6 +420,7 @@ def update_task(task_id: int, summary: str = "", context: str = "",
         context: New/appended context.
         tags:    Updated tags.
     """
+    log_tool("update_task", task_id=task_id)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
 
@@ -433,6 +443,7 @@ def reopen_task(task_id: int) -> str:
     Args:
         task_id: Task ID from list_tasks(status="closed").
     """
+    log_tool("reopen_task", task_id=task_id)
     if _store.reopen_task(task_id):
         return f"Task #{task_id} reopened."
     return f"Task #{task_id} not found."
@@ -446,6 +457,7 @@ def list_tasks(status: str = "open") -> str:
     Args:
         status: "open", "closed", or "all".
     """
+    log_tool("list_tasks", status=status)
     rows = _store.list_tasks(status)
     if not rows:
         return f"No {status} tasks."
@@ -468,6 +480,7 @@ def search_context(query: str, top_k: int = 5) -> str:
         query: Natural language description of the task.
         top_k: Max results per category.
     """
+    log_tool("search_context", query=query, top_k=top_k)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
 
@@ -547,6 +560,7 @@ def index_skills() -> str:
     Run this once after installing or updating plugins.
     Requires Ollama with nomic-embed-text: ollama pull nomic-embed-text
     """
+    log_tool("index_skills")
     if not ollama_available(EMBED_MODEL):
         return (
             f"Ollama model '{EMBED_MODEL}' not found. "
@@ -567,6 +581,7 @@ def index_plugins() -> str:
     Reads enabledPlugins from settings.json and indexes their descriptions
     from the plugin manifest files.
     """
+    log_tool("index_plugins")
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
 
@@ -781,6 +796,7 @@ def configure(key: str = "", value: str = "") -> str:
         key:   Config key to set. Empty to show all.
         value: New value. Strings, numbers, and booleans auto-detected.
     """
+    log_tool("configure", key=key, value=value)
     from . import config as cfg
 
     if not key:
@@ -830,6 +846,7 @@ def optimize_memory(dry_run: bool = True) -> str:
         dry_run: If True (default), only report recommendations.
                  If False, apply PRUNE actions (delete files + update MEMORY.md).
     """
+    log_tool("optimize_memory", dry_run=dry_run)
     reason_model = str(_cfg.get("reason_model"))
     if not ollama_available(reason_model):
         return (

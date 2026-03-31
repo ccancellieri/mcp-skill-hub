@@ -6,6 +6,7 @@ import re
 import httpx
 
 from . import config as _cfg
+from .activity_log import log_llm
 
 # These module-level names are kept for backwards compatibility with imports,
 # but always read the live config value.
@@ -48,6 +49,7 @@ def rerank(query: str, candidates: list[dict],
     """
     import json
 
+    log_llm("rerank", model=model, candidates=len(candidates))
     scored: list[tuple[float, dict]] = []
     for c in candidates:
         prompt = _RERANK_PROMPT.format(
@@ -105,6 +107,7 @@ def compact(content: str, model: str = RERANK_MODEL) -> dict:
     Use a local LLM to compact a conversation/task summary.
     Returns a structured digest dict.
     """
+    log_llm("compact", model=model, input_chars=len(content[:4000]))
     prompt = _COMPACT_PROMPT.format(content=content[:4000])
     try:
         resp = httpx.post(
@@ -138,6 +141,7 @@ def rewrite_query(message: str, context: str = "",
     Saves Claude tokens by doing query understanding locally.
     Falls back to original message on failure.
     """
+    log_llm("rewrite_query", model=model)
     prompt = _REWRITE_PROMPT.format(message=message, context=context[:1000])
     try:
         resp = httpx.post(
@@ -193,6 +197,7 @@ def optimize_context(entries: list[dict],
     Returns:
         list of recommendation dicts from the LLM
     """
+    log_llm("optimize_context", model=model, entries=len(entries))
     # Format entries for the prompt
     formatted = []
     for e in entries:

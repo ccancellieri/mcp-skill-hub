@@ -11,6 +11,7 @@ Usage from hooks:
 import json
 import sys
 
+from .activity_log import log_hook, log_llm, log_event
 from .embeddings import (
     embed, compact, ollama_available, optimize_context,
     EMBED_MODEL, RERANK_MODEL,
@@ -86,14 +87,17 @@ def _classify_intent(message: str) -> dict:
     # Stage 1a: length guard — long messages are almost never task commands
     max_len = int(_cfg.get("hook_max_message_length") or 400)
     if len(message) > max_len:
+        log_hook("classify_skip", reason="length_guard", length=len(message))
         return {"intent": "none"}
 
     # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
     threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
     sim = _task_similarity(message)
     if sim < threshold:
+        log_hook("classify_skip", reason="low_similarity", sim=f"{sim:.3f}", threshold=threshold)
         return {"intent": "none"}
 
+    log_hook("classify_llm", sim=f"{sim:.3f}", threshold=threshold)
     # Stage 2: LLM classification
     prompt = f"""\
 You are a strict command classifier. Classify ONLY explicit task management commands.
@@ -131,7 +135,9 @@ User message: {message}"""
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            result = json.loads(json_match.group())
+            log_llm("classify", model=RERANK_MODEL, intent=result.get("intent"))
+            return result
     except Exception:
         pass
     return {"intent": "none"}
@@ -141,6 +147,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
     """Execute a classified intent. Returns a user-facing message, or None if not handled."""
     store = SkillStore()
     action = intent.get("intent", "none")
+    log_hook("execute", intent=action)
 
     if action == "save_task":
         if not ollama_available(EMBED_MODEL):
@@ -339,6 +346,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     if not parts:
         return None
 
+    log_hook("context_inject", parts=len(parts), chars=sum(len(p) for p in parts))
     header = ("[Skill Hub — auto-injected context relevant to this message. "
               "Use this as background knowledge, do not repeat it verbatim.]\n\n")
     return header + "\n\n".join(parts)
@@ -356,6 +364,7 @@ def _precompact_hint(message: str) -> str | None:
     if len(message) <= threshold:
         return None
 
+    log_hook("precompact", length=len(message), threshold=threshold)
     try:
         digest = compact(message)
         summary = digest.get("summary", "")
@@ -402,6 +411,7 @@ def _conversation_digest_if_due(message: str) -> str | None:
     if not ollama_available(RERANK_MODEL):
         return None
 
+    log_hook("digest", message_count=len(_session_messages))
     try:
         digest = conversation_digest(_session_messages)
         store = SkillStore()
@@ -437,7 +447,7 @@ def _conversation_digest_if_due(message: str) -> str | None:
             if suggested:
                 parts.append(
                     f"Conversation fits '{suggested}' profile. "
-                    f"Switch with: /profile {suggested}"
+                    f"Switch with: /hub-profile{suggested}"
                 )
 
         store.close()
@@ -459,6 +469,7 @@ def _exhaustion_auto_save(context: str) -> str:
     When Claude is exhausted/unavailable, use local LLM to auto-save the session.
     Saves a task with LLM-generated summary and updates memory.
     """
+    log_event("SAVE", "exhaustion auto-save triggered")
     result_parts: list[str] = ["=== Exhaustion Auto-Save ===\n"]
 
     try:
@@ -532,7 +543,7 @@ def _cmd_exhaustion_save(args_str: str) -> str:
     from . import config as _cfg
 
     if not _cfg.get("exhaustion_fallback"):
-        return "Exhaustion fallback is disabled. Enable with: /configure exhaustion_fallback true"
+        return "Exhaustion fallback is disabled. Enable with: /hub-configure exhaustion_fallback true"
 
     # Use session messages as context, or args_str if provided
     if args_str.strip():
@@ -576,7 +587,7 @@ def _cmd_conversation_digest() -> str:
         suggested = digest.get("suggested_profile")
         if suggested:
             lines.append(f"\nSuggested profile: {suggested}")
-            lines.append(f"  Activate: /profile {suggested}")
+            lines.append(f"  Activate: /hub-profile{suggested}")
 
         return "\n".join(lines)
     except Exception as exc:
@@ -1097,35 +1108,49 @@ def _cmd_help() -> str:
     """Quick reference — runs locally."""
     return """=== Skill Hub Commands ===
 
-Slash commands (intercepted locally, 0 Claude tokens):
-  /hub-status          Health check, models, DB stats
-  /hub-help            This reference
-  /token-stats         Token savings report
-  /list-tasks [status] Open/closed/all tasks
-  /save-task [title]   Save current work (needs LLM)
-  /close-task [N]      Close + compact task (needs LLM)
-  /search-context Q    Unified search (needs embed model)
-  /list-skills         All indexed skills
-  /list-teachings      Teaching rules
-  /list-models         Installed Ollama models
-  /configure [K] [V]   View/set config
-  /profile              List session profiles
-  /profile <name>       Activate a profile (toggle plugins)
-  /profile save <name>  Save current plugin state as profile
-  /profile delete <name>Remove a profile
-  /profile auto <task>  LLM recommends best profile for task
-  /exhaustion-save     Auto-save session when Claude is exhausted
-  /digest              Force conversation digest now
-  /optimize-context    LLM analyzes memory, recommends pruning
-  /save-memory [desc]  LLM generates memory entry from session
+All commands start with /hub-* and are intercepted locally (0 Claude tokens).
 
-These run via local LLM or SQLite — Claude never sees them.
+Status & Config:
+  /hub-status              Health check, models, DB stats
+  /hub-help                This reference
+  /hub-token-stats         Token savings report
+  /hub-configure [K] [V]   View/set config
+  /hub-list-models         Installed Ollama models
+  /hub-pull-model <name>   Download an Ollama model
 
-MCP tools (called BY Claude when needed):
-  search_skills(query)     suggest_plugins(query)
-  teach(rule, suggest)     record_feedback(skill_id, helpful)
-  toggle_plugin(name, on)  pull_model(model)
-  index_skills()           index_plugins()"""
+Skills & Plugins:
+  /hub-search-skills Q     Semantic skill search
+  /hub-search-context Q    Unified search: skills + tasks + teachings
+  /hub-suggest-plugins Q   Suggest plugins for current task
+  /hub-list-skills         All indexed skills
+  /hub-index-skills        Rebuild skill index
+  /hub-index-plugins       Rebuild plugin index
+  /hub-toggle-plugin N on  Enable/disable a plugin (via Claude)
+
+Tasks:
+  /hub-list-tasks [status] Open/closed/all tasks
+  /hub-save-task [title]   Save current work (needs LLM)
+  /hub-close-task [N]      Close + compact task (needs LLM)
+  /hub-update-task N       Update task (via Claude)
+  /hub-reopen-task N       Reopen a closed task
+
+Learning:
+  /hub-teach rule -> target  Add teaching rule
+  /hub-list-teachings        Show all teaching rules
+  /hub-forget-teaching N     Remove a teaching rule
+
+Profiles:
+  /hub-profile               List session profiles
+  /hub-profile <name>        Activate a profile
+  /hub-profile save <name>   Save current state as profile
+  /hub-profile delete <name> Remove a profile
+  /hub-profile auto <task>   LLM recommends best profile
+
+Context & Memory:
+  /hub-digest              Force conversation digest now
+  /hub-optimize-context    LLM analyzes memory, recommends pruning
+  /hub-save-memory [desc]  LLM generates memory entry from session
+  /hub-exhaustion-save     Auto-save session when Claude is exhausted"""
 
 
 def _cmd_list_models() -> str:
@@ -1251,7 +1276,7 @@ def _cmd_profile(args_str: str) -> str:
     # /profile — list profiles
     if not subcmd:
         if not profiles:
-            return "No profiles defined. Use /profile save <name> to create one."
+            return "No profiles defined. Use /hub-profile save <name> to create one."
         lines = ["=== Session Profiles ===\n"]
         for name, prof in sorted(profiles.items()):
             desc = prof.get("description", "")
@@ -1261,9 +1286,9 @@ def _cmd_profile(args_str: str) -> str:
             else:
                 count = str(len(plugins))
             lines.append(f"  {name:<15} {count:>3} plugins — {desc}")
-        lines.append(f"\nUsage: /profile <name> to activate (requires restart)")
-        lines.append(f"       /profile save <name> to save current state")
-        lines.append(f"       /profile auto <task description>")
+        lines.append(f"\nUsage: /hub-profile <name> to activate (requires restart)")
+        lines.append(f"       /hub-profile save <name> to save current state")
+        lines.append(f"       /hub-profile auto <task description>")
         return "\n".join(lines)
 
     # /profile save <name> [description]
@@ -1272,7 +1297,7 @@ def _cmd_profile(args_str: str) -> str:
         name = parts[0] if parts else ""
         desc = parts[1] if len(parts) > 1 else ""
         if not name:
-            return "Usage: /profile save <name> [description]"
+            return "Usage: /hub-profile save <name> [description]"
 
         if not SETTINGS_PATH.exists():
             return "Settings file not found."
@@ -1295,7 +1320,7 @@ def _cmd_profile(args_str: str) -> str:
     # /profile delete <name>
     if subcmd == "delete":
         if not rest:
-            return "Usage: /profile delete <name>"
+            return "Usage: /hub-profile delete <name>"
         if rest not in profiles:
             return f"Profile '{rest}' not found."
         del profiles[rest]
@@ -1306,7 +1331,7 @@ def _cmd_profile(args_str: str) -> str:
     # /profile auto <task description>
     if subcmd == "auto":
         if not rest:
-            return "Usage: /profile auto <describe your task>"
+            return "Usage: /hub-profile auto <describe your task>"
         # Use embedding similarity to find the best profile
         try:
             task_vec = embed(rest)
@@ -1340,8 +1365,8 @@ def _cmd_profile(args_str: str) -> str:
             return (f"Recommended profile: {best_name} (sim={best_sim:.2f})\n"
                     f"  {prof.get('description', '')}\n"
                     f"  {count} plugins: {', '.join(plugins) if isinstance(plugins, list) else 'all enabled'}\n\n"
-                    f"To activate: /profile {best_name}")
-        return "No matching profile found. Create one with /profile save <name>."
+                    f"To activate: /hub-profile {best_name}")
+        return "No matching profile found. Create one with /hub-profile save <name>."
 
     # /profile <name> — activate
     name = subcmd
@@ -1398,23 +1423,31 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-status": "status",
     "/hub-help": "help",
     "/hub-manual": "help",
-    "/token-stats": "token_stats",
-    "/list-tasks": "list_tasks",
-    "/list-models": "list_models",
-    "/list-skills": "list_skills",
-    "/list-teachings": "list_teachings",
-    "/configure": "configure",
-    "/session-stats": "token_stats",
-    "/save-task": "save_task",
-    "/close-task": "close_task",
-    "/search-context": "search_context",
-    "/index-skills": "index_skills",
-    "/index-plugins": "index_plugins",
-    "/profile": "profile",
-    "/exhaustion-save": "exhaustion_save",
-    "/digest": "digest",
-    "/optimize-context": "optimize_context",
-    "/save-memory": "save_memory",
+    "/hub-token-stats": "token_stats",
+    "/hub-session-stats": "token_stats",
+    "/hub-list-tasks": "list_tasks",
+    "/hub-list-models": "list_models",
+    "/hub-list-skills": "list_skills",
+    "/hub-list-teachings": "list_teachings",
+    "/hub-configure": "configure",
+    "/hub-save-task": "save_task",
+    "/hub-close-task": "close_task",
+    "/hub-search-context": "search_context",
+    "/hub-search-skills": "search_skills",
+    "/hub-index-skills": "index_skills",
+    "/hub-index-plugins": "index_plugins",
+    "/hub-profile": "profile",
+    "/hub-exhaustion-save": "exhaustion_save",
+    "/hub-digest": "digest",
+    "/hub-optimize-context": "optimize_context",
+    "/hub-save-memory": "save_memory",
+    "/hub-suggest-plugins": "suggest_plugins",
+    "/hub-teach": "teach",
+    "/hub-forget-teaching": "forget_teaching",
+    "/hub-toggle-plugin": "toggle_plugin",
+    "/hub-pull-model": "pull_model",
+    "/hub-update-task": "update_task",
+    "/hub-reopen-task": "reopen_task",
 }
 
 
@@ -1460,9 +1493,108 @@ def _handle_slash_command(message: str) -> dict | None:
                 return {"decision": "block", "message": f"No {status} tasks."}
             lines = [f"  #{r['id']} [{r['status']}] {r['title']} — {r['summary'][:80]}" for r in tasks]
             return {"decision": "block", "message": f"{len(lines)} {status} tasks:\n" + "\n".join(lines)}
-        elif action in ("save_task", "close_task", "search_context"):
-            # These need LLM — fall through to classify
+        elif action == "save_task":
+            # Needs LLM to extract title — fall through to classify
             return None
+        elif action == "close_task":
+            return None  # needs LLM
+        elif action == "search_context":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-search-context <query>"}
+            return None  # needs embedding + LLM
+        elif action == "search_skills":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-search-skills <query>"}
+            try:
+                vec = embed(args_str.strip()[:500])
+                store = SkillStore()
+                results = store.search(vec, top_k=5, similarity_threshold=0.3)
+                store.close()
+                if not results:
+                    return {"decision": "block", "message": "No matching skills."}
+                lines = [f"  {r['id']}: {(r.get('description') or '')[:100]} (sim={r.get('similarity', 0):.2f})"
+                         for r in results]
+                return {"decision": "block", "message": f"{len(lines)} skills:\n" + "\n".join(lines)}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Search failed: {exc}"}
+        elif action == "suggest_plugins":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-suggest-plugins <query>"}
+            try:
+                vec = embed(args_str.strip()[:500])
+                store = SkillStore()
+                results = store.suggest_plugins(vec)
+                store.close()
+                if not results:
+                    return {"decision": "block", "message": "No matching plugins."}
+                lines = [f"  {r['short_name']}: {(r.get('description') or '')[:80]} "
+                         f"(score={r.get('total_score', 0):.2f})" for r in results[:5]]
+                return {"decision": "block", "message": f"Suggested plugins:\n" + "\n".join(lines)}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Suggest failed: {exc}"}
+        elif action == "teach":
+            if not args_str.strip():
+                return {"decision": "block",
+                        "message": "Usage: /hub-teach <rule> -> <plugin_or_skill>\n"
+                                   "Example: /hub-teach when debugging CSS -> chrome-devtools-mcp"}
+            parts_t = args_str.split("->", 1)
+            if len(parts_t) < 2:
+                return {"decision": "block", "message": "Use '->' to separate rule from target.\n"
+                        "Example: /hub-teach when I give a URL -> chrome-devtools-mcp"}
+            rule = parts_t[0].strip()
+            target = parts_t[1].strip()
+            try:
+                vec = embed(rule)
+                store = SkillStore()
+                tid = store.add_teaching(rule, vec, "suggest", "plugin", target)
+                store.close()
+                return {"decision": "block", "message": f"Teaching #{tid}: when \"{rule}\" -> suggest {target}"}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Teach failed: {exc}"}
+        elif action == "forget_teaching":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-forget-teaching <id>"}
+            try:
+                store = SkillStore()
+                ok = store.remove_teaching(int(args_str.strip()))
+                store.close()
+                return {"decision": "block",
+                        "message": f"Teaching removed." if ok else "Teaching not found."}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Error: {exc}"}
+        elif action == "toggle_plugin":
+            # Complex — needs settings.json manipulation, let Claude handle
+            return None
+        elif action == "pull_model":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-pull-model <model_name>"}
+            import subprocess
+            model = args_str.strip()
+            if "/" in model or ";" in model or "|" in model or "&" in model:
+                return {"decision": "block", "message": f"Invalid model name: {model}"}
+            try:
+                result = subprocess.run(
+                    ["ollama", "pull", model], capture_output=True, text=True, timeout=600)
+                if result.returncode == 0:
+                    return {"decision": "block",
+                            "message": f"Pulled {model}.\n"
+                                       f"To activate: /hub-configure reason_model {model}"}
+                return {"decision": "block", "message": f"Pull failed: {result.stderr.strip()}"}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Pull failed: {exc}"}
+        elif action == "update_task":
+            return None  # needs LLM
+        elif action == "reopen_task":
+            if not args_str.strip():
+                return {"decision": "block", "message": "Usage: /hub-reopen-task <task_id>"}
+            try:
+                store = SkillStore()
+                ok = store.reopen_task(int(args_str.strip()))
+                store.close()
+                return {"decision": "block",
+                        "message": f"Task reopened." if ok else "Task not found."}
+            except Exception as exc:
+                return {"decision": "block", "message": f"Error: {exc}"}
         elif action == "index_skills":
             from .indexer import index_all
             store = SkillStore()
