@@ -1,0 +1,18 @@
+{
+  "name": "git-summary",
+  "description": "Show a comprehensive git activity summary",
+  "triggers": [
+    "git summary",
+    "what changed recently",
+    "show recent activity",
+    "repo overview",
+    "project status"
+  ],
+  "steps": [
+    {"run": "git log --oneline -10", "as": "recent_commits"},
+    {"run": "git diff --stat", "as": "changes"},
+    {"run": "git status -s", "as": "status"},
+    {"run": "git branch --show-current", "as": "branch"}
+  ],
+  "output": "## Branch: {branch}\n\n### Recent commits\n```\n{recent_commits}\n```\n\n### Uncommitted changes\n```\n{changes}\n```\n\n### Working tree\n```\n{status}\n```"
+}

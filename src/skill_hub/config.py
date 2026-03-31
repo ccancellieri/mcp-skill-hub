@@ -89,6 +89,62 @@ _DEFAULTS = {
     "hook_llm_triage_min_confidence": 0.7,  # min confidence to act on local_answer
     "hook_llm_triage_skip_length": 2000,    # messages longer than this skip triage
 
+    # ── Local execution levels ──────────────────────────────────────
+    # Level 1: Safe shell whitelist — predefined commands, no params
+    # Level 2: Templated shell — commands with LLM-extracted parameters
+    # Level 3: Local skill execution — LLM follows multi-step skill scripts
+    # Level 4: Full local agent — tool-using agent loop (local or remote LLM)
+    "local_execution_enabled": True,
+
+    # Model per level — heavier models for harder tasks
+    # Values: Ollama model name, or "remote:<base_url>" for external APIs
+    "local_models": {
+        "level_1": "qwen2.5-coder:3b",           # simple command mapping
+        "level_2": "qwen2.5-coder:7b-instruct-q4_k_m",  # parameter extraction
+        "level_3": "qwen2.5-coder:14b",           # skill following
+        "level_4": "qwen2.5-coder:32b",           # or "remote:http://host:11434"
+    },
+
+    # Level 1: whitelisted shell commands (name → command)
+    "local_commands": {
+        "git_status": "git status",
+        "git_log": "git log --oneline -20",
+        "git_diff_stat": "git diff --stat",
+        "git_diff": "git diff",
+        "git_branch": "git branch -a",
+        "git_stash_list": "git stash list",
+        "git_remote": "git remote -v",
+        "ls": "ls -la",
+        "pwd": "pwd",
+        "df": "df -h",
+        "uptime": "uptime",
+    },
+
+    # Level 2: templated commands (name → template with {param} placeholders)
+    # Allowed params are extracted by LLM from the user message
+    "local_templates": {
+        "git_log_n": {"cmd": "git log --oneline -{n}", "params": {"n": "int"}},
+        "git_diff_file": {"cmd": "git diff {file}", "params": {"file": "path"}},
+        "git_show": {"cmd": "git show {ref}", "params": {"ref": "str"}},
+        "git_checkout": {"cmd": "git checkout {branch}", "params": {"branch": "str"}},
+        "git_add": {"cmd": "git add {file}", "params": {"file": "path"}},
+        "cat_file": {"cmd": "cat {file}", "params": {"file": "path"}},
+        "grep_pattern": {"cmd": "grep -rn {pattern} .", "params": {"pattern": "str"}},
+    },
+
+    # Level 4: remote model endpoint (used when local_models.level_4 starts with "remote:")
+    "remote_llm": {
+        "base_url": "",            # e.g. "http://myserver:11434" or OpenAI-compatible URL
+        "api_key": "",             # for authenticated endpoints
+        "model": "",               # model name at the remote endpoint
+        "timeout": 120,
+    },
+
+    # Level 3: local skills directory — step-based .json skills executed by local LLM
+    # Defaults to ~/.claude/local-skills/ — can be separated from Claude skills
+    # to optimize local skills for local models (recommended)
+    "local_skills_dir": str(Path.home() / ".claude" / "local-skills"),
+
     # Activity log — daily rotation, 50 MB cap
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")
     "log_dir": str(Path.home() / ".claude" / "mcp-skill-hub" / "logs"),

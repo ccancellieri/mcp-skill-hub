@@ -1,0 +1,15 @@
+{
+  "name": "port-check",
+  "description": "Check which processes are listening on common dev ports",
+  "triggers": [
+    "what's running",
+    "port check",
+    "which ports are open",
+    "listening ports",
+    "running services"
+  ],
+  "steps": [
+    {"run": "lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | grep -E ':(80|443|3000|5000|5173|8000|8080|8888|11434)\\b' | awk '{print $1, $9}' | sort -u || echo 'No common dev ports in use'", "as": "ports"}
+  ],
+  "output": "### Listening dev ports\n```\n{ports}\n```"
+}

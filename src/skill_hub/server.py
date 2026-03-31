@@ -50,7 +50,7 @@ from .embeddings import (
     EMBED_MODEL, RERANK_MODEL, ollama_available,
 )
 from .indexer import index_all
-from .activity_log import log_tool, log_llm
+from .activity_log import log_tool, log_llm, log_banner
 from .store import SkillStore
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
@@ -1340,6 +1340,11 @@ def exhaustion_save(context: str = "") -> str:
 
 
 def main() -> None:
+    import sys
+    log_banner()
+    # Print log path to stderr (Claude console) — stdout is MCP transport
+    from .activity_log import LOG_FILE
+    print(f"[Skill Hub] Logs: tail -100f {LOG_FILE}", file=sys.stderr)
     mcp.run(transport="stdio")
 
 

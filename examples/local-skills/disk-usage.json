@@ -1,0 +1,16 @@
+{
+  "name": "disk-usage",
+  "description": "Show disk usage and largest files in current directory",
+  "triggers": [
+    "disk usage",
+    "how much space",
+    "largest files",
+    "disk space"
+  ],
+  "steps": [
+    {"run": "df -h .", "as": "disk"},
+    {"run": "du -sh . 2>/dev/null", "as": "dir_size"},
+    {"run": "find . -maxdepth 2 -type f -exec du -h {} + 2>/dev/null | sort -rh | head -10", "as": "largest"}
+  ],
+  "output": "### Disk\n```\n{disk}\n```\n\n### Directory size\n{dir_size}\n\n### Largest files\n```\n{largest}\n```"
+}

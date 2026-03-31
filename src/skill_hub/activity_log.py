@@ -13,9 +13,24 @@ import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path.home() / ".claude" / "mcp-skill-hub" / "logs"
-LOG_FILE = LOG_DIR / "activity.log"
+_DEFAULT_LOG_DIR = Path.home() / ".claude" / "mcp-skill-hub" / "logs"
 MAX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def _resolve_log_dir() -> Path:
+    """Read log_dir from config, fall back to default."""
+    try:
+        from . import config as _cfg
+        custom = _cfg.get("log_dir")
+        if custom:
+            return Path(str(custom)).expanduser()
+    except Exception:
+        pass
+    return _DEFAULT_LOG_DIR
+
+
+LOG_DIR = _resolve_log_dir()
+LOG_FILE = LOG_DIR / "activity.log"
 
 _logger: logging.Logger | None = None
 
@@ -103,3 +118,40 @@ def log_llm(operation: str, model: str = "", **kwargs: object) -> None:
 def log_event(category: str, message: str) -> None:
     """Log a general event."""
     get_logger().info("%-6s%s", category.upper(), message)
+
+
+def log_banner() -> None:
+    """Log startup banner with session stats — called once when MCP server starts."""
+    from . import config as _cfg
+    from .store import SkillStore
+
+    cfg = _cfg.load_config()
+    logger = get_logger()
+
+    store = SkillStore()
+    skill_count = store.count_skills()
+    task_counts = store.count_tasks()
+    teaching_count = store.count_teachings()
+    interceptions = store.count_interceptions()
+    tokens_saved = store.total_tokens_saved()
+    store.close()
+
+    logger.info("=" * 60)
+    logger.info("SKILL HUB SESSION START")
+    logger.info("-" * 60)
+    logger.info("embed=%s  reason=%s",
+                cfg.get("embed_model", "?"), cfg.get("reason_model", "?"))
+    logger.info("skills=%d  tasks=%d open/%d closed  teachings=%d",
+                skill_count,
+                task_counts.get("open", 0),
+                task_counts.get("closed", 0),
+                teaching_count)
+    logger.info("hook=%s  context_inject=%s  token_profiling=%s",
+                "on" if cfg.get("hook_enabled") else "off",
+                "on" if cfg.get("hook_context_injection") else "off",
+                "on" if cfg.get("token_profiling") else "off")
+    logger.info("interceptions=%d  tokens_saved=~%d",
+                interceptions, tokens_saved)
+    logger.info("-" * 60)
+    logger.info("LOG: tail -100f %s", LOG_FILE)
+    logger.info("=" * 60)

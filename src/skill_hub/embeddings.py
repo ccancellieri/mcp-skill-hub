@@ -387,12 +387,17 @@ Provide the answer.
   - Suggesting which skills/plugins Claude should use
   Provide a concise hint for Claude.
 
+"local_agent" — This is a well-defined task that can be handled by a local agent with \
+tools (shell commands, skills, file reading, search). Good for: git operations, running \
+tests, searching code, reading files, executing skill workflows. NOT for: complex refactoring, \
+architecture decisions, multi-file edits, or creative coding that needs Claude's reasoning.
+
 "pass_through" — Complex coding task, debugging, or creative work that only Claude \
 can handle well. No pre-processing needed.
 
 Output ONLY a JSON object:
 {{
-  "action": "local_answer|local_action|enrich_and_forward|pass_through",
+  "action": "local_answer|local_action|local_agent|enrich_and_forward|pass_through",
   "answer": "<direct answer if local_answer, else null>",
   "command": "<hub command if local_action, e.g. '/hub-list-tasks', else null>",
   "hint": "<concise hint for Claude if enrich_and_forward, else null>",
@@ -438,7 +443,7 @@ def triage_message(message: str, context: str = "",
         if json_match:
             result = json.loads(json_match.group())
             # Validate action field
-            valid_actions = {"local_answer", "local_action",
+            valid_actions = {"local_answer", "local_action", "local_agent",
                              "enrich_and_forward", "pass_through"}
             if result.get("action") in valid_actions:
                 return result

@@ -1,0 +1,15 @@
+{
+  "name": "ollama-status",
+  "description": "Show Ollama service status and running models",
+  "triggers": [
+    "ollama status",
+    "which models are running",
+    "ollama running",
+    "model status"
+  ],
+  "steps": [
+    {"run": "curl -s http://localhost:11434/api/tags | python3 -c \"import sys,json; models=json.load(sys.stdin).get('models',[]); [print(f\\\"  {m['name']:<35} {m.get('size',0)/1073741824:.1f} GB\\\") for m in models]\" 2>/dev/null || echo 'Ollama not reachable'", "as": "models"},
+    {"run": "curl -s http://localhost:11434/api/ps | python3 -c \"import sys,json; models=json.load(sys.stdin).get('models',[]); [print(f\\\"  {m['name']:<35} VRAM: {m.get('size_vram',0)/1073741824:.1f} GB\\\") for m in models]\" 2>/dev/null || echo 'No models loaded'", "as": "running"}
+  ],
+  "output": "### Installed models\n{models}\n\n### Currently loaded\n{running}"
+}

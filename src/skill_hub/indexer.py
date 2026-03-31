@@ -90,13 +90,17 @@ def _plugin_from_id(skill_id: str) -> str:
 def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
               use_rerank: bool = False) -> tuple[int, list[str]]:
     """
-    Walk all plugin directories, index every SKILL.md found.
+    Walk all plugin directories, index every SKILL.md found (target=claude).
+    Also index local JSON skills from local_skills_dir (target=local).
     Returns (count_indexed, list_of_errors).
     """
+    import json as _json
+
     indexed = 0
     errors: list[str] = []
 
-    def _index_skill_file(skill_file: Path, skill_id: str, plugin: str) -> None:
+    def _index_skill_file(skill_file: Path, skill_id: str, plugin: str,
+                          target: str = "claude") -> None:
         nonlocal indexed
         parsed = _parse_skill_file(skill_file)
         if not parsed:
@@ -110,6 +114,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             content=content,
             file_path=str(skill_file),
             plugin=plugin,
+            target=target,
         )
         store.upsert_skill(skill)
         embed_text = f"{name}: {description}" if description else name
@@ -120,7 +125,46 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         except Exception as exc:
             errors.append(f"embed failed for {skill_id}: {exc}")
 
-    # Built-in plugin directories
+    def _index_local_json(json_file: Path) -> None:
+        """Index a local JSON skill (target=local)."""
+        nonlocal indexed
+        try:
+            data = _json.loads(json_file.read_text(encoding="utf-8"))
+        except Exception:
+            errors.append(f"parse failed: {json_file}")
+            return
+        name = data.get("name", json_file.stem)
+        description = data.get("description", "")
+        triggers = data.get("triggers", [])
+        steps = data.get("steps", [])
+        # Build content from steps for searchability
+        steps_text = "\n".join(
+            f"  {i+1}. {s.get('run', '')}" for i, s in enumerate(steps)
+        )
+        content = (f"{description}\n\nTriggers: {', '.join(triggers)}\n"
+                   f"Steps:\n{steps_text}\n\nOutput: {data.get('output', '')}")
+        skill_id = f"local:{name}"
+        skill = Skill(
+            id=skill_id,
+            name=name,
+            description=description,
+            content=content,
+            file_path=str(json_file),
+            plugin="local",
+            target="local",
+        )
+        store.upsert_skill(skill)
+        embed_text = f"{name}: {description}" if description else name
+        if triggers:
+            embed_text += " " + " ".join(triggers[:5])
+        try:
+            vector = embed(embed_text, model=embed_model)
+            store.upsert_embedding(skill_id, embed_model, vector)
+            indexed += 1
+        except Exception as exc:
+            errors.append(f"embed failed for {skill_id}: {exc}")
+
+    # Built-in plugin directories (target=claude)
     for base in PLUGIN_DIRS:
         if not base.exists():
             continue
@@ -128,7 +172,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             skill_id = _skill_id_from_path(skill_file)
             _index_skill_file(skill_file, skill_id, _plugin_from_id(skill_id))
 
-    # Extra skill/plugin directories from config
+    # Extra skill/plugin directories from config (target=claude)
     for entry in _cfg.get("extra_skill_dirs") or []:
         if not entry.get("enabled", True):
             continue
@@ -137,8 +181,14 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
-            # flat structure: <base>/<skill-name>/SKILL.md → id = source:skill-name
             skill_id = f"{source}:{skill_file.parent.name}"
             _index_skill_file(skill_file, skill_id, source)
+
+    # Local JSON skills (target=local)
+    local_dir = Path(str(_cfg.get("local_skills_dir") or
+                         "~/.claude/local-skills")).expanduser()
+    if local_dir.exists():
+        for json_file in sorted(local_dir.glob("*.json")):
+            _index_local_json(json_file)
 
     return indexed, errors

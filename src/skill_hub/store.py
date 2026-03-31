@@ -28,6 +28,7 @@ class Skill:
     content: str
     file_path: str
     plugin: str
+    target: str = "claude"  # "claude" or "local"
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -53,6 +54,8 @@ class SkillStore:
                 content     TEXT NOT NULL,
                 file_path   TEXT,
                 plugin      TEXT,
+                target      TEXT NOT NULL DEFAULT 'claude'
+                                CHECK (target IN ('claude', 'local')),
                 indexed_at  TEXT DEFAULT (datetime('now'))
             );
 
@@ -172,22 +175,31 @@ class SkillStore:
         """)
         self._conn.commit()
 
+        # Incremental migration: add 'target' column to existing DBs
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
+        if "target" not in cols:
+            self._conn.execute(
+                "ALTER TABLE skills ADD COLUMN target TEXT NOT NULL DEFAULT 'claude'"
+            )
+            self._conn.commit()
+
     # ------------------------------------------------------------------
     # Write
 
     def upsert_skill(self, skill: Skill) -> None:
         self._conn.execute("""
-            INSERT INTO skills (id, name, description, content, file_path, plugin)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO skills (id, name, description, content, file_path, plugin, target)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name        = excluded.name,
                 description = excluded.description,
                 content     = excluded.content,
                 file_path   = excluded.file_path,
                 plugin      = excluded.plugin,
+                target      = excluded.target,
                 indexed_at  = datetime('now')
         """, (skill.id, skill.name, skill.description, skill.content,
-              skill.file_path, skill.plugin))
+              skill.file_path, skill.plugin, skill.target))
         self._conn.commit()
 
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
@@ -211,20 +223,35 @@ class SkillStore:
     # ------------------------------------------------------------------
     # Read
 
-    def list_skills(self) -> list[sqlite3.Row]:
+    def list_skills(self, target: str | None = None) -> list[sqlite3.Row]:
+        if target:
+            return self._conn.execute(
+                "SELECT id, name, description, plugin, target FROM skills "
+                "WHERE target = ? ORDER BY name", (target,)
+            ).fetchall()
         return self._conn.execute(
-            "SELECT id, name, description, plugin FROM skills ORDER BY name"
+            "SELECT id, name, description, plugin, target FROM skills ORDER BY name"
         ).fetchall()
 
     def search(self, query_vector: list[float], top_k: int = 3,
-               similarity_threshold: float = 0.3) -> list[dict]:
+               similarity_threshold: float = 0.3,
+               target: str | None = None) -> list[dict]:
         """Return top-k skills by cosine similarity, boosted by past feedback."""
-        rows = self._conn.execute("""
-            SELECT s.id, s.name, s.description, s.content, s.plugin,
-                   e.vector, e.model
-            FROM skills s
-            JOIN embeddings e ON e.skill_id = s.id
-        """).fetchall()
+        if target:
+            rows = self._conn.execute("""
+                SELECT s.id, s.name, s.description, s.content, s.plugin, s.target,
+                       e.vector, e.model
+                FROM skills s
+                JOIN embeddings e ON e.skill_id = s.id
+                WHERE s.target = ?
+            """, (target,)).fetchall()
+        else:
+            rows = self._conn.execute("""
+                SELECT s.id, s.name, s.description, s.content, s.plugin, s.target,
+                       e.vector, e.model
+                FROM skills s
+                JOIN embeddings e ON e.skill_id = s.id
+            """).fetchall()
 
         scored: list[tuple[float, dict]] = []
         for row in rows:

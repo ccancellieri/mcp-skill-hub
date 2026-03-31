@@ -550,6 +550,72 @@ Configure:
 
 Stats via `/hub-token-stats` show triage breakdown: how many messages were answered locally vs enriched vs passed through.
 
+### 16. Local Execution Engine (Levels 1-4)
+
+Run commands, templates, and multi-step skills **entirely locally** — no Claude tokens, no network. Messages are matched through 4 escalating levels:
+
+| Level | What | Model | Example |
+|-------|------|-------|---------|
+| **L1** | Whitelisted commands | 3b | "git status" → `git status` |
+| **L2** | Templated commands with params | 7b | "show last 5 commits" → `git log --oneline -5` |
+| **L3** | Multi-step local skills | embeddings | "project summary" → git-summary skill (4 steps) |
+| **L4** | Full local agent loop | 14b+ | "refactor this file" → iterative tool-using agent |
+
+**First-time confirmation:** New commands require `y/n` approval. Once approved, the command auto-executes for the rest of the session.
+
+```
+User: "show recent git activity"
+  → L3 match: git-summary (sim=0.82)
+  → [Skill Hub — local execution L3]
+    Local skill matched: git-summary
+    Steps:
+      1. git log --oneline -10
+      2. git diff --stat
+      3. git status -s
+      4. git branch --show-current
+    Reply y to run, n to cancel.
+
+User: y
+  → ## Branch: main
+    ### Recent commits
+    1af2a15 Add universal LLM triage...
+    ...
+```
+
+**Management commands:**
+
+```
+/hub-local-status              # show levels, models, commands, skills
+/hub-local-skills              # list all local skill definitions
+/hub-local-approve git_status  # pre-approve for this session
+/hub-local-agent <task>        # run task via local agent (L4)
+```
+
+**Local skills** are JSON files in `~/.claude/local-skills/`:
+
+```json
+{
+  "name": "git-summary",
+  "description": "Show recent git activity summary",
+  "triggers": ["git summary", "recent activity", "what changed"],
+  "steps": [
+    {"run": "git log --oneline -10", "as": "recent_commits"},
+    {"run": "git diff --stat", "as": "changes"},
+    {"run": "git status -s", "as": "status"}
+  ],
+  "output": "## Recent commits\n{recent_commits}\n\n## Changes\n{changes}\n\n## Status\n{status}"
+}
+```
+
+See `examples/local-skills/` for more examples.
+
+Configure:
+
+```
+/hub-configure local_execution_enabled true
+/hub-configure local_models '{"level_1":"qwen2.5-coder:3b","level_2":"qwen2.5-coder:7b-instruct-q4_k_m","level_3":"qwen2.5-coder:14b"}'
+```
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
@@ -603,6 +669,11 @@ All settings have sensible defaults. Override only what you need.
 | `hook_llm_triage_timeout` | `30` | Max seconds for triage LLM call |
 | `hook_llm_triage_min_confidence` | `0.7` | Min confidence to act on local answer |
 | `hook_llm_triage_skip_length` | `2000` | Messages longer than this skip triage |
+| `local_execution_enabled` | `true` | Enable local command execution (L1-L4) |
+| `local_models` | `{level_1: 3b, ...}` | Ollama model per execution level |
+| `local_commands` | `{git_status: ...}` | Level 1 whitelisted shell commands |
+| `local_templates` | `{git_log_n: ...}` | Level 2 templated commands with params |
+| `local_skills_dir` | `~/.claude/local-skills` | Directory for Level 3 skill JSON files |
 
 ## Roadmap
 
@@ -613,6 +684,8 @@ All settings have sensible defaults. Override only what you need.
 - [x] Context compaction — periodic conversation digest via local LLM
 - [x] Exhaustion fallback — local LLM auto-saves session when Claude is unavailable
 - [x] Universal LLM triage — local LLM pre-processes all messages, answers locally or enriches
+- [x] Local execution engine — 4-level command/template/skill/agent execution with confirmation flow
+- [ ] Level 4 full agent — iterative tool-using agent loop with local LLM
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License

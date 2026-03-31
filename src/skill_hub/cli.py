@@ -9,6 +9,7 @@ Usage from hooks:
 """
 
 import json
+import re
 import sys
 
 from .activity_log import log_hook, log_llm, log_event
@@ -230,7 +231,354 @@ _TOKEN_ESTIMATES: dict[str, int] = {
     "close_task": 800,
     "list_tasks": 300,
     "search_context": 400,
+    "local_command": 300,
+    "local_template": 400,
 }
+
+# Track which commands have been approved this session (by name)
+_approved_commands: set[str] = set()
+# Pending command awaiting user confirmation
+_pending_command: dict | None = None
+
+
+# ── Local execution engine ──────────────────────────────────────────
+
+
+_LOCAL_COMMAND_PROMPT = """\
+You are a command mapper. Given a user message and a list of available commands, \
+pick the BEST matching command. If none match, reply "none".
+
+Available commands:
+{commands}
+
+Reply with ONLY a JSON object:
+{{"command": "<command_name or none>", "confidence": <0.0-1.0>}}
+
+User message: {message}"""
+
+
+def _match_local_command(message: str) -> dict | None:
+    """Level 1: Map user message to a whitelisted shell command via local LLM."""
+    import httpx
+    import re
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE
+
+    if not _cfg.get("local_execution_enabled"):
+        return None
+
+    commands = _cfg.get("local_commands") or {}
+    if not commands:
+        return None
+
+    model = (_cfg.get("local_models") or {}).get("level_1", "qwen2.5-coder:3b")
+
+    cmd_list = "\n".join(f"  {name}: {cmd}" for name, cmd in commands.items())
+    prompt = _LOCAL_COMMAND_PROMPT.format(commands=cmd_list, message=message)
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            name = result.get("command", "none")
+            confidence = float(result.get("confidence", 0))
+            if name != "none" and name in commands and confidence >= 0.7:
+                log_hook("local_cmd_match", command=name, confidence=f"{confidence:.2f}")
+                return {"name": name, "shell": commands[name], "level": 1}
+    except Exception:
+        pass
+    return None
+
+
+_LOCAL_TEMPLATE_PROMPT = """\
+You are a command mapper with parameter extraction. Given a user message, \
+pick the BEST matching command template and extract its parameters.
+
+Available templates:
+{templates}
+
+Parameter types: int (number), str (word), path (file/dir path).
+If none match, reply "none".
+
+Reply with ONLY a JSON object:
+{{"template": "<template_name or none>", "params": {{"param1": "value1"}}, "confidence": <0.0-1.0>}}
+
+User message: {message}"""
+
+
+_SHELL_UNSAFE = re.compile(r'[;&|`$(){}!<>\n\r\\]')
+
+
+def _sanitize_param(value: str, param_type: str) -> str | None:
+    """Sanitize a parameter value. Returns None if unsafe."""
+    value = value.strip().strip("'\"")
+    if _SHELL_UNSAFE.search(value):
+        return None
+    if param_type == "int":
+        try:
+            return str(int(value))
+        except ValueError:
+            return None
+    if param_type == "path":
+        # reject traversal and absolute paths outside cwd
+        if ".." in value or value.startswith("/"):
+            return None
+    return value
+
+
+def _match_local_template(message: str) -> dict | None:
+    """Level 2: Map user message to a templated command with extracted params."""
+    import httpx
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE
+
+    if not _cfg.get("local_execution_enabled"):
+        return None
+
+    templates = _cfg.get("local_templates") or {}
+    if not templates:
+        return None
+
+    model = (_cfg.get("local_models") or {}).get("level_2", "qwen2.5-coder:7b-instruct-q4_k_m")
+
+    tpl_list = "\n".join(
+        f"  {name}: {t['cmd']}  (params: {t['params']})"
+        for name, t in templates.items()
+    )
+    prompt = _LOCAL_TEMPLATE_PROMPT.format(templates=tpl_list, message=message)
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            name = result.get("template", "none")
+            confidence = float(result.get("confidence", 0))
+            params = result.get("params", {})
+
+            if name == "none" or name not in templates or confidence < 0.7:
+                return None
+
+            tpl = templates[name]
+            # Sanitize all params
+            safe_params = {}
+            for pname, ptype in tpl["params"].items():
+                raw_val = str(params.get(pname, ""))
+                if not raw_val:
+                    return None  # missing required param
+                clean = _sanitize_param(raw_val, ptype)
+                if clean is None:
+                    log_hook("local_tpl_reject", template=name, param=pname, reason="unsafe")
+                    return None
+                safe_params[pname] = clean
+
+            # Build the shell command
+            shell_cmd = tpl["cmd"].format(**safe_params)
+            log_hook("local_tpl_match", template=name, confidence=f"{confidence:.2f}",
+                     params=safe_params)
+            return {"name": name, "shell": shell_cmd, "level": 2}
+    except Exception:
+        pass
+    return None
+
+
+def _execute_local_command(cmd: dict) -> str | None:
+    """Execute a matched local command and return its output."""
+    import subprocess
+
+    shell_cmd = cmd["shell"]
+    log_hook("local_cmd_exec", level=cmd["level"], command=shell_cmd)
+
+    try:
+        result = subprocess.run(
+            shell_cmd, shell=True, capture_output=True, text=True,
+            timeout=30, cwd=None,  # inherits working directory
+        )
+        output = result.stdout
+        if result.returncode != 0 and result.stderr:
+            output += f"\n(stderr: {result.stderr.strip()})"
+        # Truncate very long output
+        if len(output) > 5000:
+            output = output[:5000] + f"\n... (truncated, {len(output)} chars total)"
+        return f"```\n$ {shell_cmd}\n{output.strip()}\n```"
+    except subprocess.TimeoutExpired:
+        return f"Command timed out: {shell_cmd}"
+    except Exception as exc:
+        return f"Command failed: {exc}"
+
+
+# ── Level 3: Local skill execution ───────────────────────────────────
+#
+# Local skills are JSON files in local_skills_dir (default ~/.claude/local-skills/).
+# Format:
+# {
+#   "name": "git-summary",
+#   "description": "Show recent git activity summary",
+#   "triggers": ["git summary", "recent activity", "what changed"],
+#   "steps": [
+#     {"run": "git log --oneline -10", "as": "recent_commits"},
+#     {"run": "git diff --stat", "as": "changes"},
+#     {"run": "git status -s", "as": "status"}
+#   ],
+#   "output": "## Recent commits\n{recent_commits}\n\n## Changed files\n{changes}\n\n## Working tree\n{status}"
+# }
+#
+# Recommended: keep local skills in a separate folder optimized for local models.
+# Local models work best with short, concrete triggers and deterministic steps.
+
+_local_skills_cache: list[dict] | None = None
+_local_skills_hash: int | None = None
+
+
+def _load_local_skills() -> list[dict]:
+    """Load and cache local skill definitions from local_skills_dir."""
+    global _local_skills_cache, _local_skills_hash
+    from . import config as _cfg
+    from pathlib import Path
+
+    skills_dir = Path(str(_cfg.get("local_skills_dir"))).expanduser()
+    if not skills_dir.exists():
+        return []
+
+    # Check if dir has changed (by mtime of newest file)
+    json_files = sorted(skills_dir.glob("*.json"))
+    if not json_files:
+        return []
+    current_hash = hash(tuple((f.name, f.stat().st_mtime_ns) for f in json_files))
+    if _local_skills_cache is not None and _local_skills_hash == current_hash:
+        return _local_skills_cache
+
+    skills = []
+    for f in json_files:
+        try:
+            skill = json.loads(f.read_text(encoding="utf-8"))
+            skill["_file"] = str(f)
+            skills.append(skill)
+        except Exception:
+            continue
+
+    _local_skills_cache = skills
+    _local_skills_hash = current_hash
+    log_hook("local_skills_loaded", count=len(skills), dir=str(skills_dir))
+    return skills
+
+
+def _match_local_skill(message: str) -> dict | None:
+    """Level 3: Match user message to a local skill via embedding similarity."""
+    import math
+    from . import config as _cfg
+
+    if not _cfg.get("local_execution_enabled"):
+        return None
+
+    skills = _load_local_skills()
+    if not skills:
+        return None
+
+    try:
+        msg_vec = embed(message[:300])
+    except Exception:
+        return None
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    best_skill = None
+    best_sim = 0.0
+
+    for skill in skills:
+        triggers = skill.get("triggers", [])
+        desc = skill.get("description", "")
+        # Embed all triggers + description, take max similarity
+        texts = triggers + ([desc] if desc else [])
+        for text in texts:
+            try:
+                t_vec = embed(text)
+                sim = cosine(msg_vec, t_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_skill = skill
+            except Exception:
+                continue
+
+    if best_skill and best_sim >= 0.55:
+        log_hook("local_skill_match", name=best_skill["name"],
+                 sim=f"{best_sim:.3f}")
+        return best_skill
+    return None
+
+
+def _execute_local_skill(skill: dict) -> str | None:
+    """Execute a local skill's steps and format the output."""
+    import subprocess
+
+    name = skill.get("name", "unknown")
+    steps = skill.get("steps", [])
+    output_template = skill.get("output", "")
+
+    log_hook("local_skill_exec", name=name, steps=len(steps))
+
+    results: dict[str, str] = {}
+    step_outputs: list[str] = []
+
+    for step in steps:
+        cmd = step.get("run", "")
+        label = step.get("as", f"step_{len(step_outputs)}")
+
+        if not cmd:
+            continue
+
+        # Sanitize: reject shell injection in step commands
+        # (steps come from trusted JSON files, but belt-and-suspenders)
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=30,
+            )
+            out = result.stdout.strip()
+            if result.returncode != 0 and result.stderr:
+                out += f"\n(exit {result.returncode}: {result.stderr.strip()[:200]})"
+            # Truncate per step
+            if len(out) > 3000:
+                out = out[:3000] + f"\n... (truncated)"
+        except subprocess.TimeoutExpired:
+            out = f"(timed out: {cmd})"
+        except Exception as exc:
+            out = f"(error: {exc})"
+
+        results[label] = out
+        step_outputs.append(f"$ {cmd}\n{out}")
+
+    # Format output
+    if output_template:
+        try:
+            formatted = output_template.format(**results)
+            return f"[Local skill: {name}]\n\n{formatted}"
+        except KeyError:
+            pass
+
+    # Fallback: concatenate step outputs
+    return f"[Local skill: {name}]\n\n" + "\n\n".join(
+        f"```\n{s}\n```" for s in step_outputs
+    )
 
 
 def _build_context_injection(message: str, msg_vector: list[float]) -> str | None:
@@ -251,8 +599,9 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     try:
         store = SkillStore()
 
-        # Search skills
-        skills = store.search(msg_vector, top_k=2, similarity_threshold=0.4)
+        # Search skills — only Claude skills go into Claude's context
+        skills = store.search(msg_vector, top_k=2, similarity_threshold=0.4,
+                              target="claude")
         for s in skills:
             if budget <= 0:
                 break
@@ -469,6 +818,7 @@ def _exhaustion_auto_save(context: str) -> str:
     When Claude is exhausted/unavailable, use local LLM to auto-save the session.
     Saves a task with LLM-generated summary and updates memory.
     """
+    from . import config as _cfg
     log_event("SAVE", "exhaustion auto-save triggered")
     result_parts: list[str] = ["=== Exhaustion Auto-Save ===\n"]
 
@@ -513,6 +863,8 @@ def _exhaustion_auto_save(context: str) -> str:
 
         result_parts.append(f"\nTo resume later: search_context(\"{title}\")")
         result_parts.append(f"Or: /list-tasks")
+        if _cfg.get("local_execution_enabled"):
+            result_parts.append(f"\nTo continue working locally: /local-agent <task>")
 
         # Also update memory files
         mem_result = _update_memory_on_exhaustion(digest)
@@ -991,11 +1343,149 @@ def hook_classify_and_execute(message: str) -> dict:
                                 pass
                         return reroute
 
+            elif triage_action == "local_agent" and confidence >= min_conf:
+                # Triage routed to Level 4 agent — show plan for approval
+                if _cfg.get("local_execution_enabled"):
+                    agent_result = _cmd_local_agent(message)
+                    if agent_result:
+                        return agent_result
+
             elif triage_action == "enrich_and_forward":
                 hint = triage_result.get("hint", "")
                 if hint:
                     triage_hint = (f"[Skill Hub triage — local LLM analysis]\n"
                                    f"{hint}")
+
+    # ── Stage 3b: Local command execution (Level 1+2) ──
+    if _cfg.get("local_execution_enabled"):
+        global _pending_command
+
+        # Check if user is confirming a pending command
+        stripped = message.strip().lower()
+        if _pending_command and stripped in ("y", "yes", "ok", "go", "run"):
+            local_cmd = _pending_command
+            _pending_command = None
+            _approved_commands.add(local_cmd["name"])
+            # Level 4: agent execution (plan was approved)
+            if "_agent_message" in local_cmd:
+                from .local_agent import run_agent
+                log_hook("local_agent_run", message=local_cmd["_agent_message"][:200])
+                result = run_agent(
+                    local_cmd["_agent_message"],
+                    context=local_cmd.get("_agent_context", ""),
+                )
+                if _cfg.get("token_profiling"):
+                    try:
+                        store = SkillStore()
+                        store.log_interception(
+                            command_type="local_L4:agent",
+                            message_preview=local_cmd["_agent_message"],
+                            estimated_tokens=1000,
+                        )
+                        store.close()
+                    except Exception:
+                        pass
+                return {"decision": "block", "message": result}
+            # Level 3 skills have a _skill key
+            elif "_skill" in local_cmd:
+                result = _execute_local_skill(local_cmd["_skill"])
+            else:
+                result = _execute_local_command(local_cmd)
+            if result:
+                if _cfg.get("token_profiling"):
+                    try:
+                        store = SkillStore()
+                        store.log_interception(
+                            command_type=f"local_L{local_cmd['level']}:{local_cmd['name']}",
+                            message_preview=message,
+                            estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300),
+                        )
+                        store.close()
+                    except Exception:
+                        pass
+                return {"decision": "block", "message": result}
+        elif _pending_command and stripped in ("n", "no", "cancel", "skip"):
+            _pending_command = None
+            return {"decision": "block", "message": "Command cancelled."}
+
+        # Clear pending if user sent something else
+        _pending_command = None
+
+        # Try Level 1 (whitelisted commands)
+        local_cmd = _match_local_command(message)
+        # Try Level 2 (templated commands) if Level 1 didn't match
+        if not local_cmd:
+            local_cmd = _match_local_template(message)
+
+        if local_cmd:
+            # If command was previously approved this session, execute directly
+            if local_cmd["name"] in _approved_commands:
+                result = _execute_local_command(local_cmd)
+                if result:
+                    if _cfg.get("token_profiling"):
+                        try:
+                            store = SkillStore()
+                            store.log_interception(
+                                command_type=f"local_L{local_cmd['level']}:{local_cmd['name']}",
+                                message_preview=message,
+                                estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300),
+                            )
+                            store.close()
+                        except Exception:
+                            pass
+                    return {"decision": "block", "message": result}
+            else:
+                # First time: ask for confirmation
+                _pending_command = local_cmd
+                level_tag = f"L{local_cmd['level']}"
+                return {
+                    "decision": "block",
+                    "message": (
+                        f"[Skill Hub — local execution {level_tag}]\n\n"
+                        f"Command matched: **{local_cmd['name']}**\n"
+                        f"```\n$ {local_cmd['shell']}\n```\n"
+                        f"Reply **y** to run, **n** to cancel.\n"
+                        f"(Once approved, `{local_cmd['name']}` runs directly this session)"
+                    ),
+                }
+
+        # Try Level 3 (local skills — multi-step)
+        local_skill = _match_local_skill(message)
+        if local_skill:
+            skill_name = local_skill.get("name", "unknown")
+            steps_preview = "\n".join(
+                f"  {i+1}. {s.get('run', '?')}" for i, s in enumerate(local_skill.get("steps", []))
+            )
+            if skill_name in _approved_commands:
+                result = _execute_local_skill(local_skill)
+                if result:
+                    if _cfg.get("token_profiling"):
+                        try:
+                            store = SkillStore()
+                            store.log_interception(
+                                command_type=f"local_L3:{skill_name}",
+                                message_preview=message,
+                                estimated_tokens=500,
+                            )
+                            store.close()
+                        except Exception:
+                            pass
+                    return {"decision": "block", "message": result}
+            else:
+                _pending_command = {
+                    "name": skill_name, "level": 3,
+                    "_skill": local_skill,
+                }
+                return {
+                    "decision": "block",
+                    "message": (
+                        f"[Skill Hub — local execution L3]\n\n"
+                        f"Local skill matched: **{skill_name}**\n"
+                        f"{local_skill.get('description', '')}\n\n"
+                        f"Steps:\n{steps_preview}\n\n"
+                        f"Reply **y** to run, **n** to cancel."
+                    ),
+                }
 
     # ── Stage 4: Context enrichment for messages going to Claude ──
     if not _cfg.get("hook_context_injection") and not triage_hint:
@@ -1049,6 +1539,92 @@ def hook_classify_and_execute(message: str) -> dict:
         return {"decision": "allow", "systemMessage": combined}
 
     return {"decision": "allow"}
+
+
+def _cmd_local_status() -> str:
+    """Show local execution status: levels, models, commands, templates, skills."""
+    from . import config as _cfg
+    from pathlib import Path
+
+    cfg = _cfg.load_config()
+    enabled = cfg.get("local_execution_enabled", False)
+    lines = ["=== Local Execution Status ===\n"]
+    lines.append(f"Enabled:     {'✓ on' if enabled else '○ off'}")
+
+    # Models per level
+    models = cfg.get("local_models", {})
+    lines.append(f"\nModels:")
+    for level in ("level_1", "level_2", "level_3", "level_4"):
+        lines.append(f"  {level}: {models.get(level, '(not set)')}")
+
+    # Level 1: whitelisted commands
+    commands = cfg.get("local_commands", {})
+    lines.append(f"\nLevel 1 — Whitelisted commands ({len(commands)}):")
+    for name, cmd in sorted(commands.items()):
+        lines.append(f"  {name:<20} {cmd}")
+
+    # Level 2: templates
+    templates = cfg.get("local_templates", {})
+    lines.append(f"\nLevel 2 — Templated commands ({len(templates)}):")
+    for name, tpl in sorted(templates.items()):
+        params = ", ".join(f"{k}:{v}" for k, v in tpl.get("params", {}).items())
+        lines.append(f"  {name:<20} {tpl['cmd']}  ({params})")
+
+    # Level 3: local skills
+    skills = _load_local_skills()
+    skills_dir = Path(str(cfg.get("local_skills_dir", "~/.claude/local-skills"))).expanduser()
+    lines.append(f"\nLevel 3 — Local skills ({len(skills)}) from {skills_dir}:")
+    for s in skills:
+        triggers = ", ".join(s.get("triggers", [])[:3])
+        step_count = len(s.get("steps", []))
+        lines.append(f"  {s['name']:<20} {step_count} steps  triggers: {triggers}")
+
+    # Session approvals
+    lines.append(f"\nSession approvals: {', '.join(sorted(_approved_commands)) or '(none)'}")
+
+    return "\n".join(lines)
+
+
+def _cmd_local_skills() -> str:
+    """List all local skill files with details."""
+    from pathlib import Path
+    from . import config as _cfg
+
+    skills_dir = Path(str(_cfg.get("local_skills_dir"))).expanduser()
+    if not skills_dir.exists():
+        return (f"Local skills directory not found: {skills_dir}\n"
+                f"Create it and add JSON skill files. See /hub-help for format.")
+
+    skills = _load_local_skills()
+    if not skills:
+        return f"No local skills in {skills_dir}"
+
+    lines = [f"=== Local Skills ({len(skills)}) ===\n"]
+    for s in skills:
+        lines.append(f"**{s['name']}** — {s.get('description', '(no description)')}")
+        lines.append(f"  File: {s.get('_file', '?')}")
+        triggers = s.get("triggers", [])
+        if triggers:
+            lines.append(f"  Triggers: {', '.join(triggers)}")
+        steps = s.get("steps", [])
+        for i, step in enumerate(steps, 1):
+            lines.append(f"  {i}. {step.get('run', '?')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _cmd_local_approve(args: str) -> str:
+    """Pre-approve a command/skill name for auto-execution this session."""
+    name = args.strip()
+    if not name:
+        if _approved_commands:
+            return ("Session-approved commands:\n  " +
+                    "\n  ".join(sorted(_approved_commands)) +
+                    "\n\nUsage: /hub-local-approve <name>")
+        return "No commands approved yet this session.\nUsage: /hub-local-approve <name>"
+
+    _approved_commands.add(name)
+    return f"Approved `{name}` — will execute without confirmation this session."
 
 
 def _cmd_status() -> str:
@@ -1205,6 +1781,75 @@ def _cmd_token_stats() -> str:
     return "\n".join(lines)
 
 
+def _cmd_local_agent(args_str: str) -> dict:
+    """Handle /local-agent command — explicit Level 4 invocation."""
+    from . import config as _cfg
+    from .local_agent import plan_agent
+
+    if not _cfg.get("local_execution_enabled"):
+        return {"decision": "block",
+                "message": "Local execution is disabled. Enable with: /hub-configure local_execution_enabled true"}
+
+    message = args_str.strip()
+    if not message:
+        # Show agent info + available skills
+        skills = _load_local_skills()
+        commands = _cfg.get("local_commands") or {}
+        models = _cfg.get("local_models") or {}
+        model_spec = models.get("level_4", "qwen2.5-coder:32b")
+
+        lines = ["=== Local Agent (Level 4) ===\n"]
+        lines.append(f"Model:    {model_spec}")
+        lines.append(f"Skills:   {len(skills)}")
+        lines.append(f"Commands: {len(commands)}")
+        if skills:
+            lines.append("\nAvailable local skills:")
+            for s in skills:
+                lines.append(f"  - {s['name']}: {s.get('description', '')}")
+        lines.append("\nUsage: /local-agent <describe your task>")
+        return {"decision": "block", "message": "\n".join(lines)}
+
+    # Plan first — show to user for approval
+    global _pending_command
+    log_hook("local_agent_plan", message=message[:200])
+
+    recent = "\n".join(_session_messages[-5:]) if _session_messages else ""
+    plan = plan_agent(message, context=recent)
+
+    if not plan.get("can_handle"):
+        reason = plan.get("reason", "Unknown")
+        return {"decision": "block",
+                "message": (f"[Local agent — {plan.get('model', '?')}]\n\n"
+                            f"Cannot handle this task locally.\n"
+                            f"Reason: {reason}\n\n"
+                            f"Passing through to Claude.")}
+
+    # Format plan for display
+    plan_steps = plan.get("plan", [])
+    skills_needed = plan.get("skills_needed", [])
+    commands_needed = plan.get("commands_needed", [])
+
+    plan_display = [f"[Local agent — {plan.get('model', '?')}]\n"]
+    plan_display.append(f"**Plan for:** {message}\n")
+    if plan_steps:
+        plan_display.append("Steps:")
+        for i, step in enumerate(plan_steps, 1):
+            plan_display.append(f"  {i}. {step}")
+    if skills_needed:
+        plan_display.append(f"\nSkills: {', '.join(skills_needed)}")
+    if commands_needed:
+        plan_display.append(f"Commands: {', '.join(commands_needed)}")
+    plan_display.append("\nReply **y** to execute, **n** to cancel (pass to Claude).")
+
+    _pending_command = {
+        "name": "__local_agent__",
+        "level": 4,
+        "_agent_message": message,
+        "_agent_context": recent,
+    }
+    return {"decision": "block", "message": "\n".join(plan_display)}
+
+
 def _cmd_help() -> str:
     """Quick reference — runs locally."""
     return """=== Skill Hub Commands ===
@@ -1246,6 +1891,12 @@ Profiles:
   /hub-profile save <name>   Save current state as profile
   /hub-profile delete <name> Remove a profile
   /hub-profile auto <task>   LLM recommends best profile
+
+Local Execution (L1=commands, L2=templates, L3=skills, L4=agent):
+  /hub-local-status        Show levels, models, commands, skills
+  /hub-local-skills        List all local skill definitions
+  /hub-local-approve <name> Pre-approve a command for this session
+  /hub-local-agent <task>  Run task via local LLM agent (L4)
 
 Context & Memory:
   /hub-digest              Force conversation digest now
@@ -1347,9 +1998,17 @@ def _cmd_list_skills() -> str:
     store.close()
     if not rows:
         return "No skills indexed. Run index_skills() first."
-    lines = [f"{len(rows)} skills:\n"]
-    for r in rows:
-        lines.append(f"  {r['id']}: {r['description'] or '(no description)'}"[:120])
+    claude_skills = [r for r in rows if r["target"] == "claude"]
+    local_skills = [r for r in rows if r["target"] == "local"]
+    lines = [f"{len(rows)} skills ({len(claude_skills)} claude, {len(local_skills)} local):\n"]
+    if claude_skills:
+        lines.append("Claude skills:")
+        for r in claude_skills:
+            lines.append(f"  {r['id']}: {r['description'] or '(no description)'}"[:120])
+    if local_skills:
+        lines.append("\nLocal skills:")
+        for r in local_skills:
+            lines.append(f"  {r['id']}: {r['description'] or '(no description)'}"[:120])
     return "\n".join(lines)
 
 
@@ -1549,6 +2208,10 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-pull-model": "pull_model",
     "/hub-update-task": "update_task",
     "/hub-reopen-task": "reopen_task",
+    "/hub-local-status": "local_status",
+    "/hub-local-skills": "local_skills",
+    "/hub-local-approve": "local_approve",
+    "/hub-local-agent": "local_agent",
 }
 
 
@@ -1718,6 +2381,14 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_optimize_context()}
         elif action == "save_memory":
             return {"decision": "block", "message": _cmd_save_memory(args_str)}
+        elif action == "local_status":
+            return {"decision": "block", "message": _cmd_local_status()}
+        elif action == "local_skills":
+            return {"decision": "block", "message": _cmd_local_skills()}
+        elif action == "local_approve":
+            return {"decision": "block", "message": _cmd_local_approve(args_str)}
+        elif action == "local_agent":
+            return _cmd_local_agent(args_str)
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
@@ -1731,7 +2402,8 @@ def main() -> None:
         print("Commands: classify, status, help, token_stats, list_models,")
         print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context,")
-        print("          exhaustion_save, digest, optimize_context, save_memory")
+        print("          exhaustion_save, digest, optimize_context, save_memory,")
+        print("          local_agent")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -1811,6 +2483,10 @@ def main() -> None:
 
     elif cmd == "save_memory":
         print(_cmd_save_memory(" ".join(args)))
+
+    elif cmd == "local_agent":
+        result = _cmd_local_agent(" ".join(args))
+        print(result.get("message", json.dumps(result)))
 
     else:
         print(f"Unknown command: {cmd}")
