@@ -137,6 +137,16 @@ class SkillStore:
 
             CREATE INDEX IF NOT EXISTS idx_interceptions_type ON interceptions (command_type);
 
+            CREATE TABLE IF NOT EXISTS conversation_state (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT,
+                message_count   INTEGER NOT NULL DEFAULT 0,
+                digest          TEXT,           -- JSON conversation digest from local LLM
+                stale_topics    TEXT,           -- JSON array of topics no longer active
+                suggested_profile TEXT,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS context_injections (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_preview TEXT,
@@ -576,6 +586,36 @@ class SkillStore:
             FROM context_injections
         """).fetchone()
         return dict(row) if row else {}
+
+    # ------------------------------------------------------------------
+    # Conversation state tracking
+
+    def save_conversation_state(self, session_id: str, message_count: int,
+                                digest: str, stale_topics: str,
+                                suggested_profile: str | None) -> int:
+        cur = self._conn.execute("""
+            INSERT INTO conversation_state
+                (session_id, message_count, digest, stale_topics, suggested_profile)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session_id, message_count, digest, stale_topics, suggested_profile))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def get_latest_conversation_state(self, session_id: str) -> sqlite3.Row | None:
+        return self._conn.execute("""
+            SELECT * FROM conversation_state
+            WHERE session_id = ?
+            ORDER BY id DESC LIMIT 1
+        """, (session_id,)).fetchone()
+
+    def get_message_count(self, session_id: str) -> int:
+        """Get latest message count for a session."""
+        row = self._conn.execute("""
+            SELECT message_count FROM conversation_state
+            WHERE session_id = ?
+            ORDER BY id DESC LIMIT 1
+        """, (session_id,)).fetchone()
+        return row["message_count"] if row else 0
 
     def close(self) -> None:
         self._conn.close()

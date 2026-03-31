@@ -11,7 +11,10 @@ Usage from hooks:
 import json
 import sys
 
-from .embeddings import embed, compact, ollama_available, EMBED_MODEL, RERANK_MODEL
+from .embeddings import (
+    embed, compact, ollama_available, EMBED_MODEL, RERANK_MODEL,
+    conversation_digest, exhaustion_save,
+)
 from .store import SkillStore
 
 
@@ -365,6 +368,215 @@ def _precompact_hint(message: str) -> str | None:
     return None
 
 
+# Session-level state for conversation tracking (per-process)
+_session_messages: list[str] = []
+_session_id: str | None = None
+
+
+def _get_session_id() -> str:
+    """Get or create a session ID for this process."""
+    global _session_id
+    if _session_id is None:
+        import os
+        _session_id = f"pid-{os.getpid()}"
+    return _session_id
+
+
+def _conversation_digest_if_due(message: str) -> str | None:
+    """
+    Strategy #2: Periodic conversation digest.
+    Every N messages, use local LLM to produce a compact state summary.
+    Also tracks relevance decay for auto-eviction (#1).
+
+    Returns a systemMessage with the digest, or None.
+    """
+    from . import config as _cfg
+
+    _session_messages.append(message)
+    n = int(_cfg.get("digest_every_n_messages") or 5)
+
+    if len(_session_messages) < n or len(_session_messages) % n != 0:
+        return None
+
+    if not ollama_available(RERANK_MODEL):
+        return None
+
+    try:
+        digest = conversation_digest(_session_messages)
+        store = SkillStore()
+        session_id = _get_session_id()
+
+        # Save conversation state
+        stale = json.dumps(digest.get("stale_topics", []))
+        store.save_conversation_state(
+            session_id=session_id,
+            message_count=len(_session_messages),
+            digest=json.dumps(digest),
+            stale_topics=stale,
+            suggested_profile=digest.get("suggested_profile"),
+        )
+
+        parts: list[str] = []
+
+        # Inject current focus as context hint
+        focus = digest.get("current_focus", "")
+        if focus and focus != "unknown":
+            parts.append(f"Current focus: {focus}")
+
+        decisions = digest.get("recent_decisions", [])
+        if decisions:
+            parts.append(f"Recent decisions: {', '.join(decisions[:3])}")
+
+        # Strategy #1: Auto-eviction — detect stale topics and suggest profile switch
+        if _cfg.get("eviction_enabled"):
+            stale_topics = digest.get("stale_topics", [])
+            suggested = digest.get("suggested_profile")
+            if stale_topics:
+                parts.append(f"Stale topics (no longer active): {', '.join(stale_topics)}")
+            if suggested:
+                parts.append(
+                    f"Conversation fits '{suggested}' profile. "
+                    f"Switch with: /profile {suggested}"
+                )
+
+        store.close()
+
+        if parts:
+            header = "[Skill Hub — conversation digest (auto-generated every "
+            header += f"{n} messages)]\n"
+            return header + "\n".join(parts)
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _exhaustion_auto_save(context: str) -> str:
+    """
+    Strategy #3: Exhaustion fallback.
+    When Claude is exhausted/unavailable, use local LLM to auto-save the session.
+    Saves a task with LLM-generated summary and updates memory.
+    """
+    result_parts: list[str] = ["=== Exhaustion Auto-Save ===\n"]
+
+    try:
+        # Generate structured save via local LLM
+        digest = exhaustion_save(context)
+
+        title = digest.get("title", "Session interrupted")
+        summary = digest.get("summary", context[:500])
+        tags = digest.get("tags", "auto-saved,exhaustion")
+        next_steps = digest.get("next_steps", [])
+        files = digest.get("files_modified", [])
+
+        # Save as task
+        store = SkillStore()
+        vector = embed(f"{title}: {summary}") if ollama_available(EMBED_MODEL) else []
+        full_context = json.dumps({
+            "decisions": digest.get("decisions", []),
+            "next_steps": next_steps,
+            "files_modified": files,
+        }, indent=2)
+        tid = store.save_task(
+            title=title,
+            summary=summary,
+            vector=vector,
+            context=full_context,
+            tags=tags,
+            session_id=_get_session_id(),
+        )
+        store.close()
+
+        result_parts.append(f"Task #{tid} saved: \"{title}\"\n")
+        result_parts.append(f"Summary: {summary}\n")
+
+        if next_steps:
+            result_parts.append("Next steps when resuming:")
+            for step in next_steps:
+                result_parts.append(f"  - {step}")
+
+        if files:
+            result_parts.append(f"\nFiles modified: {', '.join(files)}")
+
+        result_parts.append(f"\nTo resume later: search_context(\"{title}\")")
+        result_parts.append(f"Or: /list-tasks")
+
+    except Exception as exc:
+        # Even if LLM fails, do a raw save
+        try:
+            store = SkillStore()
+            vector = embed(context[:200]) if ollama_available(EMBED_MODEL) else []
+            tid = store.save_task(
+                title="Session interrupted (raw save)",
+                summary=context[:1000],
+                vector=vector,
+                tags="auto-saved,exhaustion,raw",
+            )
+            store.close()
+            result_parts.append(f"Raw save: task #{tid} (LLM unavailable: {exc})")
+        except Exception as inner:
+            result_parts.append(f"Failed to save: {inner}")
+
+    return "\n".join(result_parts)
+
+
+def _cmd_exhaustion_save(args_str: str) -> str:
+    """Handle /exhaustion-save command — manually trigger exhaustion save."""
+    from . import config as _cfg
+
+    if not _cfg.get("exhaustion_fallback"):
+        return "Exhaustion fallback is disabled. Enable with: /configure exhaustion_fallback true"
+
+    # Use session messages as context, or args_str if provided
+    if args_str.strip():
+        context = args_str.strip()
+    elif _session_messages:
+        context = "\n---\n".join(_session_messages[-15:])
+    else:
+        return "No session context to save. Provide a description: /exhaustion-save <context>"
+
+    return _exhaustion_auto_save(context)
+
+
+def _cmd_conversation_digest() -> str:
+    """Handle /digest command — force a conversation digest now."""
+    if not _session_messages:
+        return "No messages in this session yet."
+
+    if not ollama_available(RERANK_MODEL):
+        return "Ollama/reason model not available for digest."
+
+    try:
+        digest = conversation_digest(_session_messages)
+        lines = ["=== Conversation Digest ===\n"]
+        lines.append(f"Messages in session: {len(_session_messages)}")
+        lines.append(f"Current focus: {digest.get('current_focus', 'unknown')}")
+
+        decisions = digest.get("recent_decisions", [])
+        if decisions:
+            lines.append(f"\nRecent decisions:")
+            for d in decisions:
+                lines.append(f"  - {d}")
+
+        active = digest.get("active_plugins", [])
+        if active:
+            lines.append(f"\nActive plugins: {', '.join(active)}")
+
+        stale = digest.get("stale_topics", [])
+        if stale:
+            lines.append(f"\nStale topics: {', '.join(stale)}")
+
+        suggested = digest.get("suggested_profile")
+        if suggested:
+            lines.append(f"\nSuggested profile: {suggested}")
+            lines.append(f"  Activate: /profile {suggested}")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Digest failed: {exc}"
+
+
 def hook_classify_and_execute(message: str) -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
@@ -430,6 +642,7 @@ def hook_classify_and_execute(message: str) -> dict:
         system_parts.append(precompact)
 
     # Strategy #1 + #5: RAG context injection + memory-aware context
+    context: str | None = None
     try:
         msg_vector = embed(message[:500])  # truncate for embedding
         context = _build_context_injection(message, msg_vector)
@@ -437,6 +650,11 @@ def hook_classify_and_execute(message: str) -> dict:
             system_parts.append(context)
     except Exception:
         pass
+
+    # Strategy #2: Periodic conversation digest + relevance decay
+    digest_msg = _conversation_digest_if_due(message)
+    if digest_msg:
+        system_parts.append(digest_msg)
 
     if system_parts:
         combined = "\n\n".join(system_parts)
@@ -612,6 +830,8 @@ Slash commands (intercepted locally, 0 Claude tokens):
   /profile save <name>  Save current plugin state as profile
   /profile delete <name>Remove a profile
   /profile auto <task>  LLM recommends best profile for task
+  /exhaustion-save     Auto-save session when Claude is exhausted
+  /digest              Force conversation digest now
 
 These run via local LLM or SQLite — Claude never sees them.
 
@@ -905,6 +1125,8 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/index-skills": "index_skills",
     "/index-plugins": "index_plugins",
     "/profile": "profile",
+    "/exhaustion-save": "exhaustion_save",
+    "/digest": "digest",
 }
 
 
@@ -967,6 +1189,10 @@ def _handle_slash_command(message: str) -> dict | None:
             return None
         elif action == "profile":
             return {"decision": "block", "message": _cmd_profile(args_str)}
+        elif action == "exhaustion_save":
+            return {"decision": "block", "message": _cmd_exhaustion_save(args_str)}
+        elif action == "digest":
+            return {"decision": "block", "message": _cmd_conversation_digest()}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
@@ -979,7 +1205,8 @@ def main() -> None:
         print("Usage: skill-hub-cli <command> [args...]")
         print("Commands: classify, status, help, token_stats, list_models,")
         print("          list_skills, list_teachings, configure, profile,")
-        print("          save_task, close_task, list_tasks, search_context")
+        print("          save_task, close_task, list_tasks, search_context,")
+        print("          exhaustion_save, digest")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -1047,6 +1274,12 @@ def main() -> None:
 
     elif cmd == "profile":
         print(_cmd_profile(" ".join(args)))
+
+    elif cmd == "exhaustion_save":
+        print(_cmd_exhaustion_save(" ".join(args)))
+
+    elif cmd == "digest":
+        print(_cmd_conversation_digest())
 
     else:
         print(f"Unknown command: {cmd}")

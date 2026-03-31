@@ -416,6 +416,66 @@ Delete a custom profile:
 
 Profiles modify `~/.claude/settings.json` — restart Claude Code for changes to take effect.
 
+### 11. Conversation Digest & Auto-Eviction
+
+Every N messages (default 5), the local LLM produces a compact conversation digest:
+
+```
+/digest    # force a digest now
+```
+
+```
+=== Conversation Digest ===
+
+Messages in session: 15
+Current focus: implementing session profiles for MCP skill hub
+
+Recent decisions:
+  - Use embedding similarity for profile auto-recommendation
+  - Store profiles in config.json, not settings.json
+
+Stale topics: CSS debugging, Terraform workspace setup
+Suggested profile: mcp-dev
+  Activate: /profile mcp-dev
+```
+
+The digest is auto-injected as `systemMessage` to keep Claude aware of the conversation's evolution. Stale topics are flagged so irrelevant context doesn't accumulate.
+
+Configure:
+
+```
+/configure digest_every_n_messages 10   # less frequent digests
+/configure eviction_enabled false       # disable decay tracking
+```
+
+### 12. Exhaustion Fallback
+
+When Claude is exhausted (quota/rate limit), the local LLM saves your session:
+
+```
+/exhaustion-save                        # auto-save from session context
+/exhaustion-save "working on auth API"  # save with explicit description
+```
+
+```
+=== Exhaustion Auto-Save ===
+
+Task #12 saved: "Auth API middleware rewrite"
+
+Summary: Implemented OAuth token validation middleware. Decided to use
+jose library over PyJWT. Next: wire up refresh token rotation.
+
+Next steps when resuming:
+  - Implement refresh token rotation in auth_middleware.py
+  - Add integration tests for token expiry edge cases
+
+Files modified: auth_middleware.py, token_service.py
+
+To resume later: search_context("Auth API middleware rewrite")
+```
+
+The local LLM generates a structured digest with title, summary, decisions, next steps, and files. If the LLM is also unavailable, a raw save captures the session text.
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
@@ -431,6 +491,8 @@ Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 | `tasks` | Open/closed task digests |
 | `session_log` | Per-session tool usage |
 | `interceptions` | Hook-intercepted command log for token profiling |
+| `context_injections` | RAG context injection stats |
+| `conversation_state` | Periodic conversation digests for relevance tracking |
 
 ### Config
 
@@ -457,16 +519,20 @@ All settings have sensible defaults. Override only what you need.
 | `hook_context_max_chars` | `2000` | Max chars injected as systemMessage |
 | `hook_precompact_threshold` | `1500` | Messages longer than this get LLM pre-compaction |
 | `profiles` | `{6 built-in}` | Session profile definitions |
+| `digest_every_n_messages` | `5` | Produce conversation digest every N messages |
+| `digest_stale_threshold` | `0.3` | Similarity below this = stale topic |
+| `eviction_enabled` | `true` | Enable relevance decay tracking |
+| `eviction_min_stale_count` | `3` | Suggest profile switch after N stale detections |
+| `exhaustion_fallback` | `true` | Enable exhaustion auto-save |
 
 ## Roadmap
 
 - [x] Session profiles — predefined plugin sets per work context
 - [x] Auto-profile — LLM recommends best profile for task description
 - [x] RAG context injection — auto-enrich Claude's context with relevant skills/tasks/memory
-- [ ] Auto-eviction — dynamically unload unused skills mid-session
-- [ ] Context compaction — local LLM summarizes growing context
-- [ ] Exhaustion fallback — use local LLM when Claude quota is exhausted
-- [ ] Conversation digest enrichment — embed full conversation summaries
+- [x] Auto-eviction — relevance decay tracking + profile switch suggestions
+- [x] Context compaction — periodic conversation digest via local LLM
+- [x] Exhaustion fallback — local LLM auto-saves session when Claude is unavailable
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License

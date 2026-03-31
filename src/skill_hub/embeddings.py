@@ -239,6 +239,108 @@ def optimize_context(entries: list[dict],
     return results
 
 
+_CONVERSATION_DIGEST_PROMPT = """\
+You are a context-optimization assistant. Summarize this conversation state into a \
+compact digest that captures the CURRENT focus, recent decisions, and active intent.
+
+Output ONLY a JSON object:
+{{
+  "current_focus": "<what the user is working on right now, 1 sentence>",
+  "recent_decisions": ["<key decision 1>", "<key decision 2>"],
+  "active_plugins": ["<plugin name that seems relevant>"],
+  "stale_topics": ["<topic that was discussed earlier but is no longer active>"],
+  "suggested_profile": "<profile name if conversation clearly fits one, else null>"
+}}
+
+Conversation context:
+{content}
+"""
+
+_EXHAUSTION_SAVE_PROMPT = """\
+You are an AI session-saving assistant. The external AI (Claude) is exhausted/unavailable.
+Analyze the conversation state and produce a structured task save so work can resume later.
+
+Output ONLY a JSON object:
+{{
+  "title": "<descriptive title of what was being worked on, max 12 words>",
+  "summary": "<what was accomplished and what remains, 3-5 sentences>",
+  "decisions": ["<key decision made during this session>"],
+  "next_steps": ["<concrete next action to take when resuming>"],
+  "files_modified": ["<file paths that were changed>"],
+  "tags": "<comma-separated tags>"
+}}
+
+Session state:
+{content}
+"""
+
+
+def conversation_digest(messages: list[str],
+                        model: str = RERANK_MODEL) -> dict:
+    """
+    Use local LLM to produce a compact digest of conversation state.
+    Used for periodic context compaction and relevance decay tracking.
+    """
+    content = "\n---\n".join(messages[-10:])  # last 10 messages
+    max_chars = int(_cfg.get("compact_max_input_chars")) * 2
+    prompt = _CONVERSATION_DIGEST_PROMPT.format(content=content[:max_chars])
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception:
+        pass
+    return {
+        "current_focus": "unknown",
+        "recent_decisions": [],
+        "active_plugins": [],
+        "stale_topics": [],
+        "suggested_profile": None,
+    }
+
+
+def exhaustion_save(content: str,
+                    model: str = RERANK_MODEL) -> dict:
+    """
+    Use local LLM to generate a structured task save when Claude is exhausted.
+    Returns a digest suitable for store.save_task().
+    """
+    max_chars = int(_cfg.get("compact_max_input_chars")) * 3  # 12k
+    prompt = _EXHAUSTION_SAVE_PROMPT.format(content=content[:max_chars])
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception:
+        pass
+    return {
+        "title": "Session interrupted",
+        "summary": content[:500],
+        "decisions": [],
+        "next_steps": [],
+        "files_modified": [],
+        "tags": "auto-saved,exhaustion",
+    }
+
+
 def ollama_available(model: str = EMBED_MODEL) -> bool:
     """Check whether the required Ollama model is available."""
     try:

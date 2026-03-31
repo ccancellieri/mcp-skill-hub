@@ -70,7 +70,18 @@ _DEFAULTS = {
     "teaching_min_similarity": 0.6,     # minimum sim for teaching rule match
 
     # Compaction
-    "compact_max_input_chars": 4000,    # max chars sent to LLM for compaction
+    "compact_max_input_chars": 4000,
+
+    # Conversation digest — periodic context compaction
+    "digest_every_n_messages": 5,       # produce a digest every N messages
+    "digest_stale_threshold": 0.3,      # similarity below this = "stale" topic
+
+    # Auto-eviction — relevance decay tracking
+    "eviction_enabled": True,           # enable relevance decay tracking
+    "eviction_min_stale_count": 3,      # suggest profile switch after N stale detections
+
+    # Exhaustion fallback — local LLM takes over when Claude is unavailable
+    "exhaustion_fallback": True,        # enable exhaustion auto-save    # max chars sent to LLM for compaction
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}

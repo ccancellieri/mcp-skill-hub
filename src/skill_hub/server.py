@@ -1302,6 +1302,26 @@ def pull_model(model: str) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def exhaustion_save(context: str = "") -> str:
+    """
+    Auto-save the current session when Claude is exhausted or rate-limited.
+
+    Uses the local LLM to generate a structured task save with title, summary,
+    decisions, next steps, and files modified. The saved task can be resumed
+    later with search_context() or list_tasks().
+
+    Call this when you detect Claude is running low on context or quota.
+    Also available as /exhaustion-save slash command (0 Claude tokens).
+
+    Args:
+        context: Description of current work state. If empty, uses recent
+                 session messages from the hook pipeline.
+    """
+    from .cli import _cmd_exhaustion_save
+    return _cmd_exhaustion_save(context)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 
