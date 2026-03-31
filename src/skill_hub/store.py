@@ -147,6 +147,17 @@ class SkillStore:
                 created_at      TEXT DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS triage_log (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_preview     TEXT,
+                action              TEXT NOT NULL,   -- local_answer, local_action, enrich_and_forward, pass_through
+                confidence          REAL NOT NULL DEFAULT 0.0,
+                estimated_tokens_saved INTEGER NOT NULL DEFAULT 0,
+                created_at          TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_triage_action ON triage_log (action);
+
             CREATE TABLE IF NOT EXISTS context_injections (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_preview TEXT,
@@ -588,6 +599,31 @@ class SkillStore:
         return dict(row) if row else {}
 
     # ------------------------------------------------------------------
+    # Triage stats
+
+    def log_triage(self, message_preview: str, action: str,
+                   confidence: float, estimated_tokens_saved: int) -> None:
+        self._conn.execute("""
+            INSERT INTO triage_log
+                (message_preview, action, confidence, estimated_tokens_saved)
+            VALUES (?, ?, ?, ?)
+        """, (message_preview[:100], action, confidence, estimated_tokens_saved))
+        self._conn.commit()
+
+    def get_triage_stats(self) -> dict:
+        row = self._conn.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN action = 'local_answer' THEN 1 ELSE 0 END) as local_answers,
+                   SUM(CASE WHEN action = 'local_action' THEN 1 ELSE 0 END) as local_actions,
+                   SUM(CASE WHEN action = 'enrich_and_forward' THEN 1 ELSE 0 END) as enriched,
+                   SUM(CASE WHEN action = 'pass_through' THEN 1 ELSE 0 END) as passed,
+                   SUM(estimated_tokens_saved) as total_tokens_saved,
+                   AVG(confidence) as avg_confidence
+            FROM triage_log
+        """).fetchone()
+        return dict(row) if row else {}
+
+    # ------------------------------------------------------------------
     # Conversation state tracking
 
     def save_conversation_state(self, session_id: str, message_count: int,
@@ -616,6 +652,33 @@ class SkillStore:
             ORDER BY id DESC LIMIT 1
         """, (session_id,)).fetchone()
         return row["message_count"] if row else 0
+
+    # ------------------------------------------------------------------
+    # Aggregate counts (for activity log banner)
+
+    def count_skills(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) as n FROM skills").fetchone()
+        return row["n"] if row else 0
+
+    def count_tasks(self) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) as n FROM tasks GROUP BY status"
+        ).fetchall()
+        return {r["status"]: r["n"] for r in rows}
+
+    def count_teachings(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) as n FROM teachings").fetchone()
+        return row["n"] if row else 0
+
+    def count_interceptions(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) as n FROM interceptions").fetchone()
+        return row["n"] if row else 0
+
+    def total_tokens_saved(self) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(estimated_tokens), 0) as n FROM interceptions"
+        ).fetchone()
+        return row["n"] if row else 0
 
     def close(self) -> None:
         self._conn.close()

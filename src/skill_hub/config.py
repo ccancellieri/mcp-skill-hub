@@ -81,7 +81,17 @@ _DEFAULTS = {
     "eviction_min_stale_count": 3,      # suggest profile switch after N stale detections
 
     # Exhaustion fallback — local LLM takes over when Claude is unavailable
-    "exhaustion_fallback": True,        # enable exhaustion auto-save    # max chars sent to LLM for compaction
+    "exhaustion_fallback": True,        # enable exhaustion auto-save
+
+    # LLM triage — local LLM pre-processes ALL messages before Claude
+    "hook_llm_triage": True,            # enable universal LLM triage
+    "hook_llm_triage_timeout": 30,      # max seconds for triage LLM call
+    "hook_llm_triage_min_confidence": 0.7,  # min confidence to act on local_answer
+    "hook_llm_triage_skip_length": 2000,    # messages longer than this skip triage
+
+    # Activity log — daily rotation, 50 MB cap
+    # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")
+    "log_dir": str(Path.home() / ".claude" / "mcp-skill-hub" / "logs"),
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}

@@ -13,7 +13,7 @@ import sys
 
 from .activity_log import log_hook, log_llm, log_event
 from .embeddings import (
-    embed, compact, ollama_available, optimize_context,
+    embed, compact, ollama_available, optimize_context, triage_message,
     EMBED_MODEL, RERANK_MODEL,
     conversation_digest, exhaustion_save,
 )
@@ -879,8 +879,9 @@ def hook_classify_and_execute(message: str) -> dict:
     Pipeline:
     1. Slash commands → instant local handling (0ms)
     2. Task commands → semantic prefilter + LLM classify → local execution
-    3. Normal messages → context injection + pre-compact → allow to Claude
-       with enriched systemMessage
+    3. LLM triage → local LLM decides: answer locally, redirect to /hub-*
+       command, enrich with hints for Claude, or pass through
+    4. Context enrichment → RAG injection + pre-compact + digest + triage hints
 
     Returns:
       - {"decision": "block", "message": "..."} if handled locally
@@ -889,7 +890,7 @@ def hook_classify_and_execute(message: str) -> dict:
     """
     from . import config as _cfg
 
-    # Fast path: known slash commands — no LLM, no embedding, instant
+    # ── Stage 1: Slash commands — no LLM, no embedding, instant ──
     slash_result = _handle_slash_command(message)
     if slash_result is not None:
         if _cfg.get("token_profiling") and slash_result.get("decision") == "block":
@@ -905,7 +906,7 @@ def hook_classify_and_execute(message: str) -> dict:
                 pass
         return slash_result
 
-    # Semantic path: embedding prefilter → LLM classify
+    # ── Stage 2: Task command classification — semantic prefilter + LLM ──
     intent = _classify_intent(message)
     action = intent.get("intent", "none")
 
@@ -925,11 +926,86 @@ def hook_classify_and_execute(message: str) -> dict:
                     pass
             return {"decision": "block", "message": result}
 
-    # ── Context enrichment for messages going to Claude ──
-    if not _cfg.get("hook_context_injection"):
+    # ── Stage 3: LLM Triage — local LLM pre-processes ALL messages ──
+    triage_result: dict | None = None
+    triage_hint: str | None = None
+
+    if _cfg.get("hook_llm_triage"):
+        skip_len = int(_cfg.get("hook_llm_triage_skip_length") or 2000)
+        min_conf = float(_cfg.get("hook_llm_triage_min_confidence") or 0.7)
+
+        if len(message) <= skip_len and ollama_available(RERANK_MODEL):
+            # Build brief context from recent session messages
+            recent = "\n".join(_session_messages[-5:]) if _session_messages else ""
+            triage_result = triage_message(message, context=recent)
+            triage_action = triage_result.get("action", "pass_through")
+            confidence = float(triage_result.get("confidence", 0.0))
+            est_saved = int(triage_result.get("estimated_tokens_saved", 0))
+
+            # Log triage decision
+            if _cfg.get("token_profiling"):
+                try:
+                    store = SkillStore()
+                    store.log_triage(message, triage_action, confidence, est_saved)
+                    store.close()
+                except Exception:
+                    pass
+
+            # Act on triage decision
+            if triage_action == "local_answer" and confidence >= min_conf:
+                answer = triage_result.get("answer", "")
+                if answer:
+                    # Log as interception (tokens saved)
+                    if _cfg.get("token_profiling"):
+                        try:
+                            store = SkillStore()
+                            store.log_interception(
+                                command_type="triage:local_answer",
+                                message_preview=message,
+                                estimated_tokens=max(est_saved, 200),
+                            )
+                            store.close()
+                        except Exception:
+                            pass
+                    return {"decision": "block",
+                            "message": f"[Answered locally by {RERANK_MODEL}]\n\n{answer}"}
+
+            elif triage_action == "local_action" and confidence >= min_conf:
+                cmd = triage_result.get("command", "")
+                if cmd and cmd.startswith("/hub-"):
+                    # Re-route to the local slash command handler
+                    reroute = _handle_slash_command(
+                        cmd if " " in cmd else f"{cmd} {message}"
+                    )
+                    if reroute is not None:
+                        if _cfg.get("token_profiling"):
+                            try:
+                                store = SkillStore()
+                                store.log_interception(
+                                    command_type=f"triage:local_action:{cmd}",
+                                    message_preview=message,
+                                    estimated_tokens=max(est_saved, 300),
+                                )
+                                store.close()
+                            except Exception:
+                                pass
+                        return reroute
+
+            elif triage_action == "enrich_and_forward":
+                hint = triage_result.get("hint", "")
+                if hint:
+                    triage_hint = (f"[Skill Hub triage — local LLM analysis]\n"
+                                   f"{hint}")
+
+    # ── Stage 4: Context enrichment for messages going to Claude ──
+    if not _cfg.get("hook_context_injection") and not triage_hint:
         return {"decision": "allow"}
 
     system_parts: list[str] = []
+
+    # Triage hint (from Stage 3)
+    if triage_hint:
+        system_parts.append(triage_hint)
 
     # Strategy #4: Pre-compact long input
     precompact = _precompact_hint(message)
@@ -938,13 +1014,14 @@ def hook_classify_and_execute(message: str) -> dict:
 
     # Strategy #1 + #5: RAG context injection + memory-aware context
     context: str | None = None
-    try:
-        msg_vector = embed(message[:500])  # truncate for embedding
-        context = _build_context_injection(message, msg_vector)
-        if context:
-            system_parts.append(context)
-    except Exception:
-        pass
+    if _cfg.get("hook_context_injection"):
+        try:
+            msg_vector = embed(message[:500])
+            context = _build_context_injection(message, msg_vector)
+            if context:
+                system_parts.append(context)
+        except Exception:
+            pass
 
     # Strategy #2: Periodic conversation digest + relevance decay
     digest_msg = _conversation_digest_if_due(message)
@@ -1055,6 +1132,7 @@ def _cmd_token_stats() -> str:
     store = SkillStore()
     totals = store.get_interception_totals()
     ctx_stats = store.get_context_injection_stats()
+    triage_stats = store.get_triage_stats()
     store.close()
 
     lines: list[str] = []
@@ -1069,10 +1147,33 @@ def _cmd_token_stats() -> str:
 
         stats = store.get_interception_stats()
         for row in stats:
-            avg = (row["total_tokens_saved"] or 0) // max(row["intercept_count"], 1)
-            lines.append(f"  {row['command_type']:<20} {row['intercept_count']:>4}x  ~{row['total_tokens_saved'] or 0:,} tokens")
+            lines.append(f"  {row['command_type']:<30} {row['intercept_count']:>4}x  "
+                        f"~{row['total_tokens_saved'] or 0:,} tokens")
     else:
         lines.append("No interceptions recorded yet.\n")
+
+    # Triage stats
+    if triage_stats and triage_stats.get("total", 0) > 0:
+        total = triage_stats["total"]
+        local_ans = triage_stats.get("local_answers", 0) or 0
+        local_act = triage_stats.get("local_actions", 0) or 0
+        enriched = triage_stats.get("enriched", 0) or 0
+        passed = triage_stats.get("passed", 0) or 0
+        triage_saved = triage_stats.get("total_tokens_saved", 0) or 0
+        avg_conf = triage_stats.get("avg_confidence", 0) or 0
+
+        lines.append(f"\n=== LLM Triage (all messages) ===\n")
+        lines.append(f"Total triaged:       {total}")
+        lines.append(f"Avg confidence:      {avg_conf:.2f}")
+        lines.append(f"Est. tokens saved:   ~{triage_saved:,}\n")
+
+        def _tpct(n: int) -> str:
+            return f"{n / total * 100:.0f}%" if total else "0%"
+
+        lines.append(f"  Answered locally:  {local_ans:>4}x  ({_tpct(local_ans)}) — 0 Claude tokens")
+        lines.append(f"  Routed to /hub-*:  {local_act:>4}x  ({_tpct(local_act)}) — 0 Claude tokens")
+        lines.append(f"  Enriched + fwd:    {enriched:>4}x  ({_tpct(enriched)}) — hint injected")
+        lines.append(f"  Passed through:    {passed:>4}x  ({_tpct(passed)}) — no change")
 
     # Context injection stats
     if ctx_stats and ctx_stats.get("total", 0) > 0:

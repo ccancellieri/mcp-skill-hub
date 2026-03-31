@@ -512,6 +512,44 @@ Generate and save a memory entry from the current session using the local LLM:
 
 The local LLM generates a structured memory file with appropriate type (user/feedback/project/reference) and updates MEMORY.md automatically.
 
+### 15. Universal LLM Triage
+
+Every message passes through the local LLM **before** reaching Claude. The triage decides:
+
+| Decision | What happens | Claude tokens |
+|----------|-------------|---------------|
+| `local_answer` | LLM answers directly (greetings, simple queries) | **0** |
+| `local_action` | Routes to a `/hub-*` command (e.g., "what models?" → `/hub-list-models`) | **0** |
+| `enrich_and_forward` | LLM adds a hint/analysis for Claude | Reduced |
+| `pass_through` | Complex task → Claude handles normally | Normal |
+
+```
+User: "what models do I have installed?"
+  → Triage: local_action → /hub-list-models
+  → Shows full Ollama model list, 0 Claude tokens
+
+User: "refactor the database to use async"
+  → Triage: enrich_and_forward
+  → Hint: "Consider async patterns, check existing driver code"
+  → RAG: injects matching skills + memory + past tasks
+  → Claude gets pre-processed, focused context
+
+User: "hello"
+  → Triage: local_answer → "Hello! How can I assist you today?"
+  → 0 Claude tokens
+```
+
+Configure:
+
+```
+/hub-configure hook_llm_triage true           # enable/disable
+/hub-configure hook_llm_triage_timeout 30     # max seconds
+/hub-configure hook_llm_triage_min_confidence 0.7  # threshold
+/hub-configure hook_llm_triage_skip_length 2000    # skip long messages
+```
+
+Stats via `/hub-token-stats` show triage breakdown: how many messages were answered locally vs enriched vs passed through.
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
@@ -529,6 +567,7 @@ Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 | `interceptions` | Hook-intercepted command log for token profiling |
 | `context_injections` | RAG context injection stats |
 | `conversation_state` | Periodic conversation digests for relevance tracking |
+| `triage_log` | LLM triage decisions and token savings |
 
 ### Config
 
@@ -560,6 +599,10 @@ All settings have sensible defaults. Override only what you need.
 | `eviction_enabled` | `true` | Enable relevance decay tracking |
 | `eviction_min_stale_count` | `3` | Suggest profile switch after N stale detections |
 | `exhaustion_fallback` | `true` | Enable exhaustion auto-save |
+| `hook_llm_triage` | `true` | Enable universal LLM triage on all messages |
+| `hook_llm_triage_timeout` | `30` | Max seconds for triage LLM call |
+| `hook_llm_triage_min_confidence` | `0.7` | Min confidence to act on local answer |
+| `hook_llm_triage_skip_length` | `2000` | Messages longer than this skip triage |
 
 ## Roadmap
 
@@ -569,6 +612,7 @@ All settings have sensible defaults. Override only what you need.
 - [x] Auto-eviction — relevance decay tracking + profile switch suggestions
 - [x] Context compaction — periodic conversation digest via local LLM
 - [x] Exhaustion fallback — local LLM auto-saves session when Claude is unavailable
+- [x] Universal LLM triage — local LLM pre-processes all messages, answers locally or enriches
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License

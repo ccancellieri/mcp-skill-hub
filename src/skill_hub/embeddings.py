@@ -346,6 +346,115 @@ def exhaustion_save(content: str,
     }
 
 
+_TRIAGE_PROMPT = """\
+You are a smart message triage assistant for an AI coding tool (Claude). Your job is to \
+decide whether this user message can be handled locally or needs the expensive cloud AI.
+
+You have access to these local /hub-* commands:
+- /hub-list-models — show installed Ollama models
+- /hub-status — health check, models, DB stats
+- /hub-list-tasks — show open/closed tasks
+- /hub-list-skills — list indexed skills
+- /hub-list-teachings — show teaching rules
+- /hub-search-skills <q> — semantic skill search
+- /hub-suggest-plugins <q> — find matching plugins
+- /hub-configure — view/set config
+- /hub-profile — list/switch plugin profiles
+- /hub-token-stats — token savings report
+- /hub-help — command reference
+- /hub-search-context <q> — unified search across skills, tasks, memory
+- /hub-optimize-context — analyze memory for pruning
+- /hub-save-memory <desc> — save memory entry
+- /hub-teach rule -> target — add teaching rule
+- /hub-digest — conversation digest
+
+Classify the message into ONE of these actions:
+
+"local_answer" — You can answer this directly. ONLY for: greetings, confirmations ("yes", \
+"ok"), questions about what /hub-* commands are available, or trivial clarifications. \
+Do NOT answer coding questions or factual questions about the codebase — those need Claude. \
+Provide the answer.
+
+"local_action" — This maps to a local /hub-* command. Identify which one. Examples:
+  "what models do I have?" → /hub-list-models
+  "show my tasks" → /hub-list-tasks
+  "what plugins for debugging?" → /hub-suggest-plugins debugging
+  "search for MCP skills" → /hub-search-skills MCP server
+
+"enrich_and_forward" — This needs Claude but you can help by:
+  - Extracting the core intent (removing filler words)
+  - Identifying which files/functions are relevant
+  - Suggesting which skills/plugins Claude should use
+  Provide a concise hint for Claude.
+
+"pass_through" — Complex coding task, debugging, or creative work that only Claude \
+can handle well. No pre-processing needed.
+
+Output ONLY a JSON object:
+{{
+  "action": "local_answer|local_action|enrich_and_forward|pass_through",
+  "answer": "<direct answer if local_answer, else null>",
+  "command": "<hub command if local_action, e.g. '/hub-list-tasks', else null>",
+  "hint": "<concise hint for Claude if enrich_and_forward, else null>",
+  "confidence": <0.0-1.0>,
+  "estimated_tokens_saved": <rough estimate of tokens Claude won't need to process>
+}}
+
+{context}
+
+User message: {message}
+"""
+
+
+def triage_message(message: str, context: str = "",
+                   model: str = RERANK_MODEL) -> dict:
+    """
+    Use local LLM to triage a user message before sending to Claude.
+
+    Returns a dict with action, optional answer/command/hint, and confidence.
+    Falls back to pass_through on any error.
+    """
+    log_llm("triage", model=model, message_len=len(message))
+
+    ctx_section = ""
+    if context:
+        ctx_section = f"\nRecent conversation context:\n{context}\n"
+
+    prompt = _TRIAGE_PROMPT.format(
+        message=message[:2000],
+        context=ctx_section,
+    )
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=int(_cfg.get("hook_llm_triage_timeout") or 30),
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            # Validate action field
+            valid_actions = {"local_answer", "local_action",
+                             "enrich_and_forward", "pass_through"}
+            if result.get("action") in valid_actions:
+                return result
+    except Exception:
+        pass
+
+    return {
+        "action": "pass_through",
+        "answer": None,
+        "command": None,
+        "hint": None,
+        "confidence": 0.0,
+        "estimated_tokens_saved": 0,
+    }
+
+
 def ollama_available(model: str = EMBED_MODEL) -> bool:
     """Check whether the required Ollama model is available."""
     try:
