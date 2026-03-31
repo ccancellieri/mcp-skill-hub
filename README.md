@@ -1,187 +1,219 @@
 # MCP Skill Hub
 
-A local MCP (Model Context Protocol) server that provides **semantic skill search** for Claude Code. Instead of loading all plugin skills into context at once, Skill Hub indexes them in a SQLite database with Ollama embeddings and serves only the relevant ones on demand.
+A local MCP server that provides **semantic skill search** for Claude Code. Instead of loading all plugin skills into context, Skill Hub indexes them with Ollama embeddings and serves only the relevant ones on demand. It **learns from your usage** to get smarter over time.
 
 ## Problem
 
-Claude Code loads every enabled plugin's skills into context at session start. With 20+ plugins and hundreds of skills, this wastes thousands of tokens on skill definitions you'll never use in that session. The system prompt bloats, response quality degrades, and you pay for tokens that add no value.
+Claude Code loads every enabled plugin's skills into context at session start. With 20+ plugins and hundreds of skills, this wastes thousands of tokens on definitions you'll never use. The system prompt bloats, response quality degrades, and you pay for tokens that add no value.
 
 ## Solution
 
-Skill Hub acts as a smart skill router:
+Skill Hub is a smart skill/plugin router with three learning signals:
 
-1. **Index** all plugin skills once (parses `SKILL.md` files, embeds descriptions via Ollama)
-2. **Search** by semantic similarity — describe your task, get back only matching skill content
-3. **Learn** from usage feedback — skills that proved helpful for similar queries rank higher over time
-4. **Manage** plugins — enable/disable plugins in `settings.json` without leaving the conversation
+1. **Explicit teachings** — tell it rules like "when I give a URL, suggest chrome-devtools"
+2. **Feedback learning** — rate skills as helpful/not after using them
+3. **Passive session learning** — automatically tracks which tools you actually use
 
 ```
-User: "I need to build a REST API with FastAPI"
+User: "check this website for accessibility"
          │
          ▼
-   search_skills(query)
-         │
-    ┌────┴────┐
-    │ Ollama  │ ← embed query with nomic-embed-text
-    │ Embed   │
-    └────┬────┘
-         │
-    ┌────┴─────────┐
-    │ SQLite        │ ← cosine similarity + feedback boost
-    │ Vector Search │
-    └────┬─────────┘
-         │
-    ┌────┴──────────┐
-    │ (optional)    │ ← deepseek-r1:1.5b re-ranks top candidates
-    │ LLM Re-rank  │
-    └────┬──────────┘
-         │
-         ▼
-   Top-K skill content returned inline
+   ┌─────────────────────┐
+   │  Semantic Search     │ ← Ollama nomic-embed-text
+   │  + Teaching Rules    │ ← "URL → chrome-devtools"
+   │  + Feedback Boost    │ ← past helpful ratings
+   │  + Session History   │ ← tools you actually used
+   └──────────┬──────────┘
+              │
+   ┌──────────┴──────────┐
+   │  (optional)          │ ← deepseek-r1:1.5b re-ranking
+   │  LLM Re-rank        │
+   └──────────┬──────────┘
+              │
+              ▼
+   Skills loaded + plugin suggestions
 ```
 
-## Requirements
-
-- Python 3.11+
-- [Ollama](https://ollama.ai) running locally
-- Claude Code
-
-## Installation
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone https://github.com/ccancellieri/mcp-skill-hub.git
 cd mcp-skill-hub
-
-# Create virtual environment and install
-python3 -m venv .venv
-.venv/bin/pip install -e .
-
-# Pull the embedding model (274 MB)
-ollama pull nomic-embed-text
-
-# Optional: pull the re-ranking model (1.1 GB, reasoning-capable)
-ollama pull deepseek-r1:1.5b
+./install.sh
 ```
 
-## Configuration
+That's it. The installer:
+- Creates a Python venv and installs the package
+- Pulls `nomic-embed-text` via Ollama (274 MB)
+- Registers the MCP server in `~/.mcp.json`
 
-Register the MCP server in `~/.mcp.json`:
+**After install:** restart Claude Code, then run:
+
+```
+index_skills()     # index all plugin skills
+index_plugins()    # index plugin descriptions for suggestions
+```
+
+### Manual Install
+
+If you prefer manual steps:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e .
+ollama pull nomic-embed-text
+```
+
+Add to `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "skill-hub": {
       "type": "stdio",
-      "command": "/path/to/mcp-skill-hub/.venv/bin/skill-hub"
+      "command": "/absolute/path/to/mcp-skill-hub/.venv/bin/skill-hub"
     }
   }
 }
 ```
 
-Restart Claude Code. The `skill-hub` tools will appear in your tool list.
-
 ## Usage
 
-### 1. Build the Index
+### Search Skills
 
-Run once after installing or updating plugins:
-
-```
-→ index_skills()
-Indexed 47 skills.
-```
-
-This scans:
-- `~/.claude/plugins/cache/` (official plugins)
-- `~/.claude/plugins/marketplaces/` (marketplace plugins)
-- `~/.claude/skills/` (user-local skills)
-
-### 2. Search Skills
-
-Describe your current task in natural language:
+Describe your task — get back matching skill content:
 
 ```
-→ search_skills(query="build an MCP server in Python")
+search_skills("build an MCP server in Python")
+search_skills("debug a failing pytest", use_rerank=True)  # slower but smarter
 ```
 
-Returns the **full content** of the top matching skills, ready to follow inline. No need to separately load or invoke them.
+### Teach It
 
-With optional LLM re-ranking for higher precision:
-
-```
-→ search_skills(query="debug a failing pytest", use_rerank=True)
-```
-
-### 3. Record Feedback
-
-After using a skill, tell Skill Hub whether it helped:
+Add persistent rules that match semantically:
 
 ```
-→ record_feedback(skill_id="superpowers:systematic-debugging", helpful=True)
+teach(rule="when I give a URL to check", suggest="chrome-devtools-mcp")
+teach(rule="working on Terraform infrastructure", suggest="terraform")
+teach(rule="debugging CSS or layout issues", suggest="chrome-devtools-mcp")
+teach(rule="writing a Telegram bot", suggest="telegram")
 ```
 
-This improves future rankings. The boost algorithm:
-- Stores (query_vector, skill_id, helpful) tuples
-- For future queries, finds past feedback on similar queries (cosine sim > 0.75)
-- Applies a boost factor of 1.0x to 1.5x based on positive/negative feedback ratio
+Future queries like "inspect this page" match "check a URL" without exact keywords.
 
-### 4. Manage Plugins
+### Plugin Suggestions
 
-List indexed skills:
+Disabled plugins can still be suggested when they match your task:
 
 ```
-→ list_skills()
-→ list_skills(plugin="superpowers")
+suggest_plugins("take a screenshot of this page")
+# → [DISABLED] chrome-devtools-mcp: Browser DevTools...
+#   → to enable: toggle_plugin("chrome-devtools-mcp", enabled=True)
 ```
 
-Toggle plugins in `settings.json` (takes effect next session):
+### Feedback
+
+Rate skills after using them — rankings improve for similar future queries:
 
 ```
-→ toggle_plugin(plugin_name="firebase", enabled=False)
+record_feedback(skill_id="superpowers:systematic-debugging", helpful=True)
+```
+
+### Manage Plugins
+
+```
+toggle_plugin("chrome-devtools-mcp", enabled=True)   # restart to apply
+toggle_plugin("firebase", enabled=False)
+list_skills(plugin="superpowers")
+session_stats()  # see which plugins you actually use
 ```
 
 ## Tools Reference
 
 | Tool | Description |
 |------|-------------|
-| `search_skills(query, top_k=3, use_rerank=False)` | Semantic search returning full skill content |
-| `record_feedback(skill_id, helpful, query="")` | Record usage feedback for ranking improvement |
-| `index_skills()` | Rebuild index from all plugin directories |
-| `list_skills(plugin="")` | List indexed skills, optionally filtered by plugin |
-| `toggle_plugin(plugin_name, enabled)` | Enable/disable a plugin in settings.json |
+| **Search & Load** | |
+| `search_skills(query, top_k=3, use_rerank=False)` | Semantic search, returns full skill content |
+| `suggest_plugins(query="")` | Suggest plugins (including disabled) for current task |
+| **Learning** | |
+| `teach(rule, suggest)` | Add a persistent "when X, suggest Y" rule |
+| `record_feedback(skill_id, helpful, query="")` | Rate a skill to improve future rankings |
+| `forget_teaching(teaching_id)` | Remove a teaching rule |
+| `list_teachings()` | Show all teaching rules |
+| `log_session(tool_name, plugin_id)` | Record tool usage (called by hooks) |
+| **Management** | |
+| `index_skills()` | Rebuild skill index from plugin directories |
+| `index_plugins()` | Index plugin descriptions for suggest_plugins |
+| `list_skills(plugin="")` | List indexed skills |
+| `toggle_plugin(plugin_name, enabled)` | Enable/disable plugins in settings.json |
+| `session_stats()` | Show most-used plugins from session history |
+
+## How Learning Works
+
+### 1. Teachings (Explicit Rules)
+
+```
+teach(rule="when I give a URL", suggest="chrome-devtools-mcp")
+```
+
+The rule text is embedded as a vector. Future queries are compared by cosine similarity — "inspect this website" matches "when I give a URL" at ~0.8 similarity. Each teaching can also have a weight for fine-tuning.
+
+### 2. Feedback Boost
+
+When you call `record_feedback(skill_id, helpful=True)`, the query vector is stored alongside the skill. Future similar queries (cosine > 0.75) get a boost of up to 1.5x for that skill.
+
+### 3. Session History (Passive)
+
+A Stop hook logs which MCP tools were actually called during each session, associated with the session topic. Over time, this builds a usage map:
+
+```
+"debug website" → chrome-devtools (used 8/10 sessions)
+"deploy infra"  → terraform (used 5/5 sessions)
+```
+
+Plugin suggestions combine all three signals:
+`total_score = embedding_similarity + teaching_boost + session_history_boost`
 
 ## Architecture
 
 ```
 src/skill_hub/
-├── server.py       # FastMCP server — tool definitions and MCP protocol
-├── store.py        # SQLite store — skills, embeddings, feedback, cosine similarity
-├── indexer.py      # Skill scanner — parses SKILL.md frontmatter, builds index
-└── embeddings.py   # Ollama client — embed() and rerank() functions
+├── server.py       # FastMCP tools + MCP protocol
+├── store.py        # SQLite: skills, embeddings, feedback, teachings, session_log
+├── indexer.py      # Scan plugin dirs, parse SKILL.md, build index
+└── embeddings.py   # Ollama embed + deepseek-r1 re-rank
+
+hooks/
+└── session-logger.sh   # Stop hook for passive learning
 ```
 
-### SQLite Schema
+### Database
 
-- **skills** — id, name, description, full content, file path, plugin name
-- **embeddings** — skill_id, model name, vector (JSON float array)
-- **feedback** — query, query_vector, skill_id, helpful flag, timestamp
+Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 
-Database location: `~/.claude/mcp-skill-hub/skill_hub.db`
+| Table | Purpose |
+|-------|---------|
+| `skills` | Skill metadata + full content |
+| `embeddings` | Float vectors per skill |
+| `feedback` | (query, skill, helpful) for boost calculation |
+| `teachings` | Explicit rules with embedded vectors |
+| `plugins` | Plugin descriptions for suggest_plugins |
+| `plugin_embeddings` | Float vectors per plugin |
+| `session_log` | Per-session tool usage for passive learning |
 
-### Embedding Models
+### Models
 
 | Model | Size | Purpose |
 |-------|------|---------|
-| `nomic-embed-text` | 274 MB | Primary embedding model (768-dim vectors) |
-| `deepseek-r1:1.5b` | 1.1 GB | Optional re-ranker with chain-of-thought reasoning |
+| `nomic-embed-text` | 274 MB | Embedding (required) |
+| `deepseek-r1:1.5b` | 1.1 GB | Re-ranking (optional, reasoning-capable) |
 
 ## Roadmap
 
-- **Session profiles** — predefined plugin sets per work context (`skill-hub launch --profile geoid`)
-- **Auto-profile** — predict needed plugins from recent feedback patterns before session start
-- **OpenSearch backend** — swap SQLite for OpenSearch when scaling beyond local use
-- **Hook integration** — `UserPromptSubmit` hook that auto-searches skills based on user message
+- [ ] Session profiles — predefined plugin sets per work context
+- [ ] Auto-profile — predict needed plugins before session start
+- [ ] Conversation digest — embed conversation summaries to enrich the index
+- [ ] OpenSearch backend — for scaling beyond local use
+- [ ] UserPromptSubmit hook — auto-search skills on every user message
 
 ## License
 

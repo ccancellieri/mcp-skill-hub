@@ -1,10 +1,13 @@
-"""SQLite-backed store for skills, embeddings, and usage feedback.
+"""SQLite-backed store for skills, embeddings, usage feedback, and teachings.
 
 Schema
 ------
 skills       — indexed skill metadata + full content
 embeddings   — float vectors (JSON) per skill
 feedback     — (query_vector, skill_id, helpful) rows for boost calculation
+teachings    — explicit user rules ("when X, suggest Y")
+plugins      — plugin metadata + embedded descriptions for suggestion
+session_log  — automatic per-session tool usage for passive learning
 """
 
 import json
@@ -68,6 +71,43 @@ class SkillStore:
             );
 
             CREATE INDEX IF NOT EXISTS idx_feedback_skill ON feedback (skill_id);
+
+            CREATE TABLE IF NOT EXISTS teachings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule        TEXT NOT NULL,          -- "when I give a URL..."
+                rule_vector TEXT NOT NULL,           -- JSON embedding of rule
+                action      TEXT NOT NULL,           -- "suggest chrome-devtools-mcp"
+                target_type TEXT NOT NULL DEFAULT 'plugin',  -- 'plugin' or 'skill'
+                target_id   TEXT NOT NULL,           -- plugin or skill id
+                weight      REAL NOT NULL DEFAULT 1.0,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS plugins (
+                id          TEXT PRIMARY KEY,        -- e.g. "chrome-devtools-mcp@claude-plugins-official"
+                short_name  TEXT NOT NULL,           -- e.g. "chrome-devtools-mcp"
+                description TEXT,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS plugin_embeddings (
+                plugin_id   TEXT PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+                model       TEXT NOT NULL,
+                vector      TEXT NOT NULL            -- JSON array of floats
+            );
+
+            CREATE TABLE IF NOT EXISTS session_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,           -- unique per session
+                query       TEXT,                    -- first user message / topic
+                query_vector TEXT,                   -- embedded query
+                tool_used   TEXT NOT NULL,           -- MCP tool name that was called
+                plugin_id   TEXT,                    -- resolved plugin
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_log_plugin ON session_log (plugin_id);
+            CREATE INDEX IF NOT EXISTS idx_session_log_session ON session_log (session_id);
         """)
         self._conn.commit()
 
@@ -163,6 +203,173 @@ class SkillStore:
         if total == 0.0:
             return 1.0
         return 1.0 + (positive / total) * 0.5  # max 1.5x boost
+
+    # ------------------------------------------------------------------
+    # Teachings
+
+    def add_teaching(self, rule: str, rule_vector: list[float],
+                     action: str, target_type: str, target_id: str,
+                     weight: float = 1.0) -> int:
+        cur = self._conn.execute("""
+            INSERT INTO teachings (rule, rule_vector, action, target_type, target_id, weight)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (rule, json.dumps(rule_vector), action, target_type, target_id, weight))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def search_teachings(self, query_vector: list[float],
+                         min_sim: float = 0.6) -> list[dict]:
+        """Find teachings whose rule matches the query semantically."""
+        rows = self._conn.execute(
+            "SELECT id, rule, rule_vector, action, target_type, target_id, weight "
+            "FROM teachings"
+        ).fetchall()
+
+        results: list[tuple[float, dict]] = []
+        for row in rows:
+            vec = json.loads(row["rule_vector"])
+            sim = _cosine(query_vector, vec)
+            if sim >= min_sim:
+                results.append((sim * row["weight"], dict(row)))
+
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in results]
+
+    def list_teachings(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT id, rule, action, target_type, target_id, weight FROM teachings "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+
+    def remove_teaching(self, teaching_id: int) -> bool:
+        cur = self._conn.execute("DELETE FROM teachings WHERE id = ?", (teaching_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Plugins
+
+    def upsert_plugin(self, plugin_id: str, short_name: str,
+                      description: str) -> None:
+        self._conn.execute("""
+            INSERT INTO plugins (id, short_name, description)
+            VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                short_name  = excluded.short_name,
+                description = excluded.description
+        """, (plugin_id, short_name, description))
+        self._conn.commit()
+
+    def upsert_plugin_embedding(self, plugin_id: str, model: str,
+                                vector: list[float]) -> None:
+        self._conn.execute("""
+            INSERT INTO plugin_embeddings (plugin_id, model, vector)
+            VALUES (?, ?, ?)
+            ON CONFLICT(plugin_id) DO UPDATE SET
+                model  = excluded.model,
+                vector = excluded.vector
+        """, (plugin_id, model, json.dumps(vector)))
+        self._conn.commit()
+
+    def suggest_plugins(self, query_vector: list[float],
+                        min_sim: float = 0.4) -> list[dict]:
+        """Suggest plugins by combining embedding similarity + teachings + session history."""
+        # 1. Embedding-based similarity
+        rows = self._conn.execute("""
+            SELECT p.id, p.short_name, p.description, pe.vector
+            FROM plugins p
+            JOIN plugin_embeddings pe ON pe.plugin_id = p.id
+        """).fetchall()
+
+        scores: dict[str, dict] = {}
+        for row in rows:
+            vec = json.loads(row["vector"])
+            sim = _cosine(query_vector, vec)
+            if sim >= min_sim:
+                scores[row["id"]] = {
+                    "plugin_id": row["id"],
+                    "short_name": row["short_name"],
+                    "description": row["description"],
+                    "embed_score": sim,
+                    "teaching_score": 0.0,
+                    "session_score": 0.0,
+                }
+
+        # 2. Teaching-based boost
+        teachings = self.search_teachings(query_vector, min_sim=0.6)
+        for t in teachings:
+            if t["target_type"] == "plugin":
+                pid = t["target_id"]
+                if pid not in scores:
+                    # Teaching overrides threshold — force include
+                    plugin = self._conn.execute(
+                        "SELECT id, short_name, description FROM plugins WHERE id = ? "
+                        "OR short_name = ?", (pid, pid)
+                    ).fetchone()
+                    if plugin:
+                        scores[plugin["id"]] = {
+                            "plugin_id": plugin["id"],
+                            "short_name": plugin["short_name"],
+                            "description": plugin["description"],
+                            "embed_score": 0.0,
+                            "teaching_score": 0.0,
+                            "session_score": 0.0,
+                        }
+                        pid = plugin["id"]
+                if pid in scores:
+                    scores[pid]["teaching_score"] += 0.3
+
+        # 3. Session history boost
+        history = self._conn.execute("""
+            SELECT plugin_id, query_vector, COUNT(*) as cnt
+            FROM session_log
+            WHERE plugin_id IS NOT NULL
+            GROUP BY plugin_id, query_vector
+        """).fetchall()
+
+        for row in history:
+            if not row["query_vector"]:
+                continue
+            past_vec = json.loads(row["query_vector"])
+            sim = _cosine(query_vector, past_vec)
+            if sim >= 0.7 and row["plugin_id"] in scores:
+                scores[row["plugin_id"]]["session_score"] += sim * 0.2 * row["cnt"]
+
+        # Combine and rank
+        ranked: list[tuple[float, dict]] = []
+        for info in scores.values():
+            total = info["embed_score"] + info["teaching_score"] + info["session_score"]
+            info["total_score"] = total
+            ranked.append((total, info))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in ranked]
+
+    # ------------------------------------------------------------------
+    # Session log
+
+    def log_session_tool(self, session_id: str, query: str,
+                         query_vector: list[float] | None,
+                         tool_used: str, plugin_id: str | None) -> None:
+        self._conn.execute("""
+            INSERT INTO session_log (session_id, query, query_vector, tool_used, plugin_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session_id, query,
+              json.dumps(query_vector) if query_vector else None,
+              tool_used, plugin_id))
+        self._conn.commit()
+
+    def get_session_stats(self, limit: int = 20) -> list[sqlite3.Row]:
+        """Most-used plugins across recent sessions."""
+        return self._conn.execute("""
+            SELECT plugin_id, COUNT(*) as usage_count,
+                   COUNT(DISTINCT session_id) as session_count
+            FROM session_log
+            WHERE plugin_id IS NOT NULL
+            GROUP BY plugin_id
+            ORDER BY usage_count DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
 
     def get_skill_content(self, skill_id: str) -> str | None:
         row = self._conn.execute(
