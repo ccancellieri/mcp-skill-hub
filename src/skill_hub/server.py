@@ -32,8 +32,10 @@ index_plugins       — Index plugin descriptions for suggest_plugins
 list_skills         — List indexed skills
 toggle_plugin       — Enable/disable plugins in settings.json
 session_stats       — Show most-used plugins from session history
-status              — Health check: MCP, Ollama, models, hook, DB stats
+status              — Health check: MCP, Ollama, models, hook, DB stats, context usage
 token_stats         — Token savings report from hook interceptions
+list_models         — List installed Ollama models with role explanations
+pull_model          — Download a new Ollama model
 """
 
 import json
@@ -911,6 +913,89 @@ def status() -> str:
     lines.append(f"  embed_model={embed_model}, reason_model={reason_model}")
     lines.append(f"  search_top_k={cfg.get('search_top_k')}, hook_timeout={cfg.get('hook_timeout_seconds')}s")
 
+    # Context usage — estimate token cost of always-loaded files
+    lines.append("\n=== Context Usage (estimated) ===\n")
+
+    def _est_tokens(path: Path) -> int:
+        """Rough estimate: 1 token ≈ 4 chars."""
+        try:
+            return max(1, len(path.read_text(encoding="utf-8", errors="replace")) // 4)
+        except OSError:
+            return 0
+
+    context_files = [
+        ("User    ", Path.home() / ".claude" / "CLAUDE.md"),
+        ("Project ", Path.home() / "work" / "code" / "CLAUDE.md"),
+        ("AutoMem ", Path.home() / ".claude" / "projects" /
+         "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"),
+    ]
+    # Also check the working-directory CLAUDE.md dynamically
+    import os
+    cwd_claude = Path(os.getcwd()) / "CLAUDE.md"
+    if cwd_claude.exists() and cwd_claude not in [f for _, f in context_files]:
+        context_files.append(("Cwd     ", cwd_claude))
+
+    total_ctx = 0
+    for label, fpath in context_files:
+        if fpath.exists():
+            tok = _est_tokens(fpath)
+            total_ctx += tok
+            size_kb = fpath.stat().st_size / 1024
+            lines.append(f"  {label}  ~{tok:>5} tokens  ({size_kb:.1f} KB)  {fpath}")
+        else:
+            lines.append(f"  {label}  (not found)  {fpath}")
+
+    lines.append(f"\n  Total always-loaded:  ~{total_ctx:,} tokens")
+
+    # Breakdown by category
+    lines.append("\n  Breakdown by category:")
+    mem_path = Path.home() / ".claude" / "projects" / \
+               "-Users-ccancellieri-work-code" / "memory"
+    if mem_path.exists():
+        cats: dict[str, int] = {}
+        for mf in sorted(mem_path.glob("*.md")):
+            if mf.name == "MEMORY.md":
+                continue
+            prefix = mf.stem.split("_")[0]
+            cats[prefix] = cats.get(prefix, 0) + _est_tokens(mf)
+        for cat, tok in sorted(cats.items(), key=lambda x: -x[1]):
+            lines.append(f"    {cat:<12} ~{tok:>5} tokens  (detail files, loaded on demand)")
+
+    # Memory optimization tips
+    lines.append("\n=== Memory Optimization Tips ===\n")
+    mem_index_tok = _est_tokens(
+        Path.home() / ".claude" / "projects" /
+        "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
+    )
+    tips = []
+    if mem_index_tok > 1500:
+        tips.append(
+            f"  ✦ MEMORY.md index is ~{mem_index_tok} tokens — prune entries for "
+            f"completed/stale projects. Each removed line saves ~10-20 tokens every session."
+        )
+    user_tok = _est_tokens(Path.home() / ".claude" / "CLAUDE.md")
+    if user_tok > 600:
+        tips.append(
+            f"  ✦ User CLAUDE.md (~{user_tok} tokens) — move static reference content "
+            f"(model lists, port tables) to MCP: save_task() or teach() rules, then delete from CLAUDE.md."
+        )
+    proj_tok = _est_tokens(Path.home() / "work" / "code" / "CLAUDE.md")
+    if proj_tok > 400:
+        tips.append(
+            f"  ✦ Project CLAUDE.md (~{proj_tok} tokens) — the routing table can be "
+            f"trimmed once projects are stable. Archive inactive project pointers."
+        )
+    tips.append(
+        "  ✦ Use search_context() at session start instead of pre-loading project memory files."
+    )
+    tips.append(
+        "  ✦ Closed tasks are compacted to ~200 tokens and searchable — "
+        "prefer close_task() over growing MEMORY.md with raw notes."
+    )
+    if not tips:
+        tips.append("  Context looks lean — no obvious savings available.")
+    lines.extend(tips)
+
     return "\n".join(lines)
 
 
@@ -955,6 +1040,130 @@ def token_stats() -> str:
         f"\nToken profiling: {'on' if _cfg.get('token_profiling') else 'off'}"
         f"  ← configure(key='token_profiling', value='false') to disable"
     )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def list_models() -> str:
+    """
+    List Ollama models installed on this machine, showing which ones are
+    configured for Skill Hub and recommendations by hardware tier.
+
+    The two model roles:
+    - embed_model  — converts text to vectors for semantic search (always running)
+    - reason_model — LLM used for re-ranking results, compacting tasks, and
+                     classifying hook commands (runs only when needed)
+
+    Use pull_model() to download a new model, then configure() to activate it.
+    """
+    import httpx
+
+    cfg = _cfg.load_config()
+    ollama_base = cfg.get("ollama_base", "http://localhost:11434")
+    current_embed = cfg.get("embed_model", "nomic-embed-text")
+    current_reason = cfg.get("reason_model", "deepseek-r1:1.5b")
+
+    lines = ["=== Ollama Models ===\n"]
+
+    # What the two roles do
+    lines.append("Model roles:")
+    lines.append("  embed_model  — Converts text to semantic vectors.")
+    lines.append("                 Used for ALL searches (search_skills, suggest_plugins,")
+    lines.append("                 search_context). Runs once per query, very fast.")
+    lines.append("                 Current: " + current_embed)
+    lines.append("")
+    lines.append("  reason_model — Small local LLM. Used for:")
+    lines.append("                 • Re-ranking search results (use_rerank=True)")
+    lines.append("                 • Compacting tasks on close_task()")
+    lines.append("                 • Classifying hook commands (save/close/list)")
+    lines.append("                 Runs only when needed, heavier than embed.")
+    lines.append("                 Current: " + current_reason)
+    lines.append("")
+
+    # Installed models
+    try:
+        resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
+        installed = resp.json().get("models", [])
+        if installed:
+            lines.append("Installed models:")
+            for m in installed:
+                name = m["name"]
+                size_gb = m.get("size", 0) / 1_073_741_824
+                role = ""
+                if current_embed in name:
+                    role = "  ← embed_model (active)"
+                elif current_reason in name:
+                    role = "  ← reason_model (active)"
+                lines.append(f"  {name:<35} {size_gb:.1f} GB{role}")
+        else:
+            lines.append("No models installed yet.")
+    except Exception as exc:
+        lines.append(f"Ollama not reachable ({exc})")
+
+    # Recommendations table
+    lines.append("\nRecommended models by hardware:")
+    lines.append("  RAM    embed_model              reason_model           Disk")
+    lines.append("  8 GB   nomic-embed-text (274MB) deepseek-r1:1.5b (1.1GB) ~1.4 GB")
+    lines.append(" 16 GB   nomic-embed-text (274MB) deepseek-r1:7b   (4.7GB) ~5 GB")
+    lines.append(" 32 GB   mxbai-embed-large (669MB) deepseek-r1:14b (9GB)   ~10 GB")
+    lines.append(" 64 GB+  mxbai-embed-large (669MB) deepseek-r1:32b (19GB)  ~20 GB")
+    lines.append("")
+    lines.append("To install a model:   pull_model(model='deepseek-r1:7b')")
+    lines.append("To activate a model:  configure(key='reason_model', value='deepseek-r1:7b')")
+    lines.append("                      configure(key='embed_model', value='mxbai-embed-large')")
+    lines.append("After changing embed_model, run index_skills() to rebuild vectors.")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def pull_model(model: str) -> str:
+    """
+    Pull (download) an Ollama model to this machine.
+
+    This runs `ollama pull <model>` and streams progress. The model becomes
+    available immediately after for configure(key='reason_model'/'embed_model').
+
+    Common models:
+        nomic-embed-text    — 274 MB — default embed model
+        mxbai-embed-large   — 669 MB — higher-quality embeddings
+        deepseek-r1:1.5b    — 1.1 GB — fast reasoning, 8 GB RAM
+        deepseek-r1:7b      — 4.7 GB — good quality, 16 GB RAM
+        deepseek-r1:14b     — 9 GB   — best quality, 32 GB RAM
+        qwen2.5-coder:7b    — 4.7 GB — code-focused reasoning
+
+    Args:
+        model: Model name as shown on hub.ollama.ai (e.g. "deepseek-r1:7b")
+    """
+    import subprocess
+
+    if not model or "/" in model or ";" in model or "|" in model or "&" in model:
+        return f"Invalid model name: {model!r}"
+
+    lines = [f"Pulling {model}...\n"]
+    try:
+        result = subprocess.run(
+            ["ollama", "pull", model],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode == 0:
+            lines.append(f"✓ {model} downloaded successfully.")
+            lines.append(f"\nTo activate as reasoning model:")
+            lines.append(f"  configure(key='reason_model', value='{model}')")
+            lines.append(f"To activate as embedding model:")
+            lines.append(f"  configure(key='embed_model', value='{model}')")
+            lines.append(f"  index_skills()  ← rebuild vectors after changing embed model")
+        else:
+            lines.append(f"✗ Pull failed:\n{result.stderr.strip()}")
+    except FileNotFoundError:
+        lines.append("✗ 'ollama' command not found. Install from https://ollama.com")
+    except subprocess.TimeoutExpired:
+        lines.append("✗ Pull timed out (10 min). The model may be very large or connection slow.")
+    except Exception as exc:
+        lines.append(f"✗ Error: {exc}")
+
     return "\n".join(lines)
 
 
