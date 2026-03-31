@@ -5,9 +5,13 @@ import re
 
 import httpx
 
-OLLAMA_BASE = "http://localhost:11434"
-EMBED_MODEL = "nomic-embed-text"       # ollama pull nomic-embed-text  (274 MB)
-RERANK_MODEL = "deepseek-r1:1.5b"     # ollama pull deepseek-r1:1.5b  (1.1 GB)
+from . import config as _cfg
+
+# These module-level names are kept for backwards compatibility with imports,
+# but always read the live config value.
+OLLAMA_BASE = _cfg.get("ollama_base")
+EMBED_MODEL = _cfg.get("embed_model")
+RERANK_MODEL = _cfg.get("reason_model")
 
 _RERANK_PROMPT = """\
 You are a relevance judge. Given a user query and a skill description, reply with a

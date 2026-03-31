@@ -701,6 +701,67 @@ def session_stats() -> str:
     return "Plugin usage stats:\n" + "\n".join(lines)
 
 
+@mcp.tool()
+def configure(key: str = "", value: str = "") -> str:
+    """
+    View or update Skill Hub configuration.
+    Config file: ~/.claude/mcp-skill-hub/config.json
+
+    Without arguments: show current config.
+    With key+value: update a setting.
+
+    Common settings:
+        reason_model    — LLM for re-ranking/compaction/classification
+                          "deepseek-r1:1.5b" (default, 1.1GB)
+                          "deepseek-r1:7b" (4.7GB, better quality)
+                          "deepseek-r1:14b" (9GB, best for 32GB+ RAM)
+                          "qwen2.5-coder:7b" (4.7GB, code-focused)
+        embed_model     — Embedding model
+                          "nomic-embed-text" (default, 274MB)
+                          "mxbai-embed-large" (669MB, higher quality)
+        hook_enabled    — Enable/disable UserPromptSubmit hook (true/false)
+        search_top_k    — Default number of search results (integer)
+
+    Args:
+        key:   Config key to set. Empty to show all.
+        value: New value. Strings, numbers, and booleans auto-detected.
+    """
+    from . import config as cfg
+
+    if not key:
+        current = cfg.load_config()
+        lines = [f"  {k}: {v}" for k, v in sorted(current.items())]
+        return "Current config:\n" + "\n".join(lines) + f"\n\nFile: {cfg.CONFIG_PATH}"
+
+    # Parse value type
+    parsed: str | int | float | bool = value
+    if value.lower() in ("true", "false"):
+        parsed = value.lower() == "true"
+    else:
+        try:
+            parsed = int(value)
+        except ValueError:
+            try:
+                parsed = float(value)
+            except ValueError:
+                pass
+
+    current = cfg.load_config()
+    current[key] = parsed
+    cfg.save_config(current)
+
+    # Update module-level constants if relevant
+    from . import embeddings
+    if key == "embed_model":
+        embeddings.EMBED_MODEL = str(parsed)
+    elif key == "reason_model":
+        embeddings.RERANK_MODEL = str(parsed)
+    elif key == "ollama_base":
+        embeddings.OLLAMA_BASE = str(parsed)
+
+    return f"Config updated: {key} = {parsed}\nRestart MCP server for full effect."
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 
