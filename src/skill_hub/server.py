@@ -32,6 +32,8 @@ index_plugins       — Index plugin descriptions for suggest_plugins
 list_skills         — List indexed skills
 toggle_plugin       — Enable/disable plugins in settings.json
 session_stats       — Show most-used plugins from session history
+status              — Health check: MCP, Ollama, models, hook, DB stats
+token_stats         — Token savings report from hook interceptions
 """
 
 import json
@@ -40,6 +42,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
+from . import config as _cfg
 from .embeddings import (
     embed, rerank, compact, rewrite_query,
     EMBED_MODEL, RERANK_MODEL, ollama_available,
@@ -610,12 +613,9 @@ def index_plugins() -> str:
 
     indexed = 0
     errors: list[str] = []
-    for plugin_key in plugins:
-        short_name = plugin_key.split("@")[0]
-        desc = descriptions.get(short_name, "")
-        if not desc:
-            desc = f"Plugin: {short_name}"
 
+    def _index_plugin(plugin_key: str, short_name: str, desc: str) -> None:
+        nonlocal indexed
         _store.upsert_plugin(plugin_key, short_name, desc)
         try:
             vector = embed(f"{short_name}: {desc}")
@@ -623,6 +623,59 @@ def index_plugins() -> str:
             indexed += 1
         except Exception as exc:
             errors.append(f"{short_name}: {exc}")
+
+    # Index plugins from settings.json enabledPlugins
+    for plugin_key in plugins:
+        short_name = plugin_key.split("@")[0]
+        desc = descriptions.get(short_name, "") or f"Plugin: {short_name}"
+        _index_plugin(plugin_key, short_name, desc)
+
+    # Index extra_skill_dirs entries as plugin sources (auto-registration)
+    cfg = _cfg.load_config()
+    for entry in cfg.get("extra_skill_dirs", []):
+        if not entry.get("enabled", True):
+            continue
+        source = entry.get("source", "extra")
+        base = Path(entry["path"]).expanduser()
+        # Count skills in this source to build a description
+        skill_count = len(list(base.rglob("SKILL.md"))) if base.exists() else 0
+        desc = entry.get("description") or (
+            f"Archived skills library ({skill_count} skills) from {base.name}"
+        )
+        _index_plugin(source, source, desc)
+
+    # Index explicit extra_plugin_dirs entries
+    for entry in cfg.get("extra_plugin_dirs", []):
+        if not entry.get("enabled", True):
+            continue
+        source = entry.get("source", "extra")
+        base = Path(entry["path"]).expanduser()
+        if not base.exists():
+            continue
+        # Each subdirectory is a plugin; read plugin.json or README.md for description
+        for plugin_dir in (d for d in base.iterdir() if d.is_dir()):
+            desc = entry.get("description", "")
+            for manifest in ("plugin.json", "README.md"):
+                mf = plugin_dir / manifest
+                if mf.exists():
+                    try:
+                        text = mf.read_text(encoding="utf-8", errors="replace")
+                        if manifest == "plugin.json":
+                            import json as _json
+                            data = _json.loads(text)
+                            desc = data.get("description", desc)
+                        else:
+                            # First paragraph of README
+                            para = re.search(r"\S.{20,}", re.sub(r"^#+.*$", "", text, flags=re.MULTILINE))
+                            if para:
+                                desc = para.group(0)[:200].strip()
+                        break
+                    except Exception:
+                        pass
+            if not desc:
+                desc = f"Plugin: {plugin_dir.name}"
+            plugin_key = f"{source}:{plugin_dir.name}"
+            _index_plugin(plugin_key, plugin_dir.name, desc)
 
     result = f"Indexed {indexed} plugins."
     if errors:
@@ -760,6 +813,149 @@ def configure(key: str = "", value: str = "") -> str:
         embeddings.OLLAMA_BASE = str(parsed)
 
     return f"Config updated: {key} = {parsed}\nRestart MCP server for full effect."
+
+
+@mcp.tool()
+def status() -> str:
+    """
+    Show the health status of Skill Hub and its dependencies.
+
+    Checks:
+    - MCP server running (always true if this tool responds)
+    - Ollama reachable
+    - Embedding model available
+    - Reasoning model available
+    - Hook configured in settings.json
+    - Token profiling on/off
+    - Skill and task counts in the database
+    """
+    import httpx
+
+    cfg = _cfg.load_config()
+    ollama_base = cfg.get("ollama_base", "http://localhost:11434")
+    embed_model = cfg.get("embed_model", "nomic-embed-text")
+    reason_model = cfg.get("reason_model", "deepseek-r1:1.5b")
+
+    lines: list[str] = ["=== Skill Hub Status ===\n"]
+
+    # MCP server
+    lines.append("MCP server:      ✓ running (this response proves it)")
+
+    # Ollama + models
+    try:
+        resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
+        available = [m["name"] for m in resp.json().get("models", [])]
+        lines.append(f"Ollama:          ✓ reachable at {ollama_base}")
+
+        embed_ok = any(embed_model in m for m in available)
+        lines.append(
+            f"Embed model:     {'✓' if embed_ok else '✗'} {embed_model}"
+            + ("" if embed_ok else f"  ← run: ollama pull {embed_model}")
+        )
+        reason_ok = any(reason_model in m for m in available)
+        lines.append(
+            f"Reason model:    {'✓' if reason_ok else '✗'} {reason_model}"
+            + ("" if reason_ok else f"  ← run: ollama pull {reason_model}")
+        )
+        if available:
+            lines.append(f"Other models:    {', '.join(m.split(':')[0] for m in available)}")
+    except Exception as exc:
+        lines.append(f"Ollama:          ✗ NOT reachable at {ollama_base} ({exc})")
+        lines.append(f"  ← start Ollama: brew services start ollama")
+
+    # Hook
+    hook_configured = False
+    if SETTINGS_PATH.exists():
+        try:
+            settings = json.loads(SETTINGS_PATH.read_text())
+            hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+            for group in hooks:
+                for h in group.get("hooks", []):
+                    if "intercept-task-commands" in h.get("command", ""):
+                        hook_configured = True
+        except Exception:
+            pass
+    hook_enabled = cfg.get("hook_enabled", True)
+    hook_status = (
+        "✓ configured and enabled" if hook_configured and hook_enabled
+        else ("configured but disabled (hook_enabled=false)" if hook_configured
+              else "✗ NOT configured — see README.md#install-the-hook")
+    )
+    lines.append(f"Hook:            {hook_status}")
+
+    # Token profiling
+    profiling = cfg.get("token_profiling", True)
+    lines.append(f"Token profiling: {'✓ on' if profiling else '○ off'}"
+                 + ("  ← configure(key='token_profiling', value='true') to enable"
+                    if not profiling else ""))
+
+    # DB stats
+    try:
+        rows = _store.list_skills()
+        skill_count = len(rows)
+        task_rows = _store.list_tasks("all")
+        task_count = len(task_rows)
+        open_tasks = sum(1 for r in task_rows if r["status"] == "open")
+        totals = _store.get_interception_totals()
+        saved = totals["total_tokens_saved"] or 0 if totals else 0
+        intercepted = totals["total_interceptions"] or 0 if totals else 0
+        lines.append(f"\nDatabase ({_store._conn.execute('PRAGMA database_list').fetchone()[2]}):")
+        lines.append(f"  Skills indexed:    {skill_count}")
+        lines.append(f"  Tasks:             {task_count} ({open_tasks} open)")
+        lines.append(f"  Intercepted cmds:  {intercepted} (~{saved:,} tokens saved)")
+    except Exception as exc:
+        lines.append(f"\nDatabase: error — {exc}")
+
+    # Config summary
+    lines.append(f"\nConfig ({_cfg.CONFIG_PATH}):")
+    lines.append(f"  embed_model={embed_model}, reason_model={reason_model}")
+    lines.append(f"  search_top_k={cfg.get('search_top_k')}, hook_timeout={cfg.get('hook_timeout_seconds')}s")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def token_stats() -> str:
+    """
+    Show token savings from hook interceptions.
+
+    Displays estimated Claude API tokens saved by the UserPromptSubmit hook
+    intercepting task commands before they reach Claude. Enable/disable
+    profiling with configure(key='token_profiling', value='true|false').
+    """
+    totals = _store.get_interception_totals()
+    if not totals or not totals["total_interceptions"]:
+        enabled = _cfg.get("token_profiling")
+        if not enabled:
+            return (
+                "Token profiling is disabled.\n"
+                "Enable with: configure(key='token_profiling', value='true')"
+            )
+        return "No interceptions recorded yet. Use task commands to build up data."
+
+    stats = _store.get_interception_stats()
+    total_saved = totals["total_tokens_saved"] or 0
+    total_count = totals["total_interceptions"] or 0
+
+    lines = [
+        f"=== Token Savings Report ===\n",
+        f"Total intercepted commands: {total_count}",
+        f"Total tokens saved (est.):  ~{total_saved:,}",
+        f"  (~${total_saved / 1_000_000 * 3:.4f} at $3/M tokens, ~${total_saved / 1_000_000 * 15:.4f} at $15/M)\n",
+        "By command type:",
+    ]
+    for row in stats:
+        avg = (row["total_tokens_saved"] or 0) // max(row["intercept_count"], 1)
+        lines.append(
+            f"  {row['command_type']:<20} {row['intercept_count']:>4}x  "
+            f"~{row['total_tokens_saved'] or 0:,} tokens saved  (avg {avg}/cmd)"
+        )
+
+    lines.append(
+        f"\nToken profiling: {'on' if _cfg.get('token_profiling') else 'off'}"
+        f"  ← configure(key='token_profiling', value='false') to disable"
+    )
+    return "\n".join(lines)
 
 
 def main() -> None:

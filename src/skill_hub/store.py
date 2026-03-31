@@ -126,6 +126,16 @@ class SkillStore:
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+            CREATE TABLE IF NOT EXISTS interceptions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                command_type    TEXT NOT NULL,   -- "save_task", "close_task", "list_tasks", "search_context"
+                message_preview TEXT,            -- first 100 chars of intercepted message
+                estimated_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_interceptions_type ON interceptions (command_type);
         """)
         self._conn.commit()
 
@@ -497,6 +507,34 @@ class SkillStore:
             "SELECT content FROM skills WHERE id = ?", (skill_id,)
         ).fetchone()
         return row["content"] if row else None
+
+    # ------------------------------------------------------------------
+    # Token profiling (hook interception stats)
+
+    def log_interception(self, command_type: str, message_preview: str,
+                         estimated_tokens: int) -> None:
+        self._conn.execute("""
+            INSERT INTO interceptions (command_type, message_preview, estimated_tokens)
+            VALUES (?, ?, ?)
+        """, (command_type, message_preview[:100], estimated_tokens))
+        self._conn.commit()
+
+    def get_interception_stats(self) -> list[sqlite3.Row]:
+        return self._conn.execute("""
+            SELECT command_type,
+                   COUNT(*) as intercept_count,
+                   SUM(estimated_tokens) as total_tokens_saved
+            FROM interceptions
+            GROUP BY command_type
+            ORDER BY total_tokens_saved DESC
+        """).fetchall()
+
+    def get_interception_totals(self) -> sqlite3.Row | None:
+        return self._conn.execute("""
+            SELECT COUNT(*) as total_interceptions,
+                   SUM(estimated_tokens) as total_tokens_saved
+            FROM interceptions
+        """).fetchone()
 
     def close(self) -> None:
         self._conn.close()

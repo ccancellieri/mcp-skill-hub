@@ -137,6 +137,14 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
     return None
 
 
+_TOKEN_ESTIMATES: dict[str, int] = {
+    "save_task": 500,
+    "close_task": 800,
+    "list_tasks": 300,
+    "search_context": 400,
+}
+
+
 def hook_classify_and_execute(message: str) -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
@@ -144,13 +152,28 @@ def hook_classify_and_execute(message: str) -> dict:
       - {"decision": "block", "message": "..."} if handled locally
       - {"decision": "allow"} if Claude should handle it
     """
-    intent = _classify_intent(message)
+    from . import config as _cfg
 
-    if intent.get("intent", "none") == "none":
+    intent = _classify_intent(message)
+    action = intent.get("intent", "none")
+
+    if action == "none":
         return {"decision": "allow"}
 
     result = _execute_intent(intent, message)
     if result:
+        # Log interception for token profiling (if profiling enabled)
+        if _cfg.get("token_profiling"):
+            try:
+                store = SkillStore()
+                store.log_interception(
+                    command_type=action,
+                    message_preview=message,
+                    estimated_tokens=_TOKEN_ESTIMATES.get(action, 400),
+                )
+                store.close()
+            except Exception:
+                pass
         return {
             "decision": "block",
             "message": result,

@@ -249,12 +249,14 @@ Config file: `~/.claude/mcp-skill-hub/config.json`
 | `list_teachings()` | Show all teaching rules |
 | `log_session(tool_name, plugin_id)` | Record tool usage (hooks) |
 | **Management** | |
-| `index_skills()` | Rebuild skill index |
-| `index_plugins()` | Index plugin descriptions |
+| `index_skills()` | Rebuild skill index (includes extra_skill_dirs) |
+| `index_plugins()` | Index plugin descriptions (includes extra_skill_dirs as sources) |
 | `list_skills(plugin)` | List indexed skills |
 | `toggle_plugin(plugin_name, enabled)` | Enable/disable plugins |
 | `session_stats()` | Plugin usage statistics |
 | `configure(key, value)` | View/update config |
+| `status()` | Health check: MCP, Ollama, models, hook, DB stats |
+| `token_stats()` | Token savings report from hook interceptions |
 
 ## CLI Reference
 
@@ -313,6 +315,71 @@ hooks/
 └── session-logger.sh            # Stop: passive tool usage logging
 ```
 
+### 8. Extra Skill Directories
+
+Index skills from any directory — including archived skill libraries — by adding entries to `extra_skill_dirs` in config:
+
+```
+configure(key="extra_skill_dirs", value='[{"path": "~/.claude/skills-archive", "source": "archive", "enabled": true}]')
+```
+
+Then re-index:
+
+```
+index_skills()    # scans extra_skill_dirs too
+index_plugins()   # registers extra_skill_dirs as plugin sources for suggest_plugins()
+```
+
+Skills from extra directories get IDs like `archive:skill-name`. They appear in all searches and suggestions alongside plugin skills.
+
+### 9. Status & Token Profiling
+
+Check the health of all components in one call:
+
+```
+status()
+```
+
+```
+=== Skill Hub Status ===
+MCP server:      ✓ running
+Ollama:          ✓ reachable at http://localhost:11434
+Embed model:     ✓ nomic-embed-text
+Reason model:    ✓ deepseek-r1:7b
+Hook:            ✓ configured and enabled
+Token profiling: ✓ on
+
+Database:
+  Skills indexed:    1247
+  Tasks:             12 (3 open)
+  Intercepted cmds:  89 (~52,300 tokens saved)
+```
+
+Track cumulative token savings from hook interceptions:
+
+```
+token_stats()
+```
+
+```
+=== Token Savings Report ===
+Total intercepted commands: 89
+Total tokens saved (est.):  ~52,300
+  (~$0.1569 at $3/M tokens, ~$0.7845 at $15/M)
+
+By command type:
+  save_task              34x  ~17,000 tokens saved  (avg 500/cmd)
+  close_task             28x  ~22,400 tokens saved  (avg 800/cmd)
+  list_tasks             18x  ~5,400 tokens saved   (avg 300/cmd)
+  search_context          9x  ~3,600 tokens saved   (avg 400/cmd)
+```
+
+Disable profiling to skip the DB write per hook call:
+
+```
+configure(key="token_profiling", value="false")
+```
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
@@ -327,12 +394,27 @@ Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 | `plugin_embeddings` | Plugin vectors |
 | `tasks` | Open/closed task digests |
 | `session_log` | Per-session tool usage |
+| `interceptions` | Hook-intercepted command log for token profiling |
 
 ### Config
 
 Location: `~/.claude/mcp-skill-hub/config.json`
 
 All settings have sensible defaults. Override only what you need.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `ollama_base` | `http://localhost:11434` | Ollama server URL |
+| `embed_model` | `nomic-embed-text` | Embedding model |
+| `reason_model` | `deepseek-r1:1.5b` | Reasoning model (re-rank, compact, classify) |
+| `hook_enabled` | `true` | Enable UserPromptSubmit hook |
+| `hook_keyword_prefilter` | `true` | Skip LLM for obvious non-commands |
+| `hook_timeout_seconds` | `45` | Max hook execution time |
+| `token_profiling` | `true` | Track estimated token savings |
+| `search_top_k` | `3` | Default search results count |
+| `search_similarity_threshold` | `0.3` | Minimum cosine similarity |
+| `extra_skill_dirs` | `[{skills-archive}]` | Extra skill directories to index |
+| `extra_plugin_dirs` | `[]` | Extra plugin directories to index |
 
 ## Roadmap
 

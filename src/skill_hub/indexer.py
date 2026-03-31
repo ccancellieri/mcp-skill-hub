@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from . import config as _cfg
 from .embeddings import embed, EMBED_MODEL
 from .store import Skill, SkillStore
 
@@ -95,35 +96,49 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
     indexed = 0
     errors: list[str] = []
 
+    def _index_skill_file(skill_file: Path, skill_id: str, plugin: str) -> None:
+        nonlocal indexed
+        parsed = _parse_skill_file(skill_file)
+        if not parsed:
+            errors.append(f"parse failed: {skill_file}")
+            return
+        name, description, content = parsed
+        skill = Skill(
+            id=skill_id,
+            name=name,
+            description=description,
+            content=content,
+            file_path=str(skill_file),
+            plugin=plugin,
+        )
+        store.upsert_skill(skill)
+        embed_text = f"{name}: {description}" if description else name
+        try:
+            vector = embed(embed_text, model=embed_model)
+            store.upsert_embedding(skill_id, embed_model, vector)
+            indexed += 1
+        except Exception as exc:
+            errors.append(f"embed failed for {skill_id}: {exc}")
+
+    # Built-in plugin directories
     for base in PLUGIN_DIRS:
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
-            parsed = _parse_skill_file(skill_file)
-            if not parsed:
-                errors.append(f"parse failed: {skill_file}")
-                continue
-
-            name, description, content = parsed
             skill_id = _skill_id_from_path(skill_file)
+            _index_skill_file(skill_file, skill_id, _plugin_from_id(skill_id))
 
-            skill = Skill(
-                id=skill_id,
-                name=name,
-                description=description,
-                content=content,
-                file_path=str(skill_file),
-                plugin=_plugin_from_id(skill_id),
-            )
-            store.upsert_skill(skill)
-
-            # Embed: description + name gives compact, focused vector
-            embed_text = f"{name}: {description}" if description else name
-            try:
-                vector = embed(embed_text, model=embed_model)
-                store.upsert_embedding(skill_id, embed_model, vector)
-                indexed += 1
-            except Exception as exc:
-                errors.append(f"embed failed for {skill_id}: {exc}")
+    # Extra skill/plugin directories from config
+    for entry in _cfg.get("extra_skill_dirs") or []:
+        if not entry.get("enabled", True):
+            continue
+        base = Path(entry["path"]).expanduser()
+        source = entry.get("source", "extra")
+        if not base.exists():
+            continue
+        for skill_file in base.rglob("SKILL.md"):
+            # flat structure: <base>/<skill-name>/SKILL.md → id = source:skill-name
+            skill_id = f"{source}:{skill_file.parent.name}"
+            _index_skill_file(skill_file, skill_id, source)
 
     return indexed, errors

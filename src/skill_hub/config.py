@@ -32,6 +32,7 @@ _DEFAULTS = {
     "hook_keyword_prefilter": True,     # skip LLM call for obvious non-commands
     "hook_timeout_seconds": 45,         # max time for hook LLM classification
     "hook_enabled": True,               # enable/disable UserPromptSubmit hook
+    "token_profiling": True,            # track estimated token savings per interception
 
     # Search defaults
     "search_top_k": 3,                  # default number of results
@@ -41,6 +42,22 @@ _DEFAULTS = {
 
     # Compaction
     "compact_max_input_chars": 4000,    # max chars sent to LLM for compaction
+
+    # Extra skill directories — indexed alongside the plugin cache
+    # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
+    "extra_skill_dirs": [
+        {
+            "path": str(Path.home() / ".claude" / "skills-archive"),
+            "source": "archive",
+            "enabled": True,
+        }
+    ],
+
+    # Extra plugin directories — each directory is indexed as a plugin source.
+    # The directory may contain subdirs with plugin.json or README.md manifests.
+    # Each entry: {"path": "/abs/path", "source": "label", "description": "...", "enabled": true}
+    # If omitted, extra_skill_dirs entries are auto-registered as plugin sources too.
+    "extra_plugin_dirs": [],
 }
 
 
