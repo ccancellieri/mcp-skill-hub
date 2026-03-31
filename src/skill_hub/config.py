@@ -29,9 +29,11 @@ _DEFAULTS = {
     "reason_model": "deepseek-r1:1.5b",
 
     # Hook behavior
-    "hook_keyword_prefilter": True,     # skip LLM call for obvious non-commands
     "hook_timeout_seconds": 45,         # max time for hook LLM classification
     "hook_enabled": True,               # enable/disable UserPromptSubmit hook
+    "hook_semantic_threshold": 0.35,    # min embedding similarity to trigger LLM classify
+                                        # lower = more messages reach LLM (more sensitive)
+                                        # raise to 0.5+ if you get too many false positives
     "token_profiling": True,            # track estimated token savings per interception
 
     # Search defaults

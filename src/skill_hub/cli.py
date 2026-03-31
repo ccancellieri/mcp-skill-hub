@@ -15,15 +15,88 @@ from .embeddings import embed, compact, ollama_available, EMBED_MODEL, RERANK_MO
 from .store import SkillStore
 
 
+_TASK_COMMAND_EXAMPLES = [
+    "save to memory",
+    "save this task",
+    "park this for later",
+    "remember this discussion",
+    "save and close",
+    "close task",
+    "done with this",
+    "mark as done",
+    "I'm done here",
+    "what was I working on",
+    "show my open tasks",
+    "list tasks",
+    "what did we discuss about",
+    "find my previous work on",
+    "search my past work",
+]
+
+# Cached embedding of task command examples (computed once per process)
+_task_command_vector: list[float] | None = None
+
+
+def _task_similarity(message: str) -> float:
+    """
+    Fast embedding-based similarity check (~100ms).
+    Compares the message against canonical task command phrases.
+    Returns cosine similarity 0.0–1.0.
+    """
+    import math
+
+    global _task_command_vector
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    try:
+        if _task_command_vector is None:
+            # Embed a representative centroid of all task command examples
+            centroid_text = " | ".join(_TASK_COMMAND_EXAMPLES)
+            _task_command_vector = embed(centroid_text)
+
+        msg_vec = embed(message)
+        return cosine(msg_vec, _task_command_vector)
+    except Exception:
+        return 0.0
+
+
 def _classify_intent(message: str) -> dict:
     """
-    Use local LLM to classify whether a message is a task command.
-    Returns {"intent": "save_task|close_task|list_tasks|search_context|none", "args": {...}}
+    Classify whether a message is a task command using a two-stage filter:
+
+    Stage 1 — fast embedding similarity (~100ms, no LLM):
+      - Messages > 400 chars → "none" immediately (long coding questions)
+      - Embed message, compare to canonical task command centroid
+      - Below threshold → "none" immediately
+      - Above threshold → proceed to Stage 2
+
+    Stage 2 — local LLM classification (~2-5s):
+      - Precise classification of the intent
+      - Returns structured JSON with extracted title/summary/task_id
+
+    Returns {"intent": "save_task|close_task|list_tasks|search_context|none", ...}
     """
     import httpx
     import re
+    from . import config as _cfg
     from .embeddings import OLLAMA_BASE, RERANK_MODEL
 
+    # Stage 1a: length guard — long messages are almost never task commands
+    if len(message) > 400:
+        return {"intent": "none"}
+
+    # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
+    threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
+    sim = _task_similarity(message)
+    if sim < threshold:
+        return {"intent": "none"}
+
+    # Stage 2: LLM classification
     prompt = f"""\
 You are a command classifier. Given a user message, determine if it is a task/memory command.
 

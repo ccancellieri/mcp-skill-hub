@@ -2,25 +2,14 @@
 # UserPromptSubmit hook: intercept task/memory commands before Claude sees them.
 #
 # Flow:
-#   1. User types "save to memory and close" (or similar)
-#   2. This hook fires BEFORE Claude processes the message
-#   3. Local LLM (deepseek-r1:1.5b) classifies the intent
-#   4. If it's a task command → execute locally, return {"decision":"block"} → 0 Claude tokens
-#   5. If not → return nothing, Claude processes normally
-#
-# Install in ~/.claude/settings.json:
-# {
-#   "hooks": {
-#     "UserPromptSubmit": [{
-#       "hooks": [{
-#         "type": "command",
-#         "command": "/path/to/mcp-skill-hub/hooks/intercept-task-commands.sh",
-#         "timeout": 45,
-#         "statusMessage": "Checking for task commands..."
-#       }]
-#     }]
-#   }
-# }
+#   1. Every user message passes through this hook BEFORE Claude sees it
+#   2. Python CLI does a fast embedding similarity check (~100ms):
+#      - Very long messages (>400 chars) → skip immediately (coding questions)
+#      - Short messages → embed and compare to canonical task phrases
+#      - Below similarity threshold → allow through immediately
+#      - Above threshold → call local LLM for precise classification (~2-5s)
+#   3. If it's a task command → execute locally, block Claude (0 tokens used)
+#   4. If not → allow through to Claude
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$SCRIPT_DIR/.venv/bin/skill-hub-cli"
@@ -28,47 +17,35 @@ CLI="$SCRIPT_DIR/.venv/bin/skill-hub-cli"
 # Read hook input from stdin
 INPUT=$(cat)
 
-# Extract user message from hook JSON
-# UserPromptSubmit input format: {"userMessage": "..."}
-MESSAGE=$(echo "$INPUT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('userMessage', ''))" 2>/dev/null)
+# Extract user message
+MESSAGE=$(echo "$INPUT" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('userMessage', ''))
+" 2>/dev/null)
 
 if [ -z "$MESSAGE" ]; then
-    exit 0  # No message, allow through
-fi
-
-# Quick keyword pre-filter — skip the LLM call for obvious non-commands.
-# This saves ~2s for normal messages that clearly aren't task commands.
-LOWER_MSG=$(echo "$MESSAGE" | tr '[:upper:]' '[:lower:]')
-case "$LOWER_MSG" in
-    *"save to memory"*|*"save task"*|*"park this"*|*"remember this"*|\
-    *"close task"*|*"done with this"*|*"mark as done"*|*"save and close"*|\
-    *"what was i working on"*|*"show tasks"*|*"open tasks"*|*"list tasks"*|\
-    *"what did we discuss"*|*"find my previous"*|*"past work"*)
-        # Likely a task command — classify with LLM
-        ;;
-    *)
-        # Not a task command — skip LLM, allow through immediately
-        exit 0
-        ;;
-esac
-
-# Classify and optionally execute via local LLM
-RESULT=$("$CLI" classify "$MESSAGE" 2>/dev/null)
-
-if [ $? -ne 0 ] || [ -z "$RESULT" ]; then
-    exit 0  # CLI failed, allow through
-fi
-
-# Check decision
-DECISION=$(echo "$RESULT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('decision', 'allow'))" 2>/dev/null)
-
-if [ "$DECISION" = "block" ]; then
-    # Extract the message to show the user
-    FEEDBACK=$(echo "$RESULT" | python3 -c "import sys, json; print(json.load(sys.stdin).get('message', 'Command handled locally.'))" 2>/dev/null)
-    # Return block decision with feedback
-    echo "{\"decision\": \"block\", \"message\": \"$FEEDBACK\"}"
     exit 0
 fi
 
-# Allow through to Claude
+# Classify via local LLM (Python handles the fast semantic prefilter internally)
+RESULT=$("$CLI" classify "$MESSAGE" 2>/dev/null)
+
+if [ $? -ne 0 ] || [ -z "$RESULT" ]; then
+    exit 0  # CLI failed — allow through
+fi
+
+DECISION=$(echo "$RESULT" | python3 -c "
+import sys, json
+print(json.load(sys.stdin).get('decision', 'allow'))
+" 2>/dev/null)
+
+if [ "$DECISION" = "block" ]; then
+    # Use python to safely serialise the feedback as JSON (handles quotes/newlines)
+    echo "$RESULT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(json.dumps({'decision': 'block', 'message': data.get('message', 'Command handled locally.')}))
+"
+fi
+
 exit 0
