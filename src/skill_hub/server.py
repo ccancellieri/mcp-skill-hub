@@ -16,6 +16,15 @@ forget_teaching     — Remove a teaching rule by ID
 list_teachings      — Show all teaching rules
 log_session         — Record tool usage for passive learning (called by hooks)
 
+Tools — Tasks (cross-session context)
+--------------------------------------
+save_task           — Save an open task/discussion for future sessions
+close_task          — Compact via local LLM and close
+update_task         — Update an open task with new info
+reopen_task         — Reopen a closed task
+list_tasks          — List open/closed/all tasks
+search_context      — Unified search: skills + tasks + teachings
+
 Tools — Management
 ------------------
 index_skills        — Rebuild skill + plugin index from plugin directories
@@ -31,7 +40,10 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from .embeddings import embed, rerank, EMBED_MODEL, RERANK_MODEL, ollama_available
+from .embeddings import (
+    embed, rerank, compact, rewrite_query,
+    EMBED_MODEL, RERANK_MODEL, ollama_available,
+)
 from .indexer import index_all
 from .store import SkillStore
 
@@ -310,6 +322,213 @@ def log_session(tool_name: str, plugin_id: str = "") -> str:
         plugin_id=plugin_id or None,
     )
     return f"Logged: {tool_name} → {plugin_id or '(unknown plugin)'}"
+
+
+# ---------------------------------------------------------------------------
+# Tasks (cross-session context)
+
+
+@mcp.tool()
+def save_task(
+    title: str,
+    summary: str,
+    context: str = "",
+    tags: str = "",
+) -> str:
+    """
+    Save an open task/discussion for retrieval in future sessions.
+    The task stays "open" until you close_task() it.
+
+    Args:
+        title:   Short title (e.g. "MCP skill hub development").
+        summary: What was discussed, decided, or is in progress.
+        context: Extra context — plans, key decisions, file paths, etc.
+        tags:    Comma-separated tags for filtering (e.g. "mcp,ollama,sqlite").
+    """
+    if not ollama_available(EMBED_MODEL):
+        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+
+    vector = embed(f"{title}: {summary}")
+    tid = _store.save_task(
+        title=title, summary=summary, vector=vector,
+        context=context, tags=tags, session_id=_session["id"],
+    )
+    return f"Task #{tid} saved (open): \"{title}\"\nWill surface in future search_context() calls."
+
+
+@mcp.tool()
+def close_task(task_id: int, summary: str = "") -> str:
+    """
+    Close a task with LLM-compacted summary. Uses the local deepseek-r1:1.5b
+    to distill the conversation into a compact digest (~200 tokens).
+
+    Args:
+        task_id: Task ID from list_tasks().
+        summary: Optional final summary. If empty, compacts the existing summary.
+    """
+    task = _store.get_task(task_id)
+    if not task:
+        return f"Task #{task_id} not found."
+    if task["status"] == "closed":
+        return f"Task #{task_id} is already closed."
+
+    # Prepare content for compaction
+    content = summary or task["summary"]
+    if task["context"]:
+        content += f"\n\nContext:\n{task['context']}"
+
+    # Compact via local LLM
+    digest = compact(content)
+    compact_text = json.dumps(digest, indent=2)
+
+    # Re-embed the compacted summary for better future matching
+    compact_vector = embed(f"{digest.get('title', '')}: {digest.get('summary', '')}")
+
+    _store.close_task(task_id, compact_text, compact_vector)
+    return (
+        f"Task #{task_id} closed and compacted.\n"
+        f"Title: {digest.get('title', 'N/A')}\n"
+        f"Summary: {digest.get('summary', 'N/A')}\n"
+        f"Tags: {digest.get('tags', 'N/A')}\n"
+        f"Decisions: {digest.get('decisions', [])}"
+    )
+
+
+@mcp.tool()
+def update_task(task_id: int, summary: str = "", context: str = "",
+                tags: str = "") -> str:
+    """
+    Update an open task with new information.
+
+    Args:
+        task_id: Task ID from list_tasks().
+        summary: New/appended summary text.
+        context: New/appended context.
+        tags:    Updated tags.
+    """
+    if not ollama_available(EMBED_MODEL):
+        return f"Ollama model '{EMBED_MODEL}' not found."
+
+    vector = None
+    if summary:
+        task = _store.get_task(task_id)
+        if task:
+            vector = embed(f"{task['title']}: {summary}")
+
+    if _store.update_task(task_id, summary=summary, context=context,
+                          tags=tags, vector=vector):
+        return f"Task #{task_id} updated."
+    return f"Task #{task_id} not found."
+
+
+@mcp.tool()
+def reopen_task(task_id: int) -> str:
+    """Reopen a previously closed task.
+
+    Args:
+        task_id: Task ID from list_tasks(status="closed").
+    """
+    if _store.reopen_task(task_id):
+        return f"Task #{task_id} reopened."
+    return f"Task #{task_id} not found."
+
+
+@mcp.tool()
+def list_tasks(status: str = "open") -> str:
+    """
+    List tasks by status.
+
+    Args:
+        status: "open", "closed", or "all".
+    """
+    rows = _store.list_tasks(status)
+    if not rows:
+        return f"No {status} tasks."
+    lines: list[str] = []
+    for r in rows:
+        state = f"[{r['status'].upper()}]"
+        tags = f" ({r['tags']})" if r['tags'] else ""
+        lines.append(f"  #{r['id']} {state} {r['title']}{tags} — {r['summary'][:80]}...")
+    return f"{len(lines)} tasks:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def search_context(query: str, top_k: int = 5) -> str:
+    """
+    Unified search across skills, open tasks, and teachings.
+    Returns a combined view of relevant context for the current task.
+    Use this at the start of a session to load everything relevant.
+
+    Args:
+        query: Natural language description of the task.
+        top_k: Max results per category.
+    """
+    if not ollama_available(EMBED_MODEL):
+        return f"Ollama model '{EMBED_MODEL}' not found."
+
+    query_vector = embed(query)
+
+    # Update session topic
+    if not _session["topic"]:
+        _session["topic"] = query
+        _session["topic_vector"] = query_vector
+
+    _last_search_state["query"] = query
+    _last_search_state["vector"] = query_vector
+
+    parts: list[str] = []
+
+    # 1. Open tasks
+    tasks = _store.search_tasks(query_vector, top_k=top_k, status="open")
+    if tasks:
+        task_lines = []
+        for t in tasks:
+            task_lines.append(
+                f"### Task #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
+                f"{t['summary']}\n"
+                + (f"Context: {t['context'][:300]}" if t.get('context') else "")
+            )
+        parts.append("## Open Tasks\n\n" + "\n\n".join(task_lines))
+
+    # 2. Closed tasks (compact digests)
+    closed = _store.search_tasks(query_vector, top_k=3, status="closed")
+    if closed:
+        closed_lines = []
+        for t in closed:
+            digest = t.get("compact", t["summary"])
+            closed_lines.append(
+                f"### Closed #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
+                f"{digest[:300]}"
+            )
+        parts.append("## Related Past Work\n\n" + "\n\n".join(closed_lines))
+
+    # 3. Skills
+    skills = _store.search(query_vector, top_k=top_k)
+    if skills:
+        skill_lines = [f"- {s['id']}: {s['description'][:100]}" for s in skills]
+        parts.append("## Matching Skills\n\n" + "\n".join(skill_lines))
+        _last_search_state["skills"] = [s["id"] for s in skills]
+
+    # 4. Plugin suggestions
+    suggestions = _store.suggest_plugins(query_vector)
+    if suggestions:
+        enabled_plugins: dict = {}
+        if SETTINGS_PATH.exists():
+            settings = json.loads(SETTINGS_PATH.read_text())
+            enabled_plugins = settings.get("enabledPlugins", {})
+        disabled = [s for s in suggestions[:3]
+                    if not enabled_plugins.get(s["plugin_id"], False)]
+        if disabled:
+            plug_lines = [f"- {s['short_name']}: {s['description'][:80]}" for s in disabled]
+            parts.append(
+                "## Disabled Plugins That May Help\n\n" + "\n".join(plug_lines) +
+                "\nUse toggle_plugin() to enable."
+            )
+
+    if not parts:
+        return "No relevant context found. Try index_skills() and index_plugins() first."
+
+    return "\n\n---\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

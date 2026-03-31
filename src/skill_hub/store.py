@@ -1,4 +1,4 @@
-"""SQLite-backed store for skills, embeddings, usage feedback, and teachings.
+"""SQLite-backed store for skills, embeddings, usage feedback, teachings, and tasks.
 
 Schema
 ------
@@ -8,6 +8,7 @@ feedback     — (query_vector, skill_id, helpful) rows for boost calculation
 teachings    — explicit user rules ("when X, suggest Y")
 plugins      — plugin metadata + embedded descriptions for suggestion
 session_log  — automatic per-session tool usage for passive learning
+tasks        — saved/closed conversation digests for cross-session context
 """
 
 import json
@@ -108,6 +109,23 @@ class SkillStore:
 
             CREATE INDEX IF NOT EXISTS idx_session_log_plugin ON session_log (plugin_id);
             CREATE INDEX IF NOT EXISTS idx_session_log_session ON session_log (session_id);
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title       TEXT NOT NULL,
+                summary     TEXT NOT NULL,           -- raw or compacted summary
+                context     TEXT,                    -- extra context, plans, decisions
+                status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+                tags        TEXT,                    -- comma-separated tags
+                compact     TEXT,                    -- LLM-compacted digest (on close)
+                vector      TEXT,                    -- JSON embedding of summary
+                session_id  TEXT,                    -- which session created it
+                created_at  TEXT DEFAULT (datetime('now')),
+                updated_at  TEXT DEFAULT (datetime('now')),
+                closed_at   TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
         """)
         self._conn.commit()
 
@@ -370,6 +388,109 @@ class SkillStore:
             ORDER BY usage_count DESC
             LIMIT ?
         """, (limit,)).fetchall()
+
+    # ------------------------------------------------------------------
+    # Tasks (conversation digests)
+
+    def save_task(self, title: str, summary: str, vector: list[float],
+                  context: str = "", tags: str = "",
+                  session_id: str = "") -> int:
+        cur = self._conn.execute("""
+            INSERT INTO tasks (title, summary, context, tags, vector, session_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (title, summary, context, tags, json.dumps(vector), session_id))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def update_task(self, task_id: int, summary: str = "",
+                    context: str = "", tags: str = "",
+                    vector: list[float] | None = None) -> bool:
+        parts: list[str] = ["updated_at = datetime('now')"]
+        params: list = []
+        if summary:
+            parts.append("summary = ?")
+            params.append(summary)
+        if context:
+            parts.append("context = ?")
+            params.append(context)
+        if tags:
+            parts.append("tags = ?")
+            params.append(tags)
+        if vector is not None:
+            parts.append("vector = ?")
+            params.append(json.dumps(vector))
+        params.append(task_id)
+        cur = self._conn.execute(
+            f"UPDATE tasks SET {', '.join(parts)} WHERE id = ?", params
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def close_task(self, task_id: int, compact: str,
+                   compact_vector: list[float] | None = None) -> bool:
+        params: list = [compact]
+        vec_clause = ""
+        if compact_vector is not None:
+            vec_clause = ", vector = ?"
+            params.append(json.dumps(compact_vector))
+        params.append(task_id)
+        cur = self._conn.execute(f"""
+            UPDATE tasks
+            SET status = 'closed', compact = ?, closed_at = datetime('now'),
+                updated_at = datetime('now'){vec_clause}
+            WHERE id = ? AND status = 'open'
+        """, params)
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def reopen_task(self, task_id: int) -> bool:
+        cur = self._conn.execute("""
+            UPDATE tasks SET status = 'open', closed_at = NULL,
+                             updated_at = datetime('now')
+            WHERE id = ?
+        """, (task_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_tasks(self, status: str = "open") -> list[sqlite3.Row]:
+        if status == "all":
+            return self._conn.execute(
+                "SELECT id, title, summary, status, tags, created_at, updated_at, closed_at "
+                "FROM tasks ORDER BY updated_at DESC"
+            ).fetchall()
+        return self._conn.execute(
+            "SELECT id, title, summary, status, tags, created_at, updated_at, closed_at "
+            "FROM tasks WHERE status = ? ORDER BY updated_at DESC",
+            (status,)
+        ).fetchall()
+
+    def get_task(self, task_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+
+    def search_tasks(self, query_vector: list[float], top_k: int = 3,
+                     status: str = "all", min_sim: float = 0.4) -> list[dict]:
+        """Search tasks by semantic similarity."""
+        where = "" if status == "all" else f"AND t.status = '{status}'"
+        rows = self._conn.execute(f"""
+            SELECT t.id, t.title, t.summary, t.context, t.status,
+                   t.tags, t.compact, t.vector, t.created_at, t.closed_at
+            FROM tasks t
+            WHERE t.vector IS NOT NULL {where}
+        """).fetchall()
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            vec = json.loads(row["vector"])
+            sim = _cosine(query_vector, vec)
+            if sim >= min_sim:
+                d = dict(row)
+                d["similarity"] = sim
+                scored.append((sim, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
 
     def get_skill_content(self, skill_id: str) -> str | None:
         row = self._conn.execute(
