@@ -12,7 +12,8 @@ import json
 import sys
 
 from .embeddings import (
-    embed, compact, ollama_available, EMBED_MODEL, RERANK_MODEL,
+    embed, compact, ollama_available, optimize_context,
+    EMBED_MODEL, RERANK_MODEL,
     conversation_digest, exhaustion_save,
 )
 from .store import SkillStore
@@ -502,6 +503,11 @@ def _exhaustion_auto_save(context: str) -> str:
         result_parts.append(f"\nTo resume later: search_context(\"{title}\")")
         result_parts.append(f"Or: /list-tasks")
 
+        # Also update memory files
+        mem_result = _update_memory_on_exhaustion(digest)
+        if mem_result:
+            result_parts.append(f"\n{mem_result}")
+
     except Exception as exc:
         # Even if LLM fails, do a raw save
         try:
@@ -575,6 +581,284 @@ def _cmd_conversation_digest() -> str:
         return "\n".join(lines)
     except Exception as exc:
         return f"Digest failed: {exc}"
+
+
+_SAVE_MEMORY_PROMPT = """\
+You are a memory-management assistant for an AI coding tool. Given the session \
+context, generate a memory file that captures the most important non-obvious \
+information worth remembering for future sessions.
+
+Focus on:
+- Decisions that were made and WHY
+- User preferences discovered
+- Project-specific knowledge not in the code
+- Patterns that should be repeated or avoided
+
+Do NOT save:
+- Code patterns (derivable from reading the code)
+- Git history (use git log)
+- Anything already in existing memory files
+
+Output ONLY a JSON object:
+{{
+  "filename": "<descriptive-kebab-case.md>",
+  "name": "<short title>",
+  "description": "<one-line description for the memory index>",
+  "type": "<user|feedback|project|reference>",
+  "content": "<the memory content, 2-6 sentences>"
+}}
+
+Session context:
+{content}
+
+Existing memory files (avoid duplicates):
+{existing}
+"""
+
+
+def _cmd_optimize_context() -> str:
+    """Handle /optimize-context — local LLM analyzes memory and recommends pruning."""
+    from pathlib import Path
+    import re
+
+    if not ollama_available(RERANK_MODEL):
+        return "Ollama/reason model not available."
+
+    memory_dir = (Path.home() / ".claude" / "projects" /
+                  "-Users-ccancellieri-work-code" / "memory")
+    memory_index = memory_dir / "MEMORY.md"
+
+    if not memory_index.exists():
+        return "No MEMORY.md found."
+
+    index_text = memory_index.read_text(encoding="utf-8", errors="replace")
+
+    # Parse memory entries
+    entries: list[dict] = []
+    for match in re.finditer(
+        r"-\s*\[([^\]]+)\]\(([^)]+)\)\s*—\s*(.+)$",
+        index_text, re.MULTILINE
+    ):
+        name, filepath, description = match.groups()
+        mem_file = memory_dir / filepath.strip()
+        if mem_file.exists():
+            content = mem_file.read_text(encoding="utf-8", errors="replace")
+            tokens_est = len(content) // 4
+            # Detect category from section headers
+            category = "unknown"
+            for line in index_text.split("\n"):
+                if line.startswith("## "):
+                    category = line[3:].strip()
+                if filepath.strip() in line:
+                    break
+            entries.append({
+                "file": filepath.strip(),
+                "category": category,
+                "tokens": tokens_est,
+                "content": content,
+            })
+
+    if not entries:
+        return "No memory files found to analyze."
+
+    total_tokens = sum(e["tokens"] for e in entries)
+    lines = [f"=== Context Optimization ===\n"]
+    lines.append(f"Analyzing {len(entries)} memory files (~{total_tokens:,} tokens total)...\n")
+
+    # Call local LLM to analyze
+    recommendations = optimize_context(entries)
+
+    prune_count = 0
+    compact_count = 0
+    merge_count = 0
+    tokens_saveable = 0
+
+    for rec in recommendations:
+        if rec.get("summary"):
+            # Summary line
+            lines.append(f"\n--- Summary ---")
+            lines.append(f"Total files: {rec.get('total', len(entries))}")
+            lines.append(f"Keep: {rec.get('keep', 0)}, Prune: {rec.get('prune', 0)}, "
+                        f"Compact: {rec.get('compact', 0)}, Merge: {rec.get('merge', 0)}")
+            lines.append(f"Est. tokens saveable: ~{rec.get('est_tokens_saved', 0):,}")
+            continue
+
+        action = rec.get("action", "KEEP")
+        filename = rec.get("file", "?")
+        reason = rec.get("reason", "")
+
+        if action == "PRUNE":
+            prune_count += 1
+            entry = next((e for e in entries if e["file"] == filename), None)
+            if entry:
+                tokens_saveable += entry["tokens"]
+            lines.append(f"  PRUNE  {filename} — {reason}")
+        elif action == "COMPACT":
+            compact_count += 1
+            compacted = rec.get("compacted", "")
+            entry = next((e for e in entries if e["file"] == filename), None)
+            if entry and compacted:
+                saved = entry["tokens"] - len(compacted) // 4
+                tokens_saveable += max(0, saved)
+            lines.append(f"  COMPACT {filename} — {reason}")
+            if compacted:
+                lines.append(f"          → {compacted[:150]}...")
+        elif action == "MERGE":
+            merge_count += 1
+            lines.append(f"  MERGE  {filename} — {reason}")
+        else:
+            lines.append(f"  KEEP   {filename}")
+
+    if prune_count or compact_count or merge_count:
+        lines.append(f"\nActions available:")
+        if prune_count:
+            lines.append(f"  {prune_count} files to prune (~{tokens_saveable:,} tokens saved per session)")
+        if compact_count:
+            lines.append(f"  {compact_count} files to compact")
+        if merge_count:
+            lines.append(f"  {merge_count} files to merge")
+        lines.append(f"\nTo apply: review recommendations, then manually edit/delete memory files.")
+    else:
+        lines.append(f"\nAll memory files look good — no changes recommended.")
+
+    return "\n".join(lines)
+
+
+def _cmd_save_memory(args_str: str) -> str:
+    """Handle /save-memory — local LLM generates a memory entry from session context."""
+    from pathlib import Path
+    import re
+
+    if not ollama_available(RERANK_MODEL):
+        return "Ollama/reason model not available."
+
+    memory_dir = (Path.home() / ".claude" / "projects" /
+                  "-Users-ccancellieri-work-code" / "memory")
+    memory_index = memory_dir / "MEMORY.md"
+
+    # Gather context
+    if args_str.strip():
+        context = args_str.strip()
+    elif _session_messages:
+        context = "\n---\n".join(_session_messages[-10:])
+    else:
+        return "No session context. Provide a description: /save-memory <what to remember>"
+
+    # Read existing memory index to avoid duplicates
+    existing = ""
+    if memory_index.exists():
+        existing = memory_index.read_text(encoding="utf-8", errors="replace")
+
+    # Ask local LLM to generate memory entry
+    import httpx
+    from .embeddings import OLLAMA_BASE
+
+    prompt = _SAVE_MEMORY_PROMPT.format(
+        content=context[:4000],
+        existing=existing[:2000],
+    )
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not json_match:
+            return "LLM did not produce valid JSON. Try with a more specific description."
+        entry = json.loads(json_match.group())
+    except Exception as exc:
+        return f"LLM failed: {exc}"
+
+    filename = entry.get("filename", "auto_memory.md")
+    name = entry.get("name", "Auto-generated memory")
+    description = entry.get("description", "")
+    mem_type = entry.get("type", "project")
+    content = entry.get("content", "")
+
+    if not content:
+        return "LLM generated empty content. Try with more context."
+
+    # Write memory file
+    mem_file = memory_dir / filename
+    mem_content = f"""---
+name: {name}
+description: {description}
+type: {mem_type}
+---
+
+{content}
+"""
+    mem_file.write_text(mem_content, encoding="utf-8")
+
+    # Append to MEMORY.md index
+    index_line = f"- [{filename}]({filename}) — {description}"
+    if memory_index.exists():
+        current = memory_index.read_text(encoding="utf-8", errors="replace")
+        if filename not in current:
+            with memory_index.open("a", encoding="utf-8") as f:
+                f.write(f"\n{index_line}\n")
+
+    return (f"Memory saved: {mem_file}\n"
+            f"  Name: {name}\n"
+            f"  Type: {mem_type}\n"
+            f"  Description: {description}\n"
+            f"  Content: {content[:200]}...")
+
+
+def _update_memory_on_exhaustion(digest: dict) -> str | None:
+    """
+    When exhaustion-save fires, also write a memory entry pointing to the saved task.
+    Returns status message or None on failure.
+    """
+    from pathlib import Path
+
+    memory_dir = (Path.home() / ".claude" / "projects" /
+                  "-Users-ccancellieri-work-code" / "memory")
+    memory_index = memory_dir / "MEMORY.md"
+
+    if not memory_dir.exists():
+        return None
+
+    title = digest.get("title", "Session interrupted")
+    summary = digest.get("summary", "")
+    tags = digest.get("tags", "")
+    next_steps = digest.get("next_steps", [])
+
+    # Generate a filename from the title
+    import re
+    safe_name = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:40]
+    filename = f"project_{safe_name}.md"
+
+    mem_content = f"""---
+name: {title}
+description: {summary[:100]}
+type: project
+---
+
+{summary}
+
+**Next steps:** {'; '.join(next_steps) if next_steps else 'Resume from saved task.'}
+**Tags:** {tags}
+**Saved by:** exhaustion-fallback (local LLM)
+"""
+
+    mem_file = memory_dir / filename
+    mem_file.write_text(mem_content, encoding="utf-8")
+
+    # Append to MEMORY.md
+    index_line = f"- [{filename}]({filename}) — {summary[:80]}"
+    if memory_index.exists():
+        current = memory_index.read_text(encoding="utf-8", errors="replace")
+        if filename not in current:
+            with memory_index.open("a", encoding="utf-8") as f:
+                f.write(f"\n{index_line}\n")
+
+    return f"Memory updated: {filename}"
 
 
 def hook_classify_and_execute(message: str) -> dict:
@@ -832,6 +1116,8 @@ Slash commands (intercepted locally, 0 Claude tokens):
   /profile auto <task>  LLM recommends best profile for task
   /exhaustion-save     Auto-save session when Claude is exhausted
   /digest              Force conversation digest now
+  /optimize-context    LLM analyzes memory, recommends pruning
+  /save-memory [desc]  LLM generates memory entry from session
 
 These run via local LLM or SQLite — Claude never sees them.
 
@@ -1127,6 +1413,8 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/profile": "profile",
     "/exhaustion-save": "exhaustion_save",
     "/digest": "digest",
+    "/optimize-context": "optimize_context",
+    "/save-memory": "save_memory",
 }
 
 
@@ -1193,6 +1481,10 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_exhaustion_save(args_str)}
         elif action == "digest":
             return {"decision": "block", "message": _cmd_conversation_digest()}
+        elif action == "optimize_context":
+            return {"decision": "block", "message": _cmd_optimize_context()}
+        elif action == "save_memory":
+            return {"decision": "block", "message": _cmd_save_memory(args_str)}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
@@ -1206,7 +1498,7 @@ def main() -> None:
         print("Commands: classify, status, help, token_stats, list_models,")
         print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context,")
-        print("          exhaustion_save, digest")
+        print("          exhaustion_save, digest, optimize_context, save_memory")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -1280,6 +1572,12 @@ def main() -> None:
 
     elif cmd == "digest":
         print(_cmd_conversation_digest())
+
+    elif cmd == "optimize_context":
+        print(_cmd_optimize_context())
+
+    elif cmd == "save_memory":
+        print(_cmd_save_memory(" ".join(args)))
 
     else:
         print(f"Unknown command: {cmd}")

@@ -474,7 +474,43 @@ Files modified: auth_middleware.py, token_service.py
 To resume later: search_context("Auth API middleware rewrite")
 ```
 
-The local LLM generates a structured digest with title, summary, decisions, next steps, and files. If the LLM is also unavailable, a raw save captures the session text.
+The local LLM generates a structured digest with title, summary, decisions, next steps, and files. If the LLM is also unavailable, a raw save captures the session text. A memory file is also written to MEMORY.md so future sessions pick it up automatically.
+
+### 13. Context Optimization
+
+Analyze your memory files and get recommendations to reduce token usage:
+
+```
+/optimize-context
+```
+
+```
+=== Context Optimization ===
+
+Analyzing 48 memory files (~31,550 tokens total)...
+
+  PRUNE  project_geoid_openapi_schema_cleanup.md — completed task, no longer needed
+  COMPACT reference_dynastore_tools_knowledge.md — verbose, can save ~400 tokens
+          → "Dynastore tools: enrichment pipeline, query executor, DDLBatch..."
+  MERGE  feedback_use_constants_enums.md — overlaps with feedback_use_libraries_over_custom_models.md
+  KEEP   project_geoid_core.md
+
+Actions available:
+  1 file to prune (~200 tokens saved per session)
+  1 file to compact
+  1 file to merge
+```
+
+### 14. Auto-Save Memory
+
+Generate and save a memory entry from the current session using the local LLM:
+
+```
+/save-memory                              # from session context
+/save-memory "decided to use SQLite"      # from explicit description
+```
+
+The local LLM generates a structured memory file with appropriate type (user/feedback/project/reference) and updates MEMORY.md automatically.
 
 ### Database
 
