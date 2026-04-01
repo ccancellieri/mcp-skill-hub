@@ -303,12 +303,14 @@ When you `close_task()`, the local LLM (deepseek-r1) distills the conversation i
 
 ```
 src/skill_hub/
-├── server.py       # FastMCP tools + MCP protocol
-├── store.py        # SQLite: skills, embeddings, feedback, teachings, tasks, session_log
-├── indexer.py      # Scan plugin dirs, parse SKILL.md, build index
-├── embeddings.py   # Ollama: embed, rerank, compact, rewrite_query
-├── config.py       # User-configurable settings (models, thresholds)
-└── cli.py          # Direct CLI for hooks (bypasses MCP)
+├── server.py        # FastMCP tools + MCP protocol
+├── store.py         # SQLite: skills (claude+local), embeddings, feedback, teachings, tasks
+├── indexer.py       # Scan plugin dirs + local-skills/, parse SKILL.md + JSON, build index
+├── embeddings.py    # Ollama: embed, rerank, compact, triage (incl. local_agent action)
+├── config.py        # User-configurable settings (models, thresholds, local_models)
+├── cli.py           # Hook pipeline: slash commands, L1-L4, triage, ? help, context injection
+├── local_agent.py   # Level 4: plan_agent() + run_agent() with tool-calling loop
+└── activity_log.py  # File + stderr logging (daily rotation, 50MB cap)
 
 hooks/
 ├── intercept-task-commands.sh   # UserPromptSubmit: zero-token task interception
@@ -559,7 +561,7 @@ Run commands, templates, and multi-step skills **entirely locally** — no Claud
 | **L1** | Whitelisted commands | 3b | "git status" → `git status` |
 | **L2** | Templated commands with params | 7b | "show last 5 commits" → `git log --oneline -5` |
 | **L3** | Multi-step local skills | embeddings | "project summary" → git-summary skill (4 steps) |
-| **L4** | Full local agent loop | 14b+ | "refactor this file" → iterative tool-using agent |
+| **L4** | Full local agent loop | 14b/32b | "run tests and summarize" → plan → approve → agent executes |
 
 **First-time confirmation:** New commands require `y/n` approval. Once approved, the command auto-executes for the rest of the session.
 
@@ -582,13 +584,42 @@ User: y
     ...
 ```
 
+**Level 4 — Local Agent:**
+
+The Level 4 agent is a full tool-using loop driven by a local LLM. It has access to: `run_skill`, `shell`, `read_file`, `search`, `list_files`, and `done`. The agent always shows a plan first and waits for confirmation before executing.
+
+Three ways to invoke L4:
+
+1. **Explicit:** `/local-agent <task>` — always asks, shows plan
+2. **Triage auto-routing:** when the LLM triage classifies a message as `local_agent`, it routes automatically
+3. **Exhaustion fallback:** when Claude is rate-limited, `/hub-exhaustion-save` suggests `/local-agent` for continuation
+
+```
+User: /local-agent show git status and run tests
+  → [Local agent — qwen2.5-coder:14b]
+    Plan for: show git status and run tests
+    Steps:
+      1. Run git status to check working tree
+      2. Run git diff --stat for changed files
+      3. Execute test suite
+    Commands: git status, git diff --stat
+    Reply y to execute, n to cancel.
+
+User: y
+  → [Local agent — qwen2.5-coder:32b]
+    (agent executes plan using tools, returns results)
+```
+
+Planning uses the level_3 model (14b, fast) while execution uses level_4 (32b, thorough).
+
 **Management commands:**
 
 ```
 /hub-local-status              # show levels, models, commands, skills
 /hub-local-skills              # list all local skill definitions
 /hub-local-approve git_status  # pre-approve for this session
-/hub-local-agent <task>        # run task via local agent (L4)
+/local-agent                   # show agent status + available skills
+/local-agent <task>            # plan + execute task via local agent (L4)
 ```
 
 **Local skills** are JSON files in `~/.claude/local-skills/`:
@@ -607,14 +638,57 @@ User: y
 }
 ```
 
-See `examples/local-skills/` for more examples.
+See `examples/local-skills/` for more examples. It's recommended to optimize local skills with local models — keep triggers concise and steps focused on shell commands that produce structured output.
 
 Configure:
 
 ```
 /hub-configure local_execution_enabled true
-/hub-configure local_models '{"level_1":"qwen2.5-coder:3b","level_2":"qwen2.5-coder:7b-instruct-q4_k_m","level_3":"qwen2.5-coder:14b"}'
+/hub-configure local_models '{"level_1":"qwen2.5-coder:3b","level_2":"qwen2.5-coder:7b-instruct-q4_k_m","level_3":"qwen2.5-coder:14b","level_4":"qwen2.5-coder:32b"}'
 ```
+
+The level_4 model can also be a remote endpoint:
+
+```
+/hub-configure local_models '{"level_4":"remote:http://your-server:11434"}'
+/hub-configure remote_llm '{"base_url":"http://your-server:11434","model":"qwen2.5-coder:32b","timeout":120}'
+```
+
+### 17. Dual Skill Index (Claude + Local)
+
+Skills are indexed with a **target** that determines where they're loaded:
+
+| Target | Source | Loaded into | Purpose |
+|--------|--------|-------------|---------|
+| `claude` | SKILL.md from plugins | Claude's context (RAG injection) | Plugin skills for Claude |
+| `local` | JSON from `~/.claude/local-skills/` | Local LLM agent (L4) prompt | Skills for local execution |
+
+Claude skills never pollute the local LLM prompt. Local skills never consume Claude tokens. Both are searchable via `search_skills()` and visible in `list_skills()`.
+
+```
+/hub-list-skills             # all skills (grouped by target)
+/hub-list-skills local       # only local skills
+/hub-list-skills superpowers # filter by plugin name
+```
+
+Re-indexing picks up both:
+
+```
+index_skills()    # indexes SKILL.md as target=claude, JSON as target=local
+```
+
+### 18. Inline Help System
+
+Type `?` to discover available commands, or `?command` for detailed usage:
+
+```
+?                     # list all commands with descriptions
+?hub-list-skills      # detailed usage for /hub-list-skills
+?hub-configure        # detailed usage for /hub-configure
+?local-agent          # detailed usage for /local-agent
+```
+
+Works even when Claude is rate-limited — the `?` system runs entirely in the local hook.
 
 ### Database
 
@@ -622,7 +696,7 @@ Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 
 | Table | Purpose |
 |-------|---------|
-| `skills` | Skill metadata + full content |
+| `skills` | Skill metadata + full content + target (claude/local) |
 | `embeddings` | Skill vectors |
 | `feedback` | (query, skill, helpful) for boost |
 | `teachings` | Explicit "when X suggest Y" rules |
@@ -674,6 +748,8 @@ All settings have sensible defaults. Override only what you need.
 | `local_commands` | `{git_status: ...}` | Level 1 whitelisted shell commands |
 | `local_templates` | `{git_log_n: ...}` | Level 2 templated commands with params |
 | `local_skills_dir` | `~/.claude/local-skills` | Directory for Level 3 skill JSON files |
+| `remote_llm` | `{}` | Remote LLM endpoint for L4: `{base_url, api_key, model, timeout}` |
+| `log_dir` | `~/.claude/mcp-skill-hub/logs` | Activity log directory (daily rotation, 50MB cap) |
 
 ## Roadmap
 
@@ -685,7 +761,11 @@ All settings have sensible defaults. Override only what you need.
 - [x] Exhaustion fallback — local LLM auto-saves session when Claude is unavailable
 - [x] Universal LLM triage — local LLM pre-processes all messages, answers locally or enriches
 - [x] Local execution engine — 4-level command/template/skill/agent execution with confirmation flow
-- [ ] Level 4 full agent — iterative tool-using agent loop with local LLM
+- [x] Level 4 full agent — plan-first agent loop with tool calling (shell, skills, search, files)
+- [x] Dual skill index — skills tagged claude/local, routed to the right LLM context
+- [x] Inline help system — `?` lists commands, `?command` shows detailed usage
+- [x] Activity logging — file + stderr, daily rotation, configurable log dir
+- [x] Remote LLM support — Level 4 can route to a remote Ollama or OpenAI-compatible endpoint
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License
