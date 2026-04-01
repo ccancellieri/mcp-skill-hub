@@ -33,6 +33,7 @@ Repository = "https://github.com/ccancellieri/mcp-skill-hub"
 [project.scripts]
 skill-hub = "skill_hub.server:main"
 skill-hub-cli = "skill_hub.cli:main"
+skill-hub-repl = "skill_hub.repl:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/skill_hub"]

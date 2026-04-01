@@ -15,7 +15,8 @@ import sys
 from .activity_log import log_hook, log_llm, log_event
 from .embeddings import (
     embed, compact, ollama_available, optimize_context, triage_message,
-    EMBED_MODEL, RERANK_MODEL,
+    dynamic_context_eval, smart_memory_write,
+    EMBED_MODEL, RERANK_MODEL, OLLAMA_BASE,
     conversation_digest, exhaustion_save,
 )
 from .resource_monitor import should_run_llm, snapshot, Pressure
@@ -582,6 +583,215 @@ def _execute_local_skill(skill: dict) -> str | None:
     )
 
 
+def _dynamic_context_stage(
+    message: str,
+    session_id: str,
+    _cfg: object,
+    triage_hint: str | None,
+) -> str | None:
+    """Dynamic skill lifecycle + prompt optimization via local LLM.
+
+    Flow:
+    1. Load session context (previously loaded skills, rolling summary)
+    2. Embed message and fetch skill candidates via RAG
+    3. Ask local LLM to decide keep/add/drop + optimise prompt (single call)
+    4. Build systemMessage with selected skills
+    5. Persist new session state
+    """
+    from .activity_log import LOG_FILE
+    from pathlib import Path
+    import math
+    import httpx as _httpx
+
+    top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
+    max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+
+    store = SkillStore()
+
+    # 1. Load session state
+    if session_id:
+        ctx = store.get_session_context(session_id)
+    else:
+        ctx = {"loaded_skills": [], "context_summary": "", "message_count": 0}
+    prev_loaded_ids: list[str] = ctx["loaded_skills"]
+    context_summary: str = ctx["context_summary"]
+    msg_count: int = ctx["message_count"]
+
+    # 2. Embed message + fetch candidates via RAG
+    msg_vector = embed(message[:500])
+    # Fetch wider pool of candidates for the LLM to choose from
+    all_candidates = store.search(
+        msg_vector, top_k=top_k_skills * 3,
+        similarity_threshold=0.35, target="claude",
+    )
+
+    # Separate previously loaded skills from new candidates
+    loaded_skills: list[dict] = []
+    candidate_skills: list[dict] = []
+    candidate_ids_seen: set[str] = set()
+
+    for s in all_candidates:
+        sid = s["id"]
+        if sid in prev_loaded_ids:
+            loaded_skills.append(s)
+        elif sid not in candidate_ids_seen:
+            candidate_skills.append(s)
+            candidate_ids_seen.add(sid)
+
+    # Also include any previously loaded skills not in current search
+    searched_ids = {s["id"] for s in all_candidates}
+    for sid in prev_loaded_ids:
+        if sid not in searched_ids:
+            row = store.get_skill(sid)
+            if row:
+                loaded_skills.append(dict(row))
+
+    # 3. Dynamic context via local LLM
+    # Pick best available model: prefer reason_model, fallback to smaller ones
+    dynamic_model = RERANK_MODEL
+    if not ollama_available(dynamic_model):
+        # Try progressively smaller models
+        for fallback in ("qwen2.5-coder:3b", "deepseek-r1:1.5b"):
+            if ollama_available(fallback):
+                dynamic_model = fallback
+                break
+        else:
+            dynamic_model = ""
+
+    if (should_run_llm("dynamic_context")
+            and dynamic_model
+            and (loaded_skills or candidate_skills)):
+
+        llm_result = dynamic_context_eval(
+            message=message,
+            context_summary=context_summary,
+            loaded_skills=loaded_skills,
+            candidate_skills=candidate_skills,
+            model=dynamic_model,
+        )
+
+        keep_ids = set(llm_result.get("keep", []))
+        add_ids = set(llm_result.get("add", []))
+        drop_ids = set(llm_result.get("drop", []))
+        new_summary = llm_result.get("context_summary", context_summary)
+        optimized_prompt = llm_result.get("optimized_prompt", message)
+
+        # Build final skill list: kept + added (max top_k_skills)
+        final_skill_ids = list(keep_ids | add_ids)[:top_k_skills]
+
+        log_hook("dynamic_context",
+                 model=dynamic_model,
+                 keep=len(keep_ids), add=len(add_ids), drop=len(drop_ids),
+                 final=len(final_skill_ids),
+                 prompt_changed=optimized_prompt != message)
+    else:
+        # Fallback: use top candidates from RAG (no LLM)
+        final_skill_ids = [s["id"] for s in all_candidates[:top_k_skills]]
+        new_summary = context_summary
+        optimized_prompt = message
+        reason = "no_model" if not dynamic_model else "pressure_gated"
+        if not (loaded_skills or candidate_skills):
+            reason = "no_candidates"
+        log_hook("dynamic_context_skip", reason=reason)
+
+    # 4. Build systemMessage with selected skills
+    budget = max_chars
+    parts: list[str] = []
+    loaded_names: list[str] = []
+    skill_map = {s["id"]: s for s in all_candidates}
+
+    for sid in final_skill_ids:
+        if budget <= 200:
+            break
+        s = skill_map.get(sid)
+        if not s:
+            s = store.get_skill(sid)
+        if not s:
+            continue
+        desc = (s.get("description") or "")[:150]
+        content_preview = ""
+        if not loaded_names and s.get("content"):
+            content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
+        snippet = f"Skill [{sid}]: {desc}{content_preview}"
+        parts.append(snippet)
+        budget -= len(snippet)
+        loaded_names.append(sid)
+
+    # Add relevant past tasks
+    tasks = store.search_tasks(msg_vector, top_k=2, min_sim=0.4)
+    for t in tasks:
+        if budget <= 0:
+            break
+        snippet = (f"Past work #{t['id']} [{t['status']}]: {t['title']} "
+                   f"-- {t['summary'][:150]}")
+        parts.append(snippet)
+        budget -= len(snippet)
+
+    # Add teaching rules
+    teachings = store.search_teachings(msg_vector, min_sim=0.5)
+    for t in teachings[:3]:
+        if budget <= 0:
+            break
+        snippet = f"Suggestion: when \"{t['rule']}\" -> use {t['target_id']}"
+        parts.append(snippet)
+        budget -= len(snippet)
+
+    store.close()
+
+    # 5. Persist session state
+    if session_id:
+        try:
+            s2 = SkillStore()
+            s2.save_session_context(
+                session_id=session_id,
+                loaded_skills=loaded_names,
+                context_summary=new_summary,
+                message_count=msg_count + 1,
+            )
+            s2.close()
+        except Exception:
+            pass
+
+    if not parts:
+        log_hook("context_inject_miss",
+                 skills_found=len(all_candidates), msg_len=len(message))
+        return None
+
+    # Build header showing lifecycle actions
+    dropped = set(prev_loaded_ids) - set(loaded_names)
+    added = set(loaded_names) - set(prev_loaded_ids)
+    kept = set(loaded_names) & set(prev_loaded_ids)
+
+    lifecycle_parts = []
+    if kept:
+        lifecycle_parts.append(f"kept: {', '.join(kept)}")
+    if added:
+        lifecycle_parts.append(f"+loaded: {', '.join(added)}")
+    if dropped:
+        lifecycle_parts.append(f"-dropped: {', '.join(dropped)}")
+    lifecycle_str = " | ".join(lifecycle_parts) if lifecycle_parts else "initial load"
+
+    log_hook("context_inject",
+             parts=len(parts), chars=sum(len(p) for p in parts),
+             skills_loaded=len(loaded_names),
+             skills_found=len(all_candidates),
+             lifecycle=lifecycle_str)
+
+    header = (
+        f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
+        f"skills {lifecycle_str} | "
+        f"log: tail -f {LOG_FILE}]\n\n"
+    )
+
+    result = header + "\n\n".join(parts)
+
+    # Append optimized prompt in markers for the caller to extract
+    if optimized_prompt and optimized_prompt != message:
+        result += f"\n\n[OPTIMIZED_PROMPT]{optimized_prompt}[/OPTIMIZED_PROMPT]"
+
+    return result
+
+
 def _build_context_injection(message: str, msg_vector: list[float]) -> str | None:
     """
     Strategy #1 (RAG) + #5 (Auto-Memory): Build a systemMessage with relevant
@@ -671,20 +881,30 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
                 entries.append((filepath.strip(), name.strip(), description.strip()))
 
             if entries:
-                # Embed each description and find the most relevant
+                # Batch-embed all descriptions in a single Ollama call
+                import math
+                import httpx as _httpx
+
+                descs = [desc[:200] for _, _, desc in entries]
+                try:
+                    batch_resp = _httpx.post(
+                        f"{OLLAMA_BASE}/api/embed",
+                        json={"model": EMBED_MODEL, "input": descs},
+                        timeout=15.0,
+                    )
+                    batch_resp.raise_for_status()
+                    all_vecs = batch_resp.json().get("embeddings", [])
+                except Exception:
+                    all_vecs = []
+
+                na = math.sqrt(sum(x * x for x in msg_vector))
                 scored: list[tuple[float, str, str, str]] = []
-                for filepath, name, desc in entries:
-                    try:
-                        desc_vec = embed(desc[:200])
-                        sim = sum(a * b for a, b in zip(msg_vector, desc_vec))
-                        import math
-                        na = math.sqrt(sum(x * x for x in msg_vector))
-                        nb = math.sqrt(sum(x * x for x in desc_vec))
-                        sim = sim / (na * nb) if na and nb else 0.0
-                        if sim > 0.4:
-                            scored.append((sim, filepath, name, desc))
-                    except Exception:
-                        continue
+                for (filepath, name, desc), desc_vec in zip(entries, all_vecs):
+                    nb = math.sqrt(sum(x * x for x in desc_vec))
+                    sim = (sum(a * b for a, b in zip(msg_vector, desc_vec))
+                           / (na * nb) if na and nb else 0.0)
+                    if sim > 0.4:
+                        scored.append((sim, filepath, name, desc))
 
                 scored.sort(key=lambda x: x[0], reverse=True)
 
@@ -700,10 +920,13 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
                         parts.append(snippet)
                         budget -= len(snippet)
 
-    except Exception:
-        pass
+    except Exception as exc:
+        log_hook("context_inject_error", error=str(exc)[:120])
 
     if not parts:
+        log_hook("context_inject_miss",
+                 skills_found=len(skills_found),
+                 msg_len=len(message))
         return None
 
     log_hook("context_inject", parts=len(parts), chars=sum(len(p) for p in parts),
@@ -1159,12 +1382,8 @@ def _cmd_optimize_context() -> str:
 
 
 def _cmd_save_memory(args_str: str) -> str:
-    """Handle /save-memory — local LLM generates a memory entry from session context."""
+    """Handle /save-memory — smart routing: local LLM first, Claude if quality too low."""
     from pathlib import Path
-    import re
-
-    if not ollama_available(RERANK_MODEL):
-        return "Ollama/reason model not available."
 
     memory_dir = (Path.home() / ".claude" / "projects" /
                   "-Users-ccancellieri-work-code" / "memory")
@@ -1183,38 +1402,30 @@ def _cmd_save_memory(args_str: str) -> str:
     if memory_index.exists():
         existing = memory_index.read_text(encoding="utf-8", errors="replace")
 
-    # Ask local LLM to generate memory entry
-    import httpx
-    from .embeddings import OLLAMA_BASE
-
-    prompt = _SAVE_MEMORY_PROMPT.format(
-        content=context[:4000],
-        existing=existing[:2000],
+    # Smart routing: local LLM first with quality check
+    result = smart_memory_write(
+        content=context,
+        existing_index=existing,
     )
 
-    try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False},
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not json_match:
-            return "LLM did not produce valid JSON. Try with a more specific description."
-        entry = json.loads(json_match.group())
-    except Exception as exc:
-        return f"LLM failed: {exc}"
+    if result["escalate"]:
+        reason = result["reason"]
+        quality = result["quality"]
+        # Signal to Claude that it should handle this memory write
+        return (f"[Smart memory routing: local LLM quality too low "
+                f"(score={quality:.2f}, reason={reason})]\n"
+                f"Please write this memory entry using Claude instead.\n"
+                f"Context to save:\n{context[:2000]}")
 
+    entry = result["result"]
+    quality = result["quality"]
     filename = entry.get("filename", "auto_memory.md")
     name = entry.get("name", "Auto-generated memory")
     description = entry.get("description", "")
     mem_type = entry.get("type", "project")
-    content = entry.get("content", "")
+    content_text = entry.get("content", "")
 
-    if not content:
+    if not content_text:
         return "LLM generated empty content. Try with more context."
 
     # Write memory file
@@ -1225,7 +1436,7 @@ description: {description}
 type: {mem_type}
 ---
 
-{content}
+{content_text}
 """
     mem_file.write_text(mem_content, encoding="utf-8")
 
@@ -1237,11 +1448,11 @@ type: {mem_type}
             with memory_index.open("a", encoding="utf-8") as f:
                 f.write(f"\n{index_line}\n")
 
-    return (f"Memory saved: {mem_file}\n"
+    return (f"Memory saved (local LLM, quality={quality:.2f}): {mem_file}\n"
             f"  Name: {name}\n"
             f"  Type: {mem_type}\n"
             f"  Description: {description}\n"
-            f"  Content: {content[:200]}...")
+            f"  Content: {content_text[:200]}...")
 
 
 def _update_memory_on_exhaustion(digest: dict) -> str | None:
@@ -1295,7 +1506,144 @@ type: project
     return f"Memory updated: {filename}"
 
 
-def hook_classify_and_execute(message: str) -> dict:
+def _cmd_session_end(session_id: str, last_message: str,
+                     transcript_path: str) -> dict:
+    """Handle session end — save memory, log stats, compact session context.
+
+    Smart routing: local LLM writes memory first. If quality is too low
+    AND Claude usage was low this session, returns systemMessage asking
+    Claude to write the memory instead.
+    """
+    from pathlib import Path
+
+    log_event("STOP", f"session_end session={session_id[:12]}")
+    result: dict = {"decision": "allow"}
+    parts: list[str] = []
+
+    # 1. Gather session context
+    context_pieces: list[str] = []
+
+    # From session messages (in-process memory)
+    if _session_messages:
+        context_pieces.append("\n---\n".join(_session_messages[-15:]))
+
+    # From last assistant message
+    if last_message:
+        context_pieces.append(f"[Last response]\n{last_message[:2000]}")
+
+    # From session_context table
+    if session_id:
+        try:
+            store = SkillStore()
+            ctx = store.get_session_context(session_id)
+            if ctx.get("context_summary"):
+                context_pieces.append(
+                    f"[Session summary]\n{ctx['context_summary']}")
+            msg_count = ctx.get("message_count", 0)
+            store.close()
+        except Exception:
+            msg_count = 0
+    else:
+        msg_count = len(_session_messages)
+
+    # Skip if very short session (< 3 messages, probably just testing)
+    if msg_count < 3 and not context_pieces:
+        log_event("STOP", "session too short, skipping memory save")
+        return result
+
+    context = "\n\n".join(context_pieces)
+    if not context.strip():
+        log_event("STOP", "no context to save")
+        return result
+
+    # 2. Smart memory write via local LLM
+    memory_dir = (Path.home() / ".claude" / "projects" /
+                  "-Users-ccancellieri-work-code" / "memory")
+    memory_index = memory_dir / "MEMORY.md"
+    existing = ""
+    if memory_index.exists():
+        existing = memory_index.read_text(encoding="utf-8", errors="replace")
+
+    mem_result = smart_memory_write(
+        content=context,
+        existing_index=existing,
+    )
+
+    quality = mem_result["quality"]
+    escalate = mem_result["escalate"]
+    reason = mem_result["reason"]
+
+    if escalate:
+        # Quality too low — ask Claude to handle the memory write
+        log_event("STOP", f"memory escalated to Claude: {reason}")
+        parts.append(
+            f"[Skill Hub — session end | memory needs Claude]\n"
+            f"The local LLM produced low-quality memory (score={quality:.2f}, "
+            f"reason={reason}). If this session involved non-trivial work, "
+            f"please write a memory entry.\n"
+            f"Context summary: {context[:500]}"
+        )
+    else:
+        # Local LLM quality is good — write the memory
+        entry = mem_result["result"]
+        filename = entry.get("filename", "auto_memory.md")
+        name = entry.get("name", "Session memory")
+        description = entry.get("description", "")
+        mem_type = entry.get("type", "project")
+        content_text = entry.get("content", "")
+
+        if content_text and len(content_text) >= 30:
+            mem_file = memory_dir / filename
+            mem_content = f"""---
+name: {name}
+description: {description}
+type: {mem_type}
+---
+
+{content_text}
+"""
+            mem_file.write_text(mem_content, encoding="utf-8")
+
+            # Update index
+            index_line = f"- [{filename}]({filename}) — {description}"
+            if memory_index.exists():
+                current = memory_index.read_text(
+                    encoding="utf-8", errors="replace")
+                if filename not in current:
+                    with memory_index.open("a", encoding="utf-8") as f:
+                        f.write(f"\n{index_line}\n")
+
+            log_event("STOP", f"memory saved locally: {filename} "
+                      f"(quality={quality:.2f})")
+            parts.append(
+                f"[Skill Hub — session end | memory saved locally "
+                f"(quality={quality:.2f})]\n"
+                f"  {name}: {description}"
+            )
+
+    # 3. Log session stats
+    try:
+        store = SkillStore()
+        totals = store.get_interception_totals()
+        total_saved = (totals.get("total_tokens_saved") or 0) if totals else 0
+        total_count = (totals.get("total_interceptions") or 0) if totals else 0
+        store.close()
+
+        stats_line = (f"Session #{session_id[:8] if session_id else '?'}: "
+                      f"{msg_count} messages, "
+                      f"{total_count} interceptions, "
+                      f"~{total_saved} tokens saved total")
+        log_event("STATS", stats_line)
+    except Exception:
+        pass
+
+    if parts:
+        result["systemMessage"] = "\n\n".join(parts)
+
+    return result
+
+
+def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
 
@@ -1578,7 +1926,12 @@ def hook_classify_and_execute(message: str) -> dict:
                     ),
                 }
 
-    # ── Stage 4: Context enrichment for messages going to Claude ──
+    # ── Stage 4: Dynamic context management ──
+    #
+    # Instead of static RAG, the local LLM evaluates the evolving conversation
+    # and decides which skills to load/unload + optimises the prompt.
+    # Session state persists across hook invocations via SQLite.
+
     if not _cfg.get("hook_context_injection") and not triage_hint:
         return {"decision": "allow"}
 
@@ -1593,24 +1946,55 @@ def hook_classify_and_execute(message: str) -> dict:
     if precompact:
         system_parts.append(precompact)
 
-    # Strategy #1 + #5: RAG context injection + memory-aware context
+    # ── Dynamic skill lifecycle + prompt optimization ──
+    optimized_prompt: str | None = None
     context: str | None = None
+
     if _cfg.get("hook_context_injection"):
         try:
-            msg_vector = embed(message[:500])
-            context = _build_context_injection(message, msg_vector)
+            context = _dynamic_context_stage(
+                message, session_id, _cfg, triage_hint
+            )
             if context:
-                system_parts.append(context)
-        except Exception:
-            pass
+                # Extract optimized prompt if present (between markers)
+                import re
+                opt_match = re.search(
+                    r'\[OPTIMIZED_PROMPT\](.*?)\[/OPTIMIZED_PROMPT\]',
+                    context, re.DOTALL,
+                )
+                if opt_match:
+                    optimized_prompt = opt_match.group(1).strip()
+                    # Remove the markers from the system message
+                    context = re.sub(
+                        r'\[OPTIMIZED_PROMPT\].*?\[/OPTIMIZED_PROMPT\]\n*',
+                        '', context, flags=re.DOTALL,
+                    ).strip()
+                if context:
+                    system_parts.append(context)
+        except Exception as exc:
+            log_hook("dynamic_context_error", error=str(exc)[:120])
+            # Fallback to static RAG
+            try:
+                msg_vector = embed(message[:500])
+                fallback = _build_context_injection(message, msg_vector)
+                if fallback:
+                    system_parts.append(fallback)
+            except Exception:
+                pass
 
     # Strategy #2: Periodic conversation digest + relevance decay
     digest_msg = _conversation_digest_if_due(message)
     if digest_msg:
         system_parts.append(digest_msg)
 
-    if system_parts:
-        combined = "\n\n".join(system_parts)
+    if system_parts or optimized_prompt:
+        combined = "\n\n".join(system_parts) if system_parts else ""
+        result: dict = {"decision": "allow"}
+        if combined:
+            result["systemMessage"] = combined
+        if optimized_prompt and optimized_prompt != message:
+            result["userMessage"] = optimized_prompt
+
         # Log context injection stats
         if _cfg.get("token_profiling"):
             try:
@@ -1627,7 +2011,7 @@ def hook_classify_and_execute(message: str) -> dict:
                 store.close()
             except Exception:
                 pass
-        return {"decision": "allow", "systemMessage": combined}
+        return result
 
     return {"decision": "allow"}
 
@@ -2386,6 +2770,7 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-local-skills": "local_skills",
     "/hub-local-approve": "local_approve",
     "/hub-local-agent": "local_agent",
+    "/local-agent": "local_agent",
     "/hub-local": "local_toggle",
 }
 
@@ -2430,11 +2815,6 @@ def _handle_slash_command(message: str) -> dict | None:
 
     if cmd not in _SLASH_COMMANDS:
         return None
-
-    if show_help:
-        action = _SLASH_COMMANDS[cmd]
-        usage = _COMMAND_USAGE.get(action, f"No detailed help for {cmd}.")
-        return {"decision": "block", "message": f"**{cmd}**\n\n{usage}"}
 
     action = _SLASH_COMMANDS[cmd]
 
@@ -2617,8 +2997,19 @@ def main() -> None:
     args = sys.argv[2:]
 
     if cmd == "classify":
-        message = " ".join(args) if args else sys.stdin.read()
-        result = hook_classify_and_execute(message.strip())
+        # Extract --session-id if present
+        session_id = ""
+        filtered_args = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--session-id" and i + 1 < len(args):
+                session_id = args[i + 1]
+                i += 2
+            else:
+                filtered_args.append(args[i])
+                i += 1
+        message = " ".join(filtered_args) if filtered_args else sys.stdin.read()
+        result = hook_classify_and_execute(message.strip(), session_id=session_id)
         print(json.dumps(result))
 
     elif cmd == "status":
@@ -2694,6 +3085,27 @@ def main() -> None:
     elif cmd == "local_agent":
         result = _cmd_local_agent(" ".join(args))
         print(result.get("message", json.dumps(result)))
+
+    elif cmd == "session_end":
+        # Called by the Stop hook — saves session state + memory + stats
+        session_id = ""
+        last_message = ""
+        transcript = ""
+        i = 0
+        while i < len(args):
+            if args[i] == "--session-id" and i + 1 < len(args):
+                session_id = args[i + 1]
+                i += 2
+            elif args[i] == "--transcript" and i + 1 < len(args):
+                transcript = args[i + 1]
+                i += 2
+            elif args[i] == "--last-message" and i + 1 < len(args):
+                last_message = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        result = _cmd_session_end(session_id, last_message, transcript)
+        print(json.dumps(result))
 
     else:
         print(f"Unknown command: {cmd}")

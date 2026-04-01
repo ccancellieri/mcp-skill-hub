@@ -747,6 +747,41 @@ Type `?` to discover available commands, or `?command` for detailed usage:
 
 Works even when Claude is rate-limited — the `?` system runs entirely in the local hook.
 
+### 19. Standalone REPL
+
+When Claude is rate-limited or the VS Code extension doesn't display hook output, use the standalone REPL:
+
+```bash
+skill-hub-repl                     # interactive mode
+skill-hub-repl "git status"        # single command mode
+skill-hub-repl "/hub-status"       # run any /hub-* command
+skill-hub-repl "?"                 # list available commands
+```
+
+```
+╔══════════════════════════════════════════╗
+║       Skill Hub — Local REPL             ║
+║  All commands run locally via Ollama     ║
+║  Type ? for help, Ctrl-C to exit        ║
+╚══════════════════════════════════════════╝
+
+  Embed model:  OK (nomic-embed-text)
+  Reason model: OK (qwen2.5-coder:7b-instruct-q4_k_m)
+  L4 model:     qwen2.5-coder:32b
+  Local exec:   ON
+
+skill-hub> git status
+  [Local agent plans, asks for confirmation, executes]
+
+skill-hub> /hub-list-tasks
+  #8 [open] 4-level local LLM execution — fully wired
+
+skill-hub> ?hub-configure
+  View or set config values...
+```
+
+The REPL runs the same pipeline as the hook (L1→L2→L3→L4→agent fallback) but directly in your terminal. Messages that would normally pass through to Claude instead go to the Level 4 local agent.
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
