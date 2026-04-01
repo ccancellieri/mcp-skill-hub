@@ -2179,6 +2179,78 @@ def _cmd_profile(args_str: str) -> str:
 
 
 # Map of slash command prefixes → local handlers
+_COMMAND_USAGE: dict[str, str] = {
+    "status": "Show health check: Ollama, models, DB stats, hook, config.\n\nUsage: `/hub-status`",
+    "help": "Show full command reference.\n\nUsage: `/hub-help`",
+    "token_stats": "Token savings report: interceptions, triage, context injections.\n\nUsage: `/hub-token-stats`",
+    "list_models": "List installed Ollama models with active markers.\n\nUsage: `/hub-list-models`",
+    "list_skills": (
+        "List indexed skills, optionally filtered.\n\n"
+        "Usage:\n"
+        "  `/hub-list-skills`             — all skills (claude + local)\n"
+        "  `/hub-list-skills local`       — only local skills\n"
+        "  `/hub-list-skills claude`      — only Claude skills\n"
+        "  `/hub-list-skills superpowers` — filter by plugin name\n"
+    ),
+    "list_teachings": "Show all teaching rules.\n\nUsage: `/hub-list-teachings`",
+    "configure": (
+        "View or set config values.\n\n"
+        "Usage:\n"
+        "  `/hub-configure`              — show all config\n"
+        "  `/hub-configure <key>`        — show one value\n"
+        "  `/hub-configure <key> <val>`  — set a value\n\n"
+        "Common keys: reason_model, embed_model, hook_enabled, "
+        "local_execution_enabled, local_models, hook_llm_triage"
+    ),
+    "list_tasks": (
+        "Show tasks by status.\n\n"
+        "Usage:\n"
+        "  `/hub-list-tasks`       — open tasks (default)\n"
+        "  `/hub-list-tasks all`   — all tasks\n"
+        "  `/hub-list-tasks closed` — closed tasks"
+    ),
+    "save_task": "Save current work as an open task (uses LLM to extract title).\n\nUsage: `/hub-save-task [title]`",
+    "close_task": "Close and compact a task (uses LLM).\n\nUsage: `/hub-close-task <task_id>`",
+    "update_task": "Update an existing task (via Claude).\n\nUsage: `/hub-update-task <task_id>`",
+    "reopen_task": "Reopen a closed task.\n\nUsage: `/hub-reopen-task <task_id>`",
+    "search_context": (
+        "Unified semantic search across skills, tasks, teachings, memory.\n\n"
+        "Usage: `/hub-search-context <query>`"
+    ),
+    "search_skills": "Semantic skill search by embedding similarity.\n\nUsage: `/hub-search-skills <query>`",
+    "suggest_plugins": "Find matching plugins for a task.\n\nUsage: `/hub-suggest-plugins <query>`",
+    "teach": (
+        "Add a persistent teaching rule.\n\n"
+        "Usage: `/hub-teach <rule> -> <target>`\n"
+        "Example: `/hub-teach when debugging CSS -> chrome-devtools-mcp`"
+    ),
+    "forget_teaching": "Remove a teaching rule.\n\nUsage: `/hub-forget-teaching <id>`",
+    "toggle_plugin": "Enable/disable a plugin (via Claude).\n\nUsage: `/hub-toggle-plugin <name> on|off`",
+    "profile": (
+        "Manage session profiles (plugin presets).\n\n"
+        "Usage:\n"
+        "  `/hub-profile`              — list profiles\n"
+        "  `/hub-profile <name>`       — activate a profile\n"
+        "  `/hub-profile save <name>`  — save current state\n"
+        "  `/hub-profile delete <name>` — remove profile\n"
+        "  `/hub-profile auto <task>`  — LLM recommends best"
+    ),
+    "digest": "Force a conversation digest now.\n\nUsage: `/hub-digest`",
+    "optimize_context": "LLM analyzes memory and recommends pruning.\n\nUsage: `/hub-optimize-context`",
+    "save_memory": "LLM generates a memory entry from the session.\n\nUsage: `/hub-save-memory [description]`",
+    "exhaustion_save": "Auto-save session when Claude is rate-limited.\n\nUsage: `/hub-exhaustion-save [context]`",
+    "index_skills": "Rebuild skill index from all plugin dirs + local skills.\n\nUsage: `/hub-index-skills`",
+    "index_plugins": "Rebuild plugin index (via Claude).\n\nUsage: `/hub-index-plugins`",
+    "pull_model": "Download an Ollama model.\n\nUsage: `/hub-pull-model <model_name>`",
+    "local_agent": (
+        "Run a task via the local LLM agent (Level 4).\n\n"
+        "Usage:\n"
+        "  `/local-agent`              — show agent status + skills\n"
+        "  `/local-agent <task>`       — plan + execute task locally\n\n"
+        "The agent shows a plan first, then waits for **y**/**n** confirmation."
+    ),
+}
+
 _SLASH_COMMANDS: dict[str, str] = {
     "/hub-status": "status",
     "/hub-help": "help",
@@ -2221,6 +2293,31 @@ def _handle_slash_command(message: str) -> dict | None:
     the message is not a known slash command.
     """
     stripped = message.strip()
+
+    # ? alone — list all commands; ?command — inline help for that command
+    if stripped.startswith("?"):
+        help_cmd = stripped[1:].strip().lower()
+        if not help_cmd:
+            # Bare "?" — show all available commands grouped
+            groups: dict[str, list[str]] = {}
+            for cmd_key, action in sorted(_SLASH_COMMANDS.items()):
+                # Deduplicate aliases (multiple keys → same action)
+                one_liner = _COMMAND_USAGE.get(action, "").split("\n")[0]
+                if action not in groups:
+                    groups[action] = [cmd_key, one_liner]
+            lines = ["**Available commands** (type `?command` for details)\n"]
+            for action, (cmd_key, one_liner) in sorted(groups.items(), key=lambda x: x[1][0]):
+                lines.append(f"  `{cmd_key}`  — {one_liner}")
+            return {"decision": "block", "message": "\n".join(lines)}
+        # ?command — help for a specific command
+        if not help_cmd.startswith("/"):
+            help_cmd = "/" + help_cmd
+        action = _SLASH_COMMANDS.get(help_cmd)
+        if action:
+            usage = _COMMAND_USAGE.get(action, f"No detailed help for {help_cmd}.")
+            return {"decision": "block", "message": f"**{help_cmd}**\n\n{usage}"}
+        return None
+
     if not stripped.startswith("/"):
         return None
 
@@ -2230,6 +2327,11 @@ def _handle_slash_command(message: str) -> dict | None:
 
     if cmd not in _SLASH_COMMANDS:
         return None
+
+    if show_help:
+        action = _SLASH_COMMANDS[cmd]
+        usage = _COMMAND_USAGE.get(action, f"No detailed help for {cmd}.")
+        return {"decision": "block", "message": f"**{cmd}**\n\n{usage}"}
 
     action = _SLASH_COMMANDS[cmd]
 
