@@ -18,6 +18,7 @@ from .embeddings import (
     EMBED_MODEL, RERANK_MODEL,
     conversation_digest, exhaustion_save,
 )
+from .resource_monitor import should_run_llm, snapshot, Pressure
 from .store import SkillStore
 
 
@@ -592,27 +593,37 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     from pathlib import Path
     import re
 
+    from .activity_log import LOG_FILE
+
     max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+    top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
     budget = max_chars
     parts: list[str] = []
+
+    # Track skill load status for the summary line
+    skills_loaded: list[str] = []
+    skills_found: list[str] = []
 
     try:
         store = SkillStore()
 
-        # Search skills — only Claude skills go into Claude's context
-        skills = store.search(msg_vector, top_k=2, similarity_threshold=0.4,
-                              target="claude")
-        for s in skills:
-            if budget <= 0:
+        # Search skills — only Claude skills go into Claude's context.
+        # Fetch top_k_skills * 2 candidates so we can report what was skipped.
+        skill_candidates = store.search(msg_vector, top_k=top_k_skills * 2,
+                                        similarity_threshold=0.4, target="claude")
+        skills_found = [s["id"] for s in skill_candidates]
+
+        for s in skill_candidates[:top_k_skills]:
+            if budget <= 200:  # keep 200 chars for tasks/teachings
                 break
             desc = s.get("description", "")[:150]
-            # Include truncated content for the top hit
             content_preview = ""
-            if skills.index(s) == 0 and s.get("content"):
+            if not skills_loaded and s.get("content"):  # full content for top hit only
                 content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
             snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
             parts.append(snippet)
             budget -= len(snippet)
+            skills_loaded.append(s["id"])
 
         # Search past tasks
         tasks = store.search_tasks(msg_vector, top_k=2, min_sim=0.4)
@@ -695,9 +706,23 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     if not parts:
         return None
 
-    log_hook("context_inject", parts=len(parts), chars=sum(len(p) for p in parts))
-    header = ("[Skill Hub — auto-injected context relevant to this message. "
-              "Use this as background knowledge, do not repeat it verbatim.]\n\n")
+    log_hook("context_inject", parts=len(parts), chars=sum(len(p) for p in parts),
+             skills_loaded=len(skills_loaded), skills_found=len(skills_found))
+
+    # Build skill load summary line
+    skills_skipped = [s for s in skills_found if s not in skills_loaded]
+    skill_summary_parts = []
+    if skills_loaded:
+        skill_summary_parts.append(f"loaded: {', '.join(skills_loaded)}")
+    if skills_skipped:
+        skill_summary_parts.append(f"found-not-loaded: {', '.join(skills_skipped)}")
+    skill_summary = " | ".join(skill_summary_parts) if skill_summary_parts else "none"
+
+    header = (
+        f"[Skill Hub — auto-injected context | "
+        f"skills {skill_summary} | "
+        f"log: tail -f {LOG_FILE}]\n\n"
+    )
     return header + "\n\n".join(parts)
 
 
@@ -711,6 +736,9 @@ def _precompact_hint(message: str) -> str | None:
 
     threshold = int(_cfg.get("hook_precompact_threshold") or 1500)
     if len(message) <= threshold:
+        return None
+
+    if not should_run_llm("precompact"):
         return None
 
     log_hook("precompact", length=len(message), threshold=threshold)
@@ -730,6 +758,49 @@ def _precompact_hint(message: str) -> str | None:
 # Session-level state for conversation tracking (per-process)
 _session_messages: list[str] = []
 _session_id: str | None = None
+_local_mode: bool = False  # when True, all messages go to L4 local agent
+
+
+def _cmd_local_toggle(args_str: str = "") -> str:
+    """Toggle or set local mode — all messages go to L4 agent, bypassing Claude."""
+    global _local_mode
+
+    arg = args_str.strip().lower()
+    if arg in ("on", "true", "1"):
+        _local_mode = True
+    elif arg in ("off", "false", "0"):
+        _local_mode = False
+    else:
+        _local_mode = not _local_mode
+
+    if _local_mode:
+        # Auto-save session state when entering local mode
+        if _session_messages:
+            try:
+                _exhaustion_auto_save(
+                    "\n---\n".join(_session_messages[-15:])
+                )
+            except Exception:
+                pass
+
+        from . import config as _cfg
+        models = _cfg.get("local_models") or {}
+        model = models.get("level_4", "qwen2.5-coder:32b")
+        return (
+            "Local mode: ON\n\n"
+            f"All messages now go to the local agent ({model}).\n"
+            "Claude API will NOT be used.\n"
+            "Session state auto-saved.\n\n"
+            "Capabilities: shell commands, file reading, code search, local skills.\n"
+            "Limitations: no multi-file refactoring, no complex reasoning.\n\n"
+            "Turn off: /hub-local off"
+        )
+    else:
+        return (
+            "Local mode: OFF\n\n"
+            "Messages will go to Claude again.\n"
+            "Your session state was saved — Claude can pick up where the local agent left off."
+        )
 
 
 def _get_session_id() -> str:
@@ -757,7 +828,7 @@ def _conversation_digest_if_due(message: str) -> str | None:
     if len(_session_messages) < n or len(_session_messages) % n != 0:
         return None
 
-    if not ollama_available(RERANK_MODEL):
+    if not should_run_llm("digest") or not ollama_available(RERANK_MODEL):
         return None
 
     log_hook("digest", message_count=len(_session_messages))
@@ -1242,6 +1313,24 @@ def hook_classify_and_execute(message: str) -> dict:
     """
     from . import config as _cfg
 
+    # ── Stage 0: Local mode — bypass Claude entirely, route to L4 agent ──
+    if _local_mode:
+        # Still allow slash commands (user needs /hub-local off to exit)
+        slash_result = _handle_slash_command(message)
+        if slash_result is not None:
+            return slash_result
+
+        # Route to L4 local agent directly
+        _session_messages.append(message)
+        from .local_agent import run_agent
+        recent = "\n".join(_session_messages[-10:])
+        try:
+            result = run_agent(message, context=recent)
+            return {"decision": "block", "message": result}
+        except Exception as exc:
+            return {"decision": "block",
+                    "message": f"[Local agent error: {exc}]\n\nTurn off: /hub-local off"}
+
     # ── Stage 1: Slash commands — no LLM, no embedding, instant ──
     slash_result = _handle_slash_command(message)
     if slash_result is not None:
@@ -1286,7 +1375,9 @@ def hook_classify_and_execute(message: str) -> dict:
         skip_len = int(_cfg.get("hook_llm_triage_skip_length") or 2000)
         min_conf = float(_cfg.get("hook_llm_triage_min_confidence") or 0.7)
 
-        if len(message) <= skip_len and ollama_available(RERANK_MODEL):
+        if (len(message) <= skip_len
+                and should_run_llm("triage")
+                and ollama_available(RERANK_MODEL)):
             # Build brief context from recent session messages
             recent = "\n".join(_session_messages[-5:]) if _session_messages else ""
             triage_result = triage_message(message, context=recent)
@@ -2249,6 +2340,17 @@ _COMMAND_USAGE: dict[str, str] = {
         "  `/local-agent <task>`       — plan + execute task locally\n\n"
         "The agent shows a plan first, then waits for **y**/**n** confirmation."
     ),
+    "local_toggle": (
+        "Toggle local mode — route ALL messages to the local LLM agent.\n\n"
+        "When Claude is exhausted/quota-limited, switch to local mode so\n"
+        "the local agent handles everything until Claude is back.\n\n"
+        "Usage:\n"
+        "  `/hub-local`       — toggle on/off\n"
+        "  `/hub-local on`    — force on (auto-saves session state)\n"
+        "  `/hub-local off`   — force off (resume Claude)\n\n"
+        "In local mode, all slash commands still work normally.\n"
+        "Session state is auto-saved when entering local mode."
+    ),
 }
 
 _SLASH_COMMANDS: dict[str, str] = {
@@ -2284,6 +2386,7 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-local-skills": "local_skills",
     "/hub-local-approve": "local_approve",
     "/hub-local-agent": "local_agent",
+    "/hub-local": "local_toggle",
 }
 
 
@@ -2491,6 +2594,8 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_local_approve(args_str)}
         elif action == "local_agent":
             return _cmd_local_agent(args_str)
+        elif action == "local_toggle":
+            return {"decision": "block", "message": _cmd_local_toggle(args_str)}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 

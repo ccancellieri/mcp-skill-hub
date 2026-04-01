@@ -592,7 +592,7 @@ Three ways to invoke L4:
 
 1. **Explicit:** `/local-agent <task>` — always asks, shows plan
 2. **Triage auto-routing:** when the LLM triage classifies a message as `local_agent`, it routes automatically
-3. **Exhaustion fallback:** when Claude is rate-limited, `/hub-exhaustion-save` suggests `/local-agent` for continuation
+3. **Exhaustion fallback / local mode:** when Claude is rate-limited, switch with `/hub-local on` — all messages go to the local agent until Claude is back
 
 ```
 User: /local-agent show git status and run tests
@@ -620,6 +620,10 @@ Planning uses the level_3 model (14b, fast) while execution uses level_4 (32b, t
 /hub-local-approve git_status  # pre-approve for this session
 /local-agent                   # show agent status + available skills
 /local-agent <task>            # plan + execute task via local agent (L4)
+
+/hub-local                     # toggle local mode on/off (bypass Claude)
+/hub-local on                  # force on: all messages → L4 agent, session auto-saved
+/hub-local off                 # resume Claude
 ```
 
 **Local skills** are JSON files in `~/.claude/local-skills/`:
@@ -654,7 +658,60 @@ The level_4 model can also be a remote endpoint:
 /hub-configure remote_llm '{"base_url":"http://your-server:11434","model":"qwen2.5-coder:32b","timeout":120}'
 ```
 
-### 17. Dual Skill Index (Claude + Local)
+### 17. Resource-Aware LLM Gating
+
+Skill Hub monitors CPU load and memory pressure and skips expensive local LLM operations when the machine is busy. This prevents latency spikes during builds, compiles, or large model loads.
+
+| Operation | IDLE | LOW | MODERATE | HIGH |
+|-----------|------|-----|----------|------|
+| embed | ✓ | ✓ | ✓ | ✓ |
+| triage | ✓ | ✓ | ✓ | skip |
+| rerank | ✓ | ✓ | ✓ | skip |
+| precompact | ✓ | ✓ | skip | skip |
+| digest | ✓ | ✓ | skip | skip |
+| optimize\_memory | ✓ | skip | skip | skip |
+
+Pressure is re-evaluated every 10 seconds (cached). Current pressure is always visible in `/hub-status`.
+
+```
+/hub-status           # shows: pressure=LOW  cpu=32%  mem=80%  avail=3.3GB
+```
+
+Force all operations to run regardless of pressure:
+
+```bash
+SKILL_HUB_FORCE_LLM=1 skill-hub-cli classify "..."
+```
+
+Disable gating entirely:
+
+```
+/hub-configure resource_gating_enabled false
+```
+
+### 18. Context Injection — Skills Loaded/Not-Loaded
+
+Every auto-injected system message now includes a one-line summary showing which skills were loaded into context and which were found but skipped (not enough budget):
+
+```
+[Skill Hub — auto-injected context | skills loaded: superpowers:brainstorm, feature-dev:code-architect | found-not-loaded: superpowers:writing-plans, hookify:hookify | log: tail -f ~/.claude/mcp-skill-hub/logs/activity.log]
+```
+
+The same detail appears as HTML comments in `search_skills()` results:
+
+```
+<!-- LOADED (5):      superpowers:brainstorm, feature-dev:code-architect, ... -->
+<!-- NOT LOADED (3):  superpowers:writing-plans, hookify:hookify, ... -->
+<!-- log: tail -f ~/.claude/mcp-skill-hub/logs/activity.log -->
+```
+
+To load more skills: call `search_skills(query, top_k=8)` or raise the default:
+
+```
+/hub-configure hook_context_top_k_skills 8
+```
+
+### 20. Dual Skill Index (Claude + Local)
 
 Skills are indexed with a **target** that determines where they're loaded:
 
@@ -732,6 +789,7 @@ All settings have sensible defaults. Override only what you need.
 | `hook_task_command_examples` | `[15 phrases]` | Canonical task phrases for semantic centroid |
 | `hook_context_injection` | `true` | Auto-enrich context with RAG + memory |
 | `hook_context_max_chars` | `2000` | Max chars injected as systemMessage |
+| `hook_context_top_k_skills` | `5` | Max skills loaded with full content per message |
 | `hook_precompact_threshold` | `1500` | Messages longer than this get LLM pre-compaction |
 | `profiles` | `{6 built-in}` | Session profile definitions |
 | `digest_every_n_messages` | `5` | Produce conversation digest every N messages |
@@ -739,6 +797,8 @@ All settings have sensible defaults. Override only what you need.
 | `eviction_enabled` | `true` | Enable relevance decay tracking |
 | `eviction_min_stale_count` | `3` | Suggest profile switch after N stale detections |
 | `exhaustion_fallback` | `true` | Enable exhaustion auto-save |
+| `resource_gating_enabled` | `true` | Skip LLM ops under CPU/RAM pressure |
+| `resource_cache_ttl_seconds` | `10` | How often to re-check system resources |
 | `hook_llm_triage` | `true` | Enable universal LLM triage on all messages |
 | `hook_llm_triage_timeout` | `30` | Max seconds for triage LLM call |
 | `hook_llm_triage_min_confidence` | `0.7` | Min confidence to act on local answer |

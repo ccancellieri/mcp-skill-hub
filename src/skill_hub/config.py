@@ -61,6 +61,7 @@ _DEFAULTS = {
     # Context injection — auto-enrich Claude's context with relevant skills/tasks/memory
     "hook_context_injection": True,     # enable RAG + auto-memory injection
     "hook_context_max_chars": 2000,     # max chars injected as systemMessage (~500 tokens)
+    "hook_context_top_k_skills": 5,     # max skills to load with full content per message
     "hook_precompact_threshold": 1500,  # messages longer than this get LLM pre-compaction
 
     # Search defaults
@@ -82,6 +83,13 @@ _DEFAULTS = {
 
     # Exhaustion fallback — local LLM takes over when Claude is unavailable
     "exhaustion_fallback": True,        # enable exhaustion auto-save
+
+    # Resource-aware LLM gating — skip expensive local LLM ops under pressure
+    # Pressure levels: idle(0), low(1), moderate(2), high(3)
+    # Each operation has a max pressure level at which it still runs.
+    # Set to false to disable resource gating entirely (always run all LLM ops).
+    "resource_gating_enabled": True,
+    "resource_cache_ttl_seconds": 10,   # how often to re-check system resources
 
     # LLM triage — local LLM pre-processes ALL messages before Claude
     "hook_llm_triage": True,            # enable universal LLM triage

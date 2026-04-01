@@ -51,7 +51,14 @@ from .embeddings import (
 )
 from .indexer import index_all
 from .activity_log import log_tool, log_llm, log_banner
+from .resource_monitor import should_run_llm, snapshot
 from .store import SkillStore
+
+
+def _get_cpu_info() -> int:
+    """Get CPU core count for display."""
+    import os
+    return os.cpu_count() or 0
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
@@ -97,7 +104,7 @@ _last_search_state: dict = {"query": "", "vector": [], "skills": []}
 @mcp.tool()
 def search_skills(
     query: str,
-    top_k: int = 3,
+    top_k: int = 5,
     use_rerank: bool = False,
 ) -> str:
     """
@@ -106,10 +113,13 @@ def search_skills(
 
     Args:
         query:      Natural language description of the current task or topic.
-        top_k:      Number of skills to return (default 3).
+        top_k:      Number of skills to load with full content (default 5).
+                    Additional matches above the threshold are listed but not loaded.
         use_rerank: If True, use deepseek-r1:1.5b to re-rank results for higher
                     precision (slower, ~2-5s extra per candidate).
     """
+    from .activity_log import LOG_FILE
+
     log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
     if not ollama_available(EMBED_MODEL):
         return (
@@ -124,22 +134,37 @@ def search_skills(
         _session["topic"] = query
         _session["topic_vector"] = query_vector
 
-    candidates = _store.search(query_vector, top_k=top_k * 2 if use_rerank else top_k)
+    # Fetch a wider candidate pool: top_k loaded + up to top_k more to list as found
+    fetch_n = top_k * 2 if use_rerank else top_k * 2
+    all_candidates = _store.search(query_vector, top_k=fetch_n)
 
-    if not candidates:
+    if not all_candidates:
         return "No matching skills found. Run index_skills() if the index is empty."
 
-    if use_rerank and len(candidates) > 1:
-        candidates = rerank(query, candidates, model=RERANK_MODEL)[:top_k]
-    else:
-        candidates = candidates[:top_k]
+    if use_rerank and len(all_candidates) > 1 and should_run_llm("rerank"):
+        all_candidates = rerank(query, all_candidates, model=RERANK_MODEL)
+
+    loaded = all_candidates[:top_k]
+    not_loaded = all_candidates[top_k:]
 
     _last_search_state["query"] = query
     _last_search_state["vector"] = query_vector
-    _last_search_state["skills"] = [c["id"] for c in candidates]
+    _last_search_state["skills"] = [c["id"] for c in loaded]
 
-    parts: list[str] = []
-    for c in candidates:
+    # Build summary header
+    loaded_ids = [c["id"] for c in loaded]
+    not_loaded_ids = [c["id"] for c in not_loaded]
+
+    header_lines = [
+        f"<!-- Skill Hub search: query={query!r} top_k={top_k} -->",
+        f"<!-- LOADED ({len(loaded)}):     {', '.join(loaded_ids) or 'none'} -->",
+        f"<!-- NOT LOADED ({len(not_loaded)}): {', '.join(not_loaded_ids) or 'none'} -->",
+        f"<!-- log: tail -f {LOG_FILE} -->",
+    ]
+    header = "\n".join(header_lines)
+
+    parts: list[str] = [header]
+    for c in loaded:
         parts.append(
             f"<!-- skill: {c['id']} -->\n{c['content'].strip()}"
         )
@@ -847,6 +872,17 @@ def optimize_memory(dry_run: bool = True) -> str:
                  If False, apply PRUNE actions (delete files + update MEMORY.md).
     """
     log_tool("optimize_memory", dry_run=dry_run)
+
+    if not should_run_llm("optimize_memory"):
+        s = snapshot(force=True)
+        return (
+            f"Skipped: system under pressure ({s.pressure.name}, "
+            f"cpu={s.cpu_load_1m:.0%}, mem={s.memory_used_pct:.0%}).\n"
+            f"optimize_memory runs only when the machine is idle.\n"
+            f"Try again when load is lower, or force with: "
+            f"SKILL_HUB_FORCE_LLM=1 optimize_memory"
+        )
+
     reason_model = str(_cfg.get("reason_model"))
     if not ollama_available(reason_model):
         return (
@@ -1103,6 +1139,18 @@ def status() -> str:
             cats[prefix] = cats.get(prefix, 0) + _est_tokens(mf)
         for cat, tok in sorted(cats.items(), key=lambda x: -x[1]):
             lines.append(f"    {cat:<12} ~{tok:>5} tokens  (detail files, loaded on demand)")
+
+    # System resource pressure
+    lines.append("\n=== System Resources ===\n")
+    s = snapshot(force=True)
+    pressure_icon = {"IDLE": "🟢", "LOW": "🟡", "MODERATE": "🟠", "HIGH": "🔴"}
+    lines.append(f"  Pressure:  {pressure_icon.get(s.pressure.name, '?')} {s.pressure.name}")
+    lines.append(f"  CPU load:  {s.cpu_load_1m:.0%} (normalized to {_get_cpu_info()} cores)")
+    lines.append(f"  Memory:    {s.memory_used_pct:.0%} used, {s.memory_available_mb}MB available / {s.total_memory_mb}MB total")
+    lines.append(f"  LLM gates: triage={'on' if s.pressure.value <= 2 else 'SKIP'}, "
+                 f"precompact={'on' if s.pressure.value <= 1 else 'SKIP'}, "
+                 f"digest={'on' if s.pressure.value <= 1 else 'SKIP'}, "
+                 f"optimize={'on' if s.pressure.value == 0 else 'SKIP'}")
 
     # Memory optimization tips
     lines.append("\n=== Memory Optimization Tips ===\n")
