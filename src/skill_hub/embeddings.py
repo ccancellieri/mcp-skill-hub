@@ -572,10 +572,16 @@ def triage_message(message: str, context: str = "",
     if context:
         ctx_section = f"\nRecent conversation context:\n{context}\n"
 
+    # Prepend static persona seed to triage prompt (dynamic persona skipped here —
+    # store I/O would add 200ms per message in the hot path)
+    _seed = str(_cfg.get("local_system_prompt") or "").strip()
+
     prompt = _TRIAGE_PROMPT.format(
         message=message[:2000],
         context=ctx_section,
     )
+    if _seed:
+        prompt = f"{_seed}\n\n{prompt}"
 
     try:
         resp = httpx.post(

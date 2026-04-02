@@ -29,6 +29,103 @@ from .store import SkillStore
 _task_command_vector: list[float] | None = None
 _task_command_hash: int | None = None  # tracks config changes
 
+# Dynamic persona cache: {session_id: (persona_str, built_at_epoch)}
+_persona_cache: dict[str, tuple[str, float]] = {}
+
+
+def _build_local_persona(session_id: str = "") -> str:
+    """
+    Build a dynamic system prompt for all local LLM calls (L1–L4).
+
+    Assembled from (high-value first):
+    1. Static seed from config "local_system_prompt"
+    2. All teaching rules → "Rule: when X → Y"
+    3. Recent closed tasks (last 5) → project + decision keywords
+    4. Memory index top-5 entries (by recency, from MEMORY.md)
+
+    Capped at local_persona_max_chars (default 600).
+    Cached per session_id for local_persona_ttl_seconds (default 120s).
+    Returns empty string if nothing useful is available.
+    """
+    import time
+    import os as _os
+    from pathlib import Path
+    from . import config as _cfg
+
+    ttl = float(_cfg.get("local_persona_ttl_seconds") or 120)
+    max_chars = int(_cfg.get("local_persona_max_chars") or 600)
+    now = time.monotonic()
+
+    # Cache check
+    cache_key = session_id or "__global__"
+    if cache_key in _persona_cache:
+        cached_str, built_at = _persona_cache[cache_key]
+        if now - built_at < ttl:
+            return cached_str
+
+    parts: list[str] = []
+
+    # 1. Static seed
+    seed = str(_cfg.get("local_system_prompt") or "").strip()
+    if seed:
+        parts.append(seed)
+
+    try:
+        store = SkillStore()
+
+        # 2. Teaching rules
+        teachings = store.list_teachings()
+        rules: list[str] = []
+        for t in teachings:
+            rule = t["rule"] if isinstance(t, dict) else t[1]
+            target = t["target_id"] if isinstance(t, dict) else t[4]
+            rules.append(f"when {rule} → {target}")
+        if rules:
+            parts.append("Rules: " + " | ".join(rules[:5]))
+
+        # 3. Recent closed tasks → project context
+        closed = store.list_tasks(status="closed")
+        if closed:
+            titles = [
+                (t["title"] if isinstance(t, dict) else t[1])
+                for t in list(closed)[:5]
+            ]
+            parts.append("Recent work: " + ", ".join(t[:60] for t in titles))
+
+        store.close()
+    except Exception:
+        pass
+
+    # 4. Memory index entries (last 5 lines with project-like names)
+    try:
+        _mem_cfg = _cfg.get("hook_memory_dir")
+        if _mem_cfg:
+            memory_dir = Path(str(_mem_cfg)).expanduser()
+        else:
+            _cwd_slug = _os.getcwd().replace("/", "-").replace("\\", "-").lstrip("-")
+            memory_dir = Path.home() / ".claude" / "projects" / _cwd_slug / "memory"
+        mem_index = memory_dir / "MEMORY.md"
+        if mem_index.exists():
+            lines = mem_index.read_text(encoding="utf-8", errors="replace").splitlines()
+            mem_lines = [l.strip() for l in lines if l.strip().startswith("-")][-5:]
+            if mem_lines:
+                parts.append("Memory: " + "; ".join(
+                    l.split("—")[-1].strip()[:60] for l in mem_lines if "—" in l
+                ))
+    except Exception:
+        pass
+
+    if not parts:
+        _persona_cache[cache_key] = ("", now)
+        return ""
+
+    persona = "[Context for local LLM]\n" + "\n".join(parts)
+    if len(persona) > max_chars:
+        persona = persona[:max_chars]
+
+    _persona_cache[cache_key] = (persona, now)
+    return persona
+
 
 def _get_task_examples() -> list[str]:
     """Load task command examples from config (editable at runtime)."""
@@ -289,6 +386,9 @@ def _match_local_command(message: str) -> dict | None:
 
     cmd_list = "\n".join(f"  {name}: {cmd}" for name, cmd in commands.items())
     prompt = _LOCAL_COMMAND_PROMPT.format(commands=cmd_list, message=message)
+    persona = _build_local_persona()
+    if persona:
+        prompt = f"{persona}\n\n{prompt}"
 
     try:
         resp = httpx.post(
@@ -368,6 +468,9 @@ def _match_local_template(message: str) -> dict | None:
         for name, t in templates.items()
     )
     prompt = _LOCAL_TEMPLATE_PROMPT.format(templates=tpl_list, message=message)
+    persona = _build_local_persona()
+    if persona:
+        prompt = f"{persona}\n\n{prompt}"
 
     try:
         resp = httpx.post(
@@ -1023,6 +1126,19 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
     except Exception as exc:
         log_hook("context_inject_error", error=str(exc)[:120])
+
+    # Stage 4.1: SearXNG web RAG fallback — only when skill search returned nothing
+    if not parts:
+        from . import config as _cfg_inner
+        if _cfg_inner.get("searxng_enabled") and ollama_available(EMBED_MODEL):
+            try:
+                from .searxng import searxng_context
+                web_ctx = searxng_context(message[:300])
+                if web_ctx:
+                    parts.append(web_ctx)
+                    log_hook("searxng_injected", chars=len(web_ctx))
+            except Exception as _se:
+                log_hook("searxng_error", error=str(_se)[:80])
 
     if not parts:
         log_hook("context_inject_miss",

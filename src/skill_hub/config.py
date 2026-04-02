@@ -182,6 +182,21 @@ _DEFAULTS = {
     # to optimize local skills for local models (recommended)
     "local_skills_dir": str(Path.home() / ".claude" / "local-skills"),
 
+    # Local LLM persona — optional static bio seed prepended to all local LLM calls.
+    # The full dynamic persona is assembled from this + teachings + closed tasks + memory.
+    # Example: "Python/FastAPI developer. Projects: geoid (STAC catalog), glicemia (T1D bot)."
+    "local_system_prompt": "",
+    "local_persona_ttl_seconds": 120,   # seconds before persona is rebuilt from store
+    "local_persona_max_chars": 600,     # hard cap on assembled persona string
+
+    # SearXNG web search — Stage 4.1 RAG fallback when skill search returns nothing
+    # Auto-detects localhost:8080 if searxng_url is empty.
+    # The VPS SearXNG URL can be set explicitly (e.g. "http://vps-ip:8080").
+    "searxng_url": "",         # explicit URL (VPS or custom) — empty = auto-detect
+    "searxng_enabled": True,
+    "searxng_top_k": 3,
+    "searxng_timeout": 5,      # seconds per URL probe and per search request
+
     # Activity log — daily rotation, 50 MB cap
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")
     "log_dir": str(Path.home() / ".claude" / "mcp-skill-hub" / "logs"),

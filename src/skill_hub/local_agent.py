@@ -397,6 +397,14 @@ def plan_agent(message: str, context: str = "") -> dict:
     )
 
     try:
+        from .cli import _build_local_persona
+        _persona = _build_local_persona()
+        if _persona:
+            prompt = f"{_persona}\n\n{prompt}"
+    except Exception:
+        pass
+
+    try:
         timeout = int((_cfg.get("remote_llm") or {}).get("timeout", 120))
         resp = httpx.post(
             f"{base_url.rstrip('/')}/api/generate",
@@ -443,11 +451,18 @@ def run_agent(message: str, context: str = "", max_turns: int = 8) -> str:
         f"  - {cmd}" for cmd in commands.values()
     ) or "  (none)"
 
-    system = _AGENT_SYSTEM.format(
+    base_system = _AGENT_SYSTEM.format(
         max_turns=max_turns,
         skills=skills_desc,
         commands=commands_desc,
     )
+
+    try:
+        from .cli import _build_local_persona
+        _persona = _build_local_persona()
+        system = f"{_persona}\n\n{base_system}" if _persona else base_system
+    except Exception:
+        system = base_system
 
     messages = [{"role": "system", "content": system}]
     if context:

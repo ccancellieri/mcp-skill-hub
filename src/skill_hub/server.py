@@ -64,6 +64,13 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 _store = SkillStore()
 
+# Watchdog auto-reindex — starts silently if watchdog is installed
+import atexit as _atexit
+from .watcher import start_watcher, stop_watcher as _stop_watcher
+_watcher = start_watcher()
+if _watcher:
+    _atexit.register(_stop_watcher, _watcher)
+
 # In-process session tracking
 _session = {
     "id": str(uuid.uuid4()),
