@@ -40,7 +40,7 @@ def _resolve_searxng_url(timeout: float = 5.0) -> str | None:
     explicit = str(_cfg.get("searxng_url") or "").strip()
     if explicit:
         candidates.append(explicit.rstrip("/"))
-    candidates.append("http://localhost:8080")
+    candidates.append("http://localhost:8989")
 
     for url in candidates:
         try:

@@ -190,8 +190,8 @@ _DEFAULTS = {
     "local_persona_max_chars": 600,     # hard cap on assembled persona string
 
     # SearXNG web search — Stage 4.1 RAG fallback when skill search returns nothing
-    # Auto-detects localhost:8080 if searxng_url is empty.
-    # The VPS SearXNG URL can be set explicitly (e.g. "http://vps-ip:8080").
+    # Auto-detects localhost:8989 if searxng_url is empty.
+    # The VPS SearXNG URL can be set explicitly (e.g. "http://vps-ip:8989").
     "searxng_url": "",         # explicit URL (VPS or custom) — empty = auto-detect
     "searxng_enabled": True,
     "searxng_top_k": 3,
