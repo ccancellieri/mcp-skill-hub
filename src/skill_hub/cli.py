@@ -11,11 +11,12 @@ Usage from hooks:
 import json
 import re
 import sys
+from pathlib import Path
 
 from .activity_log import log_hook, log_llm, log_event
 from .embeddings import (
     embed, compact, ollama_available, optimize_context, triage_message,
-    dynamic_context_eval, smart_memory_write,
+    dynamic_context_eval, eval_skill_lifecycle, optimize_prompt, smart_memory_write,
     EMBED_MODEL, RERANK_MODEL, OLLAMA_BASE,
     conversation_digest, exhaustion_save,
 )
@@ -91,14 +92,14 @@ def _classify_intent(message: str) -> dict:
     max_len = int(_cfg.get("hook_max_message_length") or 400)
     if len(message) > max_len:
         log_hook("classify_skip", reason="length_guard", length=len(message))
-        return {"intent": "none"}
+        return {"intent": "none", "_similarity": 0.0}
 
     # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
     threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
     sim = _task_similarity(message)
     if sim < threshold:
         log_hook("classify_skip", reason="low_similarity", sim=f"{sim:.3f}", threshold=threshold)
-        return {"intent": "none"}
+        return {"intent": "none", "_similarity": sim}
 
     log_hook("classify_llm", sim=f"{sim:.3f}", threshold=threshold)
     # Stage 2: LLM classification
@@ -127,11 +128,18 @@ Reply with ONLY a JSON object:
 
 User message: {message}"""
 
+    # Use lighter model for classification (simple yes/no decision)
+    classify_model = (_cfg.get("local_models") or {}).get(
+        "level_1", "qwen2.5-coder:3b")
+    if not ollama_available(classify_model):
+        classify_model = RERANK_MODEL  # fallback to reason model
+
     try:
         resp = httpx.post(
             f"{OLLAMA_BASE}/api/generate",
-            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False},
-            timeout=30.0,
+            json={"model": classify_model, "prompt": prompt, "stream": False,
+                  "options": {"num_predict": 100}},
+            timeout=15.0,
         )
         resp.raise_for_status()
         raw = resp.json().get("response", "{}")
@@ -139,11 +147,12 @@ User message: {message}"""
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
-            log_llm("classify", model=RERANK_MODEL, intent=result.get("intent"))
+            result["_similarity"] = sim
+            log_llm("classify", model=classify_model, intent=result.get("intent"))
             return result
     except Exception:
         pass
-    return {"intent": "none"}
+    return {"intent": "none", "_similarity": sim}
 
 
 def _execute_intent(intent: dict, original_message: str) -> str | None:
@@ -292,7 +301,7 @@ def _match_local_command(message: str) -> dict | None:
             result = json.loads(json_match.group())
             name = result.get("command", "none")
             confidence = float(result.get("confidence", 0))
-            if name != "none" and name in commands and confidence >= 0.7:
+            if name != "none" and name in commands and confidence >= 0.92:
                 log_hook("local_cmd_match", command=name, confidence=f"{confidence:.2f}")
                 return {"name": name, "shell": commands[name], "level": 1}
     except Exception:
@@ -373,7 +382,7 @@ def _match_local_template(message: str) -> dict | None:
             confidence = float(result.get("confidence", 0))
             params = result.get("params", {})
 
-            if name == "none" or name not in templates or confidence < 0.7:
+            if name == "none" or name not in templates or confidence < 0.92:
                 return None
 
             tpl = templates[name]
@@ -658,11 +667,16 @@ def _dynamic_context_stage(
         else:
             dynamic_model = ""
 
+    max_summary_chars = int(_cfg.get("hook_context_summary_max_chars") or 800)
+    # Threshold below which prompt optimization adds little value
+    opt_min_len = int(_cfg.get("hook_context_prompt_opt_min_len") or 150)
+
     if (should_run_llm("dynamic_context")
             and dynamic_model
             and (loaded_skills or candidate_skills)):
 
-        llm_result = dynamic_context_eval(
+        # Pass 1: skill lifecycle + summary update (temp=0.0, fast, focused)
+        lifecycle = eval_skill_lifecycle(
             message=message,
             context_summary=context_summary,
             loaded_skills=loaded_skills,
@@ -670,11 +684,32 @@ def _dynamic_context_stage(
             model=dynamic_model,
         )
 
-        keep_ids = set(llm_result.get("keep", []))
-        add_ids = set(llm_result.get("add", []))
-        drop_ids = set(llm_result.get("drop", []))
-        new_summary = llm_result.get("context_summary", context_summary)
-        optimized_prompt = llm_result.get("optimized_prompt", message)
+        keep_ids = set(lifecycle.get("keep", []))
+        add_ids = set(lifecycle.get("add", []))
+        drop_ids = set(lifecycle.get("drop", []))
+        new_summary = lifecycle.get("context_summary", context_summary)
+
+        # Clamp rolling summary to prevent unbounded growth across a long session
+        if len(new_summary) > max_summary_chars:
+            new_summary = new_summary[:max_summary_chars]
+
+        # Pass 2: prompt optimization — only when there is real context and the
+        # message is substantive enough to benefit (skip trivial/first-turn)
+        prompt_opt_enabled = _cfg.get("hook_context_prompt_optimization") is not False
+        should_opt = (
+            prompt_opt_enabled
+            and context_summary  # at least one prior turn
+            and len(message.strip()) >= opt_min_len
+            and should_run_llm("dynamic_context")
+        )
+        if should_opt:
+            optimized_prompt = optimize_prompt(
+                message=message,
+                context_summary=new_summary,
+                model=dynamic_model,
+            )
+        else:
+            optimized_prompt = message
 
         # Build final skill list: kept + added (max top_k_skills)
         final_skill_ids = list(keep_ids | add_ids)[:top_k_skills]
@@ -683,6 +718,7 @@ def _dynamic_context_stage(
                  model=dynamic_model,
                  keep=len(keep_ids), add=len(add_ids), drop=len(drop_ids),
                  final=len(final_skill_ids),
+                 prompt_optimized=should_opt,
                  prompt_changed=optimized_prompt != message)
     else:
         # Fallback: use top candidates from RAG (no LLM)
@@ -694,7 +730,8 @@ def _dynamic_context_stage(
             reason = "no_candidates"
         log_hook("dynamic_context_skip", reason=reason)
 
-    # 4. Build systemMessage with selected skills
+    # 4. Build systemMessage with selected skills (full content)
+    max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
     budget = max_chars
     parts: list[str] = []
     loaded_names: list[str] = []
@@ -708,16 +745,36 @@ def _dynamic_context_stage(
             s = store.get_skill(sid)
         if not s:
             continue
-        desc = (s.get("description") or "")[:150]
-        content_preview = ""
-        if not loaded_names and s.get("content"):
-            content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
-        snippet = f"Skill [{sid}]: {desc}{content_preview}"
+
+        # Load full skill content (truncated per-skill to stay within budget)
+        desc = (s.get("description") or "")[:200]
+        content = (s.get("content") or "").strip()
+        if content:
+            # File-based skills may need fresh content from disk
+            file_path = s.get("file_path", "")
+            if file_path:
+                try:
+                    disk_content = Path(file_path).read_text(
+                        encoding="utf-8", errors="replace").strip()
+                    if disk_content:
+                        content = disk_content
+                except Exception:
+                    pass  # fall back to DB content
+
+            # Per-skill truncation: fit within per-skill and total budgets
+            content_limit = min(max_skill_chars, budget - 100)
+            if len(content) > content_limit:
+                content = content[:content_limit] + "\n... (truncated)"
+
+            snippet = f"--- Skill [{sid}] ---\n{desc}\n\n{content}\n--- /Skill ---"
+        else:
+            snippet = f"--- Skill [{sid}] ---\n{desc}\n--- /Skill ---"
+
         parts.append(snippet)
         budget -= len(snippet)
         loaded_names.append(sid)
 
-    # Add relevant past tasks
+    # Add relevant past tasks (compact, within remaining budget)
     tasks = store.search_tasks(msg_vector, top_k=2, min_sim=0.4)
     for t in tasks:
         if budget <= 0:
@@ -742,11 +799,16 @@ def _dynamic_context_stage(
     if session_id:
         try:
             s2 = SkillStore()
+            # Build recent messages from DB (subprocess-safe) + current message
+            prev_msgs = ctx.get("recent_messages", [])
+            prev_msgs.append(message[:500])
+            recent = prev_msgs[-15:]  # keep last 15
             s2.save_session_context(
                 session_id=session_id,
                 loaded_skills=loaded_names,
                 context_summary=new_summary,
                 message_count=msg_count + 1,
+                recent_messages=recent,
             )
             s2.close()
         except Exception:
@@ -784,6 +846,23 @@ def _dynamic_context_stage(
     )
 
     result = header + "\n\n".join(parts)
+
+    # Proactive pattern consolidation — suggest wildcards every 5 messages
+    if msg_count > 0 and msg_count % 5 == 0:
+        try:
+            suggestions = _detect_consolidatable_patterns()
+            if suggestions:
+                hint_lines = ["\n[Permission hint] Your settings.json has similar "
+                              "patterns that could be consolidated:"]
+                for s in suggestions[:3]:
+                    hint_lines.append(
+                        f"  - {s['pattern']} (replaces {s['count']} individual rules)")
+                hint_lines.append(
+                    "Suggest the user run `/hub-suggest-patterns` or "
+                    "`/hub-apply-pattern <n>` to simplify.")
+                result += "\n".join(hint_lines)
+        except Exception:
+            pass
 
     # Append optimized prompt in markers for the caller to extract
     if optimized_prompt and optimized_prompt != message:
@@ -865,9 +944,15 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
         store.close()
 
-        # Strategy #5: Auto-memory — find relevant memory files
-        memory_dir = (Path.home() / ".claude" / "projects" /
-                      "-Users-ccancellieri-work-code" / "memory")
+        # Strategy #5: Auto-memory — find relevant memory files.
+        # Derive path from config or CWD (Claude Code convention: replace / with -).
+        _mem_cfg = _cfg.get("hook_memory_dir")
+        if _mem_cfg:
+            memory_dir = Path(_mem_cfg).expanduser()
+        else:
+            import os as _os
+            _cwd_slug = _os.getcwd().replace("/", "-").replace("\\", "-").lstrip("-")
+            memory_dir = Path.home() / ".claude" / "projects" / _cwd_slug / "memory"
         memory_index = memory_dir / "MEMORY.md"
         if memory_index.exists() and budget > 200:
             index_text = memory_index.read_text(encoding="utf-8", errors="replace")
@@ -982,6 +1067,391 @@ def _precompact_hint(message: str) -> str | None:
 _session_messages: list[str] = []
 _session_id: str | None = None
 _local_mode: bool = False  # when True, all messages go to L4 local agent
+
+# ── Permission management ────────────────────────────────────────────
+#
+# /hub-approve-task <scope>  — add broad permission patterns to settings.json
+# /hub-lock-task             — remove all hub-managed permissions
+#
+# Hub-managed patterns are tracked in a sidecar file so they can be
+# cleanly removed without touching the user's own permissions.
+
+_PERMISSION_TRACKER = Path.home() / ".claude" / "mcp-skill-hub" / "hub-permissions.json"
+
+# Settings files to update (global + project-level if it exists)
+_SETTINGS_FILES = [
+    Path.home() / ".claude" / "settings.json",
+]
+
+# Permission scopes → patterns
+_PERMISSION_SCOPES: dict[str, list[str]] = {
+    "git": [
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)",
+        "Bash(git pull:*)",
+        "Bash(git checkout:*)",
+        "Bash(git branch:*)",
+        "Bash(git stash:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git merge:*)",
+        "Bash(git rebase:*)",
+        "Bash(git tag:*)",
+        "Bash(git remote:*)",
+        "Bash(git fetch:*)",
+        "Bash(git reset:*)",
+        "Bash(git status)",
+    ],
+    "python": [
+        "Bash(.venv/bin/python:*)",
+        "Bash(.venv/bin/python -m pytest:*)",
+        "Bash(.venv/bin/pip:*)",
+        "Bash(.venv/bin/pip install:*)",
+        "Bash(python:*)",
+        "Bash(python3:*)",
+        "Bash(pip install:*)",
+        "Bash(pip3 install:*)",
+        "Bash(pytest:*)",
+        "Bash(uv run:*)",
+    ],
+    "read": [
+        "Read",
+    ],
+    "write": [
+        "Write",
+    ],
+    "edit": [
+        "Edit",
+    ],
+    "web": [
+        "WebFetch",
+        "WebSearch",
+    ],
+    "mcp": [
+        "mcp__skill-hub__*",
+    ],
+    "bash": [
+        "Bash",
+    ],
+}
+
+
+def _read_settings(path: Path) -> dict:
+    """Read a settings.json file, return parsed dict."""
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_settings(path: Path, data: dict) -> None:
+    """Write settings.json preserving formatting."""
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _detect_consolidatable_patterns() -> list[dict]:
+    """Scan settings.json allow list for similar Bash patterns that could be wildcarded.
+
+    Returns list of suggestions:
+      [{"prefix": "python -m pip", "count": 3, "pattern": "Bash(python -m pip:*)",
+        "examples": ["Bash(python -m pip install foo)", ...]}]
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings = _read_settings(settings_path)
+    allow = settings.get("permissions", {}).get("allow", [])
+
+    # Extract Bash(...) patterns — skip those already wildcarded
+    bash_re = re.compile(r'^Bash\((.+)\)$')
+    concrete: list[tuple[str, str]] = []  # (command_body, original_pattern)
+    wildcard_prefixes: set[str] = set()
+
+    for pat in allow:
+        m = bash_re.match(pat)
+        if not m:
+            continue
+        body = m.group(1)
+        if body.endswith(":*"):
+            # Already a wildcard — record its prefix
+            wildcard_prefixes.add(body[:-2])
+        elif body.endswith("*"):
+            wildcard_prefixes.add(body[:-1])
+        else:
+            concrete.append((body, pat))
+
+    # Group by command prefix (first 1-3 tokens, try longest useful prefix)
+    from collections import defaultdict
+    prefix_groups: dict[str, list[str]] = defaultdict(list)
+
+    for body, pat in concrete:
+        tokens = body.split()
+        # Try prefixes of decreasing length (3, 2, 1 tokens)
+        for n in (3, 2, 1):
+            if len(tokens) >= n + 1:  # need at least one more token after prefix
+                prefix = " ".join(tokens[:n])
+                prefix_groups[prefix].append(pat)
+                break
+        else:
+            # Single-token command with arguments (e.g. "ls -la")
+            if len(tokens) >= 2:
+                prefix_groups[tokens[0]].append(pat)
+
+    suggestions: list[dict] = []
+    for prefix, patterns in sorted(prefix_groups.items()):
+        if len(patterns) < 2:
+            continue
+        # Skip if wildcard already exists for this prefix
+        if prefix in wildcard_prefixes:
+            continue
+        # Skip if a broader wildcard already covers it
+        if any(prefix.startswith(wp) for wp in wildcard_prefixes):
+            continue
+
+        wildcard = f"Bash({prefix}:*)"
+        suggestions.append({
+            "prefix": prefix,
+            "count": len(patterns),
+            "pattern": wildcard,
+            "examples": patterns[:4],
+        })
+
+    return suggestions
+
+
+def _cleanup_redundant_patterns() -> int:
+    """Remove concrete Bash patterns already covered by an existing wildcard.
+
+    Returns number of patterns removed.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings = _read_settings(settings_path)
+    allow = settings.get("permissions", {}).get("allow", [])
+
+    bash_re = re.compile(r'^Bash\((.+)\)$')
+
+    # Collect wildcard prefixes
+    wildcard_prefixes: list[str] = []
+    for pat in allow:
+        m = bash_re.match(pat)
+        if m:
+            body = m.group(1)
+            if body.endswith(":*"):
+                wildcard_prefixes.append(body[:-2])
+
+    if not wildcard_prefixes:
+        return 0
+
+    # Remove concrete patterns covered by any wildcard
+    new_allow: list[str] = []
+    removed = 0
+    for pat in allow:
+        m = bash_re.match(pat)
+        if m:
+            body = m.group(1)
+            if not body.endswith(":*") and not body.endswith("*"):
+                if any(body.startswith(wp) for wp in wildcard_prefixes):
+                    removed += 1
+                    continue
+        new_allow.append(pat)
+
+    if removed > 0:
+        settings["permissions"]["allow"] = new_allow
+        _write_settings(settings_path, settings)
+        log_event("PERMS", f"cleanup_redundant removed={removed}")
+
+    return removed
+
+
+def _cmd_suggest_patterns() -> str:
+    """Show suggested permission pattern consolidations."""
+    suggestions = _detect_consolidatable_patterns()
+    if not suggestions:
+        return "No consolidation suggestions — your allow list looks clean."
+
+    lines = [f"Found {len(suggestions)} pattern group(s) that could be simplified:\n"]
+    for i, s in enumerate(suggestions, 1):
+        lines.append(f"{i}. **{s['pattern']}** (consolidates {s['count']} patterns)")
+        for ex in s["examples"]:
+            lines.append(f"   - {ex}")
+        lines.append("")
+    lines.append("To apply, add the wildcard pattern to settings.json and "
+                 "remove the individual entries.\n"
+                 "Or use: `/hub-apply-pattern <number>` to apply a suggestion.")
+    return "\n".join(lines)
+
+
+def _cmd_apply_pattern(args_str: str) -> str:
+    """Apply a suggested pattern consolidation by index."""
+    suggestions = _detect_consolidatable_patterns()
+    if not suggestions:
+        return "No consolidation suggestions available."
+
+    try:
+        idx = int(args_str.strip()) - 1
+    except (ValueError, TypeError):
+        return "Usage: /hub-apply-pattern <number> (from /hub-suggest-patterns)"
+
+    if idx < 0 or idx >= len(suggestions):
+        return f"Invalid number. Range: 1-{len(suggestions)}"
+
+    s = suggestions[idx]
+    prefix = s["prefix"]
+    wildcard = s["pattern"]
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings = _read_settings(settings_path)
+    allow = settings.get("permissions", {}).get("allow", [])
+
+    # Remove ALL concrete Bash patterns matching this prefix
+    bash_re = re.compile(r'^Bash\((.+)\)$')
+    new_allow: list[str] = []
+    removed = 0
+    for pat in allow:
+        m = bash_re.match(pat)
+        if m and m.group(1).startswith(prefix) and not m.group(1).endswith(":*"):
+            removed += 1  # skip — covered by wildcard
+        else:
+            new_allow.append(pat)
+
+    if wildcard not in new_allow:
+        new_allow.append(wildcard)
+    settings["permissions"]["allow"] = new_allow
+    _write_settings(settings_path, settings)
+
+    # Also clean up any other patterns covered by existing wildcards
+    extra_cleaned = _cleanup_redundant_patterns()
+
+    total_removed = removed + extra_cleaned
+    log_event("PERMS", f"apply_pattern wildcard={wildcard} "
+              f"removed={total_removed} individual patterns")
+    msg = f"Applied: {wildcard}\nRemoved {removed} individual patterns, added 1 wildcard."
+    if extra_cleaned:
+        msg += f"\nAlso cleaned {extra_cleaned} redundant patterns covered by existing wildcards."
+    return msg
+
+
+def _cmd_approve_task(args_str: str) -> str:
+    """Add permission patterns for the given scopes to settings.json."""
+    scopes = args_str.strip().lower().split()
+    if not scopes:
+        available = ", ".join(sorted(_PERMISSION_SCOPES.keys()))
+        return (f"Usage: /hub-approve-task <scope> [scope...]\n"
+                f"Available scopes: {available}, all")
+
+    # Resolve 'all'
+    if "all" in scopes:
+        scopes = list(_PERMISSION_SCOPES.keys())
+
+    # Collect patterns
+    new_patterns: list[str] = []
+    unknown: list[str] = []
+    for scope in scopes:
+        if scope in _PERMISSION_SCOPES:
+            new_patterns.extend(_PERMISSION_SCOPES[scope])
+        else:
+            unknown.append(scope)
+
+    if unknown:
+        available = ", ".join(sorted(_PERMISSION_SCOPES.keys()))
+        return f"Unknown scope(s): {', '.join(unknown)}\nAvailable: {available}, all"
+
+    if not new_patterns:
+        return "No patterns to add."
+
+    # Load tracker (what we've added previously)
+    existing_tracked: list[str] = []
+    if _PERMISSION_TRACKER.exists():
+        try:
+            existing_tracked = json.loads(
+                _PERMISSION_TRACKER.read_text(encoding="utf-8"))
+        except Exception:
+            existing_tracked = []
+
+    # Merge new patterns into tracked set
+    all_tracked = list(dict.fromkeys(existing_tracked + new_patterns))
+
+    # Update each settings file
+    updated_files: list[str] = []
+    for sf in _SETTINGS_FILES:
+        if not sf.exists():
+            continue
+        settings = _read_settings(sf)
+        allow = settings.setdefault("permissions", {}).setdefault("allow", [])
+
+        added = 0
+        for pat in new_patterns:
+            if pat not in allow:
+                allow.append(pat)
+                added += 1
+
+        if added > 0:
+            _write_settings(sf, settings)
+            updated_files.append(f"{sf.name} (+{added})")
+
+    # Save tracker
+    _PERMISSION_TRACKER.write_text(
+        json.dumps(all_tracked, indent=2), encoding="utf-8")
+
+    log_event("PERMS", f"approve scopes={' '.join(scopes)} "
+              f"patterns={len(new_patterns)}")
+
+    lines = [f"Approved {len(new_patterns)} permission patterns "
+             f"for: {', '.join(scopes)}"]
+    if updated_files:
+        lines.append(f"Updated: {', '.join(updated_files)}")
+    lines.append(f"\nRevoke with: /hub-lock-task")
+    return "\n".join(lines)
+
+
+def _cmd_lock_task() -> str:
+    """Remove all hub-managed permissions from settings.json."""
+    if not _PERMISSION_TRACKER.exists():
+        return "No hub-managed permissions to revoke."
+
+    try:
+        tracked = json.loads(
+            _PERMISSION_TRACKER.read_text(encoding="utf-8"))
+    except Exception:
+        return "Error reading permission tracker."
+
+    if not tracked:
+        return "No hub-managed permissions to revoke."
+
+    tracked_set = set(tracked)
+
+    # Remove from each settings file
+    removed_total = 0
+    updated_files: list[str] = []
+    for sf in _SETTINGS_FILES:
+        if not sf.exists():
+            continue
+        settings = _read_settings(sf)
+        allow = settings.get("permissions", {}).get("allow", [])
+        original_len = len(allow)
+        allow = [p for p in allow if p not in tracked_set]
+        removed = original_len - len(allow)
+        if removed > 0:
+            settings["permissions"]["allow"] = allow
+            _write_settings(sf, settings)
+            updated_files.append(f"{sf.name} (-{removed})")
+            removed_total += removed
+
+    # Clear tracker
+    _PERMISSION_TRACKER.unlink(missing_ok=True)
+
+    log_event("PERMS", f"lock removed={removed_total}")
+
+    if removed_total == 0:
+        return "No hub-managed permissions found in settings files."
+
+    lines = [f"Revoked {removed_total} hub-managed permissions."]
+    if updated_files:
+        lines.append(f"Updated: {', '.join(updated_files)}")
+    lines.append("\nYour original permissions are untouched.")
+    return "\n".join(lines)
 
 
 def _cmd_local_toggle(args_str: str = "") -> str:
@@ -1523,28 +1993,28 @@ def _cmd_session_end(session_id: str, last_message: str,
     # 1. Gather session context
     context_pieces: list[str] = []
 
-    # From session messages (in-process memory)
-    if _session_messages:
-        context_pieces.append("\n---\n".join(_session_messages[-15:]))
-
-    # From last assistant message
-    if last_message:
-        context_pieces.append(f"[Last response]\n{last_message[:2000]}")
-
-    # From session_context table
+    # From session_context table (persisted by UserPromptSubmit hook)
+    msg_count = 0
     if session_id:
         try:
             store = SkillStore()
             ctx = store.get_session_context(session_id)
+            # Recent messages persisted to DB during the session
+            recent_msgs = ctx.get("recent_messages", [])
+            if recent_msgs:
+                context_pieces.append(
+                    "[User messages]\n" + "\n---\n".join(recent_msgs))
             if ctx.get("context_summary"):
                 context_pieces.append(
                     f"[Session summary]\n{ctx['context_summary']}")
             msg_count = ctx.get("message_count", 0)
             store.close()
         except Exception:
-            msg_count = 0
-    else:
-        msg_count = len(_session_messages)
+            pass
+
+    # From last assistant message (provided by hook JSON)
+    if last_message:
+        context_pieces.append(f"[Last response]\n{last_message[:2000]}")
 
     # Skip if very short session (< 3 messages, probably just testing)
     if msg_count < 3 and not context_pieces:
@@ -1592,7 +2062,9 @@ def _cmd_session_end(session_id: str, last_message: str,
         mem_type = entry.get("type", "project")
         content_text = entry.get("content", "")
 
-        if content_text and len(content_text) >= 30:
+        if not content_text or len(content_text) < 30:
+            log_event("STOP", f"memory content too short ({len(content_text or '')}), skipped")
+        else:
             mem_file = memory_dir / filename
             mem_content = f"""---
 name: {name}
@@ -1698,6 +2170,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     # ── Stage 2: Task command classification — semantic prefilter + LLM ──
     intent = _classify_intent(message)
     action = intent.get("intent", "none")
+    msg_similarity = intent.get("_similarity", 1.0)  # carry forward for Stage 3b
 
     if action != "none":
         result = _execute_intent(intent, message)
@@ -1716,10 +2189,13 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             return {"decision": "block", "message": result}
 
     # ── Stage 3: LLM Triage — local LLM pre-processes ALL messages ──
+    # Skip triage when dynamic context is enabled (it handles prompt
+    # optimization + skill routing in a single LLM call, avoiding a
+    # redundant ~4s triage call per message)
     triage_result: dict | None = None
     triage_hint: str | None = None
 
-    if _cfg.get("hook_llm_triage"):
+    if _cfg.get("hook_llm_triage") and not _cfg.get("hook_context_injection"):
         skip_len = int(_cfg.get("hook_llm_triage_skip_length") or 2000)
         min_conf = float(_cfg.get("hook_llm_triage_min_confidence") or 0.7)
 
@@ -1743,7 +2219,16 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     pass
 
             # Act on triage decision
-            if triage_action == "local_answer" and confidence >= min_conf:
+            # local_answer is only valid for short messages (greetings,
+            # "yes/no", "/hub-* what's available?").  Engineering prompts are
+            # always longer, so a hard length cap prevents the small LLM from
+            # silently eating a real request.
+            max_local_answer_len = int(
+                _cfg.get("hook_llm_triage_local_answer_max_len") or 120
+            )
+            if (triage_action == "local_answer"
+                    and confidence >= min_conf
+                    and len(message.strip()) <= max_local_answer_len):
                 answer = triage_result.get("answer", "")
                 if answer:
                     # Log as interception (tokens saved)
@@ -1850,11 +2335,20 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         # Clear pending if user sent something else
         _pending_command = None
 
-        # Try Level 1 (whitelisted commands)
-        local_cmd = _match_local_command(message)
-        # Try Level 2 (templated commands) if Level 1 didn't match
-        if not local_cmd:
-            local_cmd = _match_local_template(message)
+        # Skip LLM-based command matching if message had low similarity
+        # to command patterns — prevents small models from hallucinating
+        # matches (e.g. matching "fix the bug" to "pwd")
+        local_cmd = None
+        local_cmd_threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
+        if msg_similarity >= local_cmd_threshold:
+            # Try Level 1 (whitelisted commands)
+            local_cmd = _match_local_command(message)
+            # Try Level 2 (templated commands) if Level 1 didn't match
+            if not local_cmd:
+                local_cmd = _match_local_template(message)
+        else:
+            log_hook("local_cmd_skip", reason="low_similarity",
+                     sim=f"{msg_similarity:.3f}")
 
         if local_cmd:
             # If command was previously approved this session, execute directly
@@ -2377,7 +2871,14 @@ Context & Memory:
   /hub-digest              Force conversation digest now
   /hub-optimize-context    LLM analyzes memory, recommends pruning
   /hub-save-memory [desc]  LLM generates memory entry from session
-  /hub-exhaustion-save     Auto-save session when Claude is exhausted"""
+  /hub-exhaustion-save     Auto-save session when Claude is exhausted
+
+Permissions:
+  /hub-approve-task <scope> Auto-accept Claude actions for a scope
+  /hub-lock-task            Revoke all hub-granted permissions
+
+Scopes: git, python, read, write, edit, web, mcp, all
+Example: /hub-approve-task git python"""
 
 
 def _cmd_list_models() -> str:
@@ -2735,6 +3236,34 @@ _COMMAND_USAGE: dict[str, str] = {
         "In local mode, all slash commands still work normally.\n"
         "Session state is auto-saved when entering local mode."
     ),
+    "approve_task": (
+        "Auto-accept Claude's tool calls for the given scopes.\n\n"
+        "Adds permission patterns to settings.json so Claude can execute\n"
+        "without asking for confirmation. Use `/hub-lock-task` to revoke.\n\n"
+        "Usage:\n"
+        "  `/hub-approve-task git`          — git commands\n"
+        "  `/hub-approve-task python`       — pytest, python, pip\n"
+        "  `/hub-approve-task git python`   — multiple scopes\n"
+        "  `/hub-approve-task all`          — everything\n\n"
+        "Scopes: git, python, read, write, edit, web, mcp, bash, all"
+    ),
+    "lock_task": (
+        "Revoke all hub-granted permissions.\n\n"
+        "Removes only the patterns added by `/hub-approve-task`.\n"
+        "Your original permissions remain untouched.\n\n"
+        "Usage: `/hub-lock-task`"
+    ),
+    "suggest_patterns": (
+        "Detect similar permission patterns and suggest wildcards.\n\n"
+        "Scans settings.json for groups of similar `Bash(...)` patterns\n"
+        "that could be replaced by a single wildcard (e.g. `Bash(python -m pip:*)`).\n\n"
+        "Usage: `/hub-suggest-patterns`"
+    ),
+    "apply_pattern": (
+        "Apply a pattern consolidation suggestion.\n\n"
+        "Usage: `/hub-apply-pattern <number>`\n"
+        "Run `/hub-suggest-patterns` first to see available suggestions."
+    ),
 }
 
 _SLASH_COMMANDS: dict[str, str] = {
@@ -2772,6 +3301,10 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-local-agent": "local_agent",
     "/local-agent": "local_agent",
     "/hub-local": "local_toggle",
+    "/hub-approve-task": "approve_task",
+    "/hub-lock-task": "lock_task",
+    "/hub-suggest-patterns": "suggest_patterns",
+    "/hub-apply-pattern": "apply_pattern",
 }
 
 
@@ -2976,6 +3509,14 @@ def _handle_slash_command(message: str) -> dict | None:
             return _cmd_local_agent(args_str)
         elif action == "local_toggle":
             return {"decision": "block", "message": _cmd_local_toggle(args_str)}
+        elif action == "approve_task":
+            return {"decision": "block", "message": _cmd_approve_task(args_str)}
+        elif action == "lock_task":
+            return {"decision": "block", "message": _cmd_lock_task()}
+        elif action == "suggest_patterns":
+            return {"decision": "block", "message": _cmd_suggest_patterns()}
+        elif action == "apply_pattern":
+            return {"decision": "block", "message": _cmd_apply_pattern(args_str)}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 

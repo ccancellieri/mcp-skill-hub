@@ -24,12 +24,12 @@ Skill description: {description}
 """
 
 
-def embed(text: str, model: str = EMBED_MODEL) -> list[float]:
+def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
     """Return embedding vector from Ollama."""
     resp = httpx.post(
         f"{OLLAMA_BASE}/api/embed",
         json={"model": model, "input": text},
-        timeout=30.0,
+        timeout=timeout,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -346,6 +346,152 @@ def exhaustion_save(content: str,
     }
 
 
+def smart_memory_write(
+    content: str,
+    existing_index: str,
+    model: str = RERANK_MODEL,
+) -> dict:
+    """Local LLM generates memory, then self-evaluates quality.
+
+    Returns:
+        {
+            "result": dict,          # the memory entry (filename, name, etc.)
+            "quality": float,        # 0.0-1.0 self-assessed quality score
+            "escalate": bool,        # True if Claude should handle this instead
+            "reason": str,           # why escalation is needed (or "ok")
+        }
+    """
+    log_llm("smart_memory_write", model=model, input_chars=len(content))
+
+    # Try progressively smaller models if primary unavailable
+    chosen_model = model
+    if not ollama_available(chosen_model):
+        for fallback in ("qwen2.5-coder:3b", "deepseek-r1:1.5b"):
+            if ollama_available(fallback):
+                chosen_model = fallback
+                break
+        else:
+            return {
+                "result": {}, "quality": 0.0,
+                "escalate": True, "reason": "no_local_model",
+            }
+
+    prompt = f"""You are a memory-management assistant for an AI coding tool.
+
+## Task
+Generate a memory file from the session context below. Focus on:
+- Decisions made and WHY
+- User preferences discovered
+- Project knowledge not in the code
+- Patterns to repeat or avoid
+
+Do NOT save: code patterns (read the code), git history (use git log),
+anything already in existing memory files.
+
+## Session context
+{content[:4000]}
+
+## Existing memory (avoid duplicates)
+{existing_index[:2000]}
+
+## Output
+Respond with ONLY this JSON:
+{{
+  "filename": "<descriptive-kebab-case.md>",
+  "name": "<short title>",
+  "description": "<one-line description for the memory index>",
+  "type": "<user|feedback|project|reference>",
+  "content": "<the memory content, 2-6 sentences>",
+  "key_entities": ["<list>", "<of>", "<important>", "<names/terms>", "<from the context>"],
+  "detail_score": <0.0-1.0 how much important detail you preserved>
+}}"""
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={
+                "model": chosen_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 500},
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "{}")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not json_match:
+            return {
+                "result": {}, "quality": 0.0,
+                "escalate": True, "reason": "no_json_output",
+            }
+        entry = json.loads(json_match.group())
+    except Exception as exc:
+        return {
+            "result": {}, "quality": 0.0,
+            "escalate": True, "reason": f"llm_error:{str(exc)[:60]}",
+        }
+
+    # --- Quality evaluation ---
+    mem_content = entry.get("content", "")
+    key_entities = entry.get("key_entities", [])
+    detail_score = float(entry.get("detail_score", 0.5))
+
+    # Heuristic quality checks
+    quality = detail_score
+
+    # Check 1: content not empty or too short
+    if len(mem_content) < 30:
+        quality *= 0.3
+
+    # Check 2: key entities actually appear in content
+    entity_ratio = 1.0
+    if key_entities:
+        found = sum(1 for e in key_entities if e.lower() in mem_content.lower())
+        entity_ratio = found / len(key_entities)
+        quality *= (0.5 + 0.5 * entity_ratio)  # scale 0.5-1.0
+
+    # Check 3: content length vs source length ratio
+    # Too short = detail loss; too long = not compacted
+    source_len = len(content)
+    if source_len > 0:
+        ratio = len(mem_content) / source_len
+        if ratio < 0.01:  # less than 1% — too much lost
+            quality *= 0.5
+        elif ratio > 0.5:  # more than 50% — not compacted enough
+            quality *= 0.8
+
+    # Check 4: is it a duplicate?
+    if existing_index and entry.get("filename", "") in existing_index:
+        quality *= 0.7
+
+    # Clamp
+    quality = max(0.0, min(1.0, quality))
+
+    # Decide escalation threshold
+    escalate = quality < 0.4
+    reason = "ok"
+    if escalate:
+        if len(mem_content) < 30:
+            reason = "content_too_short"
+        elif key_entities and entity_ratio < 0.3:
+            reason = "key_entities_missing"
+        else:
+            reason = f"low_quality:{quality:.2f}"
+
+    log_llm("smart_memory_quality",
+            model=chosen_model, quality=f"{quality:.2f}",
+            escalate=escalate, reason=reason)
+
+    return {
+        "result": entry,
+        "quality": quality,
+        "escalate": escalate,
+        "reason": reason,
+    }
+
+
 _TRIAGE_PROMPT = """\
 You are a smart message triage assistant for an AI coding tool (Claude). Your job is to \
 decide whether this user message can be handled locally or needs the expensive cloud AI.
@@ -370,10 +516,11 @@ You have access to these local /hub-* commands:
 
 Classify the message into ONE of these actions:
 
-"local_answer" — You can answer this directly. ONLY for: greetings, confirmations ("yes", \
-"ok"), questions about what /hub-* commands are available, or trivial clarifications. \
-Do NOT answer coding questions or factual questions about the codebase — those need Claude. \
-Provide the answer.
+"local_answer" — You can answer this directly. ONLY for messages that are ≤ 120 characters \
+AND are one of: bare greetings ("hi", "hello"), single-word confirmations ("yes", "ok", "no"), \
+or a direct question about which /hub-* commands exist. NEVER use this for coding questions, \
+bug reports, refactoring requests, or anything that references code, files, or errors — those \
+need Claude. Provide the answer.
 
 "local_action" — This maps to a local /hub-* command. Identify which one. Examples:
   "what models do I have?" → /hub-list-models
@@ -457,6 +604,194 @@ def triage_message(message: str, context: str = "",
         "hint": None,
         "confidence": 0.0,
         "estimated_tokens_saved": 0,
+    }
+
+
+_SKILL_LIFECYCLE_PROMPT = """\
+You are a context manager for Claude (an AI coding assistant).
+
+## Current conversation context
+{context_summary}
+
+## User's new message
+{message}
+
+## Currently loaded skills (injected into Claude's context)
+{loaded_list}
+
+## Candidate skills (from semantic search, not yet loaded)
+{candidate_list}
+
+Decide which skills to KEEP (still useful for this message), ADD (from candidates, \
+would help), or DROP (no longer relevant). Total loaded skills must stay ≤ 5.
+
+Also update the context summary: merge the new message's topic in. Keep all prior \
+context still relevant. 2–4 sentences max.
+
+Output ONLY this JSON, no markdown, no explanation:
+{{"keep": ["skill_id", ...], "add": ["skill_id", ...], "drop": ["skill_id", ...], \
+"context_summary": "..."}}"""
+
+_PROMPT_OPT_PROMPT = """\
+You are a prompt engineer for Claude (an AI coding assistant).
+Rewrite the user message below into a clearer, more structured prompt.
+
+Rules:
+- Weave in relevant details from the conversation context (file names, \
+technologies, prior decisions) so Claude has full context without re-asking.
+- State constraints explicitly (language, framework, coding style).
+- When the task has parts, number them and tell Claude the expected output format.
+- Preserve the exact intent — never change WHAT is asked, only add clarity.
+- Never invent file names, errors, or details not present in the message or context.
+- If the message is already specific and complete, return it unchanged.
+- Brevity beats padding: add only what genuinely helps.
+
+## Conversation context
+{context_summary}
+
+## User message
+{message}
+
+Output ONLY the rewritten prompt, no JSON, no explanation:"""
+
+
+def eval_skill_lifecycle(
+    message: str,
+    context_summary: str,
+    loaded_skills: list[dict],
+    candidate_skills: list[dict],
+    model: str = RERANK_MODEL,
+) -> dict:
+    """Decide which skills to keep/add/drop and update the rolling context summary.
+
+    Focused single-task call: structured classification only.
+    Runs at temperature=0.0 with a tight token budget (250).
+
+    Returns {"keep": [...], "add": [...], "drop": [...], "context_summary": "..."}
+    """
+    log_llm("eval_skill_lifecycle", model=model,
+            loaded=len(loaded_skills), candidates=len(candidate_skills))
+
+    loaded_list = "\n".join(
+        f"  - {s['id']}: {s.get('description', '')[:100]}"
+        for s in loaded_skills
+    ) or "  (none)"
+    candidate_list = "\n".join(
+        f"  - {s['id']}: {s.get('description', '')[:100]}"
+        for s in candidate_skills
+    ) or "  (none)"
+
+    prompt = _SKILL_LIFECYCLE_PROMPT.format(
+        context_summary=context_summary or "(new session — no prior context)",
+        message=message[:1200],
+        loaded_list=loaded_list,
+        candidate_list=candidate_list,
+    )
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 250},
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            import json as _json
+            return _json.loads(json_match.group())
+    except Exception:
+        pass
+
+    return {
+        "keep": [s["id"] for s in loaded_skills],
+        "add": [],
+        "drop": [],
+        "context_summary": context_summary,
+    }
+
+
+def optimize_prompt(
+    message: str,
+    context_summary: str,
+    model: str = RERANK_MODEL,
+) -> str:
+    """Rewrite the user message into a richer, better-structured prompt for Claude.
+
+    Only called when there is meaningful conversation context and the message is
+    long enough to benefit from enrichment (≥ 150 chars).
+    Runs at temperature=0.2 for more expressive rewrites.
+
+    Returns the optimized prompt string, or the original message on failure.
+    """
+    log_llm("optimize_prompt", model=model, message_len=len(message))
+
+    prompt = _PROMPT_OPT_PROMPT.format(
+        context_summary=context_summary,
+        message=message[:1500],
+    )
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 400},
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("response", "").strip()
+        # Reject obviously broken outputs
+        if result and len(result) > 20 and not result.startswith("{"):
+            return result
+    except Exception:
+        pass
+
+    return message
+
+
+def dynamic_context_eval(
+    message: str,
+    context_summary: str,
+    loaded_skills: list[dict],
+    candidate_skills: list[dict],
+    model: str = RERANK_MODEL,
+) -> dict:
+    """Compatibility wrapper: skill lifecycle + prompt optimization in one call.
+
+    Internally calls eval_skill_lifecycle (fast, structured) and optimize_prompt
+    (conditional, warmer temperature) as two separate focused LLM calls.
+
+    Returns {"keep": [...], "add": [...], "drop": [...],
+             "context_summary": "...", "optimized_prompt": "..."}
+    """
+    lifecycle = eval_skill_lifecycle(
+        message, context_summary, loaded_skills, candidate_skills, model
+    )
+    new_summary = lifecycle.get("context_summary", context_summary)
+
+    # Only optimize prompt when there is real conversation context and the
+    # message is substantive enough to benefit from enrichment.
+    if context_summary and len(message.strip()) >= 150:
+        opt = optimize_prompt(message, new_summary, model)
+    else:
+        opt = message
+
+    return {
+        "keep": lifecycle.get("keep", []),
+        "add": lifecycle.get("add", []),
+        "drop": lifecycle.get("drop", []),
+        "context_summary": new_summary,
+        "optimized_prompt": opt,
     }
 
 

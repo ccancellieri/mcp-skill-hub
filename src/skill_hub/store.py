@@ -43,6 +43,11 @@ class SkillStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # In-process vector cache: avoids JSON deserialization of all embedding
+        # rows on every search() call.  Invalidated by upsert_embedding().
+        # Structure: {skill_id: (vector_as_list, pre_stored_norm)}
+        self._vec_cache: dict[str, tuple[list[float], float]] = {}
+        self._vec_cache_valid: bool = False
         self._migrate()
 
     def _migrate(self) -> None:
@@ -161,6 +166,15 @@ class SkillStore:
 
             CREATE INDEX IF NOT EXISTS idx_triage_action ON triage_log (action);
 
+            CREATE TABLE IF NOT EXISTS session_context (
+                session_id      TEXT PRIMARY KEY,
+                loaded_skills   TEXT NOT NULL DEFAULT '[]',   -- JSON array of skill IDs
+                context_summary TEXT NOT NULL DEFAULT '',     -- rolling summary of conversation
+                message_count   INTEGER NOT NULL DEFAULT 0,
+                recent_messages TEXT NOT NULL DEFAULT '[]',   -- JSON array of last N user messages
+                updated_at      TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS context_injections (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_preview TEXT,
@@ -175,12 +189,47 @@ class SkillStore:
         """)
         self._conn.commit()
 
-        # Incremental migration: add 'target' column to existing DBs
+        # Incremental migrations
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "target" not in cols:
             self._conn.execute(
                 "ALTER TABLE skills ADD COLUMN target TEXT NOT NULL DEFAULT 'claude'"
             )
+            self._conn.commit()
+        if "feedback_score" not in cols:
+            # Pre-aggregated EMA feedback score: replaces per-search O(N) scan.
+            # Updated incrementally in record_feedback(); read in search().
+            self._conn.execute(
+                "ALTER TABLE skills ADD COLUMN feedback_score REAL NOT NULL DEFAULT 1.0"
+            )
+            self._conn.commit()
+
+        ctx_cols = {row[1] for row in self._conn.execute(
+            "PRAGMA table_info(session_context)")}
+        if "recent_messages" not in ctx_cols:
+            self._conn.execute(
+                "ALTER TABLE session_context ADD COLUMN "
+                "recent_messages TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
+
+        emb_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(embeddings)")}
+        if "norm" not in emb_cols:
+            # Pre-stored L2 norm: avoids recomputing sqrt(sum(x²)) per skill per search.
+            self._conn.execute(
+                "ALTER TABLE embeddings ADD COLUMN norm REAL NOT NULL DEFAULT 0.0"
+            )
+            # Back-fill norms for existing rows
+            rows = self._conn.execute(
+                "SELECT skill_id, vector FROM embeddings WHERE norm = 0.0"
+            ).fetchall()
+            for row in rows:
+                vec = json.loads(row["vector"])
+                norm = math.sqrt(sum(x * x for x in vec))
+                self._conn.execute(
+                    "UPDATE embeddings SET norm = ? WHERE skill_id = ?",
+                    (norm, row["skill_id"]),
+                )
             self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -203,14 +252,18 @@ class SkillStore:
         self._conn.commit()
 
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
+        norm = math.sqrt(sum(x * x for x in vector))
         self._conn.execute("""
-            INSERT INTO embeddings (skill_id, model, vector)
-            VALUES (?, ?, ?)
+            INSERT INTO embeddings (skill_id, model, vector, norm)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(skill_id) DO UPDATE SET
                 model  = excluded.model,
-                vector = excluded.vector
-        """, (skill_id, model, json.dumps(vector)))
+                vector = excluded.vector,
+                norm   = excluded.norm
+        """, (skill_id, model, json.dumps(vector), norm))
         self._conn.commit()
+        # Invalidate in-process vector cache so the next search reloads
+        self._vec_cache_valid = False
 
     def record_feedback(self, skill_id: str, query: str,
                         query_vector: list[float], helpful: bool) -> None:
@@ -218,10 +271,31 @@ class SkillStore:
             INSERT INTO feedback (query, query_vector, skill_id, helpful)
             VALUES (?, ?, ?, ?)
         """, (query, json.dumps(query_vector), skill_id, int(helpful)))
+        # Update EMA feedback score on skills table:
+        #   positive signal → nudge toward 1.5 (max boost)
+        #   negative signal → nudge toward 0.5 (min boost)
+        # EMA factor 0.15 keeps it responsive without thrashing on a single point.
+        target_val = 1.5 if helpful else 0.5
+        self._conn.execute("""
+            UPDATE skills
+            SET feedback_score = ROUND(
+                COALESCE(feedback_score, 1.0) * 0.85 + ? * 0.15,
+                4
+            )
+            WHERE id = ?
+        """, (target_val, skill_id))
         self._conn.commit()
 
     # ------------------------------------------------------------------
     # Read
+
+    def get_skill(self, skill_id: str) -> dict | None:
+        """Get a single skill by its ID."""
+        row = self._conn.execute(
+            "SELECT id, name, description, content, plugin, target "
+            "FROM skills WHERE id = ?", (skill_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
     def list_skills(self, target: str | None = None) -> list[sqlite3.Row]:
         if target:
@@ -233,64 +307,67 @@ class SkillStore:
             "SELECT id, name, description, plugin, target FROM skills ORDER BY name"
         ).fetchall()
 
+    def _load_vec_cache(self) -> None:
+        """Populate in-process vector cache from DB (once per process per index cycle)."""
+        rows = self._conn.execute(
+            "SELECT skill_id, vector, norm FROM embeddings"
+        ).fetchall()
+        self._vec_cache = {
+            row["skill_id"]: (json.loads(row["vector"]), row["norm"] or 0.0)
+            for row in rows
+        }
+        self._vec_cache_valid = True
+
     def search(self, query_vector: list[float], top_k: int = 3,
                similarity_threshold: float = 0.3,
                target: str | None = None) -> list[dict]:
-        """Return top-k skills by cosine similarity, boosted by past feedback."""
+        """Return top-k skills by cosine similarity, boosted by pre-aggregated feedback score.
+
+        Uses an in-process vector cache to avoid JSON deserialization on every call.
+        Uses pre-stored L2 norms to avoid recomputing sqrt per skill per search.
+        """
+        if not self._vec_cache_valid:
+            self._load_vec_cache()
+
+        # Query norm (computed once for this search)
+        qnorm = math.sqrt(sum(x * x for x in query_vector))
+        if qnorm == 0.0:
+            return []
+
+        # Fetch skill metadata + EMA feedback score (no vector column needed)
         if target:
             rows = self._conn.execute("""
-                SELECT s.id, s.name, s.description, s.content, s.plugin, s.target,
-                       e.vector, e.model
+                SELECT s.id, s.name, s.description, s.content, s.plugin,
+                       s.target, s.feedback_score
                 FROM skills s
-                JOIN embeddings e ON e.skill_id = s.id
                 WHERE s.target = ?
             """, (target,)).fetchall()
         else:
             rows = self._conn.execute("""
-                SELECT s.id, s.name, s.description, s.content, s.plugin, s.target,
-                       e.vector, e.model
+                SELECT s.id, s.name, s.description, s.content, s.plugin,
+                       s.target, s.feedback_score
                 FROM skills s
-                JOIN embeddings e ON e.skill_id = s.id
             """).fetchall()
 
         scored: list[tuple[float, dict]] = []
         for row in rows:
-            vec = json.loads(row["vector"])
-            sim = _cosine(query_vector, vec)
+            cached = self._vec_cache.get(row["id"])
+            if cached is None:
+                continue  # no embedding yet
+            vec, snorm = cached
+            if snorm == 0.0:
+                continue
+            # Cosine using pre-stored norm: avoids sqrt per skill
+            dot = sum(a * b for a, b in zip(query_vector, vec))
+            sim = dot / (qnorm * snorm)
             if sim < similarity_threshold:
                 continue
-            boost = self._feedback_boost(row["id"], query_vector)
+            boost = float(row["feedback_score"] or 1.0)
             scored.append((sim * boost, dict(row)))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
 
-    def _feedback_boost(self, skill_id: str, query_vector: list[float],
-                        min_sim: float = 0.75) -> float:
-        """
-        Boost factor in [1.0, 1.5] derived from past feedback on similar queries.
-        Uses cosine similarity between current query and stored feedback query vectors.
-        """
-        rows = self._conn.execute(
-            "SELECT query_vector, helpful FROM feedback WHERE skill_id = ?",
-            (skill_id,)
-        ).fetchall()
-
-        positive = negative = 0.0
-        for row in rows:
-            past_vec = json.loads(row["query_vector"])
-            sim = _cosine(query_vector, past_vec)
-            if sim < min_sim:
-                continue
-            if row["helpful"]:
-                positive += sim
-            else:
-                negative += sim
-
-        total = positive + negative
-        if total == 0.0:
-            return 1.0
-        return 1.0 + (positive / total) * 0.5  # max 1.5x boost
 
     # ------------------------------------------------------------------
     # Teachings
@@ -649,6 +726,53 @@ class SkillStore:
             FROM triage_log
         """).fetchone()
         return dict(row) if row else {}
+
+    # ------------------------------------------------------------------
+    # Session context (dynamic skill lifecycle)
+
+    def get_session_context(self, session_id: str) -> dict:
+        """Get the current session context for dynamic skill management."""
+        row = self._conn.execute(
+            "SELECT * FROM session_context WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return {
+                "session_id": session_id,
+                "loaded_skills": [],
+                "context_summary": "",
+                "message_count": 0,
+                "recent_messages": [],
+            }
+        import json as _json
+        return {
+            "session_id": row["session_id"],
+            "loaded_skills": _json.loads(row["loaded_skills"]),
+            "context_summary": row["context_summary"],
+            "message_count": row["message_count"],
+            "recent_messages": _json.loads(row["recent_messages"]),
+        }
+
+    def save_session_context(self, session_id: str, loaded_skills: list[str],
+                             context_summary: str, message_count: int,
+                             recent_messages: list[str] | None = None) -> None:
+        """Upsert the session context after dynamic evaluation."""
+        import json as _json
+        msgs_json = _json.dumps(recent_messages or [])
+        self._conn.execute("""
+            INSERT INTO session_context
+                (session_id, loaded_skills, context_summary, message_count,
+                 recent_messages, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(session_id) DO UPDATE SET
+                loaded_skills = excluded.loaded_skills,
+                context_summary = excluded.context_summary,
+                message_count = excluded.message_count,
+                recent_messages = excluded.recent_messages,
+                updated_at = excluded.updated_at
+        """, (session_id, _json.dumps(loaded_skills), context_summary,
+              message_count, msgs_json))
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Conversation state tracking
