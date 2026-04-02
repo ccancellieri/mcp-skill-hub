@@ -195,7 +195,8 @@ _DEFAULTS = {
     "searxng_url": "",         # explicit URL (VPS or custom) — empty = auto-detect
     "searxng_enabled": True,
     "searxng_top_k": 3,
-    "searxng_timeout": 5,      # seconds per URL probe and per search request
+    "searxng_timeout": 5,      # seconds for URL probe (is SearXNG reachable?)
+    "searxng_search_timeout": 15,  # seconds for actual search (engines need time)
 
     # Activity log — daily rotation, 50 MB cap
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")

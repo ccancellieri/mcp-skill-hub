@@ -23,7 +23,7 @@ User: "save to memory and close"
     └────┬──────────────────┘
          │
     ┌────┴──────────────────┐
-    │  Local LLM classifies │ ← deepseek-r1 on your machine
+    │  Local LLM classifies │ ← qwen2.5-coder:3b on your machine
     │  "Is this a task      │
     │   command?"           │
     └────┬──────────────────┘
@@ -37,13 +37,27 @@ User: "save to memory and close"
 
 ## Quick Start
 
+**macOS / Linux:**
 ```bash
 git clone https://github.com/ccancellieri/mcp-skill-hub.git
 cd mcp-skill-hub
 ./install.sh
 ```
 
-The installer creates a venv, installs the package, pulls `nomic-embed-text` (274 MB), and registers the MCP server in `~/.mcp.json`.
+**Windows / Cross-platform:**
+```bash
+git clone https://github.com/ccancellieri/mcp-skill-hub.git
+cd mcp-skill-hub
+python install.py
+```
+
+The installer:
+1. Creates a venv and installs the package
+2. Pulls `nomic-embed-text` (274 MB) via Ollama
+3. Registers the MCP server in `~/.mcp.json`
+4. Merges hooks into `~/.claude/settings.json` (idempotent — safe to re-run)
+
+On Windows, hooks use the Python versions (`hooks/*.py`) instead of bash scripts.
 
 **After install:** restart Claude Code, then:
 
@@ -99,6 +113,146 @@ Add to `~/.mcp.json`:
     }
   }
 }
+```
+
+### Installation Modes
+
+The cross-platform installer (`install.py`) supports several modes:
+
+```bash
+python install.py              # interactive — prompts for each optional component
+python install.py --minimal    # core only (venv + Ollama + MCP + hooks)
+python install.py --full       # everything: core + SearXNG + VPS prompt
+python install.py --searxng    # core + SearXNG Docker deployment
+python install.py --vps http://myserver:11434   # core + remote VPS Ollama
+```
+
+All modes are idempotent — safe to re-run. Settings are merged, not overwritten.
+
+### SearXNG Web Search (Docker)
+
+SearXNG provides free, private web search. It works in two modes:
+
+1. **Active** — call `search_web("query")` or `/hub-search-web query` to search the web directly
+2. **Passive** — the hook pipeline automatically falls back to SearXNG when skill/task search returns no results
+
+Results are summarized by the local LLM before being shown (active) or injected into Claude's context (passive).
+
+**Setup** (cross-platform, via Python installer):
+
+```bash
+python install.py --searxng
+```
+
+This deploys a minimal Docker container (~128MB RAM, 0.5 CPU) and auto-configures `searxng_url` in config. Requires Docker or Podman.
+
+**Manual setup:**
+
+```bash
+docker compose -f docker/docker-compose.searxng.yml up -d
+```
+
+Then configure:
+
+```
+configure(key="searxng_url", value="http://localhost:8989")
+configure(key="searxng_enabled", value="true")
+```
+
+**Verify it works:**
+
+```bash
+# Quick health check
+curl "http://localhost:8989/search?q=test&format=json" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['results']), 'results')"
+
+# Or via slash command (inside Claude Code)
+/hub-search-web python fastapi middleware
+```
+
+**Resource limits** (set in `docker/docker-compose.searxng.yml`):
+
+| Resource | Limit | Reservation |
+|----------|-------|-------------|
+| Memory | 128 MB | 64 MB |
+| CPU | 0.5 cores | 0.25 cores |
+
+The container is stateless — no volumes needed. Engines configured in `docker/searxng-settings.yml`: Brave, Qwant, Startpage, GitHub, StackOverflow, arXiv, Semantic Scholar (CAPTCHA-heavy engines like Google and DuckDuckGo are disabled).
+
+**SearXNG on a remote VPS:**
+
+If SearXNG runs on a VPS, point the config to it:
+
+```
+configure(key="searxng_url", value="http://your-vps-ip:8989")
+```
+
+The installer auto-detects SearXNG on the same host as a remote Ollama VPS.
+
+### Remote VPS (Ollama)
+
+Offload the Level 4 agent (heaviest model) to a remote server running Ollama. Levels 1-3 stay local for speed; Level 4 routes to the VPS for quality.
+
+**Automatic setup** (via installer):
+
+```bash
+python install.py --vps http://myserver:11434
+```
+
+This tests connectivity, prompts for model name and optional API key, then configures:
+- `remote_llm.base_url` — Ollama or OpenAI-compatible endpoint
+- `remote_llm.model` — model to use on the remote server
+- `local_models.level_4` — set to `remote:<url>` to route L4 traffic
+
+**Manual setup:**
+
+```
+configure(key="remote_llm", value='{"base_url":"http://myserver:11434","model":"qwen2.5-coder:32b","timeout":120}')
+configure(key="local_models", value='{"level_1":"qwen2.5-coder:3b","level_2":"qwen2.5-coder:7b-instruct-q4_k_m","level_3":"qwen2.5-coder:14b","level_4":"remote:http://myserver:11434"}')
+```
+
+**VPS requirements:**
+- Ollama installed and listening on `0.0.0.0:11434`
+- At least one model pulled (e.g. `qwen2.5-coder:32b`)
+- Firewall allows inbound TCP on port 11434 (and 8989 if running SearXNG)
+- Recommended: 32GB+ RAM for 32b models, 16GB for 14b
+
+**API key authentication** — for proxied endpoints (e.g. LiteLLM, OpenRouter):
+
+```
+configure(key="remote_llm", value='{"base_url":"https://api.example.com","api_key":"sk-...","model":"qwen2.5-coder:32b","timeout":120}')
+```
+
+The agent tries OpenAI-compatible `/v1/chat/completions` first, falls back to Ollama `/api/chat`.
+
+### Ollama Model Selection
+
+The installer pulls `nomic-embed-text` (embedding, required). For the reasoning model, choose based on your hardware:
+
+| RAM | Reasoning Model | Size | Install Command |
+|-----|----------------|------|-----------------|
+| 8 GB | `deepseek-r1:1.5b` | 1.1 GB | `ollama pull deepseek-r1:1.5b` |
+| 16 GB | `qwen2.5-coder:7b-instruct-q4_k_m` | 4.7 GB | `ollama pull qwen2.5-coder:7b-instruct-q4_k_m` |
+| 32 GB | `qwen2.5-coder:14b` | 9 GB | `ollama pull qwen2.5-coder:14b` |
+| 64 GB+ | `qwen2.5-coder:32b` | 19 GB | `ollama pull qwen2.5-coder:32b` |
+
+After pulling, activate:
+
+```
+configure(key="reason_model", value="qwen2.5-coder:7b-instruct-q4_k_m")
+```
+
+For the **Level 4 local agent** (heaviest, used for multi-step tasks):
+
+| RAM | L4 Model | Install |
+|-----|----------|---------|
+| 16 GB | `qwen2.5-coder:7b-instruct-q4_k_m` | same as reason model |
+| 32 GB | `qwen2.5-coder:14b` | `ollama pull qwen2.5-coder:14b` |
+| 64 GB+ | `qwen2.5-coder:32b` | `ollama pull qwen2.5-coder:32b` |
+
+Configure levels individually:
+
+```
+configure(key="local_models", value='{"level_1":"qwen2.5-coder:3b","level_2":"qwen2.5-coder:7b-instruct-q4_k_m","level_3":"qwen2.5-coder:14b","level_4":"qwen2.5-coder:32b"}')
 ```
 
 ## Features
@@ -171,14 +325,66 @@ A `UserPromptSubmit` hook intercepts task commands **before Claude sees them**. 
 }
 ```
 
+**Session-start protocol enforcer** — a second lightweight hook ensures Claude executes mandatory session-start steps (skill invocation, skill search, memory loading) before the first response. Without this, Claude tends to classify conversational openers as "not a task" and skip the protocol entirely.
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [
+        {
+          "type": "command",
+          "command": "/path/to/mcp-skill-hub/hooks/session-start-enforcer.sh",
+          "timeout": 5,
+          "statusMessage": "Checking session start protocol..."
+        },
+        {
+          "type": "command",
+          "command": "/path/to/mcp-skill-hub/hooks/intercept-task-commands.sh",
+          "timeout": 45,
+          "statusMessage": "Checking for task commands..."
+        }
+      ]
+    }]
+  }
+}
+```
+
+The enforcer uses a `{tempdir}/claude-session-started-{session_id}` flag file — if absent, it injects a `systemMessage` with the session-start checklist. On subsequent messages the flag exists and the hook exits immediately (~1ms). Flags older than 24h are auto-pruned.
+
+| Aspect | Detail |
+|--------|--------|
+| Cost | 0 LLM tokens (file existence check only) |
+| Latency | ~10ms first message, ~1ms thereafter |
+| Depends on | bash, python3 (no Ollama, no skill-hub) |
+| Order | Must run **before** `intercept-task-commands.sh` |
+
+**How SearXNG works** — two modes:
+
+**Active search** — call directly when you need web information:
+```
+search_web("python fastapi middleware")       # MCP tool (Claude calls it)
+/hub-search-web python fastapi middleware     # slash command (0 Claude tokens)
+```
+
+**Passive RAG fallback** — the hook pipeline uses it automatically:
+1. User sends a message → hook runs skill search
+2. If **no skills match** above the similarity threshold → SearXNG web search triggers
+3. Top results are fetched from SearXNG JSON API (`/search?q=...&format=json&categories=it,science,general`)
+4. Local LLM summarizes the results into 3-5 sentences
+5. Summary is injected into Claude's `systemMessage` as `[Web context — SearXNG]`
+6. Claude sees pre-digested web context — the raw search results are never sent
+
+**Cross-platform:** Every hook has both a `.sh` (macOS/Linux) and `.py` (Windows/any) version. The `install.py` installer auto-selects the right one per platform. On Windows, hooks are invoked as `python hooks/session_start_enforcer.py` etc.
+
 **How it saves tokens:**
 
 | Action | Without hook | With hook |
 |--------|-------------|-----------|
 | "save to memory" | ~500 tokens (Claude reads, decides, calls tool, reads response) | 0 tokens (local LLM handles, Claude never sees it) |
-| "close task 3" | ~800 tokens (Claude + LLM compaction via tool) | 0 tokens (local deepseek-r1 compacts directly) |
+| "close task 3" | ~800 tokens (Claude + LLM compaction via tool) | 0 tokens (local LLM compacts directly) |
 | "list open tasks" | ~300 tokens | 0 tokens |
-| Normal messages | Normal cost | Normal cost (hook allows through in <50ms) |
+| Normal messages | Normal cost | Normal cost (hook allows through; ~100ms if below similarity threshold, ~3-8s if context injection is enabled) |
 
 ### 4. Teaching Rules
 
@@ -261,6 +467,7 @@ Config file: `~/.claude/mcp-skill-hub/config.json`
 | **Search & Load** | |
 | `search_skills(query, top_k, use_rerank)` | Semantic search, returns full skill content |
 | `search_context(query, top_k)` | Unified search: skills + tasks + teachings + plugins |
+| `search_web(query, top_k)` | Search the web via local SearXNG + LLM summary |
 | `suggest_plugins(query)` | Suggest plugins (including disabled) for current task |
 | **Tasks** | |
 | `save_task(title, summary, context, tags)` | Save open task for future sessions |
@@ -283,6 +490,10 @@ Config file: `~/.claude/mcp-skill-hub/config.json`
 | `configure(key, value)` | View/update config |
 | `status()` | Health check: MCP, Ollama, models, hook, DB stats |
 | `token_stats()` | Token savings report from hook interceptions |
+| `list_models()` | List installed Ollama models with role markers |
+| `pull_model(model)` | Download a new Ollama model via Ollama API |
+| `optimize_memory(dry_run)` | LLM-driven analysis of memory files with prune/compact recommendations |
+| `exhaustion_save(context)` | Auto-save session when Claude is rate-limited |
 
 ## CLI Reference
 
@@ -310,7 +521,7 @@ Plugin suggestions combine all three: `total = embed_sim + teaching_boost + sess
 
 ### Task Compaction
 
-When you `close_task()`, the local LLM (deepseek-r1) distills the conversation into:
+When you `close_task()`, the local LLM (configured `reason_model`) distills the conversation into:
 
 ```json
 {
@@ -325,21 +536,47 @@ When you `close_task()`, the local LLM (deepseek-r1) distills the conversation i
 
 ~200 tokens stored vs ~5000 for the raw conversation. Future `search_context()` matches against the compact vector.
 
+## How Output Reaches the User
+
+Skill Hub uses two different communication paths. Understanding which path applies is critical:
+
+| Path | How it works | User sees it? | Example |
+|------|-------------|---------------|---------|
+| **MCP tool return** | Tool returns a string → goes into Claude's context → Claude decides what to relay | Only if Claude echoes it | `status()`, `search_skills()`, `configure()` |
+| **Hook `block` response** | Hook returns `{"decision": "block", "message": "..."}` → shown directly to user, Claude never sees the message | Yes, always | `/hub-status`, `/hub-token-stats`, task interception |
+| **Hook `systemMessage`** | Hook returns `{"decision": "allow", "systemMessage": "..."}` → injected into Claude's context as system text | No (invisible to user) | Dynamic context injection, skill loading |
+
+**In practice:**
+- **Slash commands** (`/hub-*`) are intercepted by the hook and output directly to the user — fast, 0 Claude tokens.
+- **MCP tools** (called by Claude via tool use) return results to Claude's context. Claude then summarizes or relays them. This costs tokens but gives Claude the information it needs to act.
+- **Context injection** enriches Claude's system prompt invisibly — the user only sees Claude's improved response, not the injected context.
+
+If a feature "doesn't seem to do anything", it may be injecting context into Claude's system prompt rather than showing output directly.
+
 ## Architecture
 
 ```
 src/skill_hub/
-├── server.py        # FastMCP tools + MCP protocol
-├── store.py         # SQLite: skills (claude+local), embeddings, feedback, teachings, tasks
-├── indexer.py       # Scan plugin dirs + local-skills/, parse SKILL.md + JSON, build index
-├── embeddings.py    # Ollama: embed, rerank, compact, triage (incl. local_agent action)
-├── config.py        # User-configurable settings (models, thresholds, local_models)
-├── cli.py           # Hook pipeline: slash commands, L1-L4, triage, ? help, context injection
-├── local_agent.py   # Level 4: plan_agent() + run_agent() with tool-calling loop
-└── activity_log.py  # File + stderr logging (daily rotation, 50MB cap)
+├── server.py           # FastMCP tools + MCP protocol
+├── store.py            # SQLite: skills (claude+local), embeddings, feedback, teachings, tasks
+├── indexer.py          # Scan plugin dirs + local-skills/, parse SKILL.md + JSON, build index
+├── embeddings.py       # Ollama: embed, rerank, compact, triage (incl. local_agent action)
+├── config.py           # User-configurable settings (models, thresholds, local_models)
+├── cli.py              # Hook pipeline: slash commands, L1-L4, triage, ? help, context injection
+├── local_agent.py      # Level 4: plan_agent() + run_agent() with tool-calling loop
+├── activity_log.py     # File + stderr logging (daily rotation, 50MB cap)
+├── resource_monitor.py # CPU/memory pressure gating for LLM operations
+├── searxng.py          # SearXNG web search fallback integration
+├── watcher.py          # Watchdog auto-reindex on plugin file changes
+└── repl.py             # Interactive REPL for local debugging
 
 hooks/
+├── session-start-enforcer.sh    # UserPromptSubmit: session-start protocol reminder (0 LLM tokens)
+├── session_start_enforcer.py    # ↳ cross-platform Python equivalent
 ├── intercept-task-commands.sh   # UserPromptSubmit: zero-token task interception
+├── intercept_task_commands.py   # ↳ cross-platform Python equivalent
+├── session-end.sh               # Stop: session memory + stats
+├── session_end.py               # ↳ cross-platform Python equivalent
 └── session-logger.sh            # Stop: passive tool usage logging
 ```
 
@@ -373,7 +610,7 @@ status()
 MCP server:      ✓ running
 Ollama:          ✓ reachable at http://localhost:11434
 Embed model:     ✓ nomic-embed-text
-Reason model:    ✓ deepseek-r1:7b
+Reason model:    ✓ qwen2.5-coder:7b-instruct-q4_k_m
 Hook:            ✓ configured and enabled
 Token profiling: ✓ on
 
@@ -684,6 +921,11 @@ Planning uses the level_3 model (14b, fast) while execution uses level_4 (32b, t
 /hub-local                     # toggle local mode on/off (bypass Claude)
 /hub-local on                  # force on: all messages → L4 agent, session auto-saved
 /hub-local off                 # resume Claude
+
+/hub-skill-disable             # disable L1/L2/L3 local execution (persists to config)
+/hub-skill-enable              # re-enable local execution
+/hub-hook-disable              # disable entire hook pipeline (classification, triage, context injection)
+/hub-hook-enable               # re-enable hook pipeline
 ```
 
 **Local skills** are JSON files in `~/.claude/local-skills/`:
@@ -930,7 +1172,7 @@ All settings have sensible defaults. Override only what you need.
 |-----|---------|-------------|
 | `ollama_base` | `http://localhost:11434` | Ollama server URL |
 | `embed_model` | `nomic-embed-text` | Embedding model |
-| `reason_model` | `deepseek-r1:1.5b` | Reasoning model (re-rank, compact, classify) |
+| `reason_model` | `deepseek-r1:1.5b` | Reasoning model (re-rank, compact, classify). Recommended: `qwen2.5-coder:7b-instruct-q4_k_m` |
 | `hook_enabled` | `true` | Enable UserPromptSubmit hook |
 | `hook_timeout_seconds` | `45` | Max hook execution time |
 | `token_profiling` | `true` | Track estimated token savings |
@@ -939,10 +1181,10 @@ All settings have sensible defaults. Override only what you need.
 | `extra_skill_dirs` | `[{skills-archive}]` | Extra skill directories to index |
 | `extra_plugin_dirs` | `[]` | Extra plugin directories to index |
 | `hook_semantic_threshold` | `0.45` | Min embedding similarity for LLM classify |
-| `hook_max_message_length` | `400` | Messages longer than this skip LLM classify |
+| `hook_max_message_length` | `2000` | Messages longer than this skip LLM classify |
 | `hook_task_command_examples` | `[15 phrases]` | Canonical task phrases for semantic centroid |
 | `hook_context_injection` | `true` | Auto-enrich context with RAG + memory |
-| `hook_context_max_chars` | `2000` | Max chars injected as systemMessage |
+| `hook_context_max_chars` | `40000` | Max chars injected as systemMessage (~10k tokens) |
 | `hook_context_top_k_skills` | `5` | Max skills loaded with full content per message |
 | `hook_precompact_threshold` | `1500` | Messages longer than this get LLM pre-compaction |
 | `profiles` | `{6 built-in}` | Session profile definitions |
@@ -969,9 +1211,72 @@ All settings have sensible defaults. Override only what you need.
 | `local_models` | `{level_1: 3b, ...}` | Ollama model per execution level |
 | `local_commands` | `{git_status: ...}` | Level 1 whitelisted shell commands |
 | `local_templates` | `{git_log_n: ...}` | Level 2 templated commands with params |
+| `local_cmd_similarity_threshold` | `0.55` | Min task-centroid similarity to try L1/L2 matching |
+| `local_skill_threshold` | `0.85` | Min embedding similarity for L3 local skill match |
 | `local_skills_dir` | `~/.claude/local-skills` | Directory for Level 3 skill JSON files |
 | `remote_llm` | `{}` | Remote LLM endpoint for L4: `{base_url, api_key, model, timeout}` |
+| `searxng_url` | `""` (auto-detect) | Explicit SearXNG URL; empty = probe localhost:8989 |
+| `searxng_enabled` | `true` | Enable SearXNG web search (active + passive) |
+| `searxng_top_k` | `3` | Number of search results to fetch and summarize |
+| `searxng_timeout` | `5` | Seconds for SearXNG probe (is it reachable?) |
+| `searxng_search_timeout` | `15` | Seconds for actual search (engines need time) |
 | `log_dir` | `~/.claude/mcp-skill-hub/logs` | Activity log directory (daily rotation, 50MB cap) |
+
+## Logs & Troubleshooting
+
+Two log streams show what the local LLM is doing:
+
+**Hook debug log** — raw hook I/O, timing, decisions:
+
+```bash
+# macOS / Linux
+tail -f ~/.claude/mcp-skill-hub/logs/hook-debug.log
+
+# Windows (PowerShell)
+Get-Content -Wait $HOME\.claude\mcp-skill-hub\logs\hook-debug.log
+```
+
+Sample output:
+```
+[14:32:01] [  0.0s] ENFORCER   NEW SESSION  id=abc123
+[14:32:01] [  0.0s] ENFORCER   injecting session-start checklist
+[14:32:03] [  0.0s] INTERCEPT  fired  session=abc123  len=42  msg="refactor the auth middleware"
+[14:32:03] [  0.1s] INTERCEPT  cli  exit=0  time=1823ms  stdout_len=2450
+[14:32:03] [  1.9s] INTERCEPT  ALLOW  enriched=yes  systemMsg=1890chars  cli_time=1823ms
+[14:32:03] [  1.9s] INTERCEPT  done  total_time=1924ms
+```
+
+Each line shows: `[time] [elapsed] HOOK_TYPE  details`
+
+| Prefix | Source |
+|--------|--------|
+| `ENFORCER` | `session-start-enforcer` — session detection, checklist injection |
+| `INTERCEPT` | `intercept-task-commands` — classify, block/allow, context injection |
+| `STOP` | `session-end` — memory save, session stats |
+
+**Activity log** — MCP tool calls, LLM invocations, skill searches:
+
+```bash
+# macOS / Linux
+tail -f ~/.claude/mcp-skill-hub/logs/activity.log
+
+# Windows (PowerShell)
+Get-Content -Wait $HOME\.claude\mcp-skill-hub\logs\activity.log
+```
+
+This log is written by the MCP server process (not hooks). It shows `TOOL`, `HOOK`, `LLM`, and `EVENT` entries with structured key-value pairs.
+
+Both logs rotate daily and are capped at 50 MB total.
+
+**Common issues:**
+
+| Symptom | Check |
+|---------|-------|
+| Hooks not firing | `~/.claude/settings.json` → verify `hooks.UserPromptSubmit` entries exist |
+| "CLI failed" in hook log | Run `skill-hub-cli classify "test"` manually to see the error |
+| SearXNG not found | `curl http://localhost:8989/search?q=test&format=json` |
+| Remote VPS unreachable | `curl http://your-vps:11434/api/tags` |
+| Ollama models not loading | `ollama list` — check model is pulled; `ollama ps` — check it's running |
 
 ## Roadmap
 

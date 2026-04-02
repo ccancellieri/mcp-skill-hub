@@ -161,15 +161,16 @@ def searxng_context(query: str) -> str | None:
     if not ollama_available(EMBED_MODEL):
         return None
 
-    timeout = float(_cfg.get("searxng_timeout") or 5)
+    probe_timeout = float(_cfg.get("searxng_timeout") or 5)
+    search_timeout = float(_cfg.get("searxng_search_timeout") or 15)
     top_k = int(_cfg.get("searxng_top_k") or 3)
 
-    base_url = _resolve_searxng_url(timeout=timeout)
+    base_url = _resolve_searxng_url(timeout=probe_timeout)
     if not base_url:
         return None
 
     try:
-        results = _searxng_search(query, base_url, top_k=top_k, timeout=timeout)
+        results = _searxng_search(query, base_url, top_k=top_k, timeout=search_timeout)
     except Exception:
         return None
 

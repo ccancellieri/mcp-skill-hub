@@ -1394,6 +1394,66 @@ def exhaustion_save(context: str = "") -> str:
     return _cmd_exhaustion_save(context)
 
 
+@mcp.tool()
+def search_web(query: str, top_k: int = 5) -> str:
+    """
+    Search the web using the local SearXNG instance and summarize results
+    with the local LLM.
+
+    Returns search results with titles, URLs, and snippets, plus an
+    LLM-generated summary. Requires SearXNG running (see install.py --searxng).
+
+    Use this when the user needs current information from the web, or when
+    skill search and task memory don't have relevant results.
+
+    Args:
+        query: The search query.
+        top_k: Number of results to return (default 5).
+    """
+    log_tool("search_web", query=query[:80])
+
+    from .searxng import (
+        _resolve_searxng_url,
+        _searxng_search,
+        _summarize_results,
+    )
+    from . import config as _cfg
+
+    if not _cfg.get("searxng_enabled"):
+        return "SearXNG is disabled. Enable with: configure(key='searxng_enabled', value='true')"
+
+    probe_timeout = float(_cfg.get("searxng_timeout") or 5)
+    search_timeout = float(_cfg.get("searxng_search_timeout") or 15)
+
+    base_url = _resolve_searxng_url(timeout=probe_timeout)
+    if not base_url:
+        return ("No SearXNG instance found. Set up with:\n"
+                "  python install.py --searxng\n"
+                "Or manually: docker compose -f docker/docker-compose.searxng.yml up -d")
+
+    try:
+        results = _searxng_search(query, base_url, top_k=top_k, timeout=search_timeout)
+    except Exception as exc:
+        return f"Search failed: {exc}"
+
+    if not results:
+        return "No results found."
+
+    # Format results
+    lines = [f"## Web Search: {query}\n"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"**{i}. [{r['title']}]({r['url']})**")
+        if r.get("snippet"):
+            lines.append(f"   {r['snippet']}\n")
+
+    # Add LLM summary if available
+    summary = _summarize_results(query, results)
+    if summary:
+        lines.append(f"\n**Summary:** {summary}")
+
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()

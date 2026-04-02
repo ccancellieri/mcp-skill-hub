@@ -356,14 +356,27 @@ _pending_command: dict | None = None
 
 
 _LOCAL_COMMAND_PROMPT = """\
-You are a command mapper. Given a user message and a list of available commands, \
-pick the BEST matching command. If none match, reply "none".
+You are a strict command mapper. Given a user message and a list of available \
+shell commands, pick the matching command ONLY if the user is explicitly asking \
+to run that exact operation.
+
+CRITICAL: Most messages are NOT commands — they are coding questions, bug reports, \
+feature requests, or discussions. If the user is asking about code, asking you to \
+fix/build/explain something, or discussing anything other than running a shell \
+command, you MUST reply "none" with confidence 0.0.
 
 Available commands:
 {commands}
 
 Reply with ONLY a JSON object:
 {{"command": "<command_name or none>", "confidence": <0.0-1.0>}}
+
+Examples:
+- "fix the pagination bug" → {{"command": "none", "confidence": 0.0}}
+- "show me git status" → {{"command": "git_status", "confidence": 0.95}}
+- "add a new endpoint" → {{"command": "none", "confidence": 0.0}}
+- "what branches exist" → {{"command": "git_branch", "confidence": 0.85}}
+- "refactor the query executor" → {{"command": "none", "confidence": 0.0}}
 
 User message: {message}"""
 
@@ -636,7 +649,8 @@ def _match_local_skill(message: str) -> dict | None:
             except Exception:
                 continue
 
-    if best_skill and best_sim >= 0.55:
+    min_skill_sim = float(_cfg.get("local_skill_threshold") or 0.85)
+    if best_skill and best_sim >= min_skill_sim:
         log_hook("local_skill_match", name=best_skill["name"],
                  sim=f"{best_sim:.3f}")
         return best_skill
@@ -1931,6 +1945,55 @@ def _cmd_cache_stats() -> str:
         return f"Error: {exc}"
 
 
+def _cmd_search_web(query: str) -> str:
+    """Search the web via local SearXNG and summarize with local LLM."""
+    from . import config as _cfg
+
+    if not _cfg.get("searxng_enabled"):
+        return "SearXNG is disabled. Enable: `/hub-configure searxng_enabled true`"
+
+    from .searxng import (
+        _resolve_searxng_url,
+        _searxng_search,
+        _summarize_results,
+    )
+
+    probe_timeout = float(_cfg.get("searxng_timeout") or 5)
+    search_timeout = float(_cfg.get("searxng_search_timeout") or 15)
+    top_k = int(_cfg.get("searxng_top_k") or 3)
+
+    base_url = _resolve_searxng_url(timeout=probe_timeout)
+    if not base_url:
+        return ("No SearXNG instance found.\n"
+                "Setup: `python install.py --searxng`\n"
+                "Or: `docker compose -f docker/docker-compose.searxng.yml up -d`")
+
+    try:
+        results = _searxng_search(query, base_url, top_k=top_k, timeout=search_timeout)
+    except Exception as exc:
+        return f"Search failed: {exc}"
+
+    if not results:
+        return f"No results for: {query}"
+
+    lines = [f"**Web search:** {query}\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "Untitled")
+        url = r.get("url", "")
+        snippet = r.get("snippet", "")
+        lines.append(f"{i}. **{title}**")
+        if url:
+            lines.append(f"   {url}")
+        if snippet:
+            lines.append(f"   {snippet}\n")
+
+    summary = _summarize_results(query, results)
+    if summary:
+        lines.append(f"\n**Summary:** {summary}")
+
+    return "\n".join(lines)
+
+
 def _cmd_show_patterns() -> str:
     """Show recurring message patterns that could become auto-skills."""
     try:
@@ -2854,9 +2917,11 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
 
         # Skip LLM-based command matching if message had low similarity
         # to command patterns — prevents small models from hallucinating
-        # matches (e.g. matching "fix the bug" to "pwd")
+        # matches (e.g. matching "fix the bug" to "pwd").
+        # Use a higher bar than task classification (0.55 vs 0.45) since
+        # false positives here block the user's message entirely.
         local_cmd = None
-        local_cmd_threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
+        local_cmd_threshold = float(_cfg.get("local_cmd_similarity_threshold") or 0.55)
         if msg_similarity >= local_cmd_threshold:
             # Try Level 1 (whitelisted commands)
             local_cmd = _match_local_command(message)
@@ -2900,7 +2965,11 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 }
 
         # Try Level 3 (local skills — multi-step)
-        local_skill = _match_local_skill(message)
+        # Skip if message had low task similarity — avoids false skill matches
+        # on normal coding questions
+        local_skill = None
+        if msg_similarity >= local_cmd_threshold:
+            local_skill = _match_local_skill(message)
         if local_skill:
             skill_name = local_skill.get("name", "unknown")
             steps_preview = "\n".join(
@@ -3283,7 +3352,6 @@ def _cmd_token_stats() -> str:
     totals = store.get_interception_totals()
     ctx_stats = store.get_context_injection_stats()
     triage_stats = store.get_triage_stats()
-    store.close()
 
     lines: list[str] = []
 
@@ -3352,6 +3420,7 @@ def _cmd_token_stats() -> str:
     else:
         lines.append("\nNo context injections recorded yet.")
 
+    store.close()
     return "\n".join(lines)
 
 
@@ -3869,6 +3938,31 @@ _COMMAND_USAGE: dict[str, str] = {
         "Usage: `/hub-apply-pattern <number>`\n"
         "Run `/hub-suggest-patterns` first to see available suggestions."
     ),
+    "search_web": (
+        "Search the web via local SearXNG and summarize with local LLM.\n\n"
+        "Requires SearXNG running (python install.py --searxng).\n\n"
+        "Usage: `/hub-search-web <query>`"
+    ),
+    "skill_disable": (
+        "Disable local skill/command execution (L1/L2/L3).\n\n"
+        "Stops the hook from matching user messages to local commands\n"
+        "and skills. Classification and context injection still work.\n\n"
+        "Usage: `/hub-skill-disable`"
+    ),
+    "skill_enable": (
+        "Re-enable local skill/command execution.\n\n"
+        "Usage: `/hub-skill-enable`"
+    ),
+    "hook_disable": (
+        "Disable the entire hook pipeline.\n\n"
+        "All messages pass through to Claude unmodified.\n"
+        "Slash commands still work.\n\n"
+        "Usage: `/hub-hook-disable`"
+    ),
+    "hook_enable": (
+        "Re-enable the full hook pipeline.\n\n"
+        "Usage: `/hub-hook-enable`"
+    ),
 }
 
 _SLASH_COMMANDS: dict[str, str] = {
@@ -3914,6 +4008,11 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-invalidate-cache": "invalidate_cache",
     "/hub-cache-stats": "cache_stats",
     "/hub-show-patterns": "show_patterns",
+    "/hub-search-web": "search_web",
+    "/hub-skill-disable": "skill_disable",
+    "/hub-skill-enable": "skill_enable",
+    "/hub-hook-disable": "hook_disable",
+    "/hub-hook-enable": "hook_enable",
 }
 
 
@@ -4134,6 +4233,46 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_cache_stats()}
         elif action == "show_patterns":
             return {"decision": "block", "message": _cmd_show_patterns()}
+        elif action == "search_web":
+            if not args_str.strip():
+                return {"decision": "block",
+                        "message": "Usage: `/hub-search-web <query>`"}
+            return {"decision": "block", "message": _cmd_search_web(args_str.strip())}
+        elif action == "skill_disable":
+            from . import config as _cfg
+            cfg = _cfg.load_config()
+            cfg["local_execution_enabled"] = False
+            _cfg.save_config(cfg)
+            return {"decision": "block",
+                    "message": "Local skill/command execution **disabled**.\n"
+                               "Re-enable: `/hub-skill-enable`"}
+        elif action == "skill_enable":
+            from . import config as _cfg
+            cfg = _cfg.load_config()
+            cfg["local_execution_enabled"] = True
+            _cfg.save_config(cfg)
+            return {"decision": "block",
+                    "message": "Local skill/command execution **enabled**."}
+        elif action == "hook_disable":
+            from . import config as _cfg
+            cfg = _cfg.load_config()
+            cfg["hook_enabled"] = False
+            cfg["hook_context_injection"] = False
+            cfg["hook_llm_triage"] = False
+            _cfg.save_config(cfg)
+            return {"decision": "block",
+                    "message": "Hook pipeline **disabled** (classification, triage, context injection all off).\n"
+                               "Slash commands still work. Re-enable: `/hub-hook-enable`"}
+        elif action == "hook_enable":
+            from . import config as _cfg
+            cfg = _cfg.load_config()
+            cfg["hook_enabled"] = True
+            cfg["hook_context_injection"] = True
+            cfg["hook_llm_triage"] = True
+            _cfg.save_config(cfg)
+            return {"decision": "block",
+                    "message": "Hook pipeline **enabled** (classification, triage, context injection).\n"
+                               "Local execution state unchanged — check `/hub-configure local_execution_enabled`."}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
