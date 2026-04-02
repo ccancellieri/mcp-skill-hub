@@ -1,0 +1,33 @@
+# SearXNG — minimal resource configuration for MCP Skill Hub
+# Usage: docker compose -f docker/docker-compose.searxng.yml up -d
+#
+# Resource limits: ~128MB RAM, 0.5 CPU — runs comfortably on any machine.
+# SearXNG is stateless; no volumes needed unless you want persistent settings.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: skill-hub-searxng
+    restart: unless-stopped
+    ports:
+      - "${SEARXNG_PORT:-8989}:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8989}/
+      # Disable browser UI features we don't need (API-only usage)
+      - SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+    volumes:
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/search?q=test&format=json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

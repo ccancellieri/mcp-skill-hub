@@ -98,7 +98,12 @@ class _DebounceHandler:
             log_event("WATCHER", "file change detected — re-indexing skills")
 
             from .indexer import index_all
-            index_all()
+            from .store import SkillStore
+            _store = SkillStore()
+            try:
+                index_all(_store)
+            finally:
+                _store.close()
 
             # Invalidate the Level 3 skill cache in cli.py
             try:

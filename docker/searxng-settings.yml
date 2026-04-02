@@ -1,0 +1,51 @@
+# SearXNG settings — optimized for API-only usage by MCP Skill Hub.
+#
+# Strategy: use default engines but disable those that CAPTCHA/403 server IPs.
+# Brave, Qwant, Startpage, GitHub, StackOverflow, arXiv, Semantic Scholar are stable.
+
+use_default_settings: true
+
+general:
+  instance_name: "skill-hub-searxng"
+  debug: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - json
+    - html
+
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "skill-hub-searxng-local-only"
+  limiter: false
+  image_proxy: false
+  public_instance: false
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+  results_on_new_tab: false
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+  pool_connections: 20
+  pool_maxsize: 10
+
+engines:
+  # Disable engines that aggressively CAPTCHA/block server IPs
+  - name: duckduckgo
+    disabled: true
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: yahoo
+    disabled: true
+  - name: karmasearch
+    disabled: true
