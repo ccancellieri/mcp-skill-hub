@@ -54,23 +54,31 @@ index_plugins()    # index plugin descriptions for suggestions
 
 ### Optional: Better Models
 
-Pull a reasoning model for re-ranking, compaction, and hook interception:
+Pull a reasoning model for re-ranking, compaction, and hook interception. The hook pipeline uses two focused LLM calls (skill lifecycle + prompt optimization) — **instruct-tuned models give significantly more reliable structured output**:
 
 ```bash
-# Minimum (1.1 GB) — works on any machine
+# Minimum (1.0 GB) — any machine
 ollama pull deepseek-r1:1.5b
 
-# Better quality (4.7 GB) — recommended for 16GB+ RAM (e.g. MacBook Pro)
-ollama pull deepseek-r1:7b
+# Recommended (4.4 GB) — 16GB+ RAM — instruct tuning, best quality/speed ratio
+ollama pull qwen2.5-coder:7b-instruct-q4_k_m
 
-# Best quality (9 GB) — for 32GB+ RAM
-ollama pull deepseek-r1:14b
+# Best quality (8.4 GB) — 32GB+ RAM
+ollama pull qwen2.5-coder:14b-instruct-q4_k_m
 ```
 
 Then configure:
 
 ```
-configure(key="reason_model", value="deepseek-r1:7b")
+configure(key="reason_model", value="qwen2.5-coder:7b-instruct-q4_k_m")
+```
+
+For higher-quality embeddings (better skill retrieval, requires reindex):
+
+```bash
+ollama pull mxbai-embed-large
+configure(key="embed_model", value="mxbai-embed-large")
+index_skills()   # rebuild vectors with new model
 ```
 
 ### Manual Install
@@ -123,6 +131,8 @@ Close with LLM-compacted summary (~200 tokens, processed locally):
 ```
 close_task(task_id=1)
 ```
+
+When a task is closed, **auto-memory** runs automatically: the local LLM evaluates the compacted digest and writes a memory entry to `MEMORY.md` if it judges the content substantive enough (quality threshold 0.4). Low-quality or trivial digests are silently skipped. This keeps your memory index self-maintaining — closed tasks that matter get persisted without manual `/hub-save-memory` calls.
 
 Tasks surface automatically in `search_context()` when future queries match.
 
@@ -206,6 +216,20 @@ Rate skills after use — rankings improve for similar future queries:
 record_feedback(skill_id="superpowers:systematic-debugging", helpful=True)
 ```
 
+Feedback is stored as an **EMA score** on each skill (`feedback_score` column, range 0.5–1.5). Every positive signal nudges the score up; negative nudges it down. The score multiplies the cosine similarity at search time — no extra queries, no per-search cosine scans.
+
+**Implicit feedback** runs automatically at session end — no manual calls needed. After each session, the hook correlates the skills that were injected into context against the tools Claude actually called:
+
+```
+Loaded skills: [hub-status, feature-dev:code-architect, superpowers:brainstorm]
+Tools used:    [mcp__skill-hub__status, Edit, Read, Write]
+
+→ hub-status domain "status" matches "mcp__skill-hub__status" → +positive EMA nudge
+→ feature-dev and superpowers unrelated to actual tools  → -negative EMA nudge
+```
+
+Over time this self-tunes the skill index to your actual usage patterns with zero effort.
+
 ### 7. Configuration
 
 View and change settings without editing files:
@@ -221,12 +245,14 @@ Config file: `~/.claude/mcp-skill-hub/config.json`
 
 **Model recommendations by hardware:**
 
-| RAM | Reasoning Model | Embed Model | Total Disk |
-|-----|----------------|-------------|------------|
-| 8 GB | `deepseek-r1:1.5b` | `nomic-embed-text` | ~1.4 GB |
-| 16 GB | `deepseek-r1:7b` | `nomic-embed-text` | ~5 GB |
-| 32 GB | `deepseek-r1:14b` | `mxbai-embed-large` | ~10 GB |
-| 64 GB+ | `deepseek-r1:32b` | `mxbai-embed-large` | ~20 GB |
+| RAM | Reasoning Model | Embed Model | Total Disk | Notes |
+|-----|----------------|-------------|------------|-------|
+| 8 GB | `deepseek-r1:1.5b` | `nomic-embed-text` | ~1.4 GB | Fast, basic |
+| 16 GB | `qwen2.5-coder:7b-instruct-q4_k_m` | `nomic-embed-text` | ~5 GB | **Recommended** — instruct tuning gives reliable JSON output |
+| 32 GB | `qwen2.5-coder:14b-instruct-q4_k_m` | `mxbai-embed-large` | ~9 GB | Best quality |
+| 64 GB+ | `qwen2.5-coder:32b` | `mxbai-embed-large` | ~19 GB | Maximum |
+
+> **Why `-instruct` variants?** The hook pipeline now uses two focused LLM calls: `eval_skill_lifecycle` (structured JSON at temp=0) and `optimize_prompt` (free-form rewrite at temp=0.2). Instruct-tuned models follow these single-task prompts reliably — base models frequently drop one task or wrap JSON in markdown. The `7b-instruct-q4_k_m` variant benchmarks at ~3.4s lifecycle + ~1.3s prompt optimization on Apple Silicon — same total latency as the old `3b` single call, with substantially better output quality.
 
 ## Tools Reference
 
@@ -450,7 +476,41 @@ Configure:
 /configure eviction_enabled false       # disable decay tracking
 ```
 
-### 12. Exhaustion Fallback
+### 12. Offline Auto-Fallback
+
+When `api.anthropic.com` is unreachable (rate limit, network outage, travel), Skill Hub detects it and **automatically activates the L4 local agent** — no manual intervention needed.
+
+```
+User: "refactor this function"
+  → Hook checks: api.anthropic.com reachable? (2.5s TCP, cached 30s)
+  → Unreachable → local mode activated silently
+  → L4 agent (qwen2.5-coder:32b) handles the message
+  → 0 Claude API calls, full tool access
+```
+
+The check is a lightweight TCP connection — no HTTP request, no auth. It runs at most once every 30 seconds (configurable) so it adds no latency to normal operation.
+
+When connectivity returns, turn off local mode manually:
+
+```
+/hub-local off    # resume Claude, session context preserved
+```
+
+Or save the session first:
+
+```
+/exhaustion-save  # compact + save before resuming
+/hub-local off
+```
+
+Configure:
+
+```
+/hub-configure offline_auto_fallback false    # disable auto-detection
+/hub-configure offline_check_interval 60      # check every 60s instead
+```
+
+### 13. Exhaustion Fallback
 
 When Claude is exhausted (quota/rate limit), the local LLM saves your session:
 
@@ -478,7 +538,7 @@ To resume later: search_context("Auth API middleware rewrite")
 
 The local LLM generates a structured digest with title, summary, decisions, next steps, and files. If the LLM is also unavailable, a raw save captures the session text. A memory file is also written to MEMORY.md so future sessions pick it up automatically.
 
-### 13. Context Optimization
+### 14. Context Optimization
 
 Analyze your memory files and get recommendations to reduce token usage:
 
@@ -503,7 +563,7 @@ Actions available:
   1 file to merge
 ```
 
-### 14. Auto-Save Memory
+### 15. Auto-Save Memory
 
 Generate and save a memory entry from the current session using the local LLM:
 
@@ -514,7 +574,7 @@ Generate and save a memory entry from the current session using the local LLM:
 
 The local LLM generates a structured memory file with appropriate type (user/feedback/project/reference) and updates MEMORY.md automatically.
 
-### 15. Universal LLM Triage
+### 16. Universal LLM Triage
 
 Every message passes through the local LLM **before** reaching Claude. The triage decides:
 
@@ -552,7 +612,7 @@ Configure:
 
 Stats via `/hub-token-stats` show triage breakdown: how many messages were answered locally vs enriched vs passed through.
 
-### 16. Local Execution Engine (Levels 1-4)
+### 17. Local Execution Engine (Levels 1-4)
 
 Run commands, templates, and multi-step skills **entirely locally** — no Claude tokens, no network. Messages are matched through 4 escalating levels:
 
@@ -658,7 +718,7 @@ The level_4 model can also be a remote endpoint:
 /hub-configure remote_llm '{"base_url":"http://your-server:11434","model":"qwen2.5-coder:32b","timeout":120}'
 ```
 
-### 17. Resource-Aware LLM Gating
+### 18. Resource-Aware LLM Gating
 
 Skill Hub monitors CPU load and memory pressure and skips expensive local LLM operations when the machine is busy. This prevents latency spikes during builds, compiles, or large model loads.
 
@@ -689,7 +749,7 @@ Disable gating entirely:
 /hub-configure resource_gating_enabled false
 ```
 
-### 18. Context Injection — Skills Loaded/Not-Loaded
+### 19. Context Injection — Skills Loaded/Not-Loaded
 
 Every auto-injected system message now includes a one-line summary showing which skills were loaded into context and which were found but skipped (not enough budget):
 
@@ -713,6 +773,8 @@ To load more skills: call `search_skills(query, top_k=8)` or raise the default:
 
 ### 20. Dual Skill Index (Claude + Local)
 
+
+
 Skills are indexed with a **target** that determines where they're loaded:
 
 | Target | Source | Loaded into | Purpose |
@@ -734,7 +796,7 @@ Re-indexing picks up both:
 index_skills()    # indexes SKILL.md as target=claude, JSON as target=local
 ```
 
-### 18. Inline Help System
+### 21. Inline Help System
 
 Type `?` to discover available commands, or `?command` for detailed usage:
 
@@ -747,7 +809,7 @@ Type `?` to discover available commands, or `?command` for detailed usage:
 
 Works even when Claude is rate-limited — the `?` system runs entirely in the local hook.
 
-### 19. Standalone REPL
+### 22. Standalone REPL
 
 When Claude is rate-limited or the VS Code extension doesn't display hook output, use the standalone REPL:
 
@@ -782,24 +844,81 @@ skill-hub> ?hub-configure
 
 The REPL runs the same pipeline as the hook (L1→L2→L3→L4→agent fallback) but directly in your terminal. Messages that would normally pass through to Claude instead go to the Level 4 local agent.
 
+### 23. Training Data Export & Fine-Tuning
+
+Every interaction accumulates signal in the database. Export it as JSONL training data to fine-tune your local models on your specific vocabulary, projects, and routing preferences:
+
+```
+/hub-export-training                    # export to default dir
+/hub-export-training ~/my-training-data # export to custom dir
+```
+
+```
+Training data exported to ~/.claude/mcp-skill-hub/training/
+  feedback.jsonl:  12 pairs   ← (query, skill, helpful) preference pairs
+  triage.jsonl:    43 pairs   ← (message, action) classification pairs
+  compact.jsonl:   21 pairs   ← (summary, digest) compaction pairs
+
+Total: 76 training pairs
+
+To fine-tune with mlx-lm (Apple Silicon):
+  pip install mlx-lm
+  mlx_lm.lora --model mlx-community/deepseek-r1-distill-qwen-1.5b-4bit \
+    --train --data ~/.claude/mcp-skill-hub/training --num-layers 8 --iters 200
+```
+
+**Three signal types:**
+
+| File | Source | Trains the model to... |
+|------|--------|----------------------|
+| `feedback.jsonl` | `record_feedback()` + implicit feedback | Identify relevant skills for your queries |
+| `triage.jsonl` | `triage_log` table | Route your specific phrasing (`"FAO catalog status"` → `local_action`) |
+| `compact.jsonl` | Closed tasks | Produce digests in your style with your terminology |
+
+**Recommended fine-tuning path (Apple Silicon, no GPU needed):**
+
+```bash
+pip install mlx-lm
+
+# Fine-tune the triage model (1.5b, fastest)
+mlx_lm.lora \
+  --model mlx-community/deepseek-r1-distill-qwen-1.5b-4bit \
+  --train --data ~/.claude/mcp-skill-hub/training \
+  --num-layers 8 --iters 200 --batch-size 4
+
+# After training, fuse and save as Ollama model
+mlx_lm.fuse --model mlx-community/deepseek-r1-distill-qwen-1.5b-4bit \
+  --adapter-path adapters --save-path ~/my-triage-model
+
+# Create Ollama modelfile
+echo 'FROM ~/my-triage-model' > Modelfile
+ollama create skill-hub-triage -f Modelfile
+
+# Activate
+/hub-configure reason_model skill-hub-triage
+```
+
+At ~200+ examples the fine-tuned model will recognize your project names, FAO/geoid/dynastore vocabulary, and preferred routing — making triage significantly more accurate than a generic base model.
+
 ### Database
 
 Location: `~/.claude/mcp-skill-hub/skill_hub.db`
 
 | Table | Purpose |
 |-------|---------|
-| `skills` | Skill metadata + full content + target (claude/local) |
-| `embeddings` | Skill vectors |
-| `feedback` | (query, skill, helpful) for boost |
+| `skills` | Skill metadata + full content + target (claude/local) + `feedback_score` EMA |
+| `embeddings` | Skill vectors + pre-stored L2 `norm` (avoids recompute per search) |
+| `feedback` | Raw (query, skill, helpful) history; EMA applied to `skills.feedback_score` |
 | `teachings` | Explicit "when X suggest Y" rules |
 | `plugins` | Plugin descriptions |
 | `plugin_embeddings` | Plugin vectors |
 | `tasks` | Open/closed task digests |
-| `session_log` | Per-session tool usage |
+| `session_log` | Per-session tool usage (source for implicit feedback) |
 | `interceptions` | Hook-intercepted command log for token profiling |
 | `context_injections` | RAG context injection stats |
 | `conversation_state` | Periodic conversation digests for relevance tracking |
-| `triage_log` | LLM triage decisions and token savings |
+| `triage_log` | LLM triage decisions and token savings (source for training export) |
+| `session_context` | Per-session rolling summary + loaded skills for dynamic context |
 
 ### Config
 
@@ -832,6 +951,14 @@ All settings have sensible defaults. Override only what you need.
 | `eviction_enabled` | `true` | Enable relevance decay tracking |
 | `eviction_min_stale_count` | `3` | Suggest profile switch after N stale detections |
 | `exhaustion_fallback` | `true` | Enable exhaustion auto-save |
+| `offline_auto_fallback` | `true` | Auto-activate L4 agent when Anthropic unreachable |
+| `offline_check_interval` | `30` | Seconds between reachability checks |
+| `implicit_feedback_enabled` | `true` | Infer skill quality from session tool usage at session-end |
+| `auto_memory_on_close_task` | `true` | Auto-write memory entry when a task is closed |
+| `hook_context_summary_max_chars` | `800` | Max chars for rolling context summary (prevents unbounded growth) |
+| `hook_context_prompt_opt_min_len` | `150` | Min message length to trigger prompt optimization |
+| `hook_context_prompt_optimization` | `true` | Enable local LLM prompt rewriting |
+| `hook_memory_dir` | *(CWD-derived)* | Override memory directory path |
 | `resource_gating_enabled` | `true` | Skip LLM ops under CPU/RAM pressure |
 | `resource_cache_ttl_seconds` | `10` | How often to re-check system resources |
 | `hook_llm_triage` | `true` | Enable universal LLM triage on all messages |
@@ -854,6 +981,7 @@ All settings have sensible defaults. Override only what you need.
 - [x] Auto-eviction — relevance decay tracking + profile switch suggestions
 - [x] Context compaction — periodic conversation digest via local LLM
 - [x] Exhaustion fallback — local LLM auto-saves session when Claude is unavailable
+- [x] Offline auto-fallback — TCP reachability check → auto-activates L4 agent when Claude unreachable
 - [x] Universal LLM triage — local LLM pre-processes all messages, answers locally or enriches
 - [x] Local execution engine — 4-level command/template/skill/agent execution with confirmation flow
 - [x] Level 4 full agent — plan-first agent loop with tool calling (shell, skills, search, files)
@@ -861,6 +989,12 @@ All settings have sensible defaults. Override only what you need.
 - [x] Inline help system — `?` lists commands, `?command` shows detailed usage
 - [x] Activity logging — file + stderr, daily rotation, configurable log dir
 - [x] Remote LLM support — Level 4 can route to a remote Ollama or OpenAI-compatible endpoint
+- [x] Split LLM calls — lifecycle (temp=0) + prompt optimization (temp=0.2) as separate focused calls
+- [x] DB vector cache — in-process cache eliminates per-search JSON deserialization (~5× faster)
+- [x] Feedback EMA — pre-aggregated score on skills table, no per-search O(N) scan
+- [x] Implicit feedback — session-end correlates loaded skills vs tool usage, auto-records EMA signal
+- [x] Auto memory on close_task — smart_memory_write runs after every task compaction
+- [x] Training data export — JSONL export of all signal types for mlx-lm fine-tuning on Apple Silicon
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License
