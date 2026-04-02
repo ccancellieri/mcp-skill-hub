@@ -86,6 +86,7 @@ class _DebounceHandler:
         if not (src.endswith(".json") or src.endswith(".md")):
             return
         with self._lock:
+            self._last_changed = src
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._delay, self._do_reindex)
@@ -95,15 +96,20 @@ class _DebounceHandler:
     def _do_reindex(self) -> None:
         try:
             from .activity_log import log_event
-            log_event("WATCHER", "file change detected — re-indexing skills")
+            import time
+            changed = getattr(self, "_last_changed", "")
+            changed_name = Path(changed).name if changed else "unknown"
+            log_event("WATCHER", f"re-indexing skills (trigger: {changed_name})")
 
             from .indexer import index_all
             from .store import SkillStore
+            t0 = time.monotonic()
             _store = SkillStore()
             try:
-                index_all(_store)
+                count, errors = index_all(_store)
             finally:
                 _store.close()
+            elapsed = time.monotonic() - t0
 
             # Invalidate the Level 3 skill cache in cli.py
             try:
@@ -113,10 +119,11 @@ class _DebounceHandler:
             except Exception:
                 pass
 
-            log_event("WATCHER", "re-index complete")
+            err_msg = f"  errors={len(errors)}" if errors else ""
+            log_event("WATCHER", f"re-index complete: {count} skills indexed in {elapsed:.1f}s{err_msg}")
         except Exception as exc:
             try:
                 from .activity_log import log_event
-                log_event("WATCHER", f"re-index error: {exc}")
+                log_event("WATCHER", f"re-index failed: {exc}")
             except Exception:
                 pass
