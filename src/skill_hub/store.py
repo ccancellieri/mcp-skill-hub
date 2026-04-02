@@ -831,5 +831,126 @@ class SkillStore:
         ).fetchone()
         return row["n"] if row else 0
 
+    # ------------------------------------------------------------------
+    # Implicit feedback support
+
+    def get_session_tools(self, session_id: str) -> list[str]:
+        """Return distinct tool_used values logged for a session."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT tool_used FROM session_log WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        return [r["tool_used"] for r in rows]
+
+    def record_implicit_feedback(self, session_id: str,
+                                 loaded_skills: list[str],
+                                 tools_used: list[str]) -> dict:
+        """Infer feedback from skill load vs tool usage overlap and record it.
+
+        Heuristic:
+        - If the skill domain keyword appears in any tool_used string → positive
+        - Skills loaded but with zero domain overlap and session had real tool
+          calls (not just trivial ones) → negative
+
+        Returns {"positive": [...], "negative": [...], "skipped": [...]}
+        """
+        if not loaded_skills or not tools_used:
+            return {"positive": [], "negative": [], "skipped": []}
+
+        tools_blob = " ".join(tools_used).lower()
+        positive: list[str] = []
+        negative: list[str] = []
+        skipped: list[str] = []
+
+        for skill_id in loaded_skills:
+            # Extract the short name from "plugin:skill-name" or just "skill-name"
+            short = skill_id.split(":")[-1].replace("-", " ").replace("_", " ").lower()
+            # Domain keywords: individual words ≥ 4 chars
+            keywords = [w for w in short.split() if len(w) >= 4]
+            if not keywords:
+                skipped.append(skill_id)
+                continue
+
+            hit = any(kw in tools_blob for kw in keywords)
+            if hit:
+                positive.append(skill_id)
+            else:
+                negative.append(skill_id)
+
+        # Record against a synthetic "session-end" query vector
+        # We use a zero vector placeholder; the EMA on feedback_score is what matters
+        zero_vec: list[float] = []
+        for skill_id in positive:
+            self.record_feedback(skill_id, f"session:{session_id}", zero_vec, helpful=True)
+        for skill_id in negative:
+            self.record_feedback(skill_id, f"session:{session_id}", zero_vec, helpful=False)
+
+        return {"positive": positive, "negative": negative, "skipped": skipped}
+
+    # ------------------------------------------------------------------
+    # Training data export
+
+    def export_training_data(self) -> dict:
+        """Export all available signal as structured training pairs.
+
+        Returns a dict with keys:
+          feedback_pairs  — (query, skill_content, label) from explicit feedback
+          triage_pairs    — (message, action) from triage_log
+          compact_pairs   — (summary, compact_digest) from closed tasks
+        """
+        # 1. Explicit feedback pairs
+        feedback_pairs: list[dict] = []
+        rows = self._conn.execute("""
+            SELECT f.query, f.helpful, s.content, s.description, s.id
+            FROM feedback f
+            JOIN skills s ON s.id = f.skill_id
+            WHERE f.query != '' AND s.content != ''
+            ORDER BY f.created_at DESC
+        """).fetchall()
+        for row in rows:
+            feedback_pairs.append({
+                "query": row["query"],
+                "skill_id": row["id"],
+                "skill_description": row["description"] or "",
+                "skill_content": (row["content"] or "")[:1000],
+                "label": bool(row["helpful"]),
+            })
+
+        # 2. Triage decision pairs
+        triage_pairs: list[dict] = []
+        rows = self._conn.execute("""
+            SELECT message_preview, action, confidence
+            FROM triage_log
+            WHERE action != '' AND message_preview != ''
+            ORDER BY created_at DESC
+        """).fetchall()
+        for row in rows:
+            triage_pairs.append({
+                "message": row["message_preview"],
+                "action": row["action"],
+                "confidence": row["confidence"],
+            })
+
+        # 3. Compaction pairs (summary → compact digest)
+        compact_pairs: list[dict] = []
+        rows = self._conn.execute("""
+            SELECT title, summary, compact
+            FROM tasks
+            WHERE status = 'closed' AND compact IS NOT NULL AND compact != ''
+            ORDER BY closed_at DESC
+        """).fetchall()
+        for row in rows:
+            compact_pairs.append({
+                "title": row["title"],
+                "input": row["summary"],
+                "output": row["compact"],
+            })
+
+        return {
+            "feedback_pairs": feedback_pairs,
+            "triage_pairs": triage_pairs,
+            "compact_pairs": compact_pairs,
+        }
+
     def close(self) -> None:
         self._conn.close()

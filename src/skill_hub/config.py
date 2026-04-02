@@ -34,7 +34,7 @@ _DEFAULTS = {
     "hook_semantic_threshold": 0.45,    # min embedding similarity to trigger LLM classify
                                         # lower = more messages reach LLM (more sensitive)
                                         # raise to 0.55+ if you get false positives with small models
-    "hook_max_message_length": 400,     # messages longer than this skip LLM classify entirely
+    "hook_max_message_length": 2000,    # messages longer than this skip LLM classify entirely
     "token_profiling": True,            # track estimated token savings per interception
 
     # Task command examples — used to build the semantic centroid for the
@@ -60,7 +60,8 @@ _DEFAULTS = {
 
     # Context injection — auto-enrich Claude's context with relevant skills/tasks/memory
     "hook_context_injection": True,     # enable RAG + auto-memory injection
-    "hook_context_max_chars": 2000,     # max chars injected as systemMessage (~500 tokens)
+    "hook_context_max_chars": 40000,    # total budget for systemMessage (~10k tokens)
+    "hook_context_max_skill_chars": 8000,  # max chars per skill (truncated if larger)
     "hook_context_top_k_skills": 5,     # max skills to load with full content per message
     "hook_precompact_threshold": 1500,  # messages longer than this get LLM pre-compaction
 
@@ -83,6 +84,20 @@ _DEFAULTS = {
 
     # Exhaustion fallback — local LLM takes over when Claude is unavailable
     "exhaustion_fallback": True,        # enable exhaustion auto-save
+
+    # Offline auto-fallback — automatically activate L4 local agent when
+    # api.anthropic.com is unreachable (rate limit, network outage, travel)
+    "offline_auto_fallback": True,
+    "offline_check_interval": 30.0,    # seconds between reachability checks
+
+    # Implicit feedback — infer skill quality from session tool usage at session-end
+    # Skills whose domain keywords match the tools Claude actually used → positive
+    # Skills loaded but completely unrelated to what Claude did → negative
+    "implicit_feedback_enabled": True,
+
+    # Auto memory on close_task — run smart_memory_write after every task compaction
+    # Silently skips if the local LLM judges the digest too thin to be worth saving
+    "auto_memory_on_close_task": True,
 
     # Resource-aware LLM gating — skip expensive local LLM ops under pressure
     # Pressure levels: idle(0), low(1), moderate(2), high(3)

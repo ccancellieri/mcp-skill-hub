@@ -186,6 +186,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
                 )
                 store.close_task(int(task_id), compact_text, compact_vector)
                 store.close()
+                _auto_memory_from_task_close(task_id=int(task_id), digest=digest)
                 return (
                     f"Task #{task_id} closed and compacted.\n"
                     f"Summary: {digest.get('summary', 'N/A')}"
@@ -202,6 +203,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
             )
             store.close_task(latest["id"], compact_text, compact_vector)
             store.close()
+            _auto_memory_from_task_close(task_id=latest["id"], digest=digest)
             return (
                 f"Task #{latest['id']} (\"{latest['title']}\") closed and compacted.\n"
                 f"Summary: {digest.get('summary', 'N/A')}"
@@ -1068,6 +1070,35 @@ _session_messages: list[str] = []
 _session_id: str | None = None
 _local_mode: bool = False  # when True, all messages go to L4 local agent
 
+# Offline fallback state — tracks last connectivity check result
+_offline_check_cache: dict = {"reachable": True, "checked_at": 0.0}
+
+
+def _check_anthropic_reachable(interval: float = 30.0) -> bool:
+    """Quick TCP reachability check for api.anthropic.com:443.
+
+    Cached for `interval` seconds so it doesn't add latency on every message.
+    Returns True if reachable, False if network/DNS/timeout failure.
+    """
+    import time
+    import socket
+
+    now = time.monotonic()
+    if now - _offline_check_cache["checked_at"] < interval:
+        return bool(_offline_check_cache["reachable"])
+
+    try:
+        sock = socket.create_connection(("api.anthropic.com", 443), timeout=2.5)
+        sock.close()
+        reachable = True
+    except OSError:
+        reachable = False
+
+    _offline_check_cache["reachable"] = reachable
+    _offline_check_cache["checked_at"] = now
+    log_hook("offline_check", reachable=reachable)
+    return reachable
+
 # ── Permission management ────────────────────────────────────────────
 #
 # /hub-approve-task <scope>  — add broad permission patterns to settings.json
@@ -1576,6 +1607,149 @@ def _conversation_digest_if_due(message: str) -> str | None:
     return None
 
 
+def _auto_memory_from_task_close(task_id: int, digest: dict) -> None:
+    """Write a memory entry when a task is closed, if the digest is substantive.
+
+    Runs only when auto_memory_on_close_task is enabled (default: True).
+    Uses smart_memory_write to evaluate quality before writing — silently
+    skips if the local LLM judges the digest too thin to be worth saving.
+    """
+    from . import config as _cfg
+    if not _cfg.get("auto_memory_on_close_task") is not False:
+        return
+
+    summary = digest.get("summary", "")
+    title = digest.get("title", "")
+    if not summary or len(summary) < 60:
+        return
+
+    import os as _os
+    _mem_cfg = _cfg.get("hook_memory_dir")
+    if _mem_cfg:
+        memory_dir = Path(str(_mem_cfg)).expanduser()
+    else:
+        _cwd_slug = _os.getcwd().replace("/", "-").replace("\\", "-").lstrip("-")
+        memory_dir = Path.home() / ".claude" / "projects" / _cwd_slug / "memory"
+
+    memory_index = memory_dir / "MEMORY.md"
+    existing = memory_index.read_text(encoding="utf-8", errors="replace") \
+        if memory_index.exists() else ""
+
+    content = f"Task #{task_id}: {title}\n\n{summary}"
+    if digest.get("decisions"):
+        content += "\n\nDecisions: " + ", ".join(digest["decisions"])
+
+    try:
+        mem_result = smart_memory_write(content=content, existing_index=existing)
+        if mem_result.get("escalate"):
+            log_event("MEMORY", f"task_close #{task_id}: skipped (quality={mem_result['quality']:.2f})")
+            return
+
+        entry = mem_result.get("result", {})
+        filename = entry.get("filename", f"task_{task_id}.md")
+        mem_type = entry.get("type", "project")
+        name = entry.get("name", title)
+        description = entry.get("description", summary[:100])
+        content_text = entry.get("content", "")
+
+        if not content_text or len(content_text) < 30:
+            return
+
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        mem_file = memory_dir / filename
+        mem_file.write_text(
+            f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{content_text}\n",
+            encoding="utf-8",
+        )
+        index_line = f"- [{filename}]({filename}) — {description}"
+        if memory_index.exists():
+            current = memory_index.read_text(encoding="utf-8", errors="replace")
+            if filename not in current:
+                with memory_index.open("a", encoding="utf-8") as f:
+                    f.write(f"\n{index_line}\n")
+        log_event("MEMORY", f"task_close #{task_id}: saved {filename}")
+    except Exception as exc:
+        log_event("MEMORY", f"task_close #{task_id}: error {exc}")
+
+
+def _cmd_export_training(args_str: str) -> str:
+    """Export training data as JSONL files for fine-tuning local models.
+
+    Produces three files in the export directory:
+      feedback.jsonl   — (query, skill, label) preference pairs
+      triage.jsonl     — (message, action) classification pairs
+      compact.jsonl    — (summary, digest) compaction pairs
+
+    Usage: /hub-export-training [output_dir]
+    Default output: ~/.claude/mcp-skill-hub/training/
+    """
+    import json as _json
+
+    output_dir = Path(args_str.strip()) if args_str.strip() else (
+        Path.home() / ".claude" / "mcp-skill-hub" / "training"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        store = SkillStore()
+        data = store.export_training_data()
+        store.close()
+    except Exception as exc:
+        return f"Export failed: {exc}"
+
+    written: list[str] = []
+
+    # feedback.jsonl — Alpaca-style preference format
+    fb_path = output_dir / "feedback.jsonl"
+    with fb_path.open("w", encoding="utf-8") as f:
+        for pair in data["feedback_pairs"]:
+            record = {
+                "instruction": "Given a user query, rate whether this skill is relevant (true/false).",
+                "input": f"Query: {pair['query']}\nSkill: {pair['skill_description']}\nContent: {pair['skill_content'][:500]}",
+                "output": str(pair["label"]).lower(),
+                "metadata": {"skill_id": pair["skill_id"]},
+            }
+            f.write(_json.dumps(record) + "\n")
+    written.append(f"feedback.jsonl: {len(data['feedback_pairs'])} pairs")
+
+    # triage.jsonl — classification format
+    triage_path = output_dir / "triage.jsonl"
+    with triage_path.open("w", encoding="utf-8") as f:
+        for pair in data["triage_pairs"]:
+            record = {
+                "instruction": "Classify this user message for a coding assistant. Actions: local_answer, local_action, enrich_and_forward, pass_through.",
+                "input": pair["message"],
+                "output": pair["action"],
+                "metadata": {"confidence": pair["confidence"]},
+            }
+            f.write(_json.dumps(record) + "\n")
+    written.append(f"triage.jsonl: {len(data['triage_pairs'])} pairs")
+
+    # compact.jsonl — summarization format
+    compact_path = output_dir / "compact.jsonl"
+    with compact_path.open("w", encoding="utf-8") as f:
+        for pair in data["compact_pairs"]:
+            record = {
+                "instruction": "Compact this task summary into a structured JSON digest with title, summary, decisions, tools_used, open_questions, tags.",
+                "input": pair["input"],
+                "output": pair["output"],
+            }
+            f.write(_json.dumps(record) + "\n")
+    written.append(f"compact.jsonl: {len(data['compact_pairs'])} pairs")
+
+    total = (len(data["feedback_pairs"]) + len(data["triage_pairs"])
+             + len(data["compact_pairs"]))
+    return (
+        f"Training data exported to {output_dir}/\n"
+        + "\n".join(f"  {w}" for w in written)
+        + f"\n\nTotal: {total} training pairs"
+        + f"\n\nTo fine-tune with mlx-lm (Apple Silicon):\n"
+        + f"  pip install mlx-lm\n"
+        + f"  mlx_lm.lora --model mlx-community/deepseek-r1-distill-qwen-1.5b-4bit \\\n"
+        + f"    --train --data {output_dir} --num-layers 8 --iters 200"
+    )
+
+
 def _exhaustion_auto_save(context: str) -> str:
     """
     Strategy #3: Exhaustion fallback.
@@ -2027,8 +2201,13 @@ def _cmd_session_end(session_id: str, last_message: str,
         return result
 
     # 2. Smart memory write via local LLM
-    memory_dir = (Path.home() / ".claude" / "projects" /
-                  "-Users-ccancellieri-work-code" / "memory")
+    import os as _os
+    _mem_cfg = _cfg.get("hook_memory_dir")
+    if _mem_cfg:
+        memory_dir = Path(str(_mem_cfg)).expanduser()
+    else:
+        _cwd_slug = _os.getcwd().replace("/", "-").replace("\\", "-").lstrip("-")
+        memory_dir = Path.home() / ".claude" / "projects" / _cwd_slug / "memory"
     memory_index = memory_dir / "MEMORY.md"
     existing = ""
     if memory_index.exists():
@@ -2093,7 +2272,24 @@ type: {mem_type}
                 f"  {name}: {description}"
             )
 
-    # 3. Log session stats
+    # 3. Implicit feedback — infer skill quality from session tool usage
+    if session_id and _cfg.get("implicit_feedback_enabled") is not False:
+        try:
+            store = SkillStore()
+            ctx = store.get_session_context(session_id)
+            loaded_skills = ctx.get("loaded_skills", [])
+            tools_used = store.get_session_tools(session_id)
+            if loaded_skills and tools_used:
+                fb = store.record_implicit_feedback(session_id, loaded_skills, tools_used)
+                log_event("FEEDBACK",
+                          f"implicit: +{len(fb['positive'])} "
+                          f"-{len(fb['negative'])} "
+                          f"skip={len(fb['skipped'])}")
+            store.close()
+        except Exception:
+            pass
+
+    # 4. Log session stats
     try:
         store = SkillStore()
         totals = store.get_interception_totals()
@@ -2132,6 +2328,16 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
       - {"decision": "allow", "systemMessage": "..."} if injecting context
     """
     from . import config as _cfg
+    global _local_mode
+
+    # ── Stage -1: Offline auto-fallback ──
+    # If Anthropic API is unreachable and auto-fallback is enabled, activate
+    # local mode silently so the L4 agent handles the message.
+    if _cfg.get("offline_auto_fallback") and not _local_mode:
+        check_interval = float(_cfg.get("offline_check_interval") or 30.0)
+        if not _check_anthropic_reachable(interval=check_interval):
+            _local_mode = True
+            log_hook("offline_fallback_activated")
 
     # ── Stage 0: Local mode — bypass Claude entirely, route to L4 agent ──
     if _local_mode:
@@ -3305,6 +3511,7 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-lock-task": "lock_task",
     "/hub-suggest-patterns": "suggest_patterns",
     "/hub-apply-pattern": "apply_pattern",
+    "/hub-export-training": "export_training",
 }
 
 
@@ -3517,6 +3724,8 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_suggest_patterns()}
         elif action == "apply_pattern":
             return {"decision": "block", "message": _cmd_apply_pattern(args_str)}
+        elif action == "export_training":
+            return {"decision": "block", "message": _cmd_export_training(args_str)}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 
