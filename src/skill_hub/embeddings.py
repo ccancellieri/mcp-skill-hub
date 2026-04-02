@@ -795,6 +795,192 @@ def dynamic_context_eval(
     }
 
 
+_CACHE_VERIFY_PROMPT = """\
+A user asked a coding question and a cached answer exists from a previous session.
+Decide if the cached answer is still valid given the current question.
+
+Cached question: {cached_query}
+Cached answer (first 400 chars): {cached_response}
+Current question: {current_query}
+
+Output ONLY JSON: {{"valid": true/false, "reason": "<one sentence>"}}"""
+
+_DECOMPOSE_PROMPT = """\
+The user sent a complex multi-part request to a coding assistant. \
+Break it into ordered atomic subtasks so the assistant can focus on one at a time.
+
+Request: {message}
+
+Output ONLY JSON:
+{{"parts": ["subtask 1 description", "subtask 2 description", ...], \
+"count": <integer>, "context_type": "<refactor|debug|explain|implement|review|other>"}}
+
+Rules:
+- Only split if there are genuinely 2+ independent actions (different verbs on different things)
+- Do NOT split a single request just because it is long
+- Maximum 5 parts"""
+
+_ERROR_EXTRACT_PROMPT = """\
+The following text is a coding assistant's response. Extract the primary error or exception \
+if one is present, plus a brief fix hint.
+
+Response (first 1500 chars):
+{response}
+
+Output ONLY JSON: {{"has_error": true/false, "error_signature": "<ExceptionType: short message>", \
+"fix_hint": "<one sentence fix>"}}
+If no clear error is present, output: {{"has_error": false}}"""
+
+_AUTO_SKILL_PROMPT = """\
+A user has repeatedly asked variations of the same question in a coding tool. \
+Generate a local skill JSON that automates it.
+
+Canonical question: {canonical}
+Seen {count} times.
+
+A local skill runs shell commands in sequence and formats the output. \
+Good skills are for: git operations, running tests, showing project status, listing files.
+Bad skills: anything requiring reasoning, code generation, or complex decisions.
+
+Output ONLY a JSON object (no markdown):
+{{
+  "name": "<kebab-case-name>",
+  "description": "<what it does, one sentence>",
+  "triggers": ["<phrase 1>", "<phrase 2>", "<phrase 3>"],
+  "steps": [
+    {{"run": "<shell command>", "as": "<variable_name>"}},
+    ...
+  ],
+  "output": "<template using {{variable_name}} placeholders>"
+}}
+
+If the question cannot be automated with shell commands, output: {{"can_automate": false}}"""
+
+
+def verify_cache_hit(cached_query: str, cached_response: str,
+                     current_query: str,
+                     model: str = RERANK_MODEL) -> bool:
+    """Ask local LLM if a cached answer is still valid for the current query."""
+    log_llm("verify_cache_hit", model=model)
+    prompt = _CACHE_VERIFY_PROMPT.format(
+        cached_query=cached_query[:300],
+        cached_response=cached_response[:400],
+        current_query=current_query[:300],
+    )
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 80}},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            import json as _j
+            return bool(_j.loads(m.group()).get("valid", False))
+    except Exception:
+        pass
+    return False
+
+
+def decompose_task(message: str, model: str = RERANK_MODEL) -> dict:
+    """Decompose a complex multi-part request into ordered subtasks.
+
+    Returns {"parts": [...], "count": N, "context_type": "..."}
+    or {"parts": [message], "count": 1} if no decomposition needed.
+    """
+    log_llm("decompose_task", model=model, message_len=len(message))
+    prompt = _DECOMPOSE_PROMPT.format(message=message[:1500])
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 300}},
+            timeout=12.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            import json as _j
+            result = _j.loads(m.group())
+            if result.get("count", 0) > 1 and result.get("parts"):
+                return result
+    except Exception:
+        pass
+    return {"parts": [message], "count": 1, "context_type": "other"}
+
+
+def extract_error_pattern(response_text: str,
+                           model: str = RERANK_MODEL) -> dict | None:
+    """Parse a Claude response for error patterns and extract a fix hint.
+
+    Returns {"error_signature": "...", "fix_hint": "..."} or None.
+    """
+    # Fast pre-check — skip LLM call if no error keywords present
+    error_keywords = ("Error", "Exception", "Traceback", "FAILED", "error:",
+                       "failed:", "Cannot", "ModuleNotFound", "ImportError",
+                       "TypeError", "ValueError", "AttributeError")
+    if not any(kw in response_text for kw in error_keywords):
+        return None
+
+    log_llm("extract_error", model=model)
+    prompt = _ERROR_EXTRACT_PROMPT.format(response=response_text[:1500])
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 150}},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            import json as _j
+            result = _j.loads(m.group())
+            if result.get("has_error") and result.get("error_signature"):
+                return result
+    except Exception:
+        pass
+    return None
+
+
+def generate_auto_skill(canonical: str, count: int,
+                         model: str = RERANK_MODEL) -> dict | None:
+    """Ask local LLM to generate a local skill JSON for a recurring message pattern."""
+    log_llm("generate_auto_skill", model=model, canonical=canonical[:80])
+    prompt = _AUTO_SKILL_PROMPT.format(canonical=canonical[:400], count=count)
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.2, "num_predict": 500}},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        # strip markdown fences if present
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            import json as _j
+            result = _j.loads(m.group())
+            if result.get("can_automate") is False:
+                return None
+            if result.get("name") and result.get("steps"):
+                return result
+    except Exception:
+        pass
+    return None
+
+
 def ollama_available(model: str = EMBED_MODEL) -> bool:
     """Check whether the required Ollama model is available."""
     try:

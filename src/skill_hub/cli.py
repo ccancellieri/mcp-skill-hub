@@ -17,6 +17,7 @@ from .activity_log import log_hook, log_llm, log_event
 from .embeddings import (
     embed, compact, ollama_available, optimize_context, triage_message,
     dynamic_context_eval, eval_skill_lifecycle, optimize_prompt, smart_memory_write,
+    verify_cache_hit, decompose_task, extract_error_pattern, generate_auto_skill,
     EMBED_MODEL, RERANK_MODEL, OLLAMA_BASE,
     conversation_digest, exhaustion_save,
 )
@@ -944,6 +945,19 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
             parts.append(snippet)
             budget -= len(snippet)
 
+        # Error accelerator: inject known fix if message mentions an error pattern
+        error_keywords = ("Error", "Exception", "failed", "cannot", "traceback")
+        if budget > 100 and any(kw.lower() in message.lower() for kw in error_keywords):
+            err_hits = store.search_error_cache(msg_vector, min_sim=0.78)
+            for eh in err_hits[:2]:
+                if budget <= 0:
+                    break
+                confirmed_tag = " ✓ confirmed" if eh.get("confirmed") else ""
+                snippet = (f"Known error{confirmed_tag}: {eh['error_text']} "
+                           f"→ Fix: {eh['fix_hint']}")
+                parts.append(snippet)
+                budget -= len(snippet)
+
         store.close()
 
         # Strategy #5: Auto-memory — find relevant memory files.
@@ -1750,6 +1764,78 @@ def _cmd_export_training(args_str: str) -> str:
     )
 
 
+def _cmd_invalidate_cache(args_str: str) -> str:
+    """Mark a cached response as stale so it won't be served again.
+
+    Usage: /hub-invalidate-cache <cache_id>
+    """
+    try:
+        cache_id = int(args_str.strip())
+    except ValueError:
+        return "Usage: /hub-invalidate-cache <cache_id>  (ID shown in cache hit message)"
+    try:
+        store = SkillStore()
+        store.invalidate_response_cache(cache_id)
+        store.close()
+        return f"Cache entry #{cache_id} marked as stale. It will not be served again."
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _cmd_cache_stats() -> str:
+    """Show response cache, error cache, and pattern stats."""
+    try:
+        store = SkillStore()
+        rc = store._conn.execute(
+            "SELECT COUNT(*) as n, SUM(hit_count) as hits, AVG(quality) as q "
+            "FROM response_cache"
+        ).fetchone()
+        ec = store._conn.execute(
+            "SELECT COUNT(*) as n, SUM(confirmed) as confirmed FROM error_cache"
+        ).fetchone()
+        mp = store._conn.execute(
+            "SELECT COUNT(*) as n, SUM(skill_generated) as generated, "
+            "MAX(count) as max_count FROM message_patterns"
+        ).fetchone()
+        pp = store._conn.execute(
+            "SELECT COUNT(*) as n, SUM(success_count) as successes FROM prompt_patterns"
+        ).fetchone()
+        store.close()
+        lines = [
+            "=== Skill Hub Cache & Pattern Stats ===\n",
+            f"Response cache:  {rc['n']} entries, {rc['hits'] or 0} total hits, "
+            f"avg quality={rc['q']:.2f}" if rc['n'] else "Response cache:  empty",
+            f"Error cache:     {ec['n']} patterns, {ec['confirmed'] or 0} confirmed fixes",
+            f"Message patterns:{mp['n']} tracked, {mp['generated'] or 0} auto-skills generated, "
+            f"max recurrence={mp['max_count'] or 0}",
+            f"Prompt patterns: {pp['n']} learned, {pp['successes'] or 0} successes",
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+def _cmd_show_patterns() -> str:
+    """Show recurring message patterns that could become auto-skills."""
+    try:
+        store = SkillStore()
+        rows = store.get_top_patterns(min_count=2, limit=15)
+        store.close()
+        if not rows:
+            return "No recurring patterns yet. Patterns appear after 2+ similar messages."
+        lines = ["=== Recurring Message Patterns ===\n",
+                 "Patterns seen 2+ times (candidates for auto-skill generation):\n"]
+        for r in rows:
+            generated = "✓ skill created" if r["skill_generated"] else f"(threshold: {r['count']}/3)"
+            lines.append(f"  [{r['count']}x] {r['canonical'][:80]}  {generated}")
+        lines.append(
+            "\nAuto-skill generation fires at 3 repetitions when pattern_tracking_enabled=true."
+        )
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
 def _exhaustion_auto_save(context: str) -> str:
     """
     Strategy #3: Exhaustion fallback.
@@ -2272,7 +2358,42 @@ type: {mem_type}
                 f"  {name}: {description}"
             )
 
-    # 3. Implicit feedback — infer skill quality from session tool usage
+    # 3. Cache the last Q→A pair and extract error patterns
+    if session_id and last_message and context_pieces and ollama_available(EMBED_MODEL):
+        try:
+            _recent = ctx.get("recent_messages", []) if session_id else []
+            last_query = _recent[-1] if _recent else ""
+            if last_query and last_message and len(last_message) > 80:
+                _q_vec = embed(last_query[:500])
+                _cache_store = SkillStore()
+                # Only cache if not already cached at high similarity
+                _existing = _cache_store.search_response_cache(_q_vec, min_sim=0.93)
+                if not _existing:
+                    _cache_store.cache_response(
+                        query=last_query,
+                        query_vector=_q_vec,
+                        response=last_message[:6000],
+                        session_id=session_id,
+                    )
+                    log_event("CACHE", f"response cached ({len(last_message)} chars)")
+                # Extract error pattern from last response
+                _err = extract_error_pattern(last_message)
+                if _err:
+                    _e_vec = embed(_err["error_signature"])
+                    _existing_err = _cache_store.search_error_cache(_e_vec, min_sim=0.85)
+                    if not _existing_err:
+                        _cache_store.cache_error(
+                            error_text=_err["error_signature"],
+                            error_vector=_e_vec,
+                            fix_hint=_err["fix_hint"],
+                            session_id=session_id,
+                        )
+                        log_event("CACHE", f"error pattern cached: {_err['error_signature'][:60]}")
+                _cache_store.close()
+        except Exception:
+            pass
+
+    # 4. Implicit feedback — infer skill quality from session tool usage
     if session_id and _cfg.get("implicit_feedback_enabled") is not False:
         try:
             store = SkillStore()
@@ -2289,7 +2410,38 @@ type: {mem_type}
         except Exception:
             pass
 
-    # 4. Log session stats
+    # 5. Prompt pattern tracking — record successful prompt shapes for learning
+    if session_id and _cfg.get("pattern_tracking_enabled") is not False:
+        try:
+            store = SkillStore()
+            ctx = store.get_session_context(session_id)
+            recent_msgs = ctx.get("recent_messages", [])
+            for msg_text in recent_msgs:
+                if len(msg_text) < 20 or len(msg_text) > 800:
+                    continue  # skip trivial or too-long messages
+                _m_vec = embed(msg_text[:400])
+                store.record_message_pattern(message=msg_text, message_vector=_m_vec)
+            # Auto-generate skills for patterns that crossed the threshold
+            threshold = int(_cfg.get("pattern_auto_skill_threshold") or 5)
+            top_patterns = store.get_top_patterns(min_count=threshold, limit=3)
+            for pattern in top_patterns:
+                if pattern.get("skill_generated"):
+                    continue
+                _skill_json = generate_auto_skill(
+                    pattern["representative"],
+                    recurrence_count=pattern["count"],
+                )
+                if _skill_json:
+                    _installed = _install_auto_skill(_skill_json)
+                    if _installed:
+                        store.mark_pattern_skill_generated(pattern["id"])
+                        log_event("PATTERN",
+                                  f"auto-skill generated: {_installed}")
+            store.close()
+        except Exception:
+            pass
+
+    # 6. Log session stats
     try:
         store = SkillStore()
         totals = store.get_interception_totals()
@@ -2356,6 +2508,49 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         except Exception as exc:
             return {"decision": "block",
                     "message": f"[Local agent error: {exc}]\n\nTurn off: /hub-local off"}
+
+    # ── Stage 0.5: Response cache — check for semantically identical past answers ──
+    if (_cfg.get("response_cache_enabled") and not _local_mode
+            and len(message.strip()) >= 30
+            and ollama_available(EMBED_MODEL)):
+        try:
+            _rc_vec = embed(message[:500])
+            _rc_min_sim = float(_cfg.get("response_cache_min_sim") or 0.88)
+            _rc_hits = SkillStore()
+            _rc_results = _rc_hits.search_response_cache(_rc_vec, min_sim=_rc_min_sim)
+            if _rc_results:
+                best = _rc_results[0]
+                # Verify freshness with local LLM (fast, temp=0, ~10s)
+                if (_cfg.get("response_cache_verify")
+                        and should_run_llm("triage")
+                        and ollama_available(RERANK_MODEL)):
+                    valid = verify_cache_hit(best["query"], best["response"], message)
+                else:
+                    valid = best["similarity"] >= 0.93  # high confidence: skip verify
+                if valid:
+                    _rc_hits.hit_response_cache(best["id"])
+                    _rc_hits.log_interception(
+                        command_type="response_cache",
+                        message_preview=message,
+                        estimated_tokens=max(len(best["response"]) // 4, 200),
+                    )
+                    _rc_hits.close()
+                    log_hook("response_cache_hit",
+                             sim=f"{best['similarity']:.2f}",
+                             cache_id=best["id"])
+                    return {
+                        "decision": "block",
+                        "message": (
+                            f"[Skill Hub — cached answer (sim={best['similarity']:.2f}, "
+                            f"hits={best['hit_count'] + 1})]\n\n"
+                            f"{best['response']}\n\n"
+                            f"*Cached from a previous session. "
+                            f"Reply `/hub-invalidate-cache {best['id']}` if outdated.*"
+                        ),
+                    }
+            _rc_hits.close()
+        except Exception as _exc:
+            log_hook("response_cache_error", error=str(_exc)[:80])
 
     # ── Stage 1: Slash commands — no LLM, no embedding, instant ──
     slash_result = _handle_slash_command(message)
@@ -2713,7 +2908,95 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 pass
         return result
 
+    # ── Stage 4.5: Passive learning + context enrichment ──
+    # These run after routing decisions, injecting additional context into
+    # the allow result without blocking the message.
+
+    extra_system: list[str] = []
+
+    # Task decomposition: break multi-part requests into a focused subtask sequence
+    if (_cfg.get("task_decomposition_enabled")
+            and len(message.strip()) >= int(_cfg.get("task_decomposition_min_len") or 200)
+            and should_run_llm("triage")
+            and ollama_available(RERANK_MODEL)):
+        try:
+            decomp = decompose_task(message)
+            if decomp.get("count", 1) > 1:
+                parts_list = "\n".join(
+                    f"  {i+1}. {p}" for i, p in enumerate(decomp["parts"])
+                )
+                extra_system.append(
+                    f"[Skill Hub — task decomposition ({decomp['count']} parts)]\n"
+                    f"Focus on part 1 first. Complete each part before proceeding.\n"
+                    f"{parts_list}"
+                )
+                log_hook("task_decomposed", parts=decomp["count"])
+        except Exception:
+            pass
+
+    # Pattern tracking: record recurring messages, check if auto-skill needed
+    if _cfg.get("pattern_tracking_enabled") and ollama_available(EMBED_MODEL):
+        try:
+            _pt_vec = embed(message[:400]) if not locals().get("_rc_vec") else _rc_vec  # type: ignore[name-defined]
+            _pt_store = SkillStore()
+            _pt_row = _pt_store.record_message_pattern(message, _pt_vec)
+            _pt_count = _pt_row.get("count", 1)
+            _pt_threshold = int(_cfg.get("pattern_auto_skill_threshold") or 3)
+            if (_pt_count >= _pt_threshold
+                    and not _pt_row.get("skill_generated")
+                    and should_run_llm("triage")
+                    and ollama_available(RERANK_MODEL)):
+                _pt_skill = generate_auto_skill(
+                    _pt_row.get("canonical", message), _pt_count
+                )
+                if _pt_skill:
+                    _pt_path = _install_auto_skill(_pt_skill)
+                    if _pt_path:
+                        _pt_store.mark_pattern_skill_generated(_pt_row["id"])
+                        extra_system.append(
+                            f"[Skill Hub — auto-skill created]\n"
+                            f"You've asked this {_pt_count}x. "
+                            f"Created local skill **{_pt_skill['name']}** → {_pt_path}\n"
+                            f"Next time it will run locally with 0 Claude tokens."
+                        )
+                        log_hook("auto_skill_created", name=_pt_skill["name"])
+            _pt_store.close()
+        except Exception as _exc:
+            log_hook("pattern_track_error", error=str(_exc)[:80])
+
+    if extra_system:
+        existing_sys = result.get("systemMessage", "") if isinstance(result, dict) else ""  # type: ignore[name-defined]
+        combined_extra = "\n\n".join(extra_system)
+        final_sys = f"{existing_sys}\n\n{combined_extra}".strip() if existing_sys else combined_extra
+        if isinstance(result, dict):  # type: ignore[name-defined]
+            result["systemMessage"] = final_sys  # type: ignore[name-defined]
+            return result  # type: ignore[name-defined]
+        return {"decision": "allow", "systemMessage": combined_extra}
+
     return {"decision": "allow"}
+
+
+def _install_auto_skill(skill_dict: dict) -> str | None:
+    """Write a generated skill JSON to the local-skills directory.
+
+    Returns the file path on success, None on failure.
+    """
+    import json as _json
+    from . import config as _cfg
+
+    skills_dir = Path(_cfg.get("local_skills_dir") or
+                      str(Path.home() / ".claude" / "local-skills"))
+    try:
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        name = skill_dict.get("name", "auto-skill")
+        safe = name.replace(" ", "-").replace("/", "-")
+        path = skills_dir / f"{safe}.json"
+        path.write_text(_json.dumps(skill_dict, indent=2), encoding="utf-8")
+        log_event("SKILL", f"auto-generated: {path}")
+        return str(path)
+    except Exception as exc:
+        log_hook("auto_skill_write_error", error=str(exc)[:80])
+        return None
 
 
 def _cmd_local_status() -> str:
@@ -3512,6 +3795,9 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-suggest-patterns": "suggest_patterns",
     "/hub-apply-pattern": "apply_pattern",
     "/hub-export-training": "export_training",
+    "/hub-invalidate-cache": "invalidate_cache",
+    "/hub-cache-stats": "cache_stats",
+    "/hub-show-patterns": "show_patterns",
 }
 
 
@@ -3726,6 +4012,12 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block", "message": _cmd_apply_pattern(args_str)}
         elif action == "export_training":
             return {"decision": "block", "message": _cmd_export_training(args_str)}
+        elif action == "invalidate_cache":
+            return {"decision": "block", "message": _cmd_invalidate_cache(args_str)}
+        elif action == "cache_stats":
+            return {"decision": "block", "message": _cmd_cache_stats()}
+        elif action == "show_patterns":
+            return {"decision": "block", "message": _cmd_show_patterns()}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 

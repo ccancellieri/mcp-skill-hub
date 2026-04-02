@@ -99,6 +99,20 @@ _DEFAULTS = {
     # Silently skips if the local LLM judges the digest too thin to be worth saving
     "auto_memory_on_close_task": True,
 
+    # Semantic response cache — reuse cached answers for near-identical questions
+    "response_cache_enabled": True,
+    "response_cache_min_sim": 0.88,   # min similarity to serve from cache
+    "response_cache_verify": True,    # verify freshness with LLM when sim ≥ 0.93
+
+    # Task decomposition — break complex multi-part requests into ordered subtasks
+    "task_decomposition_enabled": True,
+    "task_decomposition_min_len": 300,  # only decompose messages longer than this
+
+    # Prompt pattern tracking — learn from recurring message shapes
+    # When a pattern recurs ≥ threshold times, auto-generate a local skill
+    "pattern_tracking_enabled": True,
+    "pattern_auto_skill_threshold": 5,  # recurrences before auto-generating a skill
+
     # Resource-aware LLM gating — skip expensive local LLM ops under pressure
     # Pressure levels: idle(0), low(1), moderate(2), high(3)
     # Each operation has a max pressure level at which it still runs.

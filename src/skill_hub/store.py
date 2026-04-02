@@ -186,6 +186,58 @@ class SkillStore:
                 chars_injected  INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT DEFAULT (datetime('now'))
             );
+
+            -- Semantic response cache: store Claude Q→A pairs for re-use
+            CREATE TABLE IF NOT EXISTS response_cache (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                query           TEXT NOT NULL,
+                query_vector    TEXT NOT NULL,   -- JSON float array
+                response        TEXT NOT NULL,
+                session_id      TEXT,
+                hit_count       INTEGER NOT NULL DEFAULT 0,
+                quality         REAL NOT NULL DEFAULT 1.0,  -- LLM-verified freshness
+                created_at      TEXT DEFAULT (datetime('now')),
+                last_used_at    TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_response_cache_session
+                ON response_cache (session_id);
+
+            -- Error pattern cache: past errors → fixes
+            CREATE TABLE IF NOT EXISTS error_cache (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                error_text      TEXT NOT NULL,
+                error_vector    TEXT NOT NULL,   -- JSON float array
+                fix_hint        TEXT NOT NULL,
+                session_id      TEXT,
+                confirmed       INTEGER NOT NULL DEFAULT 0,  -- 1 = user confirmed fix worked
+                hit_count       INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Prompt patterns: successful prompt structures learned per project/context
+            CREATE TABLE IF NOT EXISTS prompt_patterns (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_text    TEXT NOT NULL,   -- what the user wrote
+                trigger_vector  TEXT NOT NULL,
+                pattern_text    TEXT NOT NULL,   -- the enriched form that worked
+                context_type    TEXT,            -- "refactor", "debug", "explain", etc.
+                success_count   INTEGER NOT NULL DEFAULT 1,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Recurring message patterns: track repeat queries for auto-skill generation
+            CREATE TABLE IF NOT EXISTS message_patterns (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical       TEXT NOT NULL,   -- representative form
+                vector          TEXT NOT NULL,
+                count           INTEGER NOT NULL DEFAULT 1,
+                skill_generated INTEGER NOT NULL DEFAULT 0,  -- 1 = auto-skill created
+                last_seen_at    TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_message_patterns_count
+                ON message_patterns (count DESC);
         """)
         self._conn.commit()
 
@@ -830,6 +882,226 @@ class SkillStore:
             "SELECT COALESCE(SUM(estimated_tokens), 0) as n FROM interceptions"
         ).fetchone()
         return row["n"] if row else 0
+
+    # ------------------------------------------------------------------
+    # Response cache
+
+    def cache_response(self, query: str, query_vector: list[float],
+                       response: str, session_id: str = "") -> int:
+        """Store a Claude Q→A pair for future re-use."""
+        cur = self._conn.execute("""
+            INSERT INTO response_cache
+                (query, query_vector, response, session_id)
+            VALUES (?, ?, ?, ?)
+        """, (query[:2000], json.dumps(query_vector), response[:8000], session_id))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def search_response_cache(self, query_vector: list[float],
+                               min_sim: float = 0.88,
+                               top_k: int = 3) -> list[dict]:
+        """Find cached responses for semantically similar queries."""
+        rows = self._conn.execute(
+            "SELECT id, query, query_vector, response, hit_count, quality, created_at "
+            "FROM response_cache"
+        ).fetchall()
+        qnorm = math.sqrt(sum(x * x for x in query_vector))
+        if not qnorm:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            vec = json.loads(row["query_vector"])
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if not snorm:
+                continue
+            sim = sum(a * b for a, b in zip(query_vector, vec)) / (qnorm * snorm)
+            if sim >= min_sim:
+                d = {k: row[k] for k in ("id", "query", "response", "hit_count",
+                                          "quality", "created_at")}
+                d["similarity"] = sim
+                scored.append((sim * float(row["quality"] or 1.0), d))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:top_k]]
+
+    def hit_response_cache(self, cache_id: int) -> None:
+        """Increment hit count and update last_used_at."""
+        self._conn.execute("""
+            UPDATE response_cache
+            SET hit_count = hit_count + 1, last_used_at = datetime('now')
+            WHERE id = ?
+        """, (cache_id,))
+        self._conn.commit()
+
+    def invalidate_response_cache(self, cache_id: int) -> None:
+        """Mark a cached response as low quality (stale)."""
+        self._conn.execute(
+            "UPDATE response_cache SET quality = 0.1 WHERE id = ?", (cache_id,)
+        )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Error cache
+
+    def cache_error(self, error_text: str, error_vector: list[float],
+                    fix_hint: str, session_id: str = "") -> int:
+        cur = self._conn.execute("""
+            INSERT INTO error_cache (error_text, error_vector, fix_hint, session_id)
+            VALUES (?, ?, ?, ?)
+        """, (error_text[:1000], json.dumps(error_vector), fix_hint[:2000], session_id))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def search_error_cache(self, error_vector: list[float],
+                            min_sim: float = 0.82) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, error_text, error_vector, fix_hint, confirmed, hit_count "
+            "FROM error_cache"
+        ).fetchall()
+        qnorm = math.sqrt(sum(x * x for x in error_vector))
+        if not qnorm:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            vec = json.loads(row["error_vector"])
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if not snorm:
+                continue
+            sim = sum(a * b for a, b in zip(error_vector, vec)) / (qnorm * snorm)
+            if sim >= min_sim:
+                d = {k: row[k] for k in ("id", "error_text", "fix_hint",
+                                          "confirmed", "hit_count")}
+                d["similarity"] = sim
+                scored.append((sim, d))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:3]]
+
+    def confirm_error_fix(self, cache_id: int) -> None:
+        self._conn.execute("""
+            UPDATE error_cache
+            SET confirmed = 1, hit_count = hit_count + 1
+            WHERE id = ?
+        """, (cache_id,))
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Message pattern tracking (for auto-skill generation)
+
+    def record_message_pattern(self, message: str, vector: list[float],
+                                min_sim: float = 0.85) -> dict:
+        """Track recurring message patterns. Returns the pattern row + whether
+        it crossed the repetition threshold for auto-skill generation."""
+        rows = self._conn.execute(
+            "SELECT id, canonical, vector, count, skill_generated FROM message_patterns"
+        ).fetchall()
+        qnorm = math.sqrt(sum(x * x for x in vector))
+        if not qnorm:
+            return {}
+
+        best_id: int | None = None
+        best_sim = 0.0
+        for row in rows:
+            vec = json.loads(row["vector"])
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if not snorm:
+                continue
+            sim = sum(a * b for a, b in zip(vector, vec)) / (qnorm * snorm)
+            if sim > best_sim:
+                best_sim = sim
+                if sim >= min_sim:
+                    best_id = row["id"]
+
+        if best_id is not None:
+            self._conn.execute("""
+                UPDATE message_patterns
+                SET count = count + 1, last_seen_at = datetime('now')
+                WHERE id = ?
+            """, (best_id,))
+            self._conn.commit()
+            row_updated = self._conn.execute(
+                "SELECT * FROM message_patterns WHERE id = ?", (best_id,)
+            ).fetchone()
+            return dict(row_updated)
+        else:
+            cur = self._conn.execute("""
+                INSERT INTO message_patterns (canonical, vector, count)
+                VALUES (?, ?, 1)
+            """, (message[:500], json.dumps(vector)))
+            self._conn.commit()
+            return {"id": cur.lastrowid, "canonical": message, "count": 1,
+                    "skill_generated": 0}
+
+    def mark_pattern_skill_generated(self, pattern_id: int) -> None:
+        self._conn.execute(
+            "UPDATE message_patterns SET skill_generated = 1 WHERE id = ?",
+            (pattern_id,)
+        )
+        self._conn.commit()
+
+    def get_top_patterns(self, min_count: int = 3,
+                         limit: int = 10) -> list[sqlite3.Row]:
+        """Return patterns that recur often but haven't generated a skill yet."""
+        return self._conn.execute("""
+            SELECT id, canonical, count, skill_generated, last_seen_at
+            FROM message_patterns
+            WHERE count >= ? AND skill_generated = 0
+            ORDER BY count DESC
+            LIMIT ?
+        """, (min_count, limit)).fetchall()
+
+    # ------------------------------------------------------------------
+    # Prompt patterns
+
+    def save_prompt_pattern(self, trigger: str, trigger_vector: list[float],
+                             pattern: str, context_type: str = "") -> int:
+        """Store a successful prompt enrichment pattern."""
+        # Check if very similar trigger already exists → increment instead
+        rows = self._conn.execute(
+            "SELECT id, trigger_vector FROM prompt_patterns"
+        ).fetchall()
+        qnorm = math.sqrt(sum(x * x for x in trigger_vector))
+        for row in rows:
+            vec = json.loads(row["trigger_vector"])
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if snorm and qnorm:
+                sim = sum(a * b for a, b in zip(trigger_vector, vec)) / (qnorm * snorm)
+                if sim >= 0.90:
+                    self._conn.execute(
+                        "UPDATE prompt_patterns SET success_count = success_count + 1 WHERE id = ?",
+                        (row["id"],)
+                    )
+                    self._conn.commit()
+                    return row["id"]
+        cur = self._conn.execute("""
+            INSERT INTO prompt_patterns
+                (trigger_text, trigger_vector, pattern_text, context_type)
+            VALUES (?, ?, ?, ?)
+        """, (trigger[:500], json.dumps(trigger_vector), pattern[:2000], context_type))
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def search_prompt_patterns(self, trigger_vector: list[float],
+                                min_sim: float = 0.75) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, trigger_text, trigger_vector, pattern_text, "
+            "context_type, success_count FROM prompt_patterns"
+        ).fetchall()
+        qnorm = math.sqrt(sum(x * x for x in trigger_vector))
+        if not qnorm:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            vec = json.loads(row["trigger_vector"])
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if not snorm:
+                continue
+            sim = sum(a * b for a, b in zip(trigger_vector, vec)) / (qnorm * snorm)
+            if sim >= min_sim:
+                d = {k: row[k] for k in ("id", "trigger_text", "pattern_text",
+                                          "context_type", "success_count")}
+                d["similarity"] = sim
+                scored.append((sim * row["success_count"], d))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:3]]
 
     # ------------------------------------------------------------------
     # Implicit feedback support

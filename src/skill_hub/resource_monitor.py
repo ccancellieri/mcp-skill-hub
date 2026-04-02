@@ -230,12 +230,13 @@ def should_run_llm(operation: str) -> bool:
     s = snapshot()
 
     limits: dict[str, Pressure] = {
-        "triage":          Pressure.MODERATE,
-        "precompact":      Pressure.LOW,
-        "digest":          Pressure.LOW,
-        "rerank":          Pressure.MODERATE,
-        "optimize_memory": Pressure.IDLE,
-        "embed":           Pressure.HIGH,  # always runs
+        "triage":           Pressure.MODERATE,
+        "dynamic_context":  Pressure.HIGH,  # core feature — always runs
+        "precompact":       Pressure.LOW,
+        "digest":           Pressure.LOW,
+        "rerank":           Pressure.MODERATE,
+        "optimize_memory":  Pressure.IDLE,
+        "embed":            Pressure.HIGH,  # always runs
     }
 
     max_pressure = limits.get(operation, Pressure.LOW)
