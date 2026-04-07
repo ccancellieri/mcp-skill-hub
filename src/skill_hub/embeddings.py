@@ -629,7 +629,15 @@ You are a context manager for Claude (an AI coding assistant).
 {candidate_list}
 
 Decide which skills to KEEP (still useful for this message), ADD (from candidates, \
-would help), or DROP (no longer relevant). Total loaded skills must stay ≤ 5.
+would help), or DROP (no longer relevant).
+
+Rules:
+- Load up to {max_skills} skills total (keep + add). Using fewer is fine if \
+candidates are irrelevant, but DO load multiple complementary skills when they \
+cover different aspects of the task (e.g. schema design + optimization + best \
+practices for a database query).
+- Prefer adding skills that cover different angles over loading just the single \
+best match.
 
 Also update the context summary: merge the new message's topic in. Keep all prior \
 context still relevant. 2–4 sentences max.
@@ -687,11 +695,15 @@ def eval_skill_lifecycle(
         for s in candidate_skills
     ) or "  (none)"
 
+    from . import config as _cfg
+    max_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
+
     prompt = _SKILL_LIFECYCLE_PROMPT.format(
         context_summary=context_summary or "(new session — no prior context)",
         message=message[:1200],
         loaded_list=loaded_list,
         candidate_list=candidate_list,
+        max_skills=max_skills,
     )
 
     try:

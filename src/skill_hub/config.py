@@ -63,6 +63,7 @@ _DEFAULTS = {
     "hook_context_max_chars": 40000,    # total budget for systemMessage (~10k tokens)
     "hook_context_max_skill_chars": 8000,  # max chars per skill (truncated if larger)
     "hook_context_top_k_skills": 5,     # max skills to load with full content per message
+    "hook_context_min_skills": 3,      # min skills to load (auto-fill from RAG if LLM picks fewer)
     "hook_precompact_threshold": 1500,  # messages longer than this get LLM pre-compaction
 
     # Search defaults

@@ -834,6 +834,21 @@ def _dynamic_context_stage(
         # Build final skill list: kept + added (max top_k_skills)
         final_skill_ids = list(keep_ids | add_ids)[:top_k_skills]
 
+        # Auto-fill: if the LLM was too conservative, backfill from
+        # highest-similarity candidates up to min_skills_floor.
+        # This ensures complementary skills (e.g. schema + optimization +
+        # best practices) are loaded even when the small LLM picks only 1.
+        min_floor = int(_cfg.get("hook_context_min_skills") or 3)
+        if len(final_skill_ids) < min_floor and candidate_skills:
+            existing = set(final_skill_ids)
+            for s in candidate_skills:
+                if len(final_skill_ids) >= min_floor:
+                    break
+                if s["id"] not in existing:
+                    final_skill_ids.append(s["id"])
+                    add_ids.add(s["id"])
+                    existing.add(s["id"])
+
         log_hook("dynamic_context",
                  model=dynamic_model,
                  keep=len(keep_ids), add=len(add_ids), drop=len(drop_ids),
