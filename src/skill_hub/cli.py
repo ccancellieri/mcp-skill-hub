@@ -2813,7 +2813,17 @@ type: {mem_type}
         except Exception:
             pass
 
-    # 6. Log session stats
+    # 6. Tool chain distillation — learn from Claude's tool sequences
+    # Parse transcript for repeating tool call patterns that could become
+    # local skills (commit → push, read → edit → test, etc.)
+    if (transcript_path and _cfg_mod.get("pattern_tracking_enabled")
+            and _cfg_mod.get("local_execution_enabled")):
+        try:
+            _distill_tool_chains(transcript_path)
+        except Exception as exc:
+            log_event("DISTILL", f"error: {exc}")
+
+    # 7. Log session stats
     try:
         store = SkillStore()
         totals = store.get_interception_totals()
@@ -3692,6 +3702,169 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         return {"decision": "allow", "systemMessage": combined_extra}
 
     return {"decision": "allow"}
+
+
+def _distill_tool_chains(transcript_path: str) -> None:
+    """Analyze a session transcript for tool call patterns that could become local skills.
+
+    Reads the JSONL transcript, extracts tool call sequences, and when a
+    pattern is automatable (shell commands, file reads, git operations),
+    generates a local skill JSON.
+
+    This is how the system "learns from Claude" — observing what Claude does
+    repeatedly and distilling it into cheap local execution.
+    """
+    import re
+    from pathlib import Path
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+
+    path = Path(transcript_path)
+    if not path.exists() or path.stat().st_size < 500:
+        return
+
+    # Parse transcript for tool calls
+    tool_sequences: list[dict] = []
+    current_sequence: list[dict] = []
+
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Look for tool_use entries (Claude's tool calls)
+            if entry.get("type") == "assistant":
+                for block in (entry.get("message", {}).get("content", []) or []):
+                    if block.get("type") == "tool_use":
+                        tool_name = block.get("name", "")
+                        tool_input = block.get("input", {})
+                        current_sequence.append({
+                            "tool": tool_name,
+                            "input": tool_input,
+                        })
+
+            # User messages reset the sequence (new intent)
+            elif entry.get("type") == "human":
+                if len(current_sequence) >= 2:
+                    # Extract user intent from the human message
+                    human_text = ""
+                    for block in (entry.get("message", {}).get("content", []) or []):
+                        if isinstance(block, str):
+                            human_text = block
+                        elif isinstance(block, dict) and block.get("type") == "text":
+                            human_text = block.get("text", "")
+                    if human_text:
+                        tool_sequences.append({
+                            "intent": human_text[:200],
+                            "tools": list(current_sequence),
+                        })
+                current_sequence = []
+    except Exception:
+        return
+
+    if not tool_sequences:
+        return
+
+    # Filter for sequences that are automatable locally
+    # (Bash commands, Read, Grep, git operations)
+    automatable_tools = {"Bash", "Read", "Grep", "Glob", "Write", "Edit"}
+    candidates = []
+    for seq in tool_sequences:
+        tools = seq["tools"]
+        if len(tools) < 2 or len(tools) > 8:
+            continue
+        # Check if most tools are automatable
+        auto_count = sum(1 for t in tools if t["tool"] in automatable_tools)
+        if auto_count / len(tools) >= 0.7:
+            candidates.append(seq)
+
+    if not candidates:
+        return
+
+    log_event("DISTILL", f"found {len(candidates)} automatable tool chains")
+
+    # Use local LLM to convert the best candidate into a local skill
+    if not ollama_available(RERANK_MODEL):
+        return
+
+    # Take the most interesting candidate (longest chain)
+    best = max(candidates, key=lambda c: len(c["tools"]))
+
+    # Format tool chain for LLM
+    chain_desc = []
+    for t in best["tools"]:
+        inp = t["input"]
+        if t["tool"] == "Bash":
+            chain_desc.append(f"  Bash: {inp.get('command', '')[:150]}")
+        elif t["tool"] == "Read":
+            chain_desc.append(f"  Read: {inp.get('file_path', '')}")
+        elif t["tool"] == "Grep":
+            chain_desc.append(f"  Grep: {inp.get('pattern', '')} in {inp.get('path', '.')}")
+        else:
+            chain_desc.append(f"  {t['tool']}: {str(inp)[:100]}")
+
+    chain_text = "\n".join(chain_desc)
+
+    prompt = f"""\
+A coding assistant (Claude) performed this tool sequence for the user's request.
+Convert it into a reusable local skill JSON that runs shell commands.
+
+User intent: {best['intent']}
+
+Tool chain:
+{chain_text}
+
+Generate a local skill JSON with this format:
+{{
+  "name": "<kebab-case-name>",
+  "description": "<what it does>",
+  "triggers": ["<phrase 1>", "<phrase 2>", "<phrase 3>"],
+  "steps": [
+    {{"run": "<shell command>", "as": "<var_name>"}},
+    ...
+  ],
+  "output": "<template using {{var_name}} placeholders>"
+}}
+
+Rules:
+- Convert Read/Grep/Bash tool calls into equivalent shell commands
+- Skip tool calls that can't be automated (Edit, Write — these need reasoning)
+- If the chain requires complex reasoning, output: {{"can_automate": false}}
+- Keep it simple — only automate the mechanical parts
+- Output ONLY JSON, no markdown"""
+
+    import httpx
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.2, "num_predict": 500}},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            skill = json.loads(m.group())
+            if skill.get("can_automate") is False:
+                log_event("DISTILL", f"chain not automatable: {best['intent'][:60]}")
+                return
+            if skill.get("name") and skill.get("steps"):
+                skill["_source"] = "distilled"
+                skill["_intent"] = best["intent"][:200]
+                installed = _install_auto_skill(skill)
+                if installed:
+                    log_event("DISTILL",
+                              f"skill distilled: {skill['name']} "
+                              f"from {len(best['tools'])} tool calls → {installed}")
+    except Exception as exc:
+        log_event("DISTILL", f"LLM error: {exc}")
 
 
 def _install_auto_skill(skill_dict: dict) -> str | None:
