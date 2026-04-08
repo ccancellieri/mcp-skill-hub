@@ -635,182 +635,6 @@ def _execute_local_command(cmd: dict) -> str | None:
         return f"Command failed: {exc}"
 
 
-# ── Git workflow commands (built-in L3) ─────────────────────────────
-#
-# Multi-step git operations that use local LLM for reasoning
-# (commit message generation, conflict resolution hints).
-
-
-def _shell(cmd: str, timeout: int = 30) -> tuple[int, str, str]:
-    """Run a shell command, return (returncode, stdout, stderr)."""
-    import subprocess
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout.strip(), r.stderr.strip()
-
-
-def _git_commit_local() -> str | None:
-    """Multi-step local git commit: diff → LLM message → stage → commit."""
-    import httpx
-    import re
-    from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, ollama_available
-
-    log_hook("git_commit_start")
-
-    # 1. Check if we're in a git repo
-    rc, _, _ = _shell("git rev-parse --is-inside-work-tree")
-    if rc != 0:
-        return "Not a git repository."
-
-    # 2. Get staged diff; if nothing staged, stage all modified files
-    rc, staged_diff, _ = _shell("git diff --staged")
-    if not staged_diff:
-        # Nothing staged — check for modifications
-        rc, unstaged_diff, _ = _shell("git diff")
-        rc2, untracked, _ = _shell("git ls-files --others --exclude-standard")
-        if not unstaged_diff and not untracked:
-            return "Nothing to commit — working tree clean."
-        # Stage all modified and new files
-        _shell("git add -A")
-        rc, staged_diff, _ = _shell("git diff --staged")
-        if not staged_diff:
-            return "Nothing to commit after staging."
-
-    # 3. Get recent commit messages for style reference
-    _, recent_log, _ = _shell("git log --oneline -5")
-
-    # 4. Use local LLM to generate commit message
-    commit_model = (_cfg.get("local_models") or {}).get("level_2", "qwen2.5-coder:7b-instruct-q4_k_m")
-    if not ollama_available(commit_model):
-        # Fallback: simple timestamp-based message
-        from datetime import datetime
-        msg = f"update {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        rc, out, err = _shell(f'git commit -m "{msg}"')
-        return f"$ git commit -m \"{msg}\"\n{out}" + (f"\n{err}" if err else "")
-
-    # Truncate diff for LLM context
-    diff_preview = staged_diff[:3000]
-    if len(staged_diff) > 3000:
-        diff_preview += f"\n... ({len(staged_diff)} chars total, truncated)"
-
-    prompt = f"""\
-Generate a concise git commit message for this diff. Follow conventional commits style.
-
-Recent commit messages (for style reference):
-{recent_log}
-
-Staged diff:
-{diff_preview}
-
-Rules:
-- First line: type(scope): short description (max 72 chars)
-- Types: feat, fix, refactor, docs, chore, test, style
-- Be specific about WHAT changed, not WHY
-- No quotes around the message
-- Output ONLY the commit message, nothing else"""
-
-    try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": commit_model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2, "num_predict": 100}},
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        # Clean up: remove quotes, backticks, "commit message:" prefix
-        msg = raw.strip().strip('"').strip("'").strip("`")
-        msg = re.sub(r"^(commit message:?\s*)", "", msg, flags=re.IGNORECASE).strip()
-        # Take first line only
-        msg = msg.split("\n")[0].strip()
-        if not msg or len(msg) < 5:
-            msg = "chore: update"
-        log_hook("git_commit_msg", model=commit_model, msg=msg[:80])
-    except Exception:
-        from datetime import datetime
-        msg = f"update {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
-    # 5. Commit
-    # Escape single quotes in message for shell
-    safe_msg = msg.replace("'", "'\\''")
-    rc, out, err = _shell(f"git commit -m '{safe_msg}'")
-    if rc != 0:
-        return f"$ git commit -m '{msg}'\nFailed: {err}"
-
-    log_hook("git_commit_done", message=msg[:80])
-    return f"$ git commit -m '{msg}'\n{out}"
-
-
-def _git_push_local() -> str | None:
-    """Multi-step local git push with conflict handling."""
-    log_hook("git_push_start")
-
-    # 1. Check if we're in a git repo with a remote
-    rc, _, _ = _shell("git rev-parse --is-inside-work-tree")
-    if rc != 0:
-        return "Not a git repository."
-
-    rc, remote, _ = _shell("git remote")
-    if not remote:
-        return "No remote configured."
-
-    # 2. Get current branch
-    _, branch, _ = _shell("git branch --show-current")
-    if not branch:
-        return "Not on any branch (detached HEAD)."
-
-    # 3. Try push
-    rc, out, err = _shell(f"git push origin {branch}", timeout=60)
-    if rc == 0:
-        log_hook("git_push_done", branch=branch)
-        return f"$ git push origin {branch}\n{out or 'Done.'}"
-
-    # 4. Push failed — likely needs pull first
-    if "rejected" in err or "fetch first" in err or "non-fast-forward" in err:
-        log_hook("git_push_retry", reason="needs_pull")
-        # Try pull --rebase then push
-        rc2, pull_out, pull_err = _shell(f"git pull --rebase origin {branch}", timeout=60)
-        if rc2 != 0:
-            # Rebase conflict
-            if "CONFLICT" in pull_err or "conflict" in pull_out.lower():
-                # Abort the rebase, report to user
-                _shell("git rebase --abort")
-                return (f"$ git push origin {branch}\n"
-                        f"Push failed: remote has diverged.\n"
-                        f"$ git pull --rebase origin {branch}\n"
-                        f"Merge conflict detected — rebase aborted.\n"
-                        f"Conflicts need manual resolution.")
-            return f"$ git pull --rebase\nFailed: {pull_err}"
-
-        # Pull succeeded, retry push
-        rc3, push_out, push_err = _shell(f"git push origin {branch}", timeout=60)
-        if rc3 == 0:
-            log_hook("git_push_done", branch=branch, after_pull=True)
-            return (f"$ git pull --rebase origin {branch}\n{pull_out}\n"
-                    f"$ git push origin {branch}\n{push_out or 'Done.'}")
-        return f"$ git push origin {branch}\nFailed after pull: {push_err}"
-
-    return f"$ git push origin {branch}\nFailed: {err}"
-
-
-def _execute_git_workflow(command: str) -> str | None:
-    """Route git workflow commands to their multi-step handlers.
-
-    Returns result string if handled, None otherwise.
-    """
-    cmd_lower = command.lower().strip()
-
-    # Match "git commit", "commit", "commit changes", etc.
-    if any(cmd_lower.startswith(p) for p in ("git commit", "commit")):
-        return _git_commit_local()
-
-    # Match "git push", "push", "push changes", etc.
-    if any(cmd_lower.startswith(p) for p in ("git push", "push")):
-        return _git_push_local()
-
-    return None
-
 
 # ── Level 3: Local skill execution ───────────────────────────────────
 #
@@ -918,8 +742,39 @@ def _match_local_skill(message: str) -> dict | None:
 
 
 def _execute_local_skill(skill: dict) -> str | None:
-    """Execute a local skill's steps and format the output."""
+    """Execute a local skill's steps and format the output.
+
+    Step types:
+      {"run": "shell command", "as": "var_name"}
+        Run a shell command, store output in var_name.
+
+      {"run": "shell command", "as": "var_name", "if_empty": "fallback_cmd"}
+        Run command; if output is empty, run fallback_cmd instead.
+
+      {"run": "shell command", "as": "var_name", "on_fail": "recovery_cmd"}
+        Run command; if it fails (non-zero exit), run recovery_cmd.
+
+      {"run": "shell command", "as": "var_name", "on_fail": "recovery_cmd",
+       "retry": true}
+        After recovery, retry the original command.
+
+      {"llm": "prompt with {var} placeholders", "as": "var_name"}
+        Use local LLM to generate text. Prompt can reference previous {var_name}s.
+
+      {"run": "cmd with {var} placeholders", "as": "var_name"}
+        Shell commands can also use {var_name} from previous steps.
+
+      {"stop_if_empty": "var_name", "message": "Nothing to do."}
+        Stop execution if a variable is empty.
+
+    Template variables: all step outputs are available as {var_name} in
+    subsequent steps and in the output template.
+    """
     import subprocess
+    import re
+    import httpx
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
 
     name = skill.get("name", "unknown")
     steps = skill.get("steps", [])
@@ -930,46 +785,108 @@ def _execute_local_skill(skill: dict) -> str | None:
     results: dict[str, str] = {}
     step_outputs: list[str] = []
 
+    def _interpolate(template: str) -> str:
+        """Replace {var_name} placeholders with step results."""
+        try:
+            return template.format(**results)
+        except (KeyError, IndexError):
+            return template
+
+    def _run_shell(cmd: str, timeout: int = 30) -> tuple[int, str]:
+        """Run a shell command, return (exit_code, output)."""
+        cmd = _interpolate(cmd)
+        try:
+            r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                               timeout=timeout)
+            out = r.stdout.strip()
+            if r.returncode != 0 and r.stderr:
+                out += f"\n(exit {r.returncode}: {r.stderr.strip()[:200]})"
+            if len(out) > 3000:
+                out = out[:3000] + "\n... (truncated)"
+            return r.returncode, out
+        except subprocess.TimeoutExpired:
+            return 1, f"(timed out: {cmd})"
+        except Exception as exc:
+            return 1, f"(error: {exc})"
+
     for step in steps:
-        cmd = step.get("run", "")
         label = step.get("as", f"step_{len(step_outputs)}")
 
+        # Stop-if-empty guard
+        if "stop_if_empty" in step:
+            check_var = step["stop_if_empty"]
+            if not results.get(check_var, "").strip():
+                msg = _interpolate(step.get("message", "Stopped: no data."))
+                return f"[{name}] {msg}"
+            continue
+
+        # LLM step
+        if "llm" in step:
+            prompt = _interpolate(step["llm"])
+            llm_model = step.get("model") or (
+                (_cfg.get("local_models") or {}).get("level_2", RERANK_MODEL))
+            if not ollama_available(llm_model):
+                llm_model = RERANK_MODEL
+            try:
+                resp = httpx.post(
+                    f"{OLLAMA_BASE}/api/generate",
+                    json={"model": llm_model, "prompt": prompt, "stream": False,
+                          "options": {"temperature": float(step.get("temperature", 0.2)),
+                                      "num_predict": int(step.get("max_tokens", 150))}},
+                    timeout=float(step.get("timeout", 15)),
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("response", "")
+                raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+                # Clean up common LLM artifacts
+                raw = raw.strip().strip('"').strip("'").strip("`")
+                raw = re.sub(r"^(commit message:?\s*)", "", raw,
+                             flags=re.IGNORECASE).strip()
+                # Take first line if step requests it
+                if step.get("first_line"):
+                    raw = raw.split("\n")[0].strip()
+                results[label] = raw
+                log_hook("local_skill_llm", name=name, var=label, chars=len(raw))
+            except Exception as exc:
+                results[label] = step.get("fallback", "")
+                log_hook("local_skill_llm_error", name=name, error=str(exc)[:80])
+            continue
+
+        # Shell step
+        cmd = step.get("run", "")
         if not cmd:
             continue
 
-        # Sanitize: reject shell injection in step commands
-        # (steps come from trusted JSON files, but belt-and-suspenders)
-        try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                timeout=30,
-            )
-            out = result.stdout.strip()
-            if result.returncode != 0 and result.stderr:
-                out += f"\n(exit {result.returncode}: {result.stderr.strip()[:200]})"
-            # Truncate per step
-            if len(out) > 3000:
-                out = out[:3000] + f"\n... (truncated)"
-        except subprocess.TimeoutExpired:
-            out = f"(timed out: {cmd})"
-        except Exception as exc:
-            out = f"(error: {exc})"
+        rc, out = _run_shell(cmd, timeout=int(step.get("timeout", 30)))
+
+        # if_empty: run fallback command when output is empty
+        if not out.strip() and step.get("if_empty"):
+            rc, out = _run_shell(step["if_empty"])
+
+        # on_fail: run recovery command on non-zero exit
+        if rc != 0 and step.get("on_fail"):
+            _, recovery_out = _run_shell(step["on_fail"])
+            step_outputs.append(f"$ {_interpolate(cmd)}\n(failed, recovering...)")
+            step_outputs.append(f"$ {_interpolate(step['on_fail'])}\n{recovery_out}")
+            # retry: re-run original command after recovery
+            if step.get("retry"):
+                rc, out = _run_shell(cmd)
+            else:
+                out = recovery_out
 
         results[label] = out
-        step_outputs.append(f"$ {cmd}\n{out}")
+        step_outputs.append(f"$ {_interpolate(cmd)}\n{out}")
 
     # Format output
     if output_template:
         try:
-            formatted = output_template.format(**results)
-            return f"[Local skill: {name}]\n\n{formatted}"
+            formatted = _interpolate(output_template)
+            return f"[{name}]\n\n{formatted}"
         except KeyError:
             pass
 
     # Fallback: concatenate step outputs
-    return f"[Local skill: {name}]\n\n" + "\n\n".join(
-        f"```\n{s}\n```" for s in step_outputs
-    )
+    return f"[{name}]\n\n" + "\n\n".join(step_outputs)
 
 
 def _dynamic_context_stage(
@@ -3184,11 +3101,13 @@ def _execute_single_command(sub_cmd: str, session_id: str, _cfg) -> str | None:
     """
     from .embeddings import ollama_available
 
-    # Try git workflow commands first (commit, push — multi-step)
+    # Try L3 local skills (multi-step workflows including git commit/push)
     if _cfg.get("local_execution_enabled"):
-        git_result = _execute_git_workflow(sub_cmd)
-        if git_result:
-            return git_result
+        local_skill = _match_local_skill(sub_cmd)
+        if local_skill:
+            result = _execute_local_skill(local_skill)
+            if result:
+                return result
 
     # Try task classification
     intent = _classify_intent(sub_cmd)
@@ -3489,24 +3408,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     triage_hint = (f"[Skill Hub triage — local LLM analysis]\n"
                                    f"{hint}")
 
-    # ── Stage 3b: Local command execution (Level 1+2+git workflows) ──
+    # ── Stage 3b: Local command execution (Level 1+2) ──
     if _cfg.get("local_execution_enabled"):
-        # Try git workflow commands (commit, push — multi-step with LLM)
-        git_result = _execute_git_workflow(message)
-        if git_result:
-            if _cfg.get("token_profiling"):
-                try:
-                    store = SkillStore()
-                    store.log_interception(
-                        command_type="git_workflow",
-                        message_preview=message,
-                        estimated_tokens=500,
-                    )
-                    store.close()
-                except Exception:
-                    pass
-            return _visible_result(git_result)
-
         global _pending_command
 
         # Check if user is confirming a pending command
