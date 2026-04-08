@@ -29,6 +29,27 @@ from .store import SkillStore
 _task_command_vector: list[float] | None = None
 _task_command_hash: int | None = None  # tracks config changes
 
+# Cached embedding centroid for L1/L2 shell commands (separate from task commands)
+_local_cmd_vector: list[float] | None = None
+_local_cmd_hash: int | None = None
+
+# Regex to strip IDE/system context tags from hook input before classification.
+# These tags (e.g. <ide_opened_file>, <ide_selection>, <system-reminder>) are
+# injected by the IDE and confuse small local LLMs during intent classification.
+_IDE_TAG_RE = re.compile(
+    r"<(?:ide_\w+|system-reminder|EXTREMELY_IMPORTANT|SUBAGENT-STOP|command-name)"
+    r"[^>]*>.*?</(?:ide_\w+|system-reminder|EXTREMELY_IMPORTANT|SUBAGENT-STOP|command-name)>",
+    re.DOTALL,
+)
+
+
+def _sanitize_hook_message(message: str) -> str:
+    """Strip IDE context tags and collapse whitespace so the LLM sees only the user's words."""
+    cleaned = _IDE_TAG_RE.sub("", message).strip()
+    # Collapse runs of whitespace left by removed tags
+    cleaned = re.sub(r"\s{3,}", "  ", cleaned)
+    return cleaned or message  # fallback to original if everything was stripped
+
 # Dynamic persona cache: {session_id: (persona_str, built_at_epoch)}
 _persona_cache: dict[str, tuple[str, float]] = {}
 
@@ -161,6 +182,49 @@ def _task_similarity(message: str) -> float:
 
         msg_vec = embed(message)
         return cosine(msg_vec, _task_command_vector)
+    except Exception:
+        return 0.0
+
+
+def _local_cmd_similarity(message: str) -> float:
+    """
+    Embedding similarity against L1/L2 shell command phrases.
+    Uses a separate centroid from task commands — "show git status"
+    is similar to shell commands but not to "save to memory".
+    """
+    import math
+    from . import config as _cfg
+
+    global _local_cmd_vector, _local_cmd_hash
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    try:
+        # Build examples from L1 command names + L2 template names
+        commands = _cfg.get("local_commands") or {}
+        templates = _cfg.get("local_templates") or {}
+        # Natural language versions of command names
+        examples = [name.replace("_", " ") for name in commands]
+        examples += [name.replace("_", " ") for name in templates]
+        # Add common phrasings
+        examples += [
+            "show git status", "run git log", "list files", "show branches",
+            "check disk space", "what directory am I in", "show git diff",
+            "show stash list", "git remote", "check uptime",
+        ]
+        current_hash = hash(tuple(sorted(examples)))
+
+        if _local_cmd_vector is None or _local_cmd_hash != current_hash:
+            centroid_text = " | ".join(examples)
+            _local_cmd_vector = embed(centroid_text)
+            _local_cmd_hash = current_hash
+
+        msg_vec = embed(message)
+        return cosine(msg_vec, _local_cmd_vector)
     except Exception:
         return 0.0
 
@@ -375,8 +439,10 @@ Examples:
 - "fix the pagination bug" → {{"command": "none", "confidence": 0.0}}
 - "show me git status" → {{"command": "git_status", "confidence": 0.95}}
 - "add a new endpoint" → {{"command": "none", "confidence": 0.0}}
-- "what branches exist" → {{"command": "git_branch", "confidence": 0.85}}
+- "what branches exist" → {{"command": "git_branch", "confidence": 0.90}}
 - "refactor the query executor" → {{"command": "none", "confidence": 0.0}}
+- "list files" → {{"command": "ls", "confidence": 0.95}}
+- "show stashes" → {{"command": "git_stash_list", "confidence": 0.90}}
 
 User message: {message}"""
 
@@ -417,9 +483,13 @@ def _match_local_command(message: str) -> dict | None:
             result = json.loads(json_match.group())
             name = result.get("command", "none")
             confidence = float(result.get("confidence", 0))
-            if name != "none" and name in commands and confidence >= 0.92:
+            min_conf = float(_cfg.get("local_cmd_min_confidence") or 0.80)
+            if name != "none" and name in commands and confidence >= min_conf:
                 log_hook("local_cmd_match", command=name, confidence=f"{confidence:.2f}")
                 return {"name": name, "shell": commands[name], "level": 1}
+            elif name != "none" and confidence > 0:
+                log_hook("local_cmd_reject", command=name,
+                         confidence=f"{confidence:.2f}", threshold=f"{min_conf:.2f}")
     except Exception:
         pass
     return None
@@ -2676,6 +2746,11 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     from . import config as _cfg
     global _local_mode
 
+    # ── Stage -0.5: Sanitize IDE context tags ──
+    # IDE plugins inject <ide_opened_file>, <ide_selection>, <system-reminder>
+    # tags that confuse small local LLMs during classification.
+    message = _sanitize_hook_message(message)
+
     # ── Stage -1: Offline auto-fallback ──
     # If Anthropic API is unreachable and auto-fallback is enabled, activate
     # local mode silently so the L4 agent handles the message.
@@ -2930,22 +3005,23 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         # Clear pending if user sent something else
         _pending_command = None
 
-        # Skip LLM-based command matching if message had low similarity
-        # to command patterns — prevents small models from hallucinating
-        # matches (e.g. matching "fix the bug" to "pwd").
-        # Use a higher bar than task classification (0.55 vs 0.45) since
-        # false positives here block the user's message entirely.
+        # Skip LLM-based command matching if message has low similarity
+        # to shell command phrases. Uses a SEPARATE centroid from task
+        # classification — "show git status" is similar to shell commands
+        # but not to "save to memory".
         local_cmd = None
-        local_cmd_threshold = float(_cfg.get("local_cmd_similarity_threshold") or 0.55)
-        if msg_similarity >= local_cmd_threshold:
+        local_cmd_threshold = float(_cfg.get("local_cmd_similarity_threshold") or 0.45)
+        cmd_sim = _local_cmd_similarity(message)
+        if cmd_sim >= local_cmd_threshold:
+            log_hook("local_cmd_gate", sim=f"{cmd_sim:.3f}", threshold=local_cmd_threshold)
             # Try Level 1 (whitelisted commands)
             local_cmd = _match_local_command(message)
             # Try Level 2 (templated commands) if Level 1 didn't match
             if not local_cmd:
                 local_cmd = _match_local_template(message)
         else:
-            log_hook("local_cmd_skip", reason="low_similarity",
-                     sim=f"{msg_similarity:.3f}")
+            log_hook("local_cmd_skip", reason="low_cmd_similarity",
+                     sim=f"{cmd_sim:.3f}")
 
         if local_cmd:
             # If command was previously approved this session, execute directly
@@ -2980,10 +3056,10 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 }
 
         # Try Level 3 (local skills — multi-step)
-        # Skip if message had low task similarity — avoids false skill matches
-        # on normal coding questions
+        # L3 skills are higher-risk (multi-step), use a separate higher threshold
         local_skill = None
-        if msg_similarity >= local_cmd_threshold:
+        local_skill_threshold = float(_cfg.get("local_skill_threshold") or 0.75)
+        if msg_similarity >= local_skill_threshold:
             local_skill = _match_local_skill(message)
         if local_skill:
             skill_name = local_skill.get("name", "unknown")
