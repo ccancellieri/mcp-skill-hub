@@ -312,8 +312,8 @@ User message: {message}"""
             result["_similarity"] = sim
             log_llm("classify", model=classify_model, intent=result.get("intent"))
             return result
-    except Exception:
-        pass
+    except Exception as exc:
+        log_hook("classify_error", error=str(exc)[:100])
     return {"intent": "none", "_similarity": sim}
 
 
@@ -2919,35 +2919,159 @@ type: {mem_type}
 
 
 def _split_multi_command(message: str) -> list[str] | None:
-    """Detect and split multi-command messages using local LLM.
+    """Detect and split multi-command messages.
 
-    Messages like "commit push document and close task" contain multiple
-    independent actions. Uses a fast LLM call to split them into an ordered
-    list suitable for sequential execution.
+    Uses a fast heuristic splitter for common patterns (0ms, no LLM).
+    Falls back to LLM for ambiguous cases.
 
     Returns a list of sub-commands if multiple found, or None if single/none.
     """
+    # Only attempt split for short-to-medium messages
+    if len(message) > 500 or len(message) < 5:
+        return None
+
+    # ── Fast heuristic split (no LLM) ──
+    result = _heuristic_split(message)
+    if result and len(result) > 1:
+        log_hook("multi_cmd_detected", count=len(result), method="heuristic")
+        return result
+
+    # ── LLM fallback for ambiguous cases ──
+    # Only if message has separators suggesting multiple actions
+    msg_lower = message.lower()
+    if not any(sep in msg_lower for sep in (" and ", ", ", " then ", " + ", " & ")):
+        return None
+
+    return _llm_split(message)
+
+
+# Known action keywords → canonical form
+_ACTION_KEYWORDS = {
+    # Git actions
+    "commit": "git commit",
+    "push": "git push",
+    "pull": "git pull",
+    "merge": "git merge",
+    "rebase": "git rebase",
+    "stash": "git stash",
+    "checkout": "git checkout",
+    "fetch": "git fetch",
+    # Task management
+    "save": "save to memory",
+    "close": "close the task",
+    "park": "save to memory",
+    "remember": "save to memory",
+    "list tasks": "list tasks",
+    "show tasks": "list tasks",
+    # Documentation
+    "document": "save documentation to memory",
+}
+
+# Multi-word phrases that should NOT be split
+_COMPOUND_PHRASES = [
+    "save to memory",
+    "close task",
+    "close the task",
+    "list tasks",
+    "show tasks",
+    "mark as done",
+    "mark done",
+    "save and close",
+    "git commit",
+    "git push",
+    "git pull",
+]
+
+
+def _heuristic_split(message: str) -> list[str] | None:
+    """Fast regex/keyword split for common multi-command patterns.
+
+    "commit push document save to memory and close task"
+    → ["git commit", "git push", "save documentation to memory",
+       "save to memory", "close the task"]
+    """
+    import re
+
+    msg = message.strip().lower()
+
+    # Normalize separators: "and", ",", "then", "&", "+"  →  " | "
+    normalized = msg
+    for sep in [" and then ", " and ", " then ", ", ", " & ", " + "]:
+        normalized = normalized.replace(sep, " | ")
+
+    # Split on |
+    raw_parts = [p.strip() for p in normalized.split("|") if p.strip()]
+
+    # Within each part, try to further split on spaces if multiple action
+    # keywords are adjacent (e.g., "commit push document" → 3 actions)
+    commands: list[str] = []
+    for part in raw_parts:
+        # Check if this part is a compound phrase first
+        is_compound = any(part == cp or part.startswith(cp + " ")
+                         for cp in _COMPOUND_PHRASES)
+        if is_compound or part in _ACTION_KEYWORDS:
+            commands.append(_ACTION_KEYWORDS.get(part, part))
+            continue
+
+        # Try splitting space-separated action keywords
+        words = part.split()
+        i = 0
+        found_actions = []
+        while i < len(words):
+            # Try matching multi-word phrases first (longest match)
+            matched = False
+            for phrase_len in range(min(4, len(words) - i), 0, -1):
+                candidate = " ".join(words[i:i + phrase_len])
+                if candidate in _ACTION_KEYWORDS:
+                    found_actions.append(_ACTION_KEYWORDS[candidate])
+                    i += phrase_len
+                    matched = True
+                    break
+                if candidate in _COMPOUND_PHRASES:
+                    found_actions.append(candidate)
+                    i += phrase_len
+                    matched = True
+                    break
+            if not matched:
+                # Single word action keyword?
+                if words[i] in _ACTION_KEYWORDS:
+                    found_actions.append(_ACTION_KEYWORDS[words[i]])
+                    i += 1
+                else:
+                    # Unknown word — accumulate into current action
+                    if found_actions:
+                        found_actions[-1] += f" {words[i]}"
+                    else:
+                        found_actions.append(words[i])
+                    i += 1
+
+        commands.extend(found_actions)
+
+    # Only return if we found multiple distinct commands
+    if len(commands) > 1:
+        # Deduplicate adjacent identical commands
+        deduped = [commands[0]]
+        for cmd in commands[1:]:
+            if cmd != deduped[-1]:
+                deduped.append(cmd)
+        if len(deduped) > 1:
+            return deduped
+
+    return None
+
+
+def _llm_split(message: str) -> list[str] | None:
+    """LLM-based split for ambiguous multi-command messages."""
     import httpx
     import re
     from . import config as _cfg
     from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
 
-    # Only attempt split for short-to-medium messages that look like commands
-    if len(message) > 500 or len(message) < 8:
-        return None
-
-    # Quick heuristic: must have multiple action-like words separated by
-    # conjunctions, commas, or spaces. Skip if it's clearly a single command.
-    action_separators = (" and ", ", ", " then ", " + ", " & ")
-    has_separator = any(sep in message.lower() for sep in action_separators)
-    word_count = len(message.split())
-    if not has_separator and word_count < 4:
-        return None
-
-    # Use level_2 model for splitting — 3b merges commands, 7b handles nuance
     split_model = (_cfg.get("local_models") or {}).get("level_2", RERANK_MODEL)
     if not ollama_available(split_model):
-        split_model = RERANK_MODEL
+        split_model = (_cfg.get("local_models") or {}).get("level_1", RERANK_MODEL)
+        if not ollama_available(split_model):
+            return None
 
     prompt = f"""\
 Does this message contain MULTIPLE distinct commands/actions to execute in sequence?
@@ -2957,24 +3081,13 @@ Message: {message}
 Rules:
 - Only split if there are 2+ DIFFERENT actions (different verbs/operations)
 - Each sub-command must be a COMPLETE, self-contained phrase — NOT a single word
-- Add context to make each command unambiguous:
-  "commit" → "git commit"
-  "push" → "git push"
-  "document" → "save documentation to memory"
-  "close task" → "close the task"
-  "save to memory" → keep together as one command
-- Preserve the logical execution order (e.g. commit before push before close)
-
-Examples:
-- "commit push and close task" → ["git commit", "git push", "close the task"]
-- "commit push document save to memory and close task" → ["git commit", "git push", "save documentation to memory", "save to memory", "close the task"]
-- "fix the pagination bug" → NOT multiple (single action)
-- "explain auth and add tests" → ["explain how auth works", "add tests"]
+- Add context: "commit" → "git commit", "push" → "git push", "close" → "close the task"
+- Preserve execution order (e.g. commit before push before close)
+- "fix the pagination bug" = 1 action → {{"multiple": false}}
 
 Reply with ONLY JSON:
-{{"multiple": true, "commands": ["complete command 1", "complete command 2", ...]}}
-or
-{{"multiple": false}}"""
+{{"multiple": true, "commands": ["command 1", "command 2", ...]}}
+or {{"multiple": false}}"""
 
     try:
         resp = httpx.post(
@@ -2991,7 +3104,8 @@ or
             import json as _j
             result = _j.loads(m.group())
             if result.get("multiple") and len(result.get("commands", [])) > 1:
-                log_hook("multi_cmd_detected", count=len(result["commands"]))
+                log_hook("multi_cmd_detected", count=len(result["commands"]),
+                         method="llm")
                 return result["commands"]
     except Exception as exc:
         log_hook("multi_cmd_split_error", error=str(exc)[:80])
