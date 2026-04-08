@@ -625,11 +625,191 @@ def _execute_local_command(cmd: dict) -> str | None:
         # Truncate very long output
         if len(output) > 5000:
             output = output[:5000] + f"\n... (truncated, {len(output)} chars total)"
-        return f"```\n$ {shell_cmd}\n{output.strip()}\n```"
+        log_hook("local_cmd_done", command=shell_cmd, chars=len(output))
+        return f"$ {shell_cmd}\n{output.strip()}"
     except subprocess.TimeoutExpired:
+        log_hook("local_cmd_done", command=shell_cmd, error="timeout")
         return f"Command timed out: {shell_cmd}"
     except Exception as exc:
+        log_hook("local_cmd_done", command=shell_cmd, error=str(exc))
         return f"Command failed: {exc}"
+
+
+# ── Git workflow commands (built-in L3) ─────────────────────────────
+#
+# Multi-step git operations that use local LLM for reasoning
+# (commit message generation, conflict resolution hints).
+
+
+def _shell(cmd: str, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a shell command, return (returncode, stdout, stderr)."""
+    import subprocess
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def _git_commit_local() -> str | None:
+    """Multi-step local git commit: diff → LLM message → stage → commit."""
+    import httpx
+    import re
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE, ollama_available
+
+    log_hook("git_commit_start")
+
+    # 1. Check if we're in a git repo
+    rc, _, _ = _shell("git rev-parse --is-inside-work-tree")
+    if rc != 0:
+        return "Not a git repository."
+
+    # 2. Get staged diff; if nothing staged, stage all modified files
+    rc, staged_diff, _ = _shell("git diff --staged")
+    if not staged_diff:
+        # Nothing staged — check for modifications
+        rc, unstaged_diff, _ = _shell("git diff")
+        rc2, untracked, _ = _shell("git ls-files --others --exclude-standard")
+        if not unstaged_diff and not untracked:
+            return "Nothing to commit — working tree clean."
+        # Stage all modified and new files
+        _shell("git add -A")
+        rc, staged_diff, _ = _shell("git diff --staged")
+        if not staged_diff:
+            return "Nothing to commit after staging."
+
+    # 3. Get recent commit messages for style reference
+    _, recent_log, _ = _shell("git log --oneline -5")
+
+    # 4. Use local LLM to generate commit message
+    commit_model = (_cfg.get("local_models") or {}).get("level_2", "qwen2.5-coder:7b-instruct-q4_k_m")
+    if not ollama_available(commit_model):
+        # Fallback: simple timestamp-based message
+        from datetime import datetime
+        msg = f"update {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        rc, out, err = _shell(f'git commit -m "{msg}"')
+        return f"$ git commit -m \"{msg}\"\n{out}" + (f"\n{err}" if err else "")
+
+    # Truncate diff for LLM context
+    diff_preview = staged_diff[:3000]
+    if len(staged_diff) > 3000:
+        diff_preview += f"\n... ({len(staged_diff)} chars total, truncated)"
+
+    prompt = f"""\
+Generate a concise git commit message for this diff. Follow conventional commits style.
+
+Recent commit messages (for style reference):
+{recent_log}
+
+Staged diff:
+{diff_preview}
+
+Rules:
+- First line: type(scope): short description (max 72 chars)
+- Types: feat, fix, refactor, docs, chore, test, style
+- Be specific about WHAT changed, not WHY
+- No quotes around the message
+- Output ONLY the commit message, nothing else"""
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": commit_model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.2, "num_predict": 100}},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        # Clean up: remove quotes, backticks, "commit message:" prefix
+        msg = raw.strip().strip('"').strip("'").strip("`")
+        msg = re.sub(r"^(commit message:?\s*)", "", msg, flags=re.IGNORECASE).strip()
+        # Take first line only
+        msg = msg.split("\n")[0].strip()
+        if not msg or len(msg) < 5:
+            msg = "chore: update"
+        log_hook("git_commit_msg", model=commit_model, msg=msg[:80])
+    except Exception:
+        from datetime import datetime
+        msg = f"update {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+    # 5. Commit
+    # Escape single quotes in message for shell
+    safe_msg = msg.replace("'", "'\\''")
+    rc, out, err = _shell(f"git commit -m '{safe_msg}'")
+    if rc != 0:
+        return f"$ git commit -m '{msg}'\nFailed: {err}"
+
+    log_hook("git_commit_done", message=msg[:80])
+    return f"$ git commit -m '{msg}'\n{out}"
+
+
+def _git_push_local() -> str | None:
+    """Multi-step local git push with conflict handling."""
+    log_hook("git_push_start")
+
+    # 1. Check if we're in a git repo with a remote
+    rc, _, _ = _shell("git rev-parse --is-inside-work-tree")
+    if rc != 0:
+        return "Not a git repository."
+
+    rc, remote, _ = _shell("git remote")
+    if not remote:
+        return "No remote configured."
+
+    # 2. Get current branch
+    _, branch, _ = _shell("git branch --show-current")
+    if not branch:
+        return "Not on any branch (detached HEAD)."
+
+    # 3. Try push
+    rc, out, err = _shell(f"git push origin {branch}", timeout=60)
+    if rc == 0:
+        log_hook("git_push_done", branch=branch)
+        return f"$ git push origin {branch}\n{out or 'Done.'}"
+
+    # 4. Push failed — likely needs pull first
+    if "rejected" in err or "fetch first" in err or "non-fast-forward" in err:
+        log_hook("git_push_retry", reason="needs_pull")
+        # Try pull --rebase then push
+        rc2, pull_out, pull_err = _shell(f"git pull --rebase origin {branch}", timeout=60)
+        if rc2 != 0:
+            # Rebase conflict
+            if "CONFLICT" in pull_err or "conflict" in pull_out.lower():
+                # Abort the rebase, report to user
+                _shell("git rebase --abort")
+                return (f"$ git push origin {branch}\n"
+                        f"Push failed: remote has diverged.\n"
+                        f"$ git pull --rebase origin {branch}\n"
+                        f"Merge conflict detected — rebase aborted.\n"
+                        f"Conflicts need manual resolution.")
+            return f"$ git pull --rebase\nFailed: {pull_err}"
+
+        # Pull succeeded, retry push
+        rc3, push_out, push_err = _shell(f"git push origin {branch}", timeout=60)
+        if rc3 == 0:
+            log_hook("git_push_done", branch=branch, after_pull=True)
+            return (f"$ git pull --rebase origin {branch}\n{pull_out}\n"
+                    f"$ git push origin {branch}\n{push_out or 'Done.'}")
+        return f"$ git push origin {branch}\nFailed after pull: {push_err}"
+
+    return f"$ git push origin {branch}\nFailed: {err}"
+
+
+def _execute_git_workflow(command: str) -> str | None:
+    """Route git workflow commands to their multi-step handlers.
+
+    Returns result string if handled, None otherwise.
+    """
+    cmd_lower = command.lower().strip()
+
+    # Match "git commit", "commit", "commit changes", etc.
+    if any(cmd_lower.startswith(p) for p in ("git commit", "commit")):
+        return _git_commit_local()
+
+    # Match "git push", "push", "push changes", etc.
+    if any(cmd_lower.startswith(p) for p in ("git push", "push")):
+        return _git_push_local()
+
+    return None
 
 
 # ── Level 3: Local skill execution ───────────────────────────────────
@@ -2562,7 +2742,8 @@ def _cmd_session_end(session_id: str, last_message: str,
 
     # 2. Smart memory write via local LLM
     import os as _os
-    _mem_cfg = _cfg.get("hook_memory_dir")
+    from . import config as _cfg_mod
+    _mem_cfg = _cfg_mod.get("hook_memory_dir")
     if _mem_cfg:
         memory_dir = Path(str(_mem_cfg)).expanduser()
     else:
@@ -2737,6 +2918,190 @@ type: {mem_type}
     return result
 
 
+def _split_multi_command(message: str) -> list[str] | None:
+    """Detect and split multi-command messages using local LLM.
+
+    Messages like "commit push document and close task" contain multiple
+    independent actions. Uses a fast LLM call to split them into an ordered
+    list suitable for sequential execution.
+
+    Returns a list of sub-commands if multiple found, or None if single/none.
+    """
+    import httpx
+    import re
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+
+    # Only attempt split for short-to-medium messages that look like commands
+    if len(message) > 500 or len(message) < 8:
+        return None
+
+    # Quick heuristic: must have multiple action-like words separated by
+    # conjunctions, commas, or spaces. Skip if it's clearly a single command.
+    action_separators = (" and ", ", ", " then ", " + ", " & ")
+    has_separator = any(sep in message.lower() for sep in action_separators)
+    word_count = len(message.split())
+    if not has_separator and word_count < 4:
+        return None
+
+    # Use level_2 model for splitting — 3b merges commands, 7b handles nuance
+    split_model = (_cfg.get("local_models") or {}).get("level_2", RERANK_MODEL)
+    if not ollama_available(split_model):
+        split_model = RERANK_MODEL
+
+    prompt = f"""\
+Does this message contain MULTIPLE distinct commands/actions to execute in sequence?
+
+Message: {message}
+
+Rules:
+- Only split if there are 2+ DIFFERENT actions (different verbs/operations)
+- Each sub-command must be a COMPLETE, self-contained phrase — NOT a single word
+- Add context to make each command unambiguous:
+  "commit" → "git commit"
+  "push" → "git push"
+  "document" → "save documentation to memory"
+  "close task" → "close the task"
+  "save to memory" → keep together as one command
+- Preserve the logical execution order (e.g. commit before push before close)
+
+Examples:
+- "commit push and close task" → ["git commit", "git push", "close the task"]
+- "commit push document save to memory and close task" → ["git commit", "git push", "save documentation to memory", "save to memory", "close the task"]
+- "fix the pagination bug" → NOT multiple (single action)
+- "explain auth and add tests" → ["explain how auth works", "add tests"]
+
+Reply with ONLY JSON:
+{{"multiple": true, "commands": ["complete command 1", "complete command 2", ...]}}
+or
+{{"multiple": false}}"""
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": split_model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 200}},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            import json as _j
+            result = _j.loads(m.group())
+            if result.get("multiple") and len(result.get("commands", [])) > 1:
+                log_hook("multi_cmd_detected", count=len(result["commands"]))
+                return result["commands"]
+    except Exception as exc:
+        log_hook("multi_cmd_split_error", error=str(exc)[:80])
+
+    return None
+
+
+def _hydrate_passthrough(commands: list[str], already_done: list[str]) -> str:
+    """Use local LLM to expand terse commands into detailed Claude instructions.
+
+    "git commit" → "Commit staged changes with a descriptive message based on the diff."
+    "git push" → "Push the committed changes to the remote origin."
+    Falls back to plain list if LLM is unavailable.
+    """
+    import httpx
+    import re
+    from . import config as _cfg
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+
+    fallback = "\n".join(f"- {cmd}" for cmd in commands)
+
+    split_model = (_cfg.get("local_models") or {}).get("level_2", RERANK_MODEL)
+    if not ollama_available(split_model):
+        return fallback
+
+    done_context = "\n".join(already_done) if already_done else "nothing"
+    cmds_list = "\n".join(f"- {cmd}" for cmd in commands)
+
+    prompt = f"""\
+You are a prompt engineer. Expand these terse user commands into clear, \
+detailed instructions for a coding assistant (Claude). Add context so Claude \
+knows exactly what to do without asking questions.
+
+Already completed locally:
+{done_context}
+
+Commands to expand:
+{cmds_list}
+
+Rules:
+- Each command becomes 1-2 sentences of specific, actionable instructions
+- Add relevant context (e.g. "based on the current diff", "to the remote origin")
+- Keep the same order
+- Do NOT add commands that weren't requested
+- Output a numbered list, nothing else
+
+Output:"""
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": split_model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 300}},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        if raw and len(raw) > 10:
+            log_hook("hydrate_passthrough", commands=len(commands), chars=len(raw))
+            return raw
+    except Exception:
+        pass
+
+    return fallback
+
+
+def _execute_single_command(sub_cmd: str, session_id: str, _cfg) -> str | None:
+    """Execute a single sub-command through the classify + execute pipeline.
+
+    This is a lightweight version of the main pipeline that handles:
+    - Git workflows (commit, push — multi-step with LLM reasoning)
+    - Task commands (save/close/list/search)
+    - Local shell commands (L1/L2)
+    - Returns the result text, or None if the command should pass to Claude.
+    """
+    from .embeddings import ollama_available
+
+    # Try git workflow commands first (commit, push — multi-step)
+    if _cfg.get("local_execution_enabled"):
+        git_result = _execute_git_workflow(sub_cmd)
+        if git_result:
+            return git_result
+
+    # Try task classification
+    intent = _classify_intent(sub_cmd)
+    action = intent.get("intent", "none")
+
+    if action != "none":
+        result = _execute_intent(intent, sub_cmd)
+        if result:
+            return result
+
+    # Try local command matching (L1/L2)
+    if _cfg.get("local_execution_enabled"):
+        cmd_sim = _local_cmd_similarity(sub_cmd)
+        local_cmd_threshold = float(_cfg.get("local_cmd_similarity_threshold") or 0.45)
+        if cmd_sim >= local_cmd_threshold:
+            local_cmd = _match_local_command(sub_cmd)
+            if not local_cmd:
+                local_cmd = _match_local_template(sub_cmd)
+            if local_cmd:
+                result = _execute_local_command(local_cmd)
+                if result:
+                    return result
+
+    # Sub-command couldn't be handled locally — mark for Claude
+    return None
+
+
 def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
@@ -2749,7 +3114,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     4. Context enrichment → RAG injection + pre-compact + digest + triage hints
 
     Returns:
-      - {"decision": "block", "message": "..."} if handled locally
+      - {"decision": "block", "reason": "..."} if handled locally
       - {"decision": "allow"} if Claude should handle it
       - {"decision": "allow", "systemMessage": "..."} if injecting context
     """
@@ -2845,6 +3210,57 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         if slash_result.get("decision") == "block" and "message" in slash_result:
             return _visible_result(slash_result["message"])
         return slash_result
+
+    # ── Stage 1.5: Multi-command split ──
+    # Messages like "commit push document and close task" contain multiple
+    # actions. Split them and execute each sequentially through the pipeline.
+    sub_commands = _split_multi_command(message)
+    if sub_commands and len(sub_commands) > 1:
+        log_hook("multi_cmd_split", count=len(sub_commands),
+                 commands=", ".join(c[:40] for c in sub_commands))
+        handled: list[str] = []
+        passthrough: list[str] = []
+        for i, sub_cmd in enumerate(sub_commands, 1):
+            log_hook("multi_cmd_exec", step=f"{i}/{len(sub_commands)}", command=sub_cmd[:80])
+            sub_result = _execute_single_command(sub_cmd, session_id, _cfg)
+            if sub_result:
+                handled.append(f"[{i}] {sub_result}")
+            else:
+                passthrough.append(sub_cmd)
+
+        if handled:
+            combined = "\n\n".join(handled)
+            if _cfg.get("token_profiling"):
+                try:
+                    store = SkillStore()
+                    store.log_interception(
+                        command_type="multi_cmd",
+                        message_preview=message,
+                        estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300) * len(handled),
+                    )
+                    store.close()
+                except Exception:
+                    pass
+
+            if passthrough:
+                # Some commands need Claude — hydrate the passthrough commands
+                # into detailed instructions using local LLM
+                hydrated = _hydrate_passthrough(passthrough, handled)
+                log_hook("multi_cmd_partial", handled=len(handled),
+                         passthrough=len(passthrough))
+                return {
+                    "decision": "allow",
+                    "systemMessage": (
+                        f"[Skill Hub — multi-command: {len(handled)} handled locally, "
+                        f"{len(passthrough)} for you]\n"
+                        f"Already done locally:\n{combined}\n\n"
+                        f"Please handle these remaining commands in order:\n"
+                        + hydrated
+                    ),
+                }
+            else:
+                # All commands handled locally — block (0 tokens)
+                return _visible_result(combined)
 
     # ── Stage 2: Task command classification — semantic prefilter + LLM ──
     intent = _classify_intent(message)
@@ -2959,8 +3375,24 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     triage_hint = (f"[Skill Hub triage — local LLM analysis]\n"
                                    f"{hint}")
 
-    # ── Stage 3b: Local command execution (Level 1+2) ──
+    # ── Stage 3b: Local command execution (Level 1+2+git workflows) ──
     if _cfg.get("local_execution_enabled"):
+        # Try git workflow commands (commit, push — multi-step with LLM)
+        git_result = _execute_git_workflow(message)
+        if git_result:
+            if _cfg.get("token_profiling"):
+                try:
+                    store = SkillStore()
+                    store.log_interception(
+                        command_type="git_workflow",
+                        message_preview=message,
+                        estimated_tokens=500,
+                    )
+                    store.close()
+                except Exception:
+                    pass
+            return _visible_result(git_result)
+
         global _pending_command
 
         # Check if user is confirming a pending command
@@ -3033,33 +3465,23 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                      sim=f"{cmd_sim:.3f}")
 
         if local_cmd:
-            # If command was previously approved this session, execute directly
-            if local_cmd["name"] in _approved_commands:
-                result = _execute_local_command(local_cmd)
-                if result:
-                    if _cfg.get("token_profiling"):
-                        try:
-                            store = SkillStore()
-                            store.log_interception(
-                                command_type=f"local_L{local_cmd['level']}:{local_cmd['name']}",
-                                message_preview=message,
-                                estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300),
-                            )
-                            store.close()
-                        except Exception:
-                            pass
-                    return _visible_result(result)
-            else:
-                # First time: ask for confirmation
-                _pending_command = local_cmd
-                level_tag = f"L{local_cmd['level']}"
-                return _visible_result(
-                    f"[Skill Hub — local execution {level_tag}]\n\n"
-                    f"Command matched: **{local_cmd['name']}**\n"
-                    f"```\n$ {local_cmd['shell']}\n```\n"
-                    f"Reply **y** to run, **n** to cancel.\n"
-                    f"(Once approved, `{local_cmd['name']}` runs directly this session)"
-                )
+            # L1/L2 commands are user-configured whitelists — execute directly.
+            # (Confirmation flow requires persistent state which doesn't survive
+            # across CLI invocations — each hook call is a new process.)
+            result = _execute_local_command(local_cmd)
+            if result:
+                if _cfg.get("token_profiling"):
+                    try:
+                        store = SkillStore()
+                        store.log_interception(
+                            command_type=f"local_L{local_cmd['level']}:{local_cmd['name']}",
+                            message_preview=message,
+                            estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300),
+                        )
+                        store.close()
+                    except Exception:
+                        pass
+                return _visible_result(result)
 
         # Try Level 3 (local skills — multi-step)
         # L3 skills are higher-risk (multi-step), use a separate higher threshold
@@ -3584,7 +4006,7 @@ def _cmd_local_agent(args_str: str) -> dict:
         "_agent_message": message,
         "_agent_context": recent,
     }
-    return {"decision": "block", "message": "\n".join(plan_display)}
+    return {"decision": "block", "reason": "\n".join(plan_display)}
 
 
 def _cmd_help() -> str:

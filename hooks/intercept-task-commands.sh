@@ -54,24 +54,25 @@ if [ $CLI_EXIT -ne 0 ] || [ -z "$RESULT" ]; then
     exit 0  # CLI failed — allow through
 fi
 
-DECISION=$(echo "$RESULT" | python3 -c "
+# IMPORTANT: use printf '%s' (not echo) to pipe JSON — zsh's echo interprets
+# \n \t sequences, which corrupts JSON strings containing those escapes.
+DECISION=$(printf '%s' "$RESULT" | python3 -c "
 import sys, json
 print(json.load(sys.stdin).get('decision', 'allow'))
 " 2>/dev/null)
 
 if [ "$DECISION" = "block" ]; then
-    # Use python to safely serialise the feedback as JSON (handles quotes/newlines).
-    # Claude Code hook schema uses 'reason' (not 'message') for the text shown to user.
-    echo "$RESULT" | python3 -c "
+    # Block = 0 Claude tokens. VS Code shows this as raw JSON, so prettify it.
+    printf '%s' "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 reason = data.get('reason') or data.get('message', 'Command handled locally.')
-print(json.dumps({'decision': 'block', 'reason': reason}))
+print(json.dumps({'decision': 'block', 'reason': reason}, indent=2, ensure_ascii=False))
 "
 elif [ "$DECISION" = "allow" ]; then
     # Forward the full result — may contain systemMessage, userMessage,
     # or hookSpecificOutput.additionalContext for Claude's context.
-    echo "$RESULT" | python3 -c "
+    printf '%s' "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 out = {'decision': 'allow'}
