@@ -597,6 +597,25 @@ def _match_local_template(message: str) -> dict | None:
     return None
 
 
+def _visible_result(message: str) -> dict:
+    """Return a hook result that's visible in both CLI and VS Code.
+
+    In VS Code, 'block' messages only appear as notifications/toasts
+    (unreliable — see anthropics/claude-code#16114).
+    Using 'allow' + 'systemMessage' makes Claude display the output
+    inline in the chat window. Costs a few tokens for Claude's response
+    but ensures visibility everywhere.
+    """
+    return {
+        "decision": "allow",
+        "systemMessage": (
+            f"[Skill Hub — local command executed]\n\n{message}\n\n"
+            "Display this output to the user exactly as shown above. "
+            "Do not run the command again — it was already executed locally."
+        ),
+    }
+
+
 def _execute_local_command(cmd: dict) -> str | None:
     """Execute a matched local command and return its output."""
     import subprocess
@@ -2773,10 +2792,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         recent = "\n".join(_session_messages[-10:])
         try:
             result = run_agent(message, context=recent)
-            return {"decision": "block", "message": result}
+            return _visible_result(result)
         except Exception as exc:
-            return {"decision": "block",
-                    "message": f"[Local agent error: {exc}]\n\nTurn off: /hub-local off"}
+            return _visible_result(f"[Local agent error: {exc}]\n\nTurn off: /hub-local off")
 
     # ── Stage 0.5: Response cache — check for semantically identical past answers ──
     if (_cfg.get("response_cache_enabled") and not _local_mode
@@ -2807,16 +2825,13 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     log_hook("response_cache_hit",
                              sim=f"{best['similarity']:.2f}",
                              cache_id=best["id"])
-                    return {
-                        "decision": "block",
-                        "message": (
-                            f"[Skill Hub — cached answer (sim={best['similarity']:.2f}, "
-                            f"hits={best['hit_count'] + 1})]\n\n"
-                            f"{best['response']}\n\n"
-                            f"*Cached from a previous session. "
-                            f"Reply `/hub-invalidate-cache {best['id']}` if outdated.*"
-                        ),
-                    }
+                    return _visible_result(
+                        f"[Skill Hub — cached answer (sim={best['similarity']:.2f}, "
+                        f"hits={best['hit_count'] + 1})]\n\n"
+                        f"{best['response']}\n\n"
+                        f"*Cached from a previous session. "
+                        f"Reply `/hub-invalidate-cache {best['id']}` if outdated.*"
+                    )
             _rc_hits.close()
         except Exception as _exc:
             log_hook("response_cache_error", error=str(_exc)[:80])
@@ -2835,6 +2850,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 store.close()
             except Exception:
                 pass
+        # Convert block → visible result for VS Code compatibility
+        if slash_result.get("decision") == "block" and "message" in slash_result:
+            return _visible_result(slash_result["message"])
         return slash_result
 
     # ── Stage 2: Task command classification — semantic prefilter + LLM ──
@@ -2856,7 +2874,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     store.close()
                 except Exception:
                     pass
-            return {"decision": "block", "message": result}
+            return _visible_result(result)
 
     # ── Stage 3: LLM Triage — local LLM pre-processes ALL messages ──
     # Skip triage when dynamic context is enabled (it handles prompt
@@ -2979,7 +2997,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
-                return {"decision": "block", "message": result}
+                return _visible_result(result)
             # Level 3 skills have a _skill key
             elif "_skill" in local_cmd:
                 result = _execute_local_skill(local_cmd["_skill"])
@@ -2997,10 +3015,10 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
-                return {"decision": "block", "message": result}
+                return _visible_result(result)
         elif _pending_command and stripped in ("n", "no", "cancel", "skip"):
             _pending_command = None
-            return {"decision": "block", "message": "Command cancelled."}
+            return _visible_result("Command cancelled.")
 
         # Clear pending if user sent something else
         _pending_command = None
@@ -3039,21 +3057,18 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                             store.close()
                         except Exception:
                             pass
-                    return {"decision": "block", "message": result}
+                    return _visible_result(result)
             else:
                 # First time: ask for confirmation
                 _pending_command = local_cmd
                 level_tag = f"L{local_cmd['level']}"
-                return {
-                    "decision": "block",
-                    "message": (
-                        f"[Skill Hub — local execution {level_tag}]\n\n"
-                        f"Command matched: **{local_cmd['name']}**\n"
-                        f"```\n$ {local_cmd['shell']}\n```\n"
-                        f"Reply **y** to run, **n** to cancel.\n"
-                        f"(Once approved, `{local_cmd['name']}` runs directly this session)"
-                    ),
-                }
+                return _visible_result(
+                    f"[Skill Hub — local execution {level_tag}]\n\n"
+                    f"Command matched: **{local_cmd['name']}**\n"
+                    f"```\n$ {local_cmd['shell']}\n```\n"
+                    f"Reply **y** to run, **n** to cancel.\n"
+                    f"(Once approved, `{local_cmd['name']}` runs directly this session)"
+                )
 
         # Try Level 3 (local skills — multi-step)
         # L3 skills are higher-risk (multi-step), use a separate higher threshold
@@ -3080,22 +3095,19 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                             store.close()
                         except Exception:
                             pass
-                    return {"decision": "block", "message": result}
+                    return _visible_result(result)
             else:
                 _pending_command = {
                     "name": skill_name, "level": 3,
                     "_skill": local_skill,
                 }
-                return {
-                    "decision": "block",
-                    "message": (
-                        f"[Skill Hub — local execution L3]\n\n"
-                        f"Local skill matched: **{skill_name}**\n"
-                        f"{local_skill.get('description', '')}\n\n"
-                        f"Steps:\n{steps_preview}\n\n"
-                        f"Reply **y** to run, **n** to cancel."
-                    ),
-                }
+                return _visible_result(
+                    f"[Skill Hub — local execution L3]\n\n"
+                    f"Local skill matched: **{skill_name}**\n"
+                    f"{local_skill.get('description', '')}\n\n"
+                    f"Steps:\n{steps_preview}\n\n"
+                    f"Reply **y** to run, **n** to cancel."
+                )
 
     # ── Stage 4: Dynamic context management ──
     #
