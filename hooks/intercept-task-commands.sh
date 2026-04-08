@@ -60,14 +60,17 @@ print(json.load(sys.stdin).get('decision', 'allow'))
 " 2>/dev/null)
 
 if [ "$DECISION" = "block" ]; then
-    # Use python to safely serialise the feedback as JSON (handles quotes/newlines)
+    # Use python to safely serialise the feedback as JSON (handles quotes/newlines).
+    # Claude Code hook schema uses 'reason' (not 'message') for the text shown to user.
     echo "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-print(json.dumps({'decision': 'block', 'message': data.get('message', 'Command handled locally.')}))
+reason = data.get('reason') or data.get('message', 'Command handled locally.')
+print(json.dumps({'decision': 'block', 'reason': reason}))
 "
 elif [ "$DECISION" = "allow" ]; then
-    # Forward the full result (may contain systemMessage and/or userMessage)
+    # Forward the full result — may contain systemMessage, userMessage,
+    # or hookSpecificOutput.additionalContext for Claude's context.
     echo "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -76,6 +79,9 @@ if data.get('systemMessage'):
     out['systemMessage'] = data['systemMessage']
 if data.get('userMessage'):
     out['userMessage'] = data['userMessage']
+hso = data.get('hookSpecificOutput')
+if hso:
+    out['hookSpecificOutput'] = hso
 if len(out) > 1:
     print(json.dumps(out))
 " 2>/dev/null

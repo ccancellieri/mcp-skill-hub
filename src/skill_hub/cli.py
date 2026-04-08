@@ -598,22 +598,13 @@ def _match_local_template(message: str) -> dict | None:
 
 
 def _visible_result(message: str) -> dict:
-    """Return a hook result that's visible in both CLI and VS Code.
+    """Return a hook result that blocks the prompt and shows output to user.
 
-    In VS Code, 'block' messages only appear as notifications/toasts
-    (unreliable — see anthropics/claude-code#16114).
-    Using 'allow' + 'systemMessage' makes Claude display the output
-    inline in the chat window. Costs a few tokens for Claude's response
-    but ensures visibility everywhere.
+    Uses 'reason' (not 'message') per the Claude Code hook schema.
+    The 'reason' field is displayed to the user in both CLI and VS Code
+    without spending any Claude tokens.
     """
-    return {
-        "decision": "allow",
-        "systemMessage": (
-            f"[Skill Hub — local command executed]\n\n{message}\n\n"
-            "Display this output to the user exactly as shown above. "
-            "Do not run the command again — it was already executed locally."
-        ),
-    }
+    return {"decision": "block", "reason": message}
 
 
 def _execute_local_command(cmd: dict) -> str | None:
