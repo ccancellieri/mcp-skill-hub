@@ -120,6 +120,25 @@ def log_event(category: str, message: str) -> None:
     get_logger().info("%-6s%s", category.upper(), message)
 
 
+def log_skill_step(skill_name: str, step_type: str, detail: str,
+                   result: str = "", ok: bool = True) -> None:
+    """Log an L3 skill step with clear, readable formatting.
+
+    Output format:
+      SKILL [git-push] SHELL  $ git push origin main  →  ok (42 chars)
+      SKILL [git-push] LLM    model=qwen2.5:7b prompt=120ch  →  "feat(iam): extract..."
+      SKILL [git-push] IF     dirty contains "M" → goto:stash  (matched)
+      SKILL [git-push] GOTO   → do_push
+      SKILL [git-push] STOP   Rebase conflict — resolve manually
+    """
+    status = "ok" if ok else "FAIL"
+    result_str = f"  →  {result}" if result else ""
+    get_logger().info(
+        "SKILL [%s] %-6s %s%s  (%s)",
+        skill_name, step_type, detail, result_str, status,
+    )
+
+
 def log_banner() -> None:
     """Log startup banner with session stats — called once when MCP server starts."""
     from . import config as _cfg

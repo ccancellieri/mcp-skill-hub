@@ -509,7 +509,7 @@ skill-hub-cli search_context "my query"           # search
 
 ## How Learning Works
 
-### Three Signals
+### Five Signals
 
 1. **Teachings** (explicit): `teach("when I give a URL", "chrome-devtools-mcp")` — embedded as vectors, matched semantically at ~0.6 threshold
 
@@ -517,7 +517,11 @@ skill-hub-cli search_context "my query"           # search
 
 3. **Session history** (passive): Stop hook logs which tools were actually called per session, builds usage patterns over time
 
-Plugin suggestions combine all three: `total = embed_sim + teaching_boost + session_boost`
+4. **Context Bridge** (live capture): Every Claude tool call is captured in real-time from the JSONL transcript and stored in `tool_examples`. Local skills receive this as `{tool_examples}`, `{session_context}`, `{repo_context}`, `{tool_patterns}` — zero Claude token cost.
+
+5. **Skill Evolution** (shadow learning): At session end, the system compares local skill output with Claude's tool usage. If Claude's approach is better, local skills are automatically improved and versioned. Skills converge toward Claude quality across sessions.
+
+Plugin suggestions combine signals 1-3: `total = embed_sim + teaching_boost + session_boost`
 
 ### Task Compaction
 
@@ -928,8 +932,9 @@ Planning uses the level_3 model (14b, fast) while execution uses level_4 (32b, t
 /hub-hook-enable               # re-enable hook pipeline
 ```
 
-**Local skills** are JSON files in `~/.claude/local-skills/`:
+**Local skills** are JSON files in `~/.claude/local-skills/`. Three skill types:
 
+**Step-based skill** (linear or branching):
 ```json
 {
   "name": "git-summary",
@@ -944,7 +949,61 @@ Planning uses the level_3 model (14b, fast) while execution uses level_4 (32b, t
 }
 ```
 
-See `examples/local-skills/` for more examples. It's recommended to optimize local skills with local models — keep triggers concise and steps focused on shell commands that produce structured output.
+**Agent-type skill** (delegates to L4 agent loop):
+```json
+{
+  "name": "fix-test",
+  "type": "agent",
+  "description": "Analyze test failure and suggest fix",
+  "triggers": ["fix test", "failing test"],
+  "prompt": "A test is failing. Run tests, read the failure, suggest a minimal fix.",
+  "max_turns": 6
+}
+```
+
+**Shadow skill** (auto-evolves from Claude's behavior):
+```json
+{
+  "name": "git-commit",
+  "shadow": true,
+  "description": "Smart git commit with LLM-generated message",
+  "triggers": ["commit", "git commit"],
+  "steps": [
+    {"run": "git diff --staged", "as": "staged_diff"},
+    {"llm": "Generate a commit message.\n\nSession context:\n{session_context}\n\nClaude's recent commits:\n{tool_examples}\n\nDiff:\n{staged_diff}",
+     "as": "commit_msg", "first_line": true, "fallback": "chore: update"},
+    {"run": "git commit -m '{commit_msg}'", "as": "result"}
+  ]
+}
+```
+
+**Step types reference:**
+
+| Step | Description |
+|------|-------------|
+| `{"run": "cmd", "as": "var"}` | Shell command |
+| `{"run": "cmd", "as": "var", "if_empty": "fallback_cmd"}` | Run fallback if output is empty |
+| `{"run": "cmd", "as": "var", "on_fail": "recovery", "retry": true}` | Recovery + retry on non-zero exit |
+| `{"llm": "prompt…", "as": "var", "first_line": true}` | Local LLM generation |
+| `{"stop_if_empty": "var", "message": "Nothing to do."}` | Guard: halt if var is empty |
+| `{"label": "name"}` | Jump target |
+| `{"goto": "label"}` | Unconditional jump |
+| `{"stop": true, "message": "…"}` | Explicit halt |
+| `{"if_contains": "var", "value": "str", "goto": "lbl", "else": "lbl2"}` | Branch on substring |
+| `{"if_match": "var", "pattern": "regex", "goto": "lbl", "else": "lbl2"}` | Branch on regex |
+| `{"if_empty": "var", "goto": "lbl", "else": "lbl2"}` | Branch when empty |
+| `{"if_rc": "var", "eq": 0, "goto": "lbl", "else": "lbl2"}` | Branch on exit code |
+
+**Built-in variables** injected into every skill automatically:
+
+| Variable | Source |
+|----------|--------|
+| `{session_context}` | Rolling session summary from `~/.claude/mcp-skill-hub/session-context.md` |
+| `{tool_examples}` | Recent Claude tool calls from `tool_examples` DB (8 most recent) |
+| `{repo_context}` | Current branch, dirty files, last 3 commits |
+| `{tool_patterns}` | Aggregated command patterns across sessions |
+
+See `~/.claude/local-skills/` for real examples and [section 25](#25-skill-chaining--conditional-flow-in-local-skills) for the full chaining reference.
 
 Configure:
 
@@ -1141,6 +1200,241 @@ ollama create skill-hub-triage -f Modelfile
 ```
 
 At ~200+ examples the fine-tuned model will recognize your project names, FAO/geoid/dynastore vocabulary, and preferred routing — making triage significantly more accurate than a generic base model.
+
+### 24. Context Bridge — Local Intelligence from Claude
+
+Every Claude response is captured and stored locally at zero token cost. The system tails the session transcript in real-time, extracts tool calls, and builds a growing personal intelligence database that local LLMs can query.
+
+**What gets captured:**
+
+| What | Where stored | Used for |
+|------|-------------|---------|
+| Claude's tool calls (Bash, Grep, Read, Edit…) | `tool_examples` DB table | Informs local skill prompts |
+| Working repo state (branch, dirty files, last commits) | `session-context.md` file | Git commit messages, planning |
+| Rolling session summary | `session-context.md` file | All local LLM calls |
+| Per-repo patterns (commit style, common commands) | `repo_context` DB table | Local persona enrichment |
+| Behavioral patterns (PR conventions, search strategy) | `teachings` table | Future local LLM calls |
+
+**Built-in variables** available in all local skills (`{var}` in any LLM prompt or shell command):
+
+```
+{session_context}   — what the user was working on (rolling summary + messages)
+{tool_examples}     — recent Claude tool calls from this session
+{repo_context}      — branch, dirty files, last 3 commits
+{tool_patterns}     — aggregated patterns across sessions (top commands by repo)
+```
+
+**Example — git-commit with context:**
+
+```json
+{
+  "name": "git-commit",
+  "steps": [
+    {"run": "git diff --staged", "as": "staged_diff"},
+    {"llm": "Generate a commit message.\n\nSession context:\n{session_context}\n\nClaude's recent tool calls:\n{tool_examples}\n\nDiff:\n{staged_diff}",
+     "as": "commit_msg", "first_line": true}
+  ]
+}
+```
+
+Without the context bridge, the local LLM sees only the diff. With it, it knows what you were working on, what Claude named similar commits, and what the project conventions are.
+
+**Data flow:**
+
+```
+Claude response arrives
+    ↓
+Stop hook fires → _capture_tool_calls()
+    ↓ (incremental, <25ms)
+tool_examples table ← stores Bash/Grep/Read/Edit calls
+    ↓
+session-context.md ← updated with summary + tool calls + repo state
+    ↓
+Next local skill run → variables injected automatically
+```
+
+**Session-end learning** (after conversation closes):
+- `_update_repo_context()` — LLM summarizes commit style, common commands, project type
+- `_extract_teaching_examples()` — identifies 0-3 reusable behavioral patterns → teachings table
+
+Configure:
+```
+/hub-configure context_bridge_enabled true
+/hub-configure context_bridge_max_capture_per_hook 20
+```
+
+---
+
+### 25. Skill Chaining — Conditional Flow in Local Skills
+
+Local skills support full conditional branching and jump logic — enabling multi-path workflows that react to actual command output.
+
+**New step types:**
+
+| Step | Description |
+|------|-------------|
+| `{"label": "name"}` | Jump target — marks a position in the flow |
+| `{"goto": "label"}` | Unconditional jump |
+| `{"stop": true, "message": "..."}` | Explicit halt with message |
+| `{"if_contains": "var", "value": "str", "goto": "label", "else": "other"}` | Branch on string match |
+| `{"if_match": "var", "pattern": "regex", "goto": "label", "else": "other"}` | Branch on regex match |
+| `{"if_empty": "var", "goto": "label", "else": "other"}` | Branch when variable is empty |
+| `{"if_rc": "var", "eq": 0, "goto": "label", "else": "other"}` | Branch on exit code (eq/ne) |
+
+**Example — smart git-push with stash/rebase:**
+
+```json
+{
+  "name": "git-push",
+  "steps": [
+    {"run": "git status --porcelain", "as": "dirty"},
+    {"if_empty": "dirty", "goto": "do_push"},
+
+    {"run": "git stash push -m 'auto-stash before push'", "as": "stash_result"},
+
+    {"label": "do_push"},
+    {"run": "git push origin {branch}", "as": "push_result", "timeout": 60},
+    {"if_rc": "push_result", "eq": 0, "goto": "check_stash"},
+
+    {"run": "git pull --rebase origin {branch}", "as": "rebase_result"},
+    {"if_rc": "rebase_result", "ne": 0, "goto": "rebase_failed"},
+    {"run": "git push origin {branch}", "as": "push_result"},
+    {"goto": "check_stash"},
+
+    {"label": "rebase_failed"},
+    {"stop": true, "message": "Rebase conflict — resolve manually.\n{rebase_result}"},
+
+    {"label": "check_stash"},
+    {"if_empty": "dirty", "goto": "done"},
+    {"run": "git stash pop", "as": "unstash_result"},
+
+    {"label": "done"}
+  ]
+}
+```
+
+**Loop protection:** the engine counts total iterations and halts at `10 × step_count` to prevent infinite loops.
+
+**Log output** shows every branching decision clearly:
+
+```
+SKILL [git-push] SHELL  $ git status --porcelain  →  rc=0 (42 chars)  (ok)
+SKILL [git-push] IF     dirty empty = no → next
+SKILL [git-push] SHELL  $ git stash push -m 'auto-stash before push'  →  rc=0  (ok)
+SKILL [git-push] LABEL  do_push
+SKILL [git-push] SHELL  $ git push origin main  →  rc=1 (80 chars)  (FAIL)
+SKILL [git-push] IF     push_result rc==0 (actual=1) = no → next
+SKILL [git-push] SHELL  $ git pull --rebase origin main  →  rc=0  (ok)
+SKILL [git-push] IF     rebase_result rc!=0 (actual=0) = no → next
+SKILL [git-push] SHELL  $ git push origin main  →  rc=0  (ok)
+SKILL [git-push] GOTO   → check_stash
+SKILL [git-push] IF     dirty empty = no → next
+SKILL [git-push] SHELL  $ git stash pop  →  rc=0  (ok)
+```
+
+---
+
+### 26. Agent-as-Skill
+
+Any local skill can delegate to the L4 agent loop instead of running linear steps. Add `"type": "agent"` and a `"prompt"` field:
+
+```json
+{
+  "name": "fix-test",
+  "type": "agent",
+  "description": "Analyze test failure, read source, suggest fix",
+  "triggers": ["fix test", "failing test", "debug test failure"],
+  "prompt": "A test is failing. Analyze the test output, find the failure, and suggest a minimal fix.\n1. Run the test suite\n2. Read the failing test file\n3. Read the source being tested\n4. Explain what's wrong",
+  "max_turns": 6
+}
+```
+
+The agent automatically receives `{session_context}` and `{repo_context}` as context. It uses the level_4 model and has access to shell, read, search, and list_files tools.
+
+Agent skills appear alongside step-based skills in `/hub-local-skills`. They're matched by semantic similarity to triggers like any other skill — the user never needs to know if execution is a linear script or an agent loop.
+
+---
+
+### 27. Skill Evolution — Shadow Learning from Claude
+
+Skill Hub can **automatically improve local skills** by observing what Claude does and evolving the skill's prompts and steps to converge toward Claude's quality — over time, locally, at zero cost.
+
+**How it works:**
+
+```
+Claude works (edits files, runs commands, commits…)
+    ↓ captured by Context Bridge
+tool_examples DB — per session, categorized by type
+    ↓
+Session ends → _evolve_skills() runs
+    ↓
+For each "shadow": true skill:
+  1. Match skill domain to Claude's tool_examples from this session
+  2. Ask local LLM: "How should this skill change to match Claude's approach?"
+  3. If change proposed:
+     a. Snapshot current skill JSON → skill_versions table (rollback safety)
+     b. Write improved skill JSON to ~/.claude/local-skills/
+    ↓
+Next run → skill uses improved prompts
+    ↓
+After N sessions → local skill quality converges toward Claude's
+```
+
+**Enabling evolution for a skill** — add `"shadow": true`:
+
+```json
+{
+  "name": "git-commit",
+  "shadow": true,
+  "description": "Smart git commit…",
+  "steps": [...]
+}
+```
+
+Or enable for all skills at once (more aggressive):
+```
+/hub-configure skill_evolution_auto true
+```
+
+**Version history** — every evolution is snapshotted before writing:
+
+```sql
+-- Check evolution history for git-commit
+SELECT version, change_reason, created_at FROM skill_versions
+WHERE skill_name = 'git-commit' ORDER BY version;
+
+-- Restore version 2
+SELECT skill_json FROM skill_versions WHERE skill_name = 'git-commit' AND version = 2;
+```
+
+**Log output** during evolution:
+
+```
+SKILL [git-commit] EVOLVE  v0→v1  →  updated git-commit.json  (ok)
+SKILL [git-push]   EVOLVE  no changes needed  (ok)
+EVOLVE  Shadow learning: 1 skill(s) evolved in session a3f9b2c1
+```
+
+**Configuration:**
+
+```
+/hub-configure skill_evolution_enabled true       # enable/disable
+/hub-configure skill_evolution_auto false         # auto-evolve all vs shadow:true only
+/hub-configure skill_evolution_max_per_session 3  # cap per session (prevents runaway)
+```
+
+**Control:**
+
+| Config | Default | Effect |
+|--------|---------|--------|
+| `skill_evolution_enabled` | `true` | Master switch |
+| `skill_evolution_auto` | `false` | Evolve all skills vs only `shadow:true` |
+| `skill_evolution_max_per_session` | `3` | Max skills evolved per session |
+| `skill_evolution_min_session_msgs` | `5` | Min messages before evolution runs |
+
+You remain in full control: evolution only runs at session end (not live), requires substantial sessions (`≥5 messages`), is capped at 3 skills per session, and every change is versioned and reversible.
+
+---
 
 ### Database
 

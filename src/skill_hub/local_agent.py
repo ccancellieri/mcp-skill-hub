@@ -392,9 +392,16 @@ def plan_agent(message: str, context: str = "") -> dict:
         f"  - {cmd}" for cmd in commands.values()
     ) or "  (none)"
 
+    # Inject session context from disk if no explicit context provided
+    if not context:
+        from .store import read_session_context
+        context = read_session_context()
+
     prompt = _PLAN_PROMPT.format(
         skills=skills_desc, commands=commands_desc, message=message,
     )
+    if context:
+        prompt = f"Session context:\n{context}\n\n{prompt}"
 
     try:
         from .cli import _build_local_persona
@@ -465,8 +472,14 @@ def run_agent(message: str, context: str = "", max_turns: int = 8) -> str:
         system = base_system
 
     messages = [{"role": "system", "content": system}]
+
+    # Inject session context from disk (zero Claude token cost)
+    if not context:
+        from .store import read_session_context
+        context = read_session_context()
     if context:
         messages.append({"role": "system", "content": f"Recent context:\n{context}"})
+
     messages.append({"role": "user", "content": message})
 
     timeout = int((_cfg.get("remote_llm") or {}).get("timeout", 120))

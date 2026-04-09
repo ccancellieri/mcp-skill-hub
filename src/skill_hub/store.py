@@ -18,6 +18,55 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
+SESSION_CONTEXT_FILE = Path.home() / ".claude" / "mcp-skill-hub" / "session-context.md"
+
+
+def _write_session_context_file(context_summary: str,
+                                recent_messages: list[str],
+                                tool_examples: list[dict] | None = None,
+                                repo_context: str = "") -> None:
+    """Write session context to a plain-text file for local LLM consumption.
+
+    This file is the bridge between Claude's conversation and local tools:
+    L3 skills and the L4 agent read it from disk at zero Claude token cost.
+
+    Sections ordered by priority — truncation drops lower sections first.
+    """
+    try:
+        SESSION_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["# Session Context", ""]
+        if context_summary:
+            lines += ["## Summary", context_summary, ""]
+        if recent_messages:
+            lines += ["## Recent Messages"]
+            for msg in recent_messages[-10:]:
+                lines.append(f"- {msg}")
+            lines.append("")
+        if tool_examples:
+            lines += ["## Recent Tool Calls"]
+            for ex in tool_examples[-10:]:
+                hint = ex.get("context_hint", "")
+                hint_str = f" ({hint[:60]})" if hint else ""
+                lines.append(
+                    f"- {ex['tool_name']}: {ex['tool_input'][:120]}{hint_str}")
+            lines.append("")
+        if repo_context:
+            lines += ["## Repo", repo_context, ""]
+        SESSION_CONTEXT_FILE.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def read_session_context() -> str:
+    """Read the session context file. Returns empty string if missing."""
+    try:
+        if SESSION_CONTEXT_FILE.exists():
+            text = SESSION_CONTEXT_FILE.read_text(encoding="utf-8").strip()
+            # Cap at 3000 chars — local LLMs handle this fine
+            return text[:3000] if len(text) > 3000 else text
+    except OSError:
+        pass
+    return ""
 
 
 @dataclass
@@ -238,6 +287,54 @@ class SkillStore:
 
             CREATE INDEX IF NOT EXISTS idx_message_patterns_count
                 ON message_patterns (count DESC);
+
+            -- Context Bridge: captured tool calls from Claude (or any AI)
+            CREATE TABLE IF NOT EXISTS tool_examples (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT NOT NULL,
+                tool_name       TEXT NOT NULL,       -- "Bash", "Read", "Grep", etc.
+                tool_input      TEXT NOT NULL,        -- JSON of input (truncated)
+                output_summary  TEXT,                 -- first 200 chars of result
+                context_hint    TEXT,                 -- what the user was working on
+                repo_path       TEXT,                 -- working directory / repo root
+                category        TEXT DEFAULT 'general',  -- git, github, search, file, shell
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tool_ex_tool
+                ON tool_examples (tool_name);
+            CREATE INDEX IF NOT EXISTS idx_tool_ex_session
+                ON tool_examples (session_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_ex_repo
+                ON tool_examples (repo_path);
+            CREATE INDEX IF NOT EXISTS idx_tool_ex_category
+                ON tool_examples (category);
+
+            -- Context Bridge: accumulated per-repo knowledge
+            CREATE TABLE IF NOT EXISTS repo_context (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_path       TEXT NOT NULL UNIQUE,
+                commit_style    TEXT,                 -- "conventional", "freeform", etc.
+                common_commands TEXT,                 -- JSON: most-used commands
+                project_summary TEXT,                 -- what this project is about
+                tool_stats      TEXT,                 -- JSON: tool usage aggregates
+                updated_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Skill Evolution: version history for shadow learning
+            CREATE TABLE IF NOT EXISTS skill_versions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name      TEXT NOT NULL,
+                version         INTEGER NOT NULL DEFAULT 1,
+                skill_json      TEXT NOT NULL,        -- full JSON snapshot before change
+                change_reason   TEXT,                 -- LLM explanation of what changed
+                claude_example  TEXT,                 -- what Claude did that triggered it
+                local_example   TEXT,                 -- what local LLM produced
+                session_id      TEXT,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_skill_ver_name
+                ON skill_versions (skill_name);
         """)
         self._conn.commit()
 
@@ -262,6 +359,12 @@ class SkillStore:
             self._conn.execute(
                 "ALTER TABLE session_context ADD COLUMN "
                 "recent_messages TEXT NOT NULL DEFAULT '[]'"
+            )
+            self._conn.commit()
+        if "transcript_offset" not in ctx_cols:
+            self._conn.execute(
+                "ALTER TABLE session_context ADD COLUMN "
+                "transcript_offset INTEGER NOT NULL DEFAULT 0"
             )
             self._conn.commit()
 
@@ -795,6 +898,7 @@ class SkillStore:
                 "context_summary": "",
                 "message_count": 0,
                 "recent_messages": [],
+                "transcript_offset": 0,
             }
         import json as _json
         return {
@@ -803,12 +907,18 @@ class SkillStore:
             "context_summary": row["context_summary"],
             "message_count": row["message_count"],
             "recent_messages": _json.loads(row["recent_messages"]),
+            "transcript_offset": row["transcript_offset"] if "transcript_offset" in row.keys() else 0,
         }
 
     def save_session_context(self, session_id: str, loaded_skills: list[str],
                              context_summary: str, message_count: int,
                              recent_messages: list[str] | None = None) -> None:
-        """Upsert the session context after dynamic evaluation."""
+        """Upsert the session context after dynamic evaluation.
+
+        Also writes a plain-text file at SESSION_CONTEXT_FILE so local
+        LLMs (L3 skills, L4 agent) can read conversation context from
+        disk at zero Claude token cost.
+        """
         import json as _json
         msgs_json = _json.dumps(recent_messages or [])
         self._conn.execute("""
@@ -825,6 +935,227 @@ class SkillStore:
         """, (session_id, _json.dumps(loaded_skills), context_summary,
               message_count, msgs_json))
         self._conn.commit()
+
+        # Write context file for local LLM consumption
+        # Enrich with recent tool examples from DB + repo state
+        tool_ex_data: list[dict] = []
+        repo_ctx = ""
+        try:
+            rows = self.get_recent_tool_examples(limit=8)
+            tool_ex_data = [dict(r) for r in rows]
+        except Exception:
+            pass
+        try:
+            import subprocess as _sp
+            _rc = _sp.run(
+                "git rev-parse --abbrev-ref HEAD 2>/dev/null && "
+                "git diff --shortstat 2>/dev/null && "
+                "git log --oneline -1 2>/dev/null",
+                shell=True, capture_output=True, text=True, timeout=5,
+            )
+            if _rc.returncode == 0 and _rc.stdout.strip():
+                repo_ctx = _rc.stdout.strip()
+        except Exception:
+            pass
+        _write_session_context_file(
+            context_summary=context_summary,
+            recent_messages=recent_messages or [],
+            tool_examples=tool_ex_data,
+            repo_context=repo_ctx,
+        )
+
+    # ------------------------------------------------------------------
+    # Context Bridge: tool examples + repo context
+
+    def save_tool_example(self, session_id: str, tool_name: str,
+                          tool_input: str, output_summary: str = "",
+                          context_hint: str = "", repo_path: str = "",
+                          category: str = "general") -> None:
+        """Save a captured tool call example from Claude's transcript."""
+        self._conn.execute("""
+            INSERT INTO tool_examples
+                (session_id, tool_name, tool_input, output_summary,
+                 context_hint, repo_path, category)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (session_id, tool_name, tool_input[:500],
+              output_summary[:200], context_hint[:300],
+              repo_path, category))
+        self._conn.commit()
+
+    def save_tool_examples_batch(self, examples: list[dict]) -> None:
+        """Batch-insert tool examples in a single transaction."""
+        self._conn.executemany("""
+            INSERT INTO tool_examples
+                (session_id, tool_name, tool_input, output_summary,
+                 context_hint, repo_path, category)
+            VALUES (:session_id, :tool_name, :tool_input, :output_summary,
+                    :context_hint, :repo_path, :category)
+        """, examples)
+        self._conn.commit()
+
+    def get_recent_tool_examples(self, tool_name: str = "",
+                                 repo_path: str = "",
+                                 category: str = "",
+                                 limit: int = 10) -> list[sqlite3.Row]:
+        """Get recent tool examples, optionally filtered."""
+        clauses: list[str] = []
+        params: list = []
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        if repo_path:
+            clauses.append("repo_path = ?")
+            params.append(repo_path)
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        return self._conn.execute(f"""
+            SELECT tool_name, tool_input, output_summary, context_hint,
+                   repo_path, category, created_at
+            FROM tool_examples
+            {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, params).fetchall()
+
+    def get_tool_patterns(self, limit: int = 20) -> list[dict]:
+        """Aggregate tool usage patterns across sessions."""
+        rows = self._conn.execute("""
+            SELECT tool_name, repo_path, category, COUNT(*) as count,
+                   GROUP_CONCAT(SUBSTR(tool_input, 1, 80), ' | ') as sample_inputs
+            FROM (
+                SELECT DISTINCT tool_name, repo_path, category, tool_input
+                FROM tool_examples
+            )
+            GROUP BY tool_name, repo_path
+            ORDER BY count DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_transcript_offset(self, session_id: str, offset: int) -> None:
+        """Update the transcript processing offset for incremental parsing."""
+        self._conn.execute("""
+            UPDATE session_context SET transcript_offset = ?
+            WHERE session_id = ?
+        """, (offset, session_id))
+        self._conn.commit()
+
+    def prune_tool_examples(self, max_age_days: int = 30,
+                            max_rows: int = 5000) -> int:
+        """Prune old tool examples. Returns rows deleted."""
+        cur = self._conn.execute("""
+            DELETE FROM tool_examples
+            WHERE created_at < datetime('now', '-' || ? || ' days')
+        """, (max_age_days,))
+        pruned = cur.rowcount
+        # Also cap total rows
+        cur2 = self._conn.execute("""
+            DELETE FROM tool_examples
+            WHERE id NOT IN (
+                SELECT id FROM tool_examples
+                ORDER BY created_at DESC LIMIT ?
+            )
+        """, (max_rows,))
+        pruned += cur2.rowcount
+        if pruned:
+            self._conn.commit()
+        return pruned
+
+    def upsert_repo_context(self, repo_path: str, commit_style: str = "",
+                            common_commands: str = "",
+                            project_summary: str = "",
+                            tool_stats: str = "") -> None:
+        """Upsert accumulated per-repo knowledge."""
+        self._conn.execute("""
+            INSERT INTO repo_context
+                (repo_path, commit_style, common_commands, project_summary,
+                 tool_stats, updated_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(repo_path) DO UPDATE SET
+                commit_style = CASE WHEN excluded.commit_style != ''
+                    THEN excluded.commit_style ELSE repo_context.commit_style END,
+                common_commands = CASE WHEN excluded.common_commands != ''
+                    THEN excluded.common_commands ELSE repo_context.common_commands END,
+                project_summary = CASE WHEN excluded.project_summary != ''
+                    THEN excluded.project_summary ELSE repo_context.project_summary END,
+                tool_stats = CASE WHEN excluded.tool_stats != ''
+                    THEN excluded.tool_stats ELSE repo_context.tool_stats END,
+                updated_at = excluded.updated_at
+        """, (repo_path, commit_style, common_commands,
+              project_summary, tool_stats))
+        self._conn.commit()
+
+    def get_repo_context(self, repo_path: str) -> dict | None:
+        """Get accumulated context for a repo."""
+        row = self._conn.execute(
+            "SELECT * FROM repo_context WHERE repo_path = ?",
+            (repo_path,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Skill Evolution — shadow learning version tracking
+
+    def save_skill_version(self, skill_name: str, skill_json: str,
+                           change_reason: str = "", claude_example: str = "",
+                           local_example: str = "", session_id: str = "") -> int:
+        """Save a skill snapshot before evolution. Returns the new version number."""
+        # Get current max version for this skill
+        row = self._conn.execute(
+            "SELECT MAX(version) FROM skill_versions WHERE skill_name = ?",
+            (skill_name,),
+        ).fetchone()
+        version = (row[0] or 0) + 1
+        cur = self._conn.execute("""
+            INSERT INTO skill_versions
+                (skill_name, version, skill_json, change_reason,
+                 claude_example, local_example, session_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (skill_name, version, skill_json, change_reason,
+              claude_example, local_example, session_id))
+        self._conn.commit()
+        return version
+
+    def get_skill_versions(self, skill_name: str, limit: int = 10) -> list[dict]:
+        """Get version history for a skill, newest first."""
+        rows = self._conn.execute("""
+            SELECT * FROM skill_versions
+            WHERE skill_name = ?
+            ORDER BY version DESC LIMIT ?
+        """, (skill_name, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_skill_version(self, skill_name: str, version: int) -> dict | None:
+        """Get a specific version of a skill."""
+        row = self._conn.execute("""
+            SELECT * FROM skill_versions
+            WHERE skill_name = ? AND version = ?
+        """, (skill_name, version)).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_skill_version(self, skill_name: str) -> int:
+        """Get the latest version number for a skill (0 if never versioned)."""
+        row = self._conn.execute(
+            "SELECT MAX(version) FROM skill_versions WHERE skill_name = ?",
+            (skill_name,),
+        ).fetchone()
+        return row[0] or 0
+
+    def get_evolved_skills_summary(self, limit: int = 20) -> list[dict]:
+        """Get summary of all skill evolutions, grouped by skill."""
+        rows = self._conn.execute("""
+            SELECT skill_name, MAX(version) as latest_version,
+                   COUNT(*) as total_versions,
+                   MAX(created_at) as last_evolved
+            FROM skill_versions
+            GROUP BY skill_name
+            ORDER BY last_evolved DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Conversation state tracking

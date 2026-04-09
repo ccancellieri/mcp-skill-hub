@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from .activity_log import log_hook, log_llm, log_event
+from .activity_log import log_hook, log_llm, log_event, log_skill_step
 from .embeddings import (
     embed, compact, ollama_available, optimize_context, triage_message,
     dynamic_context_eval, eval_skill_lifecycle, optimize_prompt, smart_memory_write,
@@ -74,7 +74,7 @@ def _build_local_persona(session_id: str = "") -> str:
     from . import config as _cfg
 
     ttl = float(_cfg.get("local_persona_ttl_seconds") or 120)
-    max_chars = int(_cfg.get("local_persona_max_chars") or 600)
+    max_chars = int(_cfg.get("local_persona_max_chars") or 800)
     now = time.monotonic()
 
     # Cache check
@@ -103,6 +103,31 @@ def _build_local_persona(session_id: str = "") -> str:
             rules.append(f"when {rule} → {target}")
         if rules:
             parts.append("Rules: " + " | ".join(rules[:5]))
+
+        # 2b. Tool patterns — what tools the user's workflow favors
+        try:
+            patterns = store.get_tool_patterns(limit=3)
+            if patterns:
+                pat_strs = []
+                for p in patterns:
+                    repo_name = Path(p["repo_path"]).name if p.get("repo_path") else "?"
+                    pat_strs.append(
+                        f"{p['tool_name']}({repo_name}):{p['count']}x")
+                parts.append("Tool patterns: " + ", ".join(pat_strs))
+        except Exception:
+            pass
+
+        # 2c. Per-repo context (if in a known repo)
+        try:
+            cwd = _os.getcwd()
+            repo_ctx = store.get_repo_context(cwd)
+            if repo_ctx:
+                if repo_ctx.get("project_summary"):
+                    parts.append(f"Project: {repo_ctx['project_summary'][:100]}")
+                if repo_ctx.get("commit_style"):
+                    parts.append(f"Commit style: {repo_ctx['commit_style']}")
+        except Exception:
+            pass
 
         # 3. Recent closed tasks → project context
         closed = store.list_tasks(status="closed")
@@ -607,17 +632,54 @@ def _visible_result(message: str) -> dict:
     return {"decision": "block", "reason": message}
 
 
-def _execute_local_command(cmd: dict) -> str | None:
+def _resolve_repo_cwd(message: str) -> str | None:
+    """Extract a target repository path from the user message.
+
+    Looks for:
+    - @<dirname>/ or @<dirname> prefix references (e.g. "@mcp-skill-hub/")
+    - Explicit project names matching known subdirs under the work root
+
+    Returns the absolute path if it resolves to an existing git repo, else None.
+    """
+    import re
+    import os
+
+    # Pattern: @word/ or @word at start or anywhere
+    refs = re.findall(r'@([\w\-\.]+)(?:/|(?=\s|$))', message)
+    if not refs:
+        return None
+
+    # Candidate search roots: cwd's parent, and ~/work/code
+    cwd = os.getcwd()
+    search_roots = list(dict.fromkeys([
+        os.path.dirname(cwd),          # parent of current dir
+        os.path.expanduser("~/work/code"),
+        os.path.expanduser("~/work"),
+    ]))
+
+    for ref in refs:
+        for root in search_roots:
+            candidate = os.path.join(root, ref)
+            git_dir = os.path.join(candidate, ".git")
+            if os.path.isdir(candidate) and os.path.exists(git_dir):
+                log_hook("repo_cwd_resolved", ref=ref, path=candidate)
+                return candidate
+
+    return None
+
+
+def _execute_local_command(cmd: dict, cwd: str | None = None) -> str | None:
     """Execute a matched local command and return its output."""
     import subprocess
 
     shell_cmd = cmd["shell"]
-    log_hook("local_cmd_exec", level=cmd["level"], command=shell_cmd)
+    log_hook("local_cmd_exec", level=cmd["level"], command=shell_cmd,
+             cwd=cwd or "inherited")
 
     try:
         result = subprocess.run(
             shell_cmd, shell=True, capture_output=True, text=True,
-            timeout=30, cwd=None,  # inherits working directory
+            timeout=30, cwd=cwd,
         )
         output = result.stdout
         if result.returncode != 0 and result.stderr:
@@ -741,7 +803,7 @@ def _match_local_skill(message: str) -> dict | None:
     return None
 
 
-def _execute_local_skill(skill: dict) -> str | None:
+def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
     """Execute a local skill's steps and format the output.
 
     Step types:
@@ -767,8 +829,30 @@ def _execute_local_skill(skill: dict) -> str | None:
       {"stop_if_empty": "var_name", "message": "Nothing to do."}
         Stop execution if a variable is empty.
 
+      {"label": "name"}
+        Named jump target. No-op at execution.
+
+      {"goto": "label_name"}
+        Unconditional jump to a label.
+
+      {"stop": true, "message": "Done."}
+        Explicit halt with optional message.
+
+      {"if_contains": "var_name", "value": "string", "goto": "label"}
+        If var contains string, jump to label. Add "else": "other_label" for else branch.
+
+      {"if_match": "var_name", "pattern": "regex", "goto": "label"}
+        If var matches regex, jump to label. Add "else": "other_label" for else branch.
+
+      {"if_empty": "var_name", "goto": "label"}
+        If var is empty, jump to label. Add "else": "other_label" for else branch.
+
+      {"if_rc": "var_name", "eq": 0, "goto": "label"}
+        If last exit code for var equals value, jump to label. Supports "eq", "ne".
+
     Template variables: all step outputs are available as {var_name} in
     subsequent steps and in the output template.
+    Exit codes: stored as {var_name_rc} for each shell step.
     """
     import subprocess
     import re
@@ -779,11 +863,79 @@ def _execute_local_skill(skill: dict) -> str | None:
     name = skill.get("name", "unknown")
     steps = skill.get("steps", [])
     output_template = skill.get("output", "")
+    skill_type = skill.get("type", "steps")
 
-    log_hook("local_skill_exec", name=name, steps=len(steps))
+    log_hook("local_skill_exec", name=name, skill_type=skill_type, steps=len(steps))
 
+    # ── Agent-as-skill routing ──
+    # Skills with "type": "agent" delegate to the L4 agent loop instead of
+    # the linear step engine. The skill defines the goal and optional context.
+    if skill_type == "agent":
+        from .local_agent import run_agent
+        from .store import read_session_context
+        agent_prompt = skill.get("prompt", skill.get("description", name))
+        agent_context = skill.get("context", "")
+        agent_max_turns = skill.get("max_turns", 8)
+        # Inject session context if available
+        session_ctx = read_session_context()
+        if session_ctx:
+            agent_context = f"{agent_context}\n\n## Session Context\n{session_ctx}".strip()
+        log_skill_step(name, "AGENT", f"prompt={agent_prompt[:80]!r} max_turns={agent_max_turns}")
+        try:
+            result = run_agent(agent_prompt, context=agent_context,
+                               max_turns=agent_max_turns)
+            log_skill_step(name, "AGENT", "completed", result=f"{len(result)} chars")
+            return f"[{name} (agent)]\n\n{result}"
+        except Exception as exc:
+            log_skill_step(name, "AGENT", "failed", result=str(exc)[:120], ok=False)
+            return f"[{name}] Agent error: {exc}"
+
+    # Pre-populate built-in variables available to all skills
     results: dict[str, str] = {}
     step_outputs: list[str] = []
+
+    # Inject session context from disk (zero Claude token cost)
+    from .store import read_session_context, SkillStore as _SkillStore
+    results["session_context"] = read_session_context()
+
+    # {tool_examples} — recent Claude tool calls from DB
+    try:
+        _s = _SkillStore()
+        _examples = _s.get_recent_tool_examples(limit=8)
+        if _examples:
+            _lines = []
+            for _e in _examples:
+                _hint = f" ({_e['context_hint'][:60]})" if _e['context_hint'] else ""
+                _lines.append(f"- {_e['tool_name']}: {_e['tool_input'][:120]}{_hint}")
+            results["tool_examples"] = "\n".join(_lines)
+        else:
+            results["tool_examples"] = ""
+        # {tool_patterns} — aggregated patterns across sessions
+        _pats = _s.get_tool_patterns(limit=5)
+        if _pats:
+            _plines = []
+            for _p in _pats:
+                _repo = Path(_p["repo_path"]).name if _p.get("repo_path") else "?"
+                _plines.append(f"- {_p['tool_name']}({_repo}): {_p['count']}x")
+            results["tool_patterns"] = "\n".join(_plines)
+        else:
+            results["tool_patterns"] = ""
+        _s.close()
+    except Exception:
+        results["tool_examples"] = ""
+        results["tool_patterns"] = ""
+
+    # {repo_context} — current repo state (branch, dirty files, recent commits)
+    try:
+        _rc = subprocess.run(
+            "git rev-parse --abbrev-ref HEAD 2>/dev/null && "
+            "git diff --shortstat 2>/dev/null && "
+            "git log --oneline -3 2>/dev/null",
+            shell=True, capture_output=True, text=True, timeout=5,
+        )
+        results["repo_context"] = _rc.stdout.strip() if _rc.returncode == 0 else ""
+    except Exception:
+        results["repo_context"] = ""
 
     def _interpolate(template: str) -> str:
         """Replace {var_name} placeholders with step results."""
@@ -792,12 +944,15 @@ def _execute_local_skill(skill: dict) -> str | None:
         except (KeyError, IndexError):
             return template
 
+    if cwd:
+        log_hook("local_skill_cwd", name=name, cwd=cwd)
+
     def _run_shell(cmd: str, timeout: int = 30) -> tuple[int, str]:
         """Run a shell command, return (exit_code, output)."""
         cmd = _interpolate(cmd)
         try:
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                               timeout=timeout)
+                               timeout=timeout, cwd=cwd)
             out = r.stdout.strip()
             if r.returncode != 0 and r.stderr:
                 out += f"\n(exit {r.returncode}: {r.stderr.strip()[:200]})"
@@ -809,18 +964,136 @@ def _execute_local_skill(skill: dict) -> str | None:
         except Exception as exc:
             return 1, f"(error: {exc})"
 
-    for step in steps:
-        label = step.get("as", f"step_{len(step_outputs)}")
+    # Build label → index map for jump targets
+    _label_map: dict[str, int] = {}
+    for _i, _s in enumerate(steps):
+        if "label" in _s:
+            _label_map[_s["label"]] = _i
 
-        # Stop-if-empty guard
+    # Track exit codes per variable for if_rc conditions
+    _exit_codes: dict[str, int] = {}
+
+    # Index-based loop with jump support (max iterations = 10× step count to prevent infinite loops)
+    _max_iters = max(len(steps) * 10, 100)
+    _iter_count = 0
+    _step_idx = 0
+
+    while _step_idx < len(steps):
+        _iter_count += 1
+        if _iter_count > _max_iters:
+            log_skill_step(name, "HALT", f"loop limit {_max_iters} reached after {_iter_count} iterations", ok=False)
+            step_outputs.append(f"(halted: loop limit {_max_iters} reached)")
+            break
+
+        step = steps[_step_idx]
+        var_name = step.get("as", f"step_{len(step_outputs)}")
+
+        # ── Label (jump target, no-op) ──
+        if "label" in step and "run" not in step and "llm" not in step:
+            log_skill_step(name, "LABEL", step["label"])
+            _step_idx += 1
+            continue
+
+        # ── Goto (unconditional jump) ──
+        if "goto" in step and "if_contains" not in step and "if_match" not in step and "if_empty" not in step and "if_rc" not in step:
+            target = step["goto"]
+            if target in _label_map:
+                log_skill_step(name, "GOTO", f"→ {target}")
+                _step_idx = _label_map[target]
+            else:
+                log_skill_step(name, "GOTO", f"→ {target} (NOT FOUND)", ok=False)
+                step_outputs.append(f"(goto: label '{target}' not found)")
+                _step_idx += 1
+            continue
+
+        # ── Stop (explicit halt) ──
+        if step.get("stop"):
+            msg = _interpolate(step.get("message", "Stopped."))
+            log_skill_step(name, "STOP", msg[:120])
+            step_outputs.append(f"(stop: {msg})")
+            break
+
+        # ── Stop-if-empty guard ──
         if "stop_if_empty" in step:
             check_var = step["stop_if_empty"]
             if not results.get(check_var, "").strip():
                 msg = _interpolate(step.get("message", "Stopped: no data."))
+                log_skill_step(name, "GUARD", f"{check_var} is empty", result=msg[:80])
                 return f"[{name}] {msg}"
+            log_skill_step(name, "GUARD", f"{check_var} has data → continue")
+            _step_idx += 1
             continue
 
-        # LLM step
+        # ── Conditional: if_contains ──
+        if "if_contains" in step:
+            check_var = step["if_contains"]
+            value = _interpolate(step.get("value", ""))
+            var_val = results.get(check_var, "")
+            matched = value.lower() in var_val.lower()
+            target = step.get("goto", "") if matched else step.get("else", "")
+            action = f"→ {target}" if target else "→ next"
+            log_skill_step(name, "IF", f"{check_var} contains {value[:40]!r} = {'yes' if matched else 'no'} {action}")
+            if target and target in _label_map:
+                _step_idx = _label_map[target]
+            else:
+                _step_idx += 1
+            continue
+
+        # ── Conditional: if_match (regex) ──
+        if "if_match" in step:
+            check_var = step["if_match"]
+            pattern = step.get("pattern", "")
+            var_val = results.get(check_var, "")
+            try:
+                matched = bool(re.search(pattern, var_val))
+            except re.error:
+                matched = False
+                log_skill_step(name, "IF", f"regex error: {pattern[:40]!r}", ok=False)
+            target = step.get("goto", "") if matched else step.get("else", "")
+            action = f"→ {target}" if target else "→ next"
+            log_skill_step(name, "IF", f"{check_var} matches /{pattern[:40]}/ = {'yes' if matched else 'no'} {action}")
+            if target and target in _label_map:
+                _step_idx = _label_map[target]
+            else:
+                _step_idx += 1
+            continue
+
+        # ── Conditional: if_empty ──
+        if "if_empty" in step and "run" not in step:
+            check_var = step["if_empty"]
+            var_val = results.get(check_var, "")
+            matched = not var_val.strip()
+            target = step.get("goto", "") if matched else step.get("else", "")
+            action = f"→ {target}" if target else "→ next"
+            log_skill_step(name, "IF", f"{check_var} empty = {'yes' if matched else 'no'} {action}")
+            if target and target in _label_map:
+                _step_idx = _label_map[target]
+            else:
+                _step_idx += 1
+            continue
+
+        # ── Conditional: if_rc (exit code check) ──
+        if "if_rc" in step:
+            check_var = step["if_rc"]
+            actual_rc = _exit_codes.get(check_var, -1)
+            matched = False
+            op_str = ""
+            if "eq" in step:
+                matched = actual_rc == int(step["eq"])
+                op_str = f"rc=={step['eq']}"
+            elif "ne" in step:
+                matched = actual_rc != int(step["ne"])
+                op_str = f"rc!={step['ne']}"
+            target = step.get("goto", "") if matched else step.get("else", "")
+            action = f"→ {target}" if target else "→ next"
+            log_skill_step(name, "IF", f"{check_var} {op_str} (actual={actual_rc}) = {'yes' if matched else 'no'} {action}")
+            if target and target in _label_map:
+                _step_idx = _label_map[target]
+            else:
+                _step_idx += 1
+            continue
+
+        # ── LLM step ──
         if "llm" in step:
             prompt = _interpolate(step["llm"])
             llm_model = step.get("model") or (
@@ -845,37 +1118,56 @@ def _execute_local_skill(skill: dict) -> str | None:
                 # Take first line if step requests it
                 if step.get("first_line"):
                     raw = raw.split("\n")[0].strip()
-                results[label] = raw
-                log_hook("local_skill_llm", name=name, var=label, chars=len(raw))
+                results[var_name] = raw
+                log_skill_step(name, "LLM", f"model={llm_model} prompt={len(prompt)}ch",
+                               result=f"{var_name}={raw[:80]!r}")
             except Exception as exc:
-                results[label] = step.get("fallback", "")
-                log_hook("local_skill_llm_error", name=name, error=str(exc)[:80])
+                results[var_name] = step.get("fallback", "")
+                log_skill_step(name, "LLM", f"model={llm_model} prompt={len(prompt)}ch",
+                               result=f"ERROR: {exc!s:.80}", ok=False)
+            _step_idx += 1
             continue
 
-        # Shell step
+        # ── Shell step ──
         cmd = step.get("run", "")
         if not cmd:
+            _step_idx += 1
             continue
 
+        _resolved_cmd = _interpolate(cmd)
         rc, out = _run_shell(cmd, timeout=int(step.get("timeout", 30)))
+        _exit_codes[var_name] = rc
+        log_skill_step(name, "SHELL", f"$ {_resolved_cmd[:120]}",
+                       result=f"rc={rc} ({len(out)} chars)", ok=rc == 0)
 
         # if_empty: run fallback command when output is empty
         if not out.strip() and step.get("if_empty"):
+            _fallback_cmd = _interpolate(step["if_empty"])
             rc, out = _run_shell(step["if_empty"])
+            _exit_codes[var_name] = rc
+            log_skill_step(name, "SHELL", f"(fallback) $ {_fallback_cmd[:120]}",
+                           result=f"rc={rc} ({len(out)} chars)", ok=rc == 0)
 
         # on_fail: run recovery command on non-zero exit
         if rc != 0 and step.get("on_fail"):
+            _recovery_cmd = _interpolate(step["on_fail"])
             _, recovery_out = _run_shell(step["on_fail"])
-            step_outputs.append(f"$ {_interpolate(cmd)}\n(failed, recovering...)")
-            step_outputs.append(f"$ {_interpolate(step['on_fail'])}\n{recovery_out}")
+            step_outputs.append(f"$ {_resolved_cmd}\n(failed, recovering...)")
+            step_outputs.append(f"$ {_recovery_cmd}\n{recovery_out}")
+            log_skill_step(name, "SHELL", f"(recover) $ {_recovery_cmd[:120]}",
+                           result=f"{len(recovery_out)} chars")
             # retry: re-run original command after recovery
             if step.get("retry"):
                 rc, out = _run_shell(cmd)
+                _exit_codes[var_name] = rc
+                log_skill_step(name, "SHELL", f"(retry) $ {_resolved_cmd[:120]}",
+                               result=f"rc={rc}", ok=rc == 0)
             else:
                 out = recovery_out
 
-        results[label] = out
+        results[var_name] = out
         step_outputs.append(f"$ {_interpolate(cmd)}\n{out}")
+        _step_idx += 1
 
     # Format output
     if output_template:
@@ -2616,10 +2908,39 @@ def _cmd_session_end(session_id: str, last_message: str,
     Claude to write the memory instead.
     """
     from pathlib import Path
+    from . import config as _cfg_mod
 
     log_event("STOP", f"session_end session={session_id[:12]}")
     result: dict = {"decision": "allow"}
     parts: list[str] = []
+
+    # 0. Context Bridge: live tool call capture — fast, no LLM, every Stop hook
+    # Runs BEFORE anything else so even short sessions accumulate tool knowledge
+    if (transcript_path and session_id
+            and _cfg_mod.get("context_bridge_enabled") is not False):
+        try:
+            _store = SkillStore()
+            _ctx = _store.get_session_context(session_id)
+            _offset = _ctx.get("transcript_offset", 0)
+            _fsize = Path(transcript_path).stat().st_size
+            if _fsize > _offset:
+                max_cap = int(
+                    _cfg_mod.get("context_bridge_max_capture_per_hook") or 20)
+                _tools, _new_offset = _capture_tool_calls(
+                    transcript_path, session_id, _offset, max_cap)
+                if _tools:
+                    # Enrich with session context hint
+                    _hint = _ctx.get("context_summary", "")[:300]
+                    for t in _tools:
+                        t["context_hint"] = _hint
+                    _store.save_tool_examples_batch(_tools)
+                    log_event("CAPTURE",
+                              f"{len(_tools)} tool calls captured "
+                              f"(offset {_offset}→{_new_offset})")
+                _store.update_transcript_offset(session_id, _new_offset)
+            _store.close()
+        except Exception as exc:
+            log_event("CAPTURE", f"error: {exc}")
 
     # 1. Gather session context
     context_pieces: list[str] = []
@@ -2659,7 +2980,6 @@ def _cmd_session_end(session_id: str, last_message: str,
 
     # 2. Smart memory write via local LLM
     import os as _os
-    from . import config as _cfg_mod
     _mem_cfg = _cfg_mod.get("hook_memory_dir")
     if _mem_cfg:
         memory_dir = Path(str(_mem_cfg)).expanduser()
@@ -2823,7 +3143,48 @@ type: {mem_type}
         except Exception as exc:
             log_event("DISTILL", f"error: {exc}")
 
-    # 7. Log session stats
+    # 7. Context Bridge: per-repo knowledge accumulation
+    if (session_id
+            and _cfg_mod.get("context_bridge_enabled") is not False
+            and _cfg_mod.get("context_bridge_repo_context") is not False):
+        try:
+            _update_repo_context(session_id)
+        except Exception as exc:
+            log_event("REPO_CTX", f"error: {exc}")
+
+    # 8. Context Bridge: extract teaching examples from tool usage patterns
+    if (session_id
+            and _cfg_mod.get("context_bridge_enabled") is not False
+            and _cfg_mod.get("context_bridge_teaching_extraction") is not False):
+        try:
+            _extract_teaching_examples(session_id)
+        except Exception as exc:
+            log_event("TEACH_EX", f"error: {exc}")
+
+    # 9. Skill Evolution: shadow learning — evolve local skills from Claude's behavior
+    if (session_id
+            and _cfg_mod.get("skill_evolution_enabled") is not False
+            and msg_count >= 5):  # only evolve after substantial sessions
+        try:
+            _evolve_skills(session_id)
+        except Exception as exc:
+            log_event("EVOLVE", f"error: {exc}")
+
+    # 10. Context Bridge: prune old tool examples periodically
+    if (msg_count > 0 and msg_count % 50 == 0
+            and _cfg_mod.get("context_bridge_enabled") is not False):
+        try:
+            store = SkillStore()
+            max_days = int(_cfg_mod.get("context_bridge_prune_days") or 30)
+            max_rows = int(_cfg_mod.get("context_bridge_prune_max_rows") or 5000)
+            pruned = store.prune_tool_examples(max_days, max_rows)
+            store.close()
+            if pruned:
+                log_event("PRUNE", f"removed {pruned} old tool examples")
+        except Exception:
+            pass
+
+    # 10. Log session stats
     try:
         store = SkillStore()
         totals = store.get_interception_totals()
@@ -2846,149 +3207,39 @@ type: {mem_type}
 
 
 def _split_multi_command(message: str) -> list[str] | None:
-    """Detect and split multi-command messages.
+    """Detect and split multi-command messages using semantic LLM analysis.
 
-    Uses a fast heuristic splitter for common patterns (0ms, no LLM).
-    Falls back to LLM for ambiguous cases.
+    Uses a local LLM to understand whether a message contains multiple
+    distinct actions vs. a single natural-language request with conjunctions.
 
     Returns a list of sub-commands if multiple found, or None if single/none.
     """
+    from .embeddings import ollama_available
+
     # Only attempt split for short-to-medium messages
     if len(message) > 500 or len(message) < 5:
         return None
 
-    # ── Fast heuristic split (no LLM) ──
-    result = _heuristic_split(message)
-    if result and len(result) > 1:
-        log_hook("multi_cmd_detected", count=len(result), method="heuristic")
-        return result
-
-    # ── LLM fallback for ambiguous cases ──
-    # Only if message has separators suggesting multiple actions
+    # Must contain a separator to even consider splitting
     msg_lower = message.lower()
     if not any(sep in msg_lower for sep in (" and ", ", ", " then ", " + ", " & ")):
         return None
 
-    return _llm_split(message)
-
-
-# Known action keywords → canonical form
-_ACTION_KEYWORDS = {
-    # Git actions
-    "commit": "git commit",
-    "push": "git push",
-    "pull": "git pull",
-    "merge": "git merge",
-    "rebase": "git rebase",
-    "stash": "git stash",
-    "checkout": "git checkout",
-    "fetch": "git fetch",
-    # Task management
-    "save": "save to memory",
-    "close": "close the task",
-    "park": "save to memory",
-    "remember": "save to memory",
-    "list tasks": "list tasks",
-    "show tasks": "list tasks",
-    # Documentation
-    "document": "save documentation to memory",
-}
-
-# Multi-word phrases that should NOT be split
-_COMPOUND_PHRASES = [
-    "save to memory",
-    "close task",
-    "close the task",
-    "list tasks",
-    "show tasks",
-    "mark as done",
-    "mark done",
-    "save and close",
-    "git commit",
-    "git push",
-    "git pull",
-]
-
-
-def _heuristic_split(message: str) -> list[str] | None:
-    """Fast regex/keyword split for common multi-command patterns.
-
-    "commit push document save to memory and close task"
-    → ["git commit", "git push", "save documentation to memory",
-       "save to memory", "close the task"]
-    """
-    import re
-
-    msg = message.strip().lower()
-
-    # Normalize separators: "and", ",", "then", "&", "+"  →  " | "
-    normalized = msg
-    for sep in [" and then ", " and ", " then ", ", ", " & ", " + "]:
-        normalized = normalized.replace(sep, " | ")
-
-    # Split on |
-    raw_parts = [p.strip() for p in normalized.split("|") if p.strip()]
-
-    # Within each part, try to further split on spaces if multiple action
-    # keywords are adjacent (e.g., "commit push document" → 3 actions)
-    commands: list[str] = []
-    for part in raw_parts:
-        # Check if this part is a compound phrase first
-        is_compound = any(part == cp or part.startswith(cp + " ")
-                         for cp in _COMPOUND_PHRASES)
-        if is_compound or part in _ACTION_KEYWORDS:
-            commands.append(_ACTION_KEYWORDS.get(part, part))
-            continue
-
-        # Try splitting space-separated action keywords
-        words = part.split()
-        i = 0
-        found_actions = []
-        while i < len(words):
-            # Try matching multi-word phrases first (longest match)
-            matched = False
-            for phrase_len in range(min(4, len(words) - i), 0, -1):
-                candidate = " ".join(words[i:i + phrase_len])
-                if candidate in _ACTION_KEYWORDS:
-                    found_actions.append(_ACTION_KEYWORDS[candidate])
-                    i += phrase_len
-                    matched = True
-                    break
-                if candidate in _COMPOUND_PHRASES:
-                    found_actions.append(candidate)
-                    i += phrase_len
-                    matched = True
-                    break
-            if not matched:
-                # Single word action keyword?
-                if words[i] in _ACTION_KEYWORDS:
-                    found_actions.append(_ACTION_KEYWORDS[words[i]])
-                    i += 1
-                else:
-                    # Unknown word — accumulate into current action
-                    if found_actions:
-                        found_actions[-1] += f" {words[i]}"
-                    else:
-                        found_actions.append(words[i])
-                    i += 1
-
-        commands.extend(found_actions)
-
-    # Only return if we found multiple distinct commands
-    if len(commands) > 1:
-        # Deduplicate adjacent identical commands
-        deduped = [commands[0]]
-        for cmd in commands[1:]:
-            if cmd != deduped[-1]:
-                deduped.append(cmd)
-        if len(deduped) > 1:
-            return deduped
+    # Use local LLM for semantic multi-command detection
+    result = _llm_split(message)
+    if result and len(result) > 1:
+        return result
 
     return None
 
 
 def _llm_split(message: str) -> list[str] | None:
-    """LLM-based split for ambiguous multi-command messages."""
+    """LLM-based semantic split for multi-command messages.
+
+    Uses a skill-style prompt that teaches the LLM to distinguish between:
+    - Multiple independent actions: "commit and push" → 2 commands
+    - Single request with natural conjunctions: "analyze X and provide Y" → 1 command
+    """
     import httpx
     import re
     from . import config as _cfg
@@ -3001,20 +3252,51 @@ def _llm_split(message: str) -> list[str] | None:
             return None
 
     prompt = f"""\
-Does this message contain MULTIPLE distinct commands/actions to execute in sequence?
+You are a command intent classifier for a coding assistant. Your ONLY job is \
+to decide whether a user message contains MULTIPLE INDEPENDENT actions that \
+should be executed separately, or a SINGLE coherent request.
 
-Message: {message}
+## Key distinction
 
-Rules:
-- Only split if there are 2+ DIFFERENT actions (different verbs/operations)
-- Each sub-command must be a COMPLETE, self-contained phrase — NOT a single word
-- Add context: "commit" → "git commit", "push" → "git push", "close" → "close the task"
-- Preserve execution order (e.g. commit before push before close)
-- "fix the pagination bug" = 1 action → {{"multiple": false}}
+**Multiple commands** = the user wants SEPARATE, INDEPENDENT operations \
+performed in sequence. Each could be sent as its own message. They share no \
+subject or goal — they are different tasks chained together for convenience.
 
-Reply with ONLY JSON:
-{{"multiple": true, "commands": ["command 1", "command 2", ...]}}
-or {{"multiple": false}}"""
+**Single request** = the user wants ONE thing, even if the sentence uses \
+"and", "then", commas, or multiple verbs. The conjunctions connect parts of \
+the SAME goal, not separate goals.
+
+## Examples — SINGLE request (do NOT split)
+
+- "analyze the code and provide feedback" → single (one analysis task)
+- "fix the pagination bug and add tests for it" → single (one fix + its tests)
+- "read the file, understand it, and refactor the logic" → single (one workflow)
+- "as geospatial expert analyse those files and provide a compatibility study" → single
+- "explain the architecture and suggest improvements" → single (one review)
+- "deploy to staging and verify it works" → single (deploy + validate = one workflow)
+
+## Examples — MULTIPLE commands (split these)
+
+- "commit and push" → {{"multiple": true, "commands": ["git commit", "git push"]}}
+- "save this to memory then close the task" → {{"multiple": true, "commands": ["save to memory", "close the task"]}}
+- "run tests, commit, and push" → {{"multiple": true, "commands": ["run tests", "git commit", "git push"]}}
+- "fix the typo then list my open tasks" → {{"multiple": true, "commands": ["fix the typo", "list open tasks"]}}
+
+## Rules
+
+1. When in doubt, classify as SINGLE — false splits break the user's intent
+2. If all parts serve the same goal or subject, it is SINGLE
+3. Only split when parts are truly INDEPENDENT operations (different goals)
+4. Each split command must be a COMPLETE, self-contained phrase
+5. Preserve execution order
+
+## Message to classify
+
+{message}
+
+Reply with ONLY JSON, no explanation:
+{{"multiple": false}}
+or {{"multiple": true, "commands": ["command 1", "command 2", ...]}}"""
 
     try:
         resp = httpx.post(
@@ -3030,10 +3312,15 @@ or {{"multiple": false}}"""
         if m:
             import json as _j
             result = _j.loads(m.group())
-            if result.get("multiple") and len(result.get("commands", [])) > 1:
-                log_hook("multi_cmd_detected", count=len(result["commands"]),
+            is_multiple = result.get("multiple", False)
+            commands = result.get("commands", [])
+            if is_multiple and len(commands) > 1:
+                log_hook("multi_cmd_detected", count=len(commands),
                          method="llm")
-                return result["commands"]
+                return commands
+            else:
+                log_hook("multi_cmd_single", method="llm",
+                         reason="llm_classified_as_single")
     except Exception as exc:
         log_hook("multi_cmd_split_error", error=str(exc)[:80])
 
@@ -3100,7 +3387,8 @@ Output:"""
     return fallback
 
 
-def _execute_single_command(sub_cmd: str, session_id: str, _cfg) -> str | None:
+def _execute_single_command(sub_cmd: str, session_id: str, _cfg,
+                            cwd: str | None = None) -> str | None:
     """Execute a single sub-command through the classify + execute pipeline.
 
     This is a lightweight version of the main pipeline that handles:
@@ -3115,7 +3403,7 @@ def _execute_single_command(sub_cmd: str, session_id: str, _cfg) -> str | None:
     if _cfg.get("local_execution_enabled"):
         local_skill = _match_local_skill(sub_cmd)
         if local_skill:
-            result = _execute_local_skill(local_skill)
+            result = _execute_local_skill(local_skill, cwd=cwd)
             if result:
                 return result
 
@@ -3137,7 +3425,7 @@ def _execute_single_command(sub_cmd: str, session_id: str, _cfg) -> str | None:
             if not local_cmd:
                 local_cmd = _match_local_template(sub_cmd)
             if local_cmd:
-                result = _execute_local_command(local_cmd)
+                result = _execute_local_command(local_cmd, cwd=cwd)
                 if result:
                     return result
 
@@ -3257,6 +3545,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     # ── Stage 1.5: Multi-command split ──
     # Messages like "commit push document and close task" contain multiple
     # actions. Split them and execute each sequentially through the pipeline.
+    # Resolve target repo cwd from message context once for all sub-commands.
+    _multi_cwd = _resolve_repo_cwd(message)
     sub_commands = _split_multi_command(message)
     if sub_commands and len(sub_commands) > 1:
         log_hook("multi_cmd_split", count=len(sub_commands),
@@ -3265,7 +3555,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         passthrough: list[str] = []
         for i, sub_cmd in enumerate(sub_commands, 1):
             log_hook("multi_cmd_exec", step=f"{i}/{len(sub_commands)}", command=sub_cmd[:80])
-            sub_result = _execute_single_command(sub_cmd, session_id, _cfg)
+            sub_result = _execute_single_command(sub_cmd, session_id, _cfg, cwd=_multi_cwd)
             if sub_result:
                 handled.append(f"[{i}] {sub_result}")
             else:
@@ -3304,6 +3594,13 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             else:
                 # All commands handled locally — block (0 tokens)
                 return _visible_result(combined)
+        elif passthrough:
+            # No sub-commands were handled locally — all need Claude.
+            # Pass through the ORIGINAL message so Claude sees it intact.
+            log_hook("multi_cmd_all_passthrough", count=len(passthrough))
+            # Fall through to normal pipeline stages (Stage 2+) with the
+            # original message — do NOT return here, let the rest of the
+            # pipeline process it as a single message.
 
     # ── Stage 2: Task command classification — semantic prefilter + LLM ──
     intent = _classify_intent(message)
@@ -3313,6 +3610,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     if action != "none":
         result = _execute_intent(intent, message)
         if result:
+            log_hook("pipeline_decision", decision="block", stage="task_classify",
+                     intent=action, preview=result[:80])
             if _cfg.get("token_profiling"):
                 try:
                     store = SkillStore()
@@ -3422,12 +3721,17 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     if _cfg.get("local_execution_enabled"):
         global _pending_command
 
+        # Resolve target repo cwd once from message context
+        _exec_cwd = _resolve_repo_cwd(message)
+
         # Check if user is confirming a pending command
         stripped = message.strip().lower()
         if _pending_command and stripped in ("y", "yes", "ok", "go", "run"):
             local_cmd = _pending_command
             _pending_command = None
             _approved_commands.add(local_cmd["name"])
+            # Restore cwd that was captured when the pending command was created
+            _exec_cwd = local_cmd.get("_cwd") or _exec_cwd
             # Level 4: agent execution (plan was approved)
             if "_agent_message" in local_cmd:
                 from .local_agent import run_agent
@@ -3450,9 +3754,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 return _visible_result(result)
             # Level 3 skills have a _skill key
             elif "_skill" in local_cmd:
-                result = _execute_local_skill(local_cmd["_skill"])
+                result = _execute_local_skill(local_cmd["_skill"], cwd=_exec_cwd)
             else:
-                result = _execute_local_command(local_cmd)
+                result = _execute_local_command(local_cmd, cwd=_exec_cwd)
             if result:
                 if _cfg.get("token_profiling"):
                     try:
@@ -3495,7 +3799,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             # L1/L2 commands are user-configured whitelists — execute directly.
             # (Confirmation flow requires persistent state which doesn't survive
             # across CLI invocations — each hook call is a new process.)
-            result = _execute_local_command(local_cmd)
+            result = _execute_local_command(local_cmd, cwd=_exec_cwd)
             if result:
                 if _cfg.get("token_profiling"):
                     try:
@@ -3522,7 +3826,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 f"  {i+1}. {s.get('run', '?')}" for i, s in enumerate(local_skill.get("steps", []))
             )
             if skill_name in _approved_commands:
-                result = _execute_local_skill(local_skill)
+                result = _execute_local_skill(local_skill, cwd=_exec_cwd)
                 if result:
                     if _cfg.get("token_profiling"):
                         try:
@@ -3540,11 +3844,14 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 _pending_command = {
                     "name": skill_name, "level": 3,
                     "_skill": local_skill,
+                    "_cwd": _exec_cwd,  # preserve cwd for when user confirms
                 }
+                cwd_note = f"\nTarget repo: `{_exec_cwd}`" if _exec_cwd else ""
                 return _visible_result(
                     f"[Skill Hub — local execution L3]\n\n"
                     f"Local skill matched: **{skill_name}**\n"
-                    f"{local_skill.get('description', '')}\n\n"
+                    f"{local_skill.get('description', '')}"
+                    f"{cwd_note}\n\n"
                     f"Steps:\n{steps_preview}\n\n"
                     f"Reply **y** to run, **n** to cancel."
                 )
@@ -3617,6 +3924,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             result["systemMessage"] = combined
         if optimized_prompt and optimized_prompt != message:
             result["userMessage"] = optimized_prompt
+        log_hook("pipeline_decision", decision="allow", stage="context_enriched",
+                 system_chars=len(combined),
+                 optimized="yes" if optimized_prompt else "no")
 
         # Log context injection stats
         if _cfg.get("token_profiling"):
@@ -3698,10 +4008,400 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         final_sys = f"{existing_sys}\n\n{combined_extra}".strip() if existing_sys else combined_extra
         if isinstance(result, dict):  # type: ignore[name-defined]
             result["systemMessage"] = final_sys  # type: ignore[name-defined]
+            log_hook("pipeline_decision", decision="allow", stage="extra_system",
+                     extras=len(extra_system))
             return result  # type: ignore[name-defined]
+        log_hook("pipeline_decision", decision="allow", stage="extra_system",
+                 extras=len(extra_system))
         return {"decision": "allow", "systemMessage": combined_extra}
 
+    log_hook("pipeline_decision", decision="allow", stage="passthrough",
+             reason="no_match")
     return {"decision": "allow"}
+
+
+def _update_repo_context(session_id: str) -> None:
+    """Update per-repo knowledge from this session's tool examples.
+
+    Uses a local LLM call to summarize patterns (commit style, common
+    commands, project summary) and upserts into repo_context table.
+    Runs only at session end — LLM latency is acceptable here.
+    """
+    import os
+    import httpx
+    import re
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+
+    if not ollama_available(RERANK_MODEL):
+        return
+
+    store = SkillStore()
+    examples = store.get_recent_tool_examples(limit=30)
+    store.close()
+
+    if not examples:
+        return
+
+    # Group examples by repo_path
+    repos: dict[str, list] = {}
+    for ex in examples:
+        rp = ex["repo_path"] or os.getcwd()
+        repos.setdefault(rp, []).append(ex)
+
+    for repo_path, repo_examples in repos.items():
+        if len(repo_examples) < 3:
+            continue  # not enough data to summarize
+
+        # Build tool usage summary for the LLM
+        tool_lines = []
+        for ex in repo_examples[:20]:
+            tool_lines.append(f"- {ex['tool_name']}: {ex['tool_input'][:100]}")
+        tool_text = "\n".join(tool_lines)
+
+        prompt = (
+            f"Analyze these tool calls from a coding session in {repo_path}.\n"
+            f"Extract:\n"
+            f"1. commit_style: how git commits are formatted (e.g. 'conventional commits with scope', 'freeform'). Empty if no commits.\n"
+            f"2. project_summary: one sentence about what this project does, based on the tool activity.\n"
+            f"3. common_commands: top 3 most-used command patterns as a JSON array.\n\n"
+            f"Tool calls:\n{tool_text}\n\n"
+            f"Output ONLY a JSON object with keys: commit_style, project_summary, common_commands.\n"
+            f"If you can't determine a field, use empty string."
+        )
+
+        try:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
+                      "options": {"temperature": 0.0, "num_predict": 200}},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("response", "")
+            raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if m:
+                data = json.loads(m.group())
+                # Build tool stats from examples
+                tool_counts: dict[str, int] = {}
+                for ex in repo_examples:
+                    tool_counts[ex["tool_name"]] = tool_counts.get(ex["tool_name"], 0) + 1
+
+                store = SkillStore()
+                store.upsert_repo_context(
+                    repo_path=repo_path,
+                    commit_style=data.get("commit_style", ""),
+                    common_commands=json.dumps(data.get("common_commands", [])),
+                    project_summary=data.get("project_summary", ""),
+                    tool_stats=json.dumps(tool_counts),
+                )
+                store.close()
+                log_event("REPO_CTX",
+                          f"updated {Path(repo_path).name}: "
+                          f"{data.get('commit_style', '?')}")
+        except Exception as exc:
+            log_event("REPO_CTX", f"LLM error for {repo_path}: {exc}")
+
+
+def _evolve_skills(session_id: str) -> None:
+    """Shadow learning: compare local skill output with Claude's behavior and evolve.
+
+    For each local skill that has "shadow": true (or all skills if
+    skill_evolution_auto is enabled), check if Claude performed a similar
+    operation this session. If so, ask the local LLM to improve the skill's
+    prompts/steps to converge toward Claude's quality.
+
+    Flow:
+    1. Load local skills that are marked for evolution
+    2. For each, find matching tool_examples from this session
+    3. Compare local output (from step_outputs) vs Claude's approach
+    4. Ask local LLM: "How should this skill evolve?"
+    5. If LLM proposes a change, snapshot old version, write new skill file
+    """
+    from . import config as _cfg_mod
+    from .store import SkillStore
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    import httpx
+    import re
+
+    if not _cfg_mod.get("skill_evolution_enabled"):
+        return
+
+    store = SkillStore()
+    try:
+        # Get this session's tool examples
+        examples = store.get_recent_tool_examples(limit=50)
+        if not examples:
+            return
+
+        # Build a summary of what Claude did this session, grouped by category
+        claude_actions: dict[str, list[str]] = {}
+        for ex in examples:
+            cat = ex.get("category", "general")
+            summary = ex.get("tool_input", "")[:200]
+            if ex.get("output_summary"):
+                summary += f" → {ex['output_summary'][:100]}"
+            claude_actions.setdefault(cat, []).append(
+                f"{ex['tool_name']}: {summary}"
+            )
+
+        if not claude_actions:
+            return
+
+        claude_summary = ""
+        for cat, actions in claude_actions.items():
+            claude_summary += f"\n## {cat}\n"
+            for a in actions[:8]:
+                claude_summary += f"- {a}\n"
+
+        # Load local skills
+        skills = _load_local_skills()
+        if not skills:
+            return
+
+        # Filter to evolvable skills
+        auto_evolve = _cfg_mod.get("skill_evolution_auto")
+        evolvable = [
+            s for s in skills
+            if s.get("shadow") or auto_evolve
+        ]
+        if not evolvable:
+            return
+
+        max_evolutions = int(_cfg_mod.get("skill_evolution_max_per_session") or 3)
+        evolved_count = 0
+
+        # Pick the LLM model for evolution analysis
+        llm_model = (_cfg_mod.get("local_models") or {}).get("level_3", RERANK_MODEL)
+        if not ollama_available(llm_model):
+            llm_model = (_cfg_mod.get("local_models") or {}).get("level_2", RERANK_MODEL)
+            if not ollama_available(llm_model):
+                llm_model = RERANK_MODEL
+
+        for skill in evolvable:
+            if evolved_count >= max_evolutions:
+                break
+
+            skill_name = skill.get("name", "unknown")
+            skill_file = skill.get("_file")
+            if not skill_file:
+                continue
+
+            # Check if Claude did something related to this skill's domain
+            triggers = skill.get("triggers", [])
+            description = skill.get("description", "")
+            skill_keywords = " ".join(triggers + [description, skill_name]).lower()
+
+            # Simple relevance check: any category overlap?
+            relevant_actions = []
+            for cat, actions in claude_actions.items():
+                # Match skill to category heuristically
+                if (cat in skill_keywords or
+                    skill_name.startswith(cat) or
+                    any(kw in skill_keywords for kw in cat.split("-"))):
+                    relevant_actions.extend(actions[:5])
+
+            if not relevant_actions:
+                continue
+
+            # We have a match — Claude did something this skill also does
+            claude_behavior = "\n".join(f"- {a}" for a in relevant_actions[:8])
+            current_json = json.dumps(skill, indent=2, default=str)
+
+            # Ask LLM to propose evolution
+            prompt = (
+                f"You are improving a local automation skill by learning from how Claude (an AI assistant) handled similar tasks.\n\n"
+                f"## Current Skill Definition\n```json\n{current_json[:3000]}\n```\n\n"
+                f"## What Claude Did This Session\n{claude_behavior}\n\n"
+                f"## Task\n"
+                f"Analyze Claude's approach and suggest improvements to the skill's prompts or steps.\n"
+                f"Focus on:\n"
+                f"- Better prompt wording in LLM steps (to produce output closer to Claude's quality)\n"
+                f"- Missing steps that Claude performs but the skill doesn't\n"
+                f"- Better error handling or conditional logic\n\n"
+                f"If the skill is already good and Claude's approach doesn't suggest improvements, respond with exactly: NO_CHANGE\n\n"
+                f"Otherwise, respond with ONLY the updated JSON skill definition. No explanation, no markdown fences, just the JSON."
+            )
+
+            try:
+                resp = httpx.post(
+                    f"{OLLAMA_BASE}/api/generate",
+                    json={"model": llm_model, "prompt": prompt, "stream": False,
+                          "options": {"temperature": 0.3, "num_predict": 2000}},
+                    timeout=60.0,
+                )
+                resp.raise_for_status()
+                raw = resp.json().get("response", "")
+                raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            except Exception as exc:
+                log_skill_step(skill_name, "EVOLVE", f"LLM call failed: {exc!s:.80}", ok=False)
+                continue
+
+            # Check if LLM says no change needed
+            if "NO_CHANGE" in raw or not raw.strip():
+                log_skill_step(skill_name, "EVOLVE", "no changes needed")
+                continue
+
+            # Try to parse the proposed JSON
+            # Strip markdown fences if present
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+            raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
+
+            try:
+                proposed = json.loads(raw)
+            except json.JSONDecodeError:
+                log_skill_step(skill_name, "EVOLVE", "LLM returned invalid JSON", ok=False)
+                continue
+
+            # Validate: must have name and steps (or type: agent)
+            if not isinstance(proposed, dict):
+                continue
+            if "steps" not in proposed and proposed.get("type") != "agent":
+                log_skill_step(skill_name, "EVOLVE", "proposed skill missing steps", ok=False)
+                continue
+
+            # Preserve internal fields
+            proposed["_file"] = skill_file
+            if "name" not in proposed:
+                proposed["name"] = skill_name
+
+            # Snapshot the old version
+            old_version = store.get_latest_skill_version(skill_name)
+            new_version = store.save_skill_version(
+                skill_name=skill_name,
+                skill_json=current_json,
+                change_reason=f"Shadow learning from Claude session {session_id[:12]}",
+                claude_example=claude_behavior[:1000],
+                local_example="",
+                session_id=session_id,
+            )
+
+            # Write the evolved skill file
+            # Remove internal _file key before writing
+            write_data = {k: v for k, v in proposed.items() if not k.startswith("_")}
+            # Preserve shadow flag and bump version
+            write_data["shadow"] = True
+            write_data["evolved_version"] = new_version
+
+            try:
+                Path(skill_file).write_text(
+                    json.dumps(write_data, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                evolved_count += 1
+                log_skill_step(
+                    skill_name, "EVOLVE",
+                    f"v{old_version}→v{new_version}",
+                    result=f"updated {Path(skill_file).name}",
+                )
+            except Exception as exc:
+                log_skill_step(skill_name, "EVOLVE", f"write failed: {exc!s:.80}", ok=False)
+
+        # Invalidate the local skills cache so next load picks up changes
+        global _local_skills_cache, _local_skills_hash
+        _local_skills_cache = None
+        _local_skills_hash = None
+
+        if evolved_count > 0:
+            log_event("EVOLVE", f"Shadow learning: {evolved_count} skill(s) evolved in session {session_id[:12]}")
+
+    finally:
+        store.close()
+
+
+def _extract_teaching_examples(session_id: str) -> None:
+    """Extract reusable patterns from this session's tool examples as teachings.
+
+    Lighter than full skill distillation. Identifies 0-3 behavioral patterns
+    (commit style, search strategy, PR conventions) and promotes them to
+    the teachings table for future local LLM persona enrichment.
+    """
+    import httpx
+    import re
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available, embed
+
+    if not ollama_available(RERANK_MODEL):
+        return
+
+    store = SkillStore()
+    examples = store.get_recent_tool_examples(limit=20)
+
+    if len(examples) < 3:
+        store.close()
+        return
+
+    # Group by category for analysis
+    by_cat: dict[str, list] = {}
+    for ex in examples:
+        by_cat.setdefault(ex["category"], []).append(ex)
+
+    # Build summary for LLM
+    cat_summaries = []
+    for cat, exs in by_cat.items():
+        inputs = [e["tool_input"][:80] for e in exs[:5]]
+        cat_summaries.append(f"[{cat}] ({len(exs)} calls): {', '.join(inputs)}")
+    summary_text = "\n".join(cat_summaries)
+
+    prompt = (
+        f"Analyze these tool usage patterns from a coding session.\n"
+        f"Identify 0-3 reusable behavioral patterns worth remembering.\n\n"
+        f"Tool usage by category:\n{summary_text}\n\n"
+        f"For each pattern, output a JSON object in an array:\n"
+        f'[{{"rule": "when <situation>", "pattern": "<what to do>"}}]\n\n'
+        f"Examples of good patterns:\n"
+        f'- {{"rule": "when committing code", "pattern": "use conventional commits with scope: type(scope): description"}}\n'
+        f'- {{"rule": "when searching code", "pattern": "start with Grep for pattern, then Read matching files"}}\n'
+        f'- {{"rule": "when creating PRs", "pattern": "title under 50 chars, body has ## Summary + ## Test plan"}}\n\n'
+        f"Output ONLY the JSON array. Empty array [] if no clear patterns."
+    )
+
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_BASE}/api/generate",
+            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.2, "num_predict": 300}},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("response", "")
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        m = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not m:
+            store.close()
+            return
+        patterns = json.loads(m.group())
+        if not isinstance(patterns, list):
+            store.close()
+            return
+
+        added = 0
+        for pat in patterns[:3]:
+            rule = pat.get("rule", "")
+            pattern_text = pat.get("pattern", "")
+            if not rule or not pattern_text:
+                continue
+
+            # Check if a similar teaching already exists
+            rule_vec = embed(rule)
+            existing = store.search_teachings(rule_vec, min_sim=0.8)
+            if existing:
+                continue  # already have a similar teaching
+
+            store.add_teaching(
+                rule=rule,
+                rule_vector=rule_vec,
+                action=pattern_text,
+                target_type="pattern",
+                target_id="context_bridge",
+            )
+            added += 1
+
+        if added:
+            log_event("TEACH_EX", f"extracted {added} teaching examples")
+    except Exception as exc:
+        log_event("TEACH_EX", f"LLM error: {exc}")
+    finally:
+        store.close()
 
 
 def _distill_tool_chains(transcript_path: str) -> None:
@@ -3888,6 +4588,156 @@ def _install_auto_skill(skill_dict: dict) -> str | None:
     except Exception as exc:
         log_hook("auto_skill_write_error", error=str(exc)[:80])
         return None
+
+
+def _capture_tool_calls(
+    transcript_path: str,
+    session_id: str,
+    offset: int = 0,
+    max_captures: int = 20,
+) -> tuple[list[dict], int]:
+    """Parse transcript from byte offset, extract tool calls incrementally.
+
+    Returns (tool_call_dicts, new_byte_offset).
+    Pure file I/O + JSON parsing — no LLM, ~5-20ms for a typical response.
+    """
+    from pathlib import Path
+
+    path = Path(transcript_path)
+    if not path.exists():
+        return [], offset
+
+    file_size = path.stat().st_size
+    if file_size <= offset:
+        return [], offset
+
+    tool_calls: list[dict] = []
+    # Map tool_use_id → index in tool_calls for result matching
+    pending: dict[str, int] = {}
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(offset)
+            remaining = f.read()
+            new_offset = f.tell()
+
+        for line in remaining.splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            entry_type = entry.get("type", "")
+
+            # Extract tool_use blocks from assistant messages
+            if entry_type == "assistant":
+                for block in (entry.get("message", {}).get("content", []) or []):
+                    if block.get("type") != "tool_use":
+                        continue
+                    if len(tool_calls) >= max_captures:
+                        break
+
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
+                    tool_use_id = block.get("id", "")
+
+                    # Categorize
+                    category = _categorize_tool_call(tool_name, tool_input)
+
+                    # Summarize input based on tool type
+                    input_summary = _summarize_tool_input(tool_name, tool_input)
+
+                    tc = {
+                        "session_id": session_id,
+                        "tool_name": tool_name,
+                        "tool_input": input_summary,
+                        "output_summary": "",
+                        "context_hint": "",
+                        "repo_path": "",
+                        "category": category,
+                    }
+                    idx = len(tool_calls)
+                    tool_calls.append(tc)
+                    if tool_use_id:
+                        pending[tool_use_id] = idx
+
+            # Match tool results back to their tool_use
+            elif entry_type == "tool_result" or (
+                entry_type == "human"
+                and isinstance(entry.get("message", {}).get("content", None), list)
+            ):
+                content = entry.get("message", {}).get("content", [])
+                if not isinstance(content, list):
+                    content = entry.get("content", [])
+                    if not isinstance(content, list):
+                        continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") != "tool_result":
+                        continue
+                    tuid = block.get("tool_use_id", "")
+                    if tuid in pending:
+                        result_text = ""
+                        # Extract text content from result
+                        for sub in (block.get("content", []) or []):
+                            if isinstance(sub, str):
+                                result_text = sub
+                            elif isinstance(sub, dict) and sub.get("type") == "text":
+                                result_text = sub.get("text", "")
+                        if result_text:
+                            tool_calls[pending[tuid]]["output_summary"] = result_text[:200]
+                        del pending[tuid]
+
+    except Exception:
+        return tool_calls, file_size
+
+    return tool_calls, new_offset
+
+
+def _categorize_tool_call(tool_name: str, tool_input: dict) -> str:
+    """Categorize a tool call for filtering and pattern analysis."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        if cmd.startswith("gh ") or "github.com" in cmd:
+            return "github"
+        if cmd.startswith("git "):
+            return "git"
+        return "shell"
+    if tool_name in ("Grep", "Glob"):
+        return "search"
+    if tool_name in ("Read", "Edit", "Write"):
+        return "file"
+    if tool_name.startswith("mcp__"):
+        return "mcp"
+    return "general"
+
+
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    """Create a concise summary of tool input for storage."""
+    if tool_name == "Bash":
+        return tool_input.get("command", "")[:500]
+    if tool_name == "Read":
+        return tool_input.get("file_path", "")
+    if tool_name == "Edit":
+        fp = tool_input.get("file_path", "")
+        old = (tool_input.get("old_string", "") or "")[:60]
+        return f"{fp} :: {old}..."
+    if tool_name == "Write":
+        return tool_input.get("file_path", "")
+    if tool_name == "Grep":
+        pat = tool_input.get("pattern", "")
+        path = tool_input.get("path", ".")
+        return f"{pat} in {path}"
+    if tool_name == "Glob":
+        return tool_input.get("pattern", "")
+    # MCP or other tools — dump keys
+    try:
+        return json.dumps(tool_input, ensure_ascii=False)[:500]
+    except Exception:
+        return str(tool_input)[:500]
 
 
 def _cmd_local_status() -> str:

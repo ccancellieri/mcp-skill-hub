@@ -114,6 +114,26 @@ _DEFAULTS = {
     "pattern_tracking_enabled": True,
     "pattern_auto_skill_threshold": 5,  # recurrences before auto-generating a skill
 
+    # Context Bridge — capture AI tool calls + build local intelligence
+    # Captures Claude's (or any AI's) tool calls from the transcript, stores
+    # them in DB, surfaces them to local LLMs via {session_context},
+    # {tool_examples}, {repo_context}, {tool_patterns} built-in variables.
+    "context_bridge_enabled": True,
+    "context_bridge_max_capture_per_hook": 20,   # max tool calls per Stop hook
+    "context_bridge_prune_days": 30,             # prune examples older than this
+    "context_bridge_prune_max_rows": 5000,       # max total rows in tool_examples
+    "context_bridge_teaching_extraction": True,  # extract teaching examples at session end
+    "context_bridge_repo_context": True,         # maintain per-repo context summaries
+
+    # Skill Evolution — shadow learning from Claude (or any AI)
+    # At session end, compares local skill output with Claude's tool usage.
+    # If Claude's approach is better, evolves the skill's prompts/steps.
+    # Old versions are stored in skill_versions table for rollback.
+    "skill_evolution_enabled": True,
+    "skill_evolution_auto": False,              # auto-evolve ALL skills (not just shadow:true)
+    "skill_evolution_max_per_session": 3,       # max skills to evolve per session
+    "skill_evolution_min_session_msgs": 5,      # min session messages before evolving
+
     # Resource-aware LLM gating — skip expensive local LLM ops under pressure
     # Pressure levels: idle(0), low(1), moderate(2), high(3)
     # Each operation has a max pressure level at which it still runs.
