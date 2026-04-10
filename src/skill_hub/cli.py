@@ -13,7 +13,11 @@ import re
 import sys
 from pathlib import Path
 
-from .activity_log import log_hook, log_llm, log_event, log_skill_step
+from .activity_log import (
+    log_hook, log_llm, log_event, log_skill_step,
+    log_pipeline_start, log_pipeline_end, log_step, log_detail,
+    _human_size, llm_timer,
+)
 from .embeddings import (
     embed, compact, ollama_available, optimize_context, triage_message,
     dynamic_context_eval, eval_skill_lifecycle, optimize_prompt, smart_memory_write,
@@ -278,17 +282,17 @@ def _classify_intent(message: str) -> dict:
     # Stage 1a: length guard — long messages are almost never task commands
     max_len = int(_cfg.get("hook_max_message_length") or 400)
     if len(message) > max_len:
-        log_hook("classify_skip", reason="length_guard", length=len(message))
+        log_detail(f"classify: skip (message too long: {len(message)} chars)")
         return {"intent": "none", "_similarity": 0.0}
 
     # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
     threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
     sim = _task_similarity(message)
     if sim < threshold:
-        log_hook("classify_skip", reason="low_similarity", sim=f"{sim:.3f}", threshold=threshold)
+        log_detail(f"classify: not a command (sim={sim:.2f})")
         return {"intent": "none", "_similarity": sim}
 
-    log_hook("classify_llm", sim=f"{sim:.3f}", threshold=threshold)
+    log_detail(f"classify: might be a command (sim={sim:.2f}), asking LLM")
     # Stage 2: LLM classification
     prompt = f"""\
 You are a strict command classifier. Classify ONLY explicit task management commands.
@@ -322,23 +326,28 @@ User message: {message}"""
         classify_model = RERANK_MODEL  # fallback to reason model
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": classify_model, "prompt": prompt, "stream": False,
-                  "options": {"num_predict": 100}},
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        with llm_timer() as _t:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={"model": classify_model, "prompt": prompt, "stream": False,
+                      "options": {"num_predict": 100}},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("response", "{}")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
             result["_similarity"] = sim
-            log_llm("classify", model=classify_model, intent=result.get("intent"))
+            _intent = result.get("intent", "none")
+            if _intent != "none":
+                log_step(f"classify: intent={_intent} ({_t.duration:.1f}s)")
+            else:
+                log_detail(f"classify: not a command ({_t.duration:.1f}s)")
             return result
     except Exception as exc:
-        log_hook("classify_error", error=str(exc)[:100])
+        log_step(f"classify: ERROR {str(exc)[:80]}")
     return {"intent": "none", "_similarity": sim}
 
 
@@ -346,7 +355,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
     """Execute a classified intent. Returns a user-facing message, or None if not handled."""
     store = SkillStore()
     action = intent.get("intent", "none")
-    log_hook("execute", intent=action)
+    log_step(f"executing: {action}")
 
     if action == "save_task":
         if not ollama_available(EMBED_MODEL):
@@ -510,11 +519,10 @@ def _match_local_command(message: str) -> dict | None:
             confidence = float(result.get("confidence", 0))
             min_conf = float(_cfg.get("local_cmd_min_confidence") or 0.80)
             if name != "none" and name in commands and confidence >= min_conf:
-                log_hook("local_cmd_match", command=name, confidence=f"{confidence:.2f}")
+                log_step(f"local command matched: {name} (confidence={confidence:.2f})")
                 return {"name": name, "shell": commands[name], "level": 1}
             elif name != "none" and confidence > 0:
-                log_hook("local_cmd_reject", command=name,
-                         confidence=f"{confidence:.2f}", threshold=f"{min_conf:.2f}")
+                log_detail(f"local_cmd: {name} rejected (confidence={confidence:.2f} < {min_conf:.2f})")
     except Exception:
         pass
     return None
@@ -608,14 +616,13 @@ def _match_local_template(message: str) -> dict | None:
                     return None  # missing required param
                 clean = _sanitize_param(raw_val, ptype)
                 if clean is None:
-                    log_hook("local_tpl_reject", template=name, param=pname, reason="unsafe")
+                    log_detail(f"local_tpl: {name} rejected (unsafe param: {pname})")
                     return None
                 safe_params[pname] = clean
 
             # Build the shell command
             shell_cmd = tpl["cmd"].format(**safe_params)
-            log_hook("local_tpl_match", template=name, confidence=f"{confidence:.2f}",
-                     params=safe_params)
+            log_step(f"local template matched: {name} (confidence={confidence:.2f})")
             return {"name": name, "shell": shell_cmd, "level": 2}
     except Exception:
         pass
@@ -662,7 +669,7 @@ def _resolve_repo_cwd(message: str) -> str | None:
             candidate = os.path.join(root, ref)
             git_dir = os.path.join(candidate, ".git")
             if os.path.isdir(candidate) and os.path.exists(git_dir):
-                log_hook("repo_cwd_resolved", ref=ref, path=candidate)
+                log_detail(f"repo_cwd: {ref} -> {candidate}")
                 return candidate
 
     return None
@@ -673,8 +680,7 @@ def _execute_local_command(cmd: dict, cwd: str | None = None) -> str | None:
     import subprocess
 
     shell_cmd = cmd["shell"]
-    log_hook("local_cmd_exec", level=cmd["level"], command=shell_cmd,
-             cwd=cwd or "inherited")
+    log_step(f"exec L{cmd['level']}: $ {shell_cmd}")
 
     try:
         result = subprocess.run(
@@ -687,13 +693,13 @@ def _execute_local_command(cmd: dict, cwd: str | None = None) -> str | None:
         # Truncate very long output
         if len(output) > 5000:
             output = output[:5000] + f"\n... (truncated, {len(output)} chars total)"
-        log_hook("local_cmd_done", command=shell_cmd, chars=len(output))
+        log_detail(f"local_cmd_done: {shell_cmd} ({len(output)} chars)")
         return f"$ {shell_cmd}\n{output.strip()}"
     except subprocess.TimeoutExpired:
-        log_hook("local_cmd_done", command=shell_cmd, error="timeout")
+        log_step(f"exec L{cmd['level']}: TIMEOUT $ {shell_cmd}")
         return f"Command timed out: {shell_cmd}"
     except Exception as exc:
-        log_hook("local_cmd_done", command=shell_cmd, error=str(exc))
+        log_step(f"exec L{cmd['level']}: FAIL $ {shell_cmd} ({exc})")
         return f"Command failed: {exc}"
 
 
@@ -750,7 +756,7 @@ def _load_local_skills() -> list[dict]:
 
     _local_skills_cache = skills
     _local_skills_hash = current_hash
-    log_hook("local_skills_loaded", count=len(skills), dir=str(skills_dir))
+    log_detail(f"local_skills: loaded {len(skills)} from {skills_dir}")
     return skills
 
 
@@ -797,8 +803,7 @@ def _match_local_skill(message: str) -> dict | None:
 
     min_skill_sim = float(_cfg.get("local_skill_threshold") or 0.85)
     if best_skill and best_sim >= min_skill_sim:
-        log_hook("local_skill_match", name=best_skill["name"],
-                 sim=f"{best_sim:.3f}")
+        log_step(f"local skill matched: {best_skill['name']} (sim={best_sim:.2f})")
         return best_skill
     return None
 
@@ -865,7 +870,7 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
     output_template = skill.get("output", "")
     skill_type = skill.get("type", "steps")
 
-    log_hook("local_skill_exec", name=name, skill_type=skill_type, steps=len(steps))
+    log_step(f"skill exec: {name} ({skill_type}, {len(steps)} steps)")
 
     # ── Agent-as-skill routing ──
     # Skills with "type": "agent" delegate to the L4 agent loop instead of
@@ -945,7 +950,7 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
             return template
 
     if cwd:
-        log_hook("local_skill_cwd", name=name, cwd=cwd)
+        log_detail(f"skill cwd: {name} -> {cwd}")
 
     def _run_shell(cmd: str, timeout: int = 30) -> tuple[int, str]:
         """Run a shell command, return (exit_code, output)."""
@@ -1318,12 +1323,16 @@ def _dynamic_context_stage(
                     add_ids.add(s["id"])
                     existing.add(s["id"])
 
-        log_hook("dynamic_context",
-                 model=dynamic_model,
-                 keep=len(keep_ids), add=len(add_ids), drop=len(drop_ids),
-                 final=len(final_skill_ids),
-                 prompt_optimized=should_opt,
-                 prompt_changed=optimized_prompt != message)
+        _parts = []
+        if keep_ids:
+            _parts.append(f"kept {len(keep_ids)}")
+        if add_ids:
+            _parts.append(f"+{len(add_ids)} new")
+        if drop_ids:
+            _parts.append(f"-{len(drop_ids)} dropped")
+        _lifecycle_str = ", ".join(_parts) or "no changes"
+        _opt_str = ", prompt optimized" if (should_opt and optimized_prompt != message) else ""
+        log_step(f"skills: {len(final_skill_ids)} selected ({_lifecycle_str}{_opt_str})")
     else:
         # Fallback: use top candidates from RAG (no LLM)
         final_skill_ids = [s["id"] for s in all_candidates[:top_k_skills]]
@@ -1332,7 +1341,7 @@ def _dynamic_context_stage(
         reason = "no_model" if not dynamic_model else "pressure_gated"
         if not (loaded_skills or candidate_skills):
             reason = "no_candidates"
-        log_hook("dynamic_context_skip", reason=reason)
+        log_detail(f"dynamic_context: skip ({reason})")
 
     # 4. Build systemMessage with selected skills (full content)
     max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
@@ -1419,8 +1428,7 @@ def _dynamic_context_stage(
             pass
 
     if not parts:
-        log_hook("context_inject_miss",
-                 skills_found=len(all_candidates), msg_len=len(message))
+        log_detail(f"context_inject: no matches (searched {len(all_candidates)} skills)")
         return None
 
     # Build header showing lifecycle actions
@@ -1437,11 +1445,9 @@ def _dynamic_context_stage(
         lifecycle_parts.append(f"-dropped: {', '.join(dropped)}")
     lifecycle_str = " | ".join(lifecycle_parts) if lifecycle_parts else "initial load"
 
-    log_hook("context_inject",
-             parts=len(parts), chars=sum(len(p) for p in parts),
-             skills_loaded=len(loaded_names),
-             skills_found=len(all_candidates),
-             lifecycle=lifecycle_str)
+    _total_chars = sum(len(p) for p in parts)
+    log_step(f"context: {_human_size(_total_chars)}, "
+             f"{len(loaded_names)} skills ({lifecycle_str})")
 
     header = (
         f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
@@ -1623,7 +1629,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
                         budget -= len(snippet)
 
     except Exception as exc:
-        log_hook("context_inject_error", error=str(exc)[:120])
+        log_step(f"context: ERROR {str(exc)[:80]}")
 
     # Stage 4.1: SearXNG web RAG fallback — only when skill search returned nothing
     if not parts:
@@ -1634,18 +1640,17 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
                 web_ctx = searxng_context(message[:300])
                 if web_ctx:
                     parts.append(web_ctx)
-                    log_hook("searxng_injected", chars=len(web_ctx))
+                    log_step(f"context: web search added ({_human_size(len(web_ctx))})")
             except Exception as _se:
-                log_hook("searxng_error", error=str(_se)[:80])
+                log_detail(f"searxng_error: {str(_se)[:80]}")
 
     if not parts:
-        log_hook("context_inject_miss",
-                 skills_found=len(skills_found),
-                 msg_len=len(message))
+        log_detail(f"context: no matches (searched {len(skills_found)} skills)")
         return None
 
-    log_hook("context_inject", parts=len(parts), chars=sum(len(p) for p in parts),
-             skills_loaded=len(skills_loaded), skills_found=len(skills_found))
+    _total_chars = sum(len(p) for p in parts)
+    log_step(f"context: {_human_size(_total_chars)} "
+             f"({len(skills_loaded)} skills from {len(skills_found)} candidates)")
 
     # Build skill load summary line
     skills_skipped = [s for s in skills_found if s not in skills_loaded]
@@ -1679,7 +1684,7 @@ def _precompact_hint(message: str) -> str | None:
     if not should_run_llm("precompact"):
         return None
 
-    log_hook("precompact", length=len(message), threshold=threshold)
+    log_detail(f"precompact: message {len(message)} chars, compacting")
     try:
         digest = compact(message)
         summary = digest.get("summary", "")
@@ -1724,7 +1729,10 @@ def _check_anthropic_reachable(interval: float = 30.0) -> bool:
 
     _offline_check_cache["reachable"] = reachable
     _offline_check_cache["checked_at"] = now
-    log_hook("offline_check", reachable=reachable)
+    if not reachable:
+        log_step("offline: Anthropic API unreachable")
+    else:
+        log_detail("offline_check: reachable")
     return reachable
 
 # ── Permission management ────────────────────────────────────────────
@@ -3315,14 +3323,12 @@ or {{"multiple": true, "commands": ["command 1", "command 2", ...]}}"""
             is_multiple = result.get("multiple", False)
             commands = result.get("commands", [])
             if is_multiple and len(commands) > 1:
-                log_hook("multi_cmd_detected", count=len(commands),
-                         method="llm")
+                log_detail(f"multi_cmd_detected: {len(commands)} commands (LLM)")
                 return commands
             else:
-                log_hook("multi_cmd_single", method="llm",
-                         reason="llm_classified_as_single")
+                log_detail("multi_cmd: LLM says single command")
     except Exception as exc:
-        log_hook("multi_cmd_split_error", error=str(exc)[:80])
+        log_detail(f"multi_cmd_split: error {str(exc)[:80]}")
 
     return None
 
@@ -3379,7 +3385,7 @@ Output:"""
         raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         if raw and len(raw) > 10:
-            log_hook("hydrate_passthrough", commands=len(commands), chars=len(raw))
+            log_detail(f"hydrate_passthrough: {len(commands)} commands, {len(raw)} chars")
             return raw
     except Exception:
         pass
@@ -3457,6 +3463,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     # tags that confuse small local LLMs during classification.
     message = _sanitize_hook_message(message)
 
+    # ── Pipeline log: show what triggered this run ──
+    log_pipeline_start(message)
+
     # ── Stage -1: Offline auto-fallback ──
     # If Anthropic API is unreachable and auto-fallback is enabled, activate
     # local mode silently so the L4 agent handles the message.
@@ -3464,7 +3473,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         check_interval = float(_cfg.get("offline_check_interval") or 30.0)
         if not _check_anthropic_reachable(interval=check_interval):
             _local_mode = True
-            log_hook("offline_fallback_activated")
+            log_step("OFFLINE: Anthropic unreachable, switching to local agent")
 
     # ── Stage 0: Local mode — bypass Claude entirely, route to L4 agent ──
     if _local_mode:
@@ -3479,8 +3488,10 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         recent = "\n".join(_session_messages[-10:])
         try:
             result = run_agent(message, context=recent)
+            log_pipeline_end("LOCAL", reason="agent (offline)", result=result)
             return _visible_result(result)
         except Exception as exc:
+            log_pipeline_end("LOCAL", reason=f"agent error: {exc}")
             return _visible_result(f"[Local agent error: {exc}]\n\nTurn off: /hub-local off")
 
     # ── Stage 0.5: Response cache — check for semantically identical past answers ──
@@ -3509,9 +3520,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         estimated_tokens=max(len(best["response"]) // 4, 200),
                     )
                     _rc_hits.close()
-                    log_hook("response_cache_hit",
-                             sim=f"{best['similarity']:.2f}",
-                             cache_id=best["id"])
+                    log_pipeline_end("LOCAL", reason=f"cache hit (sim={best['similarity']:.2f})",
+                                     result=best["response"])
                     return _visible_result(
                         f"[Skill Hub — cached answer (sim={best['similarity']:.2f}, "
                         f"hits={best['hit_count'] + 1})]\n\n"
@@ -3521,7 +3531,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     )
             _rc_hits.close()
         except Exception as _exc:
-            log_hook("response_cache_error", error=str(_exc)[:80])
+            log_detail(f"response_cache: error {str(_exc)[:80]}")
 
     # ── Stage 1: Slash commands — no LLM, no embedding, instant ──
     slash_result = _handle_slash_command(message)
@@ -3549,12 +3559,12 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     _multi_cwd = _resolve_repo_cwd(message)
     sub_commands = _split_multi_command(message)
     if sub_commands and len(sub_commands) > 1:
-        log_hook("multi_cmd_split", count=len(sub_commands),
-                 commands=", ".join(c[:40] for c in sub_commands))
+        log_step(f"split into {len(sub_commands)} commands")
         handled: list[str] = []
         passthrough: list[str] = []
         for i, sub_cmd in enumerate(sub_commands, 1):
-            log_hook("multi_cmd_exec", step=f"{i}/{len(sub_commands)}", command=sub_cmd[:80])
+            log_step(f"  {i}/{len(sub_commands)} \"{sub_cmd[:60]}\"")
+            log_detail(f"multi_cmd_exec step={i}/{len(sub_commands)} command={sub_cmd[:80]}")
             sub_result = _execute_single_command(sub_cmd, session_id, _cfg, cwd=_multi_cwd)
             if sub_result:
                 handled.append(f"[{i}] {sub_result}")
@@ -3579,8 +3589,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 # Some commands need Claude — hydrate the passthrough commands
                 # into detailed instructions using local LLM
                 hydrated = _hydrate_passthrough(passthrough, handled)
-                log_hook("multi_cmd_partial", handled=len(handled),
-                         passthrough=len(passthrough))
+                log_pipeline_end("CLAUDE", reason=f"multi-cmd: {len(handled)} local, {len(passthrough)} for Claude")
                 return {
                     "decision": "allow",
                     "systemMessage": (
@@ -3593,11 +3602,13 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 }
             else:
                 # All commands handled locally — block (0 tokens)
+                log_pipeline_end("LOCAL", reason=f"multi-cmd: all {len(handled)} handled",
+                                 result=combined)
                 return _visible_result(combined)
         elif passthrough:
             # No sub-commands were handled locally — all need Claude.
             # Pass through the ORIGINAL message so Claude sees it intact.
-            log_hook("multi_cmd_all_passthrough", count=len(passthrough))
+            log_step(f"multi-cmd: none matched, passing all {len(passthrough)} to Claude")
             # Fall through to normal pipeline stages (Stage 2+) with the
             # original message — do NOT return here, let the rest of the
             # pipeline process it as a single message.
@@ -3610,8 +3621,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     if action != "none":
         result = _execute_intent(intent, message)
         if result:
-            log_hook("pipeline_decision", decision="block", stage="task_classify",
-                     intent=action, preview=result[:80])
+            log_pipeline_end("LOCAL", reason=f"task:{action}", result=result)
             if _cfg.get("token_profiling"):
                 try:
                     store = SkillStore()
@@ -3680,6 +3690,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                             store.close()
                         except Exception:
                             pass
+                    log_pipeline_end("LOCAL", reason=f"LLM:{RERANK_MODEL}", result=answer)
                     return {"decision": "block",
                             "message": f"[Answered locally by {RERANK_MODEL}]\n\n{answer}"}
 
@@ -3735,7 +3746,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             # Level 4: agent execution (plan was approved)
             if "_agent_message" in local_cmd:
                 from .local_agent import run_agent
-                log_hook("local_agent_run", message=local_cmd["_agent_message"][:200])
+                log_step(f"running local agent: {local_cmd['_agent_message'][:80]}")
                 result = run_agent(
                     local_cmd["_agent_message"],
                     context=local_cmd.get("_agent_context", ""),
@@ -3751,6 +3762,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
+                log_pipeline_end("LOCAL", reason="L4:agent", result=result)
                 return _visible_result(result)
             # Level 3 skills have a _skill key
             elif "_skill" in local_cmd:
@@ -3769,6 +3781,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
+                log_pipeline_end("LOCAL", reason=f"L{local_cmd['level']}:{local_cmd['name']}",
+                                 result=result)
                 return _visible_result(result)
         elif _pending_command and stripped in ("n", "no", "cancel", "skip"):
             _pending_command = None
@@ -3785,15 +3799,14 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         local_cmd_threshold = float(_cfg.get("local_cmd_similarity_threshold") or 0.45)
         cmd_sim = _local_cmd_similarity(message)
         if cmd_sim >= local_cmd_threshold:
-            log_hook("local_cmd_gate", sim=f"{cmd_sim:.3f}", threshold=local_cmd_threshold)
+            log_detail(f"local_cmd: checking (sim={cmd_sim:.2f})")
             # Try Level 1 (whitelisted commands)
             local_cmd = _match_local_command(message)
             # Try Level 2 (templated commands) if Level 1 didn't match
             if not local_cmd:
                 local_cmd = _match_local_template(message)
         else:
-            log_hook("local_cmd_skip", reason="low_cmd_similarity",
-                     sim=f"{cmd_sim:.3f}")
+            log_detail(f"local_cmd: skip (sim={cmd_sim:.2f} < {local_cmd_threshold})")
 
         if local_cmd:
             # L1/L2 commands are user-configured whitelists — execute directly.
@@ -3812,6 +3825,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
+                log_pipeline_end("LOCAL", reason=f"L{local_cmd['level']}:{local_cmd['name']}",
+                                 result=result)
                 return _visible_result(result)
 
         # Try Level 3 (local skills — multi-step)
@@ -3839,6 +3854,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                             store.close()
                         except Exception:
                             pass
+                    log_pipeline_end("LOCAL", reason=f"L3:skill:{skill_name}",
+                                     result=result)
                     return _visible_result(result)
             else:
                 _pending_command = {
@@ -3847,6 +3864,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     "_cwd": _exec_cwd,  # preserve cwd for when user confirms
                 }
                 cwd_note = f"\nTarget repo: `{_exec_cwd}`" if _exec_cwd else ""
+                log_pipeline_end("LOCAL", reason=f"L3:skill:{skill_name} (awaiting approval)")
                 return _visible_result(
                     f"[Skill Hub — local execution L3]\n\n"
                     f"Local skill matched: **{skill_name}**\n"
@@ -3863,6 +3881,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     # Session state persists across hook invocations via SQLite.
 
     if not _cfg.get("hook_context_injection") and not triage_hint:
+        log_pipeline_end("CLAUDE", reason="passthrough")
         return {"decision": "allow"}
 
     system_parts: list[str] = []
@@ -3902,7 +3921,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 if context:
                     system_parts.append(context)
         except Exception as exc:
-            log_hook("dynamic_context_error", error=str(exc)[:120])
+            log_step(f"context: ERROR {str(exc)[:100]}")
             # Fallback to static RAG
             try:
                 msg_vector = embed(message[:500])
@@ -3924,9 +3943,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             result["systemMessage"] = combined
         if optimized_prompt and optimized_prompt != message:
             result["userMessage"] = optimized_prompt
-        log_hook("pipeline_decision", decision="allow", stage="context_enriched",
-                 system_chars=len(combined),
-                 optimized="yes" if optimized_prompt else "no")
+        _opt_tag = ", optimized" if optimized_prompt else ""
+        log_pipeline_end("CLAUDE", reason=f"context {_human_size(len(combined))}{_opt_tag}")
 
         # Log context injection stats
         if _cfg.get("token_profiling"):
@@ -4008,15 +4026,12 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         final_sys = f"{existing_sys}\n\n{combined_extra}".strip() if existing_sys else combined_extra
         if isinstance(result, dict):  # type: ignore[name-defined]
             result["systemMessage"] = final_sys  # type: ignore[name-defined]
-            log_hook("pipeline_decision", decision="allow", stage="extra_system",
-                     extras=len(extra_system))
+            log_pipeline_end("CLAUDE", reason=f"context + {len(extra_system)} enrichments")
             return result  # type: ignore[name-defined]
-        log_hook("pipeline_decision", decision="allow", stage="extra_system",
-                 extras=len(extra_system))
+        log_pipeline_end("CLAUDE", reason=f"context + {len(extra_system)} enrichments")
         return {"decision": "allow", "systemMessage": combined_extra}
 
-    log_hook("pipeline_decision", decision="allow", stage="passthrough",
-             reason="no_match")
+    log_pipeline_end("CLAUDE", reason="passthrough")
     return {"decision": "allow"}
 
 

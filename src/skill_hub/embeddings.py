@@ -6,7 +6,7 @@ import re
 import httpx
 
 from . import config as _cfg
-from .activity_log import log_llm
+from .activity_log import log_llm, llm_timer
 
 # These module-level names are kept for backwards compatibility with imports,
 # but always read the live config value.
@@ -361,8 +361,6 @@ def smart_memory_write(
             "reason": str,           # why escalation is needed (or "ok")
         }
     """
-    log_llm("smart_memory_write", model=model, input_chars=len(content))
-
     # Try progressively smaller models if primary unavailable
     chosen_model = model
     if not ollama_available(chosen_model):
@@ -407,18 +405,21 @@ Respond with ONLY this JSON:
 }}"""
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={
-                "model": chosen_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 500},
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        with llm_timer() as _t:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={
+                    "model": chosen_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 500},
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("response", "{}")
+        log_llm("smart_memory_write", model=chosen_model, duration=_t.duration,
+                input_chars=len(content))
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not json_match:
@@ -683,9 +684,6 @@ def eval_skill_lifecycle(
 
     Returns {"keep": [...], "add": [...], "drop": [...], "context_summary": "..."}
     """
-    log_llm("eval_skill_lifecycle", model=model,
-            loaded=len(loaded_skills), candidates=len(candidate_skills))
-
     loaded_list = "\n".join(
         f"  - {s['id']}: {s.get('description', '')[:100]}"
         for s in loaded_skills
@@ -707,23 +705,29 @@ def eval_skill_lifecycle(
     )
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.0, "num_predict": 250},
-            },
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
+        with llm_timer() as _t:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 250},
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
             import json as _json
-            return _json.loads(json_match.group())
+            result = _json.loads(json_match.group())
+            log_llm("eval_skill_lifecycle", model=model, duration=_t.duration,
+                    loaded=len(loaded_skills), candidates=len(candidate_skills))
+            return result
+        log_llm("eval_skill_lifecycle", model=model, duration=_t.duration,
+                loaded=len(loaded_skills), candidates=len(candidate_skills))
     except Exception:
         pass
 
@@ -748,26 +752,27 @@ def optimize_prompt(
 
     Returns the optimized prompt string, or the original message on failure.
     """
-    log_llm("optimize_prompt", model=model, message_len=len(message))
-
     prompt = _PROMPT_OPT_PROMPT.format(
         context_summary=context_summary,
         message=message[:1500],
     )
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.2, "num_predict": 400},
-            },
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        result = resp.json().get("response", "").strip()
+        with llm_timer() as _t:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 400},
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            result = resp.json().get("response", "").strip()
+        log_llm("optimize_prompt", model=model, duration=_t.duration,
+                message_len=len(message))
         # Reject obviously broken outputs
         if result and len(result) > 20 and not result.startswith("{"):
             return result
