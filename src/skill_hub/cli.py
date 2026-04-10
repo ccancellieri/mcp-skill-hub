@@ -3226,16 +3226,42 @@ type: {mem_type}
     return result
 
 
-def _split_multi_command(message: str) -> list[str] | None:
-    """Detect and split multi-command messages using semantic LLM analysis.
+def _heuristic_skill_split(message: str) -> list[str] | None:
+    """Fallback split: divide on conjunctions only if EVERY part independently
+    matches a local skill via embedding. Fast enough because the embed model
+    is already warm from context injection.
 
-    Uses a local LLM to understand whether a message contains multiple
-    distinct actions vs. a single natural-language request with conjunctions.
+    This prevents false positives like "analyze the code and provide feedback"
+    (neither part matches a skill) while reliably catching "commit and push"
+    (each part matches git-commit / git-push).
+    """
+    msg_lower = message.lower().strip()
+    for sep in (" and ", " then ", " + ", " & "):
+        if sep not in msg_lower:
+            continue
+        raw = [p.strip() for p in msg_lower.split(sep)]
+        parts = [p for p in raw if p]
+        if len(parts) < 2 or len(parts) > 5:
+            continue
+        # Validate: every part must independently match a local skill
+        try:
+            if all(_match_local_skill(p) is not None for p in parts):
+                log_detail(f"multi_cmd: heuristic split ({len(parts)} parts, LLM unavailable)")
+                return parts
+        except Exception:
+            continue
+    return None
+
+
+def _split_multi_command(message: str) -> list[str] | None:
+    """Detect and split multi-command messages.
+
+    First tries a local LLM for semantic understanding; if the LLM is
+    unavailable or times out, falls back to a heuristic that splits on
+    conjunctions and validates each part against local skills via embedding.
 
     Returns a list of sub-commands if multiple found, or None if single/none.
     """
-    from .embeddings import ollama_available
-
     # Only attempt split for short-to-medium messages
     if len(message) > 500 or len(message) < 5:
         return None
@@ -3250,7 +3276,8 @@ def _split_multi_command(message: str) -> list[str] | None:
     if result and len(result) > 1:
         return result
 
-    return None
+    # LLM unavailable or timed out — heuristic fallback
+    return _heuristic_skill_split(message)
 
 
 def _llm_split(message: str) -> list[str] | None:
