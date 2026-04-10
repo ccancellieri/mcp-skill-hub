@@ -285,7 +285,23 @@ def _classify_intent(message: str) -> dict:
         log_detail(f"classify: skip (message too long: {len(message)} chars)")
         return {"intent": "none", "_similarity": 0.0}
 
-    # Stage 1b: semantic prefilter — skip LLM if message is clearly unrelated
+    # Stage 1b: question/analysis heuristic — fast guard before embedding.
+    # Questions and analysis requests are never task commands, but the 3B LLM
+    # misclassifies them when they contain task-like nouns ("migration", "driver").
+    _QUESTION_SIGNALS = (
+        "?", "which ", "what ", "how ", "why ", "when ",
+        "best option", "best approach", "best practice", "best way",
+        "instead of", " versus ", " vs ", "compare ", "analyse ", "analyze ",
+        "should i ", "could you ", "can you ", "would you ",
+        "is there ", "are there ", "is it ", "explain ",
+    )
+    _msg_lc = message.lower()
+    if (message.rstrip().endswith("?")
+            or any(sig in _msg_lc for sig in _QUESTION_SIGNALS)):
+        log_detail("classify: skip (question/analysis heuristic)")
+        return {"intent": "none", "_similarity": 0.0}
+
+    # Stage 1c: semantic prefilter — skip LLM if message is clearly unrelated
     threshold = float(_cfg.get("hook_semantic_threshold") or 0.35)
     sim = _task_similarity(message)
     if sim < threshold:
@@ -313,6 +329,9 @@ Examples of "none" (do NOT classify these as task commands):
 - "explain how this works" → none (question)
 - "refactor the query executor" → none (coding request)
 - "debug the failing test" → none (coding request)
+- "given the new driver mechanism, which are the best options instead of migrations?" → none (analysis question)
+- "given X, what should I do about Y?" → none (question)
+- "compare these two approaches for the sidecar" → none (analysis request)
 
 Reply with ONLY a JSON object:
 {{"intent": "<intent>", "title": "<extracted title if any>", "summary": "<extracted summary if any>", "task_id": <number or null>}}
