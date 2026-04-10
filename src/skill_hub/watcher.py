@@ -68,24 +68,46 @@ def stop_watcher(observer: object) -> None:
         pass
 
 
+_IGNORE_PATH_PARTS = frozenset({"temp_git_", "__pycache__", ".git", "node_modules"})
+
+# Minimum seconds between two completed reindex runs.
+# Prevents back-to-back reindexes when plugin manager creates many temp dirs.
+_MIN_REINDEX_INTERVAL = 120.0
+
+
 class _DebounceHandler:
     """
-    Filesystem event handler with debounce: waits `delay` seconds of
-    silence after the last event before triggering reindex.
-    Only reacts to .json and .md file events.
+    Filesystem event handler with debounce + post-completion cooldown.
+
+    - Debounce: waits `delay` seconds of silence before triggering.
+    - Cooldown: ignores new events for `_MIN_REINDEX_INTERVAL` seconds
+      after a reindex completes — suppresses the storm of temp_git_* events
+      that Claude Code's plugin manager generates.
+    - Skips paths containing known temp/internal dir names.
     """
 
-    def __init__(self, delay: float = 1.5) -> None:
+    def __init__(self, delay: float = 2.0) -> None:
         self._delay = delay
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
+        self._last_changed: str = ""
+        self._reindexing: bool = False
+        self._last_reindex_done: float = 0.0  # monotonic time of last completion
 
-    # watchdog calls dispatch() → on_any_event() for all event types
     def dispatch(self, event: object) -> None:
         src = getattr(event, "src_path", "")
         if not (src.endswith(".json") or src.endswith(".md")):
             return
+        # Ignore temp/internal directories
+        if any(part in src for part in _IGNORE_PATH_PARTS):
+            return
         with self._lock:
+            import time as _time
+            # If a reindex is running, or cooldown hasn't expired, skip
+            if self._reindexing:
+                return
+            if (_time.monotonic() - self._last_reindex_done) < _MIN_REINDEX_INTERVAL:
+                return
             self._last_changed = src
             if self._timer is not None:
                 self._timer.cancel()
@@ -94,11 +116,15 @@ class _DebounceHandler:
             self._timer.start()
 
     def _do_reindex(self) -> None:
+        import time
+        with self._lock:
+            if self._reindexing:
+                return
+            self._reindexing = True
+
         try:
             from .activity_log import log_event
-            import time
-            changed = getattr(self, "_last_changed", "")
-            changed_name = Path(changed).name if changed else "unknown"
+            changed_name = Path(self._last_changed).name if self._last_changed else "unknown"
             log_event("WATCHER", f"re-indexing skills (trigger: {changed_name})")
 
             from .indexer import index_all
@@ -120,10 +146,14 @@ class _DebounceHandler:
                 pass
 
             err_msg = f"  errors={len(errors)}" if errors else ""
-            log_event("WATCHER", f"re-index complete: {count} skills indexed in {elapsed:.1f}s{err_msg}")
+            log_event("WATCHER", f"re-index complete: {count} skills in {elapsed:.1f}s{err_msg}")
         except Exception as exc:
             try:
                 from .activity_log import log_event
                 log_event("WATCHER", f"re-index failed: {exc}")
             except Exception:
                 pass
+        finally:
+            with self._lock:
+                self._reindexing = False
+                self._last_reindex_done = time.monotonic()
