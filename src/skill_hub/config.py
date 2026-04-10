@@ -88,7 +88,7 @@ _DEFAULTS = {
 
     # Offline auto-fallback — automatically activate L4 local agent when
     # api.anthropic.com is unreachable (rate limit, network outage, travel)
-    "offline_auto_fallback": True,
+    "offline_auto_fallback": False,       # disabled: L4 agent unreliable with small models
     "offline_check_interval": 30.0,    # seconds between reachability checks
 
     # Implicit feedback — infer skill quality from session tool usage at session-end
@@ -103,10 +103,10 @@ _DEFAULTS = {
     # Semantic response cache — reuse cached answers for near-identical questions
     "response_cache_enabled": True,
     "response_cache_min_sim": 0.88,   # min similarity to serve from cache
-    "response_cache_verify": True,    # verify freshness with LLM when sim ≥ 0.93
+    "response_cache_verify": False,   # embedding similarity alone is sufficient at 0.93+
 
     # Task decomposition — break complex multi-part requests into ordered subtasks
-    "task_decomposition_enabled": True,
+    "task_decomposition_enabled": False,  # disabled: LLM decomposition unreliable with small models
     "task_decomposition_min_len": 300,  # only decompose messages longer than this
 
     # Prompt pattern tracking — learn from recurring message shapes
@@ -122,7 +122,7 @@ _DEFAULTS = {
     "context_bridge_max_capture_per_hook": 20,   # max tool calls per Stop hook
     "context_bridge_prune_days": 30,             # prune examples older than this
     "context_bridge_prune_max_rows": 5000,       # max total rows in tool_examples
-    "context_bridge_teaching_extraction": True,  # extract teaching examples at session end
+    "context_bridge_teaching_extraction": False, # disabled: LLM extraction unreliable with small models
     "context_bridge_repo_context": True,         # maintain per-repo context summaries
 
     # Skill Evolution — shadow learning from Claude (or any AI)
@@ -133,6 +133,13 @@ _DEFAULTS = {
     "skill_evolution_auto": False,              # auto-evolve ALL skills (not just shadow:true)
     "skill_evolution_max_per_session": 3,       # max skills to evolve per session
     "skill_evolution_min_session_msgs": 5,      # min session messages before evolving
+    "skill_evolution_feed_memory": True,        # include project memory in evolution context
+    "skill_evolution_cross_pollinate": True,    # reference official Claude skills during evolution
+    "skill_sync_on_index": True,               # check for plugin updates when indexing
+
+    # Model/effort recommendation — inject hints based on task complexity
+    "model_recommendation_enabled": True,       # inject model/effort hints in systemMessage
+    "always_forward_to_claude": True,           # NEVER block — always forward to Claude
 
     # Resource-aware LLM gating — skip expensive local LLM ops under pressure
     # Pressure levels: idle(0), low(1), moderate(2), high(3)
@@ -142,7 +149,7 @@ _DEFAULTS = {
     "resource_cache_ttl_seconds": 10,   # how often to re-check system resources
 
     # LLM triage — local LLM pre-processes ALL messages before Claude
-    "hook_llm_triage": True,            # enable universal LLM triage
+    "hook_llm_triage": False,           # disabled: small models can't classify reliably, blocks real work
     "hook_llm_triage_timeout": 30,      # max seconds for triage LLM call
     "hook_llm_triage_min_confidence": 0.7,  # min confidence to act on local_answer
     "hook_llm_triage_skip_length": 2000,    # messages longer than this skip triage
@@ -152,7 +159,7 @@ _DEFAULTS = {
     # Level 2: Templated shell — commands with LLM-extracted parameters
     # Level 3: Local skill execution — LLM follows multi-step skill scripts
     # Level 4: Full local agent — tool-using agent loop (local or remote LLM)
-    "local_execution_enabled": True,
+    "local_execution_enabled": False,    # disabled: blocks commands from reaching Claude
 
     # Model per level — heavier models for harder tasks
     # Values: Ollama model name, or "remote:<base_url>" for external APIs

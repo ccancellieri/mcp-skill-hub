@@ -37,6 +37,43 @@ _task_command_hash: int | None = None  # tracks config changes
 _local_cmd_vector: list[float] | None = None
 _local_cmd_hash: int | None = None
 
+# Cached complexity centroids — classify message complexity for model/effort hints
+_complexity_centroids: dict[str, list[float]] | None = None
+
+_COMPLEXITY_EXAMPLES: dict[str, list[str]] = {
+    "simple": [
+        "fix this typo", "rename this variable", "add a comment",
+        "format this code", "what does this function do", "yes", "no",
+        "show me the file", "run the tests", "hello", "thanks",
+        "what is this", "explain this line", "approve", "looks good",
+    ],
+    "moderate": [
+        "fix this bug", "add error handling here", "implement this function",
+        "write tests for this module", "refactor this method",
+        "update the API endpoint", "add input validation",
+        "create a new component", "add a database migration",
+    ],
+    "complex": [
+        "redesign the architecture", "plan the migration strategy",
+        "implement the entire feature end to end", "multi-file refactor",
+        "design the database schema", "review the whole codebase",
+        "create a comprehensive test suite", "build the deployment pipeline",
+        "rewrite the authentication system", "plan and implement",
+    ],
+}
+
+_MODEL_HINTS: dict[str, str] = {
+    "simple": "[Model hint: Sonnet + low effort is sufficient for this task]",
+    "moderate": "[Model hint: Sonnet + medium effort recommended]",
+    "complex": "[Model hint: Opus + high effort recommended. Consider /plan first]",
+}
+
+_BUDGET_BY_COMPLEXITY: dict[str, int] = {
+    "simple": 6000,
+    "moderate": 20000,
+    "complex": 40000,
+}
+
 # Regex to strip IDE/system context tags from hook input before classification.
 # These tags (e.g. <ide_opened_file>, <ide_selection>, <system-reminder>) are
 # injected by the IDE and confuse small local LLMs during intent classification.
@@ -256,6 +293,40 @@ def _local_cmd_similarity(message: str) -> float:
         return cosine(msg_vec, _local_cmd_vector)
     except Exception:
         return 0.0
+
+
+def _classify_complexity(msg_vector: list[float]) -> str:
+    """Classify message complexity using embedding centroids (no LLM).
+
+    Returns "simple", "moderate", or "complex" based on cosine similarity
+    to pre-computed centroids.  Falls back to "moderate" on error.
+    """
+    import math
+    global _complexity_centroids
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    try:
+        if _complexity_centroids is None:
+            _complexity_centroids = {}
+            for level, examples in _COMPLEXITY_EXAMPLES.items():
+                centroid_text = " | ".join(examples)
+                _complexity_centroids[level] = embed(centroid_text)
+
+        best_level = "moderate"
+        best_sim = -1.0
+        for level, centroid in _complexity_centroids.items():
+            sim = cosine(msg_vector, centroid)
+            if sim > best_sim:
+                best_sim = sim
+                best_level = level
+        return best_level
+    except Exception:
+        return "moderate"
 
 
 def _classify_intent(message: str) -> dict:
@@ -648,13 +719,22 @@ def _match_local_template(message: str) -> dict | None:
     return None
 
 
-def _visible_result(message: str) -> dict:
-    """Return a hook result that blocks the prompt and shows output to user.
+def _visible_result(message: str, *, force_block: bool = False) -> dict:
+    """Return a hook result — either enrich-and-forward or block.
 
-    Uses 'reason' (not 'message') per the Claude Code hook schema.
-    The 'reason' field is displayed to the user in both CLI and VS Code
-    without spending any Claude tokens.
+    When ``always_forward_to_claude`` is True (default) and *force_block* is
+    False, the local result is injected as a systemMessage and the prompt is
+    forwarded to Claude.  This ensures every user prompt reaches Claude (Rule #1).
+
+    When *force_block* is True (used for ``/hub-*`` slash commands — explicit
+    MCP admin actions), the prompt is blocked and the result shown directly.
     """
+    from . import config as _cfg
+    if not force_block and _cfg.get("always_forward_to_claude"):
+        return {
+            "decision": "allow",
+            "systemMessage": f"[Skill Hub — local context]\n{message}",
+        }
     return {"decision": "block", "reason": message}
 
 
@@ -1229,7 +1309,7 @@ def _dynamic_context_stage(
     import httpx as _httpx
 
     top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
-    max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+    default_max = int(_cfg.get("hook_context_max_chars") or 2000)
 
     store = SkillStore()
 
@@ -1244,6 +1324,11 @@ def _dynamic_context_stage(
 
     # 2. Embed message + fetch candidates via RAG
     msg_vector = embed(message[:500])
+
+    # Classify complexity for adaptive budget + model hints
+    complexity = _classify_complexity(msg_vector)
+    _session_complexity_counts[complexity] = _session_complexity_counts.get(complexity, 0) + 1
+    max_chars = _BUDGET_BY_COMPLEXITY.get(complexity, default_max)
     # Fetch wider pool of candidates for the LLM to choose from
     all_candidates = store.search(
         msg_vector, top_k=top_k_skills * 3,
@@ -1482,8 +1567,15 @@ def _dynamic_context_stage(
              f"{len(loaded_names)} skills ({_count_str})")
     log_detail(f"context skills: {lifecycle_str}")
 
+    # Model/effort recommendation based on complexity
+    if _cfg.get("model_recommendation_enabled"):
+        hint = _MODEL_HINTS.get(complexity, "")
+        if hint:
+            parts.append(hint)
+
     header = (
         f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
+        f"complexity={complexity} | "
         f"skills {lifecycle_str} | "
         f"log: tail -f {LOG_FILE}]\n\n"
     )
@@ -1527,7 +1619,12 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
     from .activity_log import LOG_FILE
 
-    max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+    # Classify complexity for adaptive budget + model hint
+    complexity = _classify_complexity(msg_vector)
+
+    # Adaptive context budget: simple tasks get less context, complex get full
+    default_max = int(_cfg.get("hook_context_max_chars") or 2000)
+    max_chars = _BUDGET_BY_COMPLEXITY.get(complexity, default_max)
     top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
     budget = max_chars
     parts: list[str] = []
@@ -1694,8 +1791,15 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
         skill_summary_parts.append(f"found-not-loaded: {', '.join(skills_skipped)}")
     skill_summary = " | ".join(skill_summary_parts) if skill_summary_parts else "none"
 
+    # Model/effort recommendation based on complexity
+    if _cfg.get("model_recommendation_enabled"):
+        hint = _MODEL_HINTS.get(complexity, "")
+        if hint:
+            parts.append(hint)
+
     header = (
         f"[Skill Hub — auto-injected context | "
+        f"complexity={complexity} | "
         f"skills {skill_summary} | "
         f"log: tail -f {LOG_FILE}]\n\n"
     )
@@ -1734,6 +1838,7 @@ def _precompact_hint(message: str) -> str | None:
 # Session-level state for conversation tracking (per-process)
 _session_messages: list[str] = []
 _session_id: str | None = None
+_session_complexity_counts: dict[str, int] = {"simple": 0, "moderate": 0, "complex": 0}
 _local_mode: bool = False  # when True, all messages go to L4 local agent
 
 # Offline fallback state — tracks last connectivity check result
@@ -3223,7 +3328,7 @@ type: {mem_type}
         except Exception:
             pass
 
-    # 10. Log session stats
+    # 10. Log session stats with complexity breakdown
     try:
         store = SkillStore()
         totals = store.get_interception_totals()
@@ -3231,8 +3336,14 @@ type: {mem_type}
         total_count = (totals.get("total_interceptions") or 0) if totals else 0
         store.close()
 
+        # Complexity breakdown from this session
+        cx = _session_complexity_counts
+        cx_str = (f"complexity=[S:{cx.get('simple', 0)} "
+                  f"M:{cx.get('moderate', 0)} "
+                  f"C:{cx.get('complex', 0)}]")
+
         stats_line = (f"Session #{session_id[:8] if session_id else '?'}: "
-                      f"{msg_count} messages, "
+                      f"{msg_count} messages, {cx_str}, "
                       f"{total_count} interceptions, "
                       f"~{total_saved} tokens saved total")
         log_event("STATS", stats_line)
@@ -3547,10 +3658,10 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         try:
             result = run_agent(message, context=recent)
             log_pipeline_end("LOCAL", reason="agent (offline)", result=result)
-            return _visible_result(result)
+            return _visible_result(result, force_block=True)
         except Exception as exc:
             log_pipeline_end("LOCAL", reason=f"agent error: {exc}")
-            return _visible_result(f"[Local agent error: {exc}]\n\nTurn off: /hub-local off")
+            return _visible_result(f"[Local agent error: {exc}]\n\nTurn off: /hub-local off", force_block=True)
 
     # ── Stage 0.5: Response cache — check for semantically identical past answers ──
     if (_cfg.get("response_cache_enabled") and not _local_mode
@@ -3607,7 +3718,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 pass
         # Convert block → visible result for VS Code compatibility
         if slash_result.get("decision") == "block" and "message" in slash_result:
-            return _visible_result(slash_result["message"])
+            return _visible_result(slash_result["message"], force_block=True)
         return slash_result
 
     # ── Stage 1.5: Multi-command split ──
@@ -3749,6 +3860,9 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         except Exception:
                             pass
                     log_pipeline_end("LOCAL", reason=f"LLM:{RERANK_MODEL}", result=answer)
+                    if _cfg.get("always_forward_to_claude"):
+                        return {"decision": "allow",
+                                "systemMessage": f"[Skill Hub — local LLM analysis]\n{answer}"}
                     return {"decision": "block",
                             "message": f"[Answered locally by {RERANK_MODEL}]\n\n{answer}"}
 
@@ -3844,7 +3958,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                 return _visible_result(result)
         elif _pending_command and stripped in ("n", "no", "cancel", "skip"):
             _pending_command = None
-            return _visible_result("Command cancelled.")
+            return _visible_result("Command cancelled.", force_block=True)
 
         # Clear pending if user sent something else
         _pending_command = None
@@ -4176,6 +4290,43 @@ def _update_repo_context(session_id: str) -> None:
             log_event("REPO_CTX", f"LLM error for {repo_path}: {exc}")
 
 
+def _gather_memory_for_skill(skill_keywords: str, max_chars: int = 1500) -> str:
+    """Gather relevant memory files for skill evolution context.
+
+    Reads the MEMORY.md index and returns content from files whose names
+    overlap with the skill's keywords. Keeps total output under max_chars.
+    """
+    mem_dir = Path.home() / ".claude" / "projects" / \
+              "-Users-ccancellieri-work-code" / "memory"
+    if not mem_dir.exists():
+        return ""
+
+    kw_lower = skill_keywords.lower()
+    collected: list[str] = []
+    total = 0
+
+    for mf in sorted(mem_dir.glob("*.md")):
+        if mf.name == "MEMORY.md":
+            continue
+        # Check if file name has keyword overlap with skill
+        name_lower = mf.stem.lower().replace("_", " ").replace("-", " ")
+        if not any(w in name_lower for w in kw_lower.split() if len(w) > 3):
+            continue
+        try:
+            content = mf.read_text(encoding="utf-8", errors="replace")
+            if total + len(content) > max_chars:
+                remaining = max_chars - total
+                if remaining > 100:
+                    collected.append(f"### {mf.name}\n{content[:remaining]}...")
+                break
+            collected.append(f"### {mf.name}\n{content}")
+            total += len(content)
+        except OSError:
+            continue
+
+    return "\n\n".join(collected) if collected else ""
+
+
 def _evolve_skills(session_id: str) -> None:
     """Shadow learning: compare local skill output with Claude's behavior and evolve.
 
@@ -4281,18 +4432,59 @@ def _evolve_skills(session_id: str) -> None:
             claude_behavior = "\n".join(f"- {a}" for a in relevant_actions[:8])
             current_json = json.dumps(skill, indent=2, default=str)
 
+            # --- Memory context (Part E2.1) ---
+            mem_context = ""
+            if _cfg_mod.get("skill_evolution_feed_memory"):
+                mem_context = _gather_memory_for_skill(skill_keywords)
+
+            # --- Cross-pollinate with official Claude skills (Part E2.2) ---
+            official_refs = ""
+            if _cfg_mod.get("skill_evolution_cross_pollinate"):
+                try:
+                    from .embeddings import embed
+                    skill_vector = embed(f"{skill_name} {description}")
+                    official_matches = store.search(
+                        skill_vector, top_k=2,
+                        similarity_threshold=0.4, target="claude",
+                    )
+                    if official_matches:
+                        ref_lines = []
+                        for om in official_matches:
+                            ref_lines.append(
+                                f"- **{om['id']}** ({om.get('plugin', '?')}): "
+                                f"{om.get('description', '')[:200]}"
+                            )
+                        official_refs = "\n".join(ref_lines)
+                except Exception:
+                    pass  # non-critical
+
             # Ask LLM to propose evolution
             prompt = (
                 f"You are improving a local automation skill by learning from how Claude (an AI assistant) handled similar tasks.\n\n"
                 f"## Current Skill Definition\n```json\n{current_json[:3000]}\n```\n\n"
                 f"## What Claude Did This Session\n{claude_behavior}\n\n"
+            )
+            if mem_context:
+                prompt += f"## Project Memory Context\n{mem_context}\n\n"
+            if official_refs:
+                prompt += (
+                    f"## Reference: Official Claude Skills (for patterns/inspiration)\n"
+                    f"{official_refs}\n\n"
+                )
+            prompt += (
                 f"## Task\n"
                 f"Analyze Claude's approach and suggest improvements to the skill's prompts or steps.\n"
                 f"Focus on:\n"
                 f"- Better prompt wording in LLM steps (to produce output closer to Claude's quality)\n"
                 f"- Missing steps that Claude performs but the skill doesn't\n"
-                f"- Better error handling or conditional logic\n\n"
-                f"If the skill is already good and Claude's approach doesn't suggest improvements, respond with exactly: NO_CHANGE\n\n"
+                f"- Better error handling or conditional logic\n"
+            )
+            if mem_context:
+                prompt += f"- Incorporate project-specific knowledge from the memory context above\n"
+            if official_refs:
+                prompt += f"- Adopt patterns from the official Claude skills listed above\n"
+            prompt += (
+                f"\nIf the skill is already good and Claude's approach doesn't suggest improvements, respond with exactly: NO_CHANGE\n\n"
                 f"Otherwise, respond with ONLY the updated JSON skill definition. No explanation, no markdown fences, just the JSON."
             )
 
@@ -5457,6 +5649,141 @@ def _cmd_profile(args_str: str) -> str:
     return "\n".join(lines)
 
 
+def _cmd_sync_skills() -> str:
+    """Re-index all skills from official + local plugin directories.
+
+    Detects updated plugin files, re-embeds them, and reports changes.
+    """
+    from .indexer import index_all
+    from .store import SkillStore
+
+    store = SkillStore()
+    old_skills = {r["id"]: r["description"] for r in store.list_skills()}
+
+    count, errors = index_all(store)
+
+    new_skills = {r["id"]: r["description"] for r in store.list_skills()}
+    store.close()
+
+    added = set(new_skills) - set(old_skills)
+    removed = set(old_skills) - set(new_skills)
+
+    lines = [f"Sync complete: {count} skills indexed."]
+    if added:
+        lines.append(f"\nNew ({len(added)}):")
+        for sid in sorted(added)[:10]:
+            lines.append(f"  + {sid}: {new_skills[sid][:80]}")
+    if removed:
+        lines.append(f"\nRemoved ({len(removed)}):")
+        for sid in sorted(removed)[:10]:
+            lines.append(f"  - {sid}")
+    if not added and not removed:
+        lines.append("No changes detected.")
+    if errors:
+        lines.append(f"\nErrors ({len(errors)}):")
+        for e in errors[:5]:
+            lines.append(f"  ! {e}")
+    return "\n".join(lines)
+
+
+def _cmd_optimize_claude_md() -> str:
+    """Use local LLM to analyze CLAUDE.md files and suggest content to migrate to MCP DB.
+
+    Identifies static reference content (port tables, routing lists, model specs)
+    that would be better served by MCP tools (teach(), save_task(), search_context())
+    and suggests a leaner version of each file.
+    """
+    import httpx
+    import re
+    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from . import config as _cfg
+
+    if not ollama_available(RERANK_MODEL):
+        return f"Reason model '{RERANK_MODEL}' not available. Run: ollama pull {RERANK_MODEL}"
+
+    # Collect all CLAUDE.md files in the project hierarchy
+    candidates = [
+        ("User global", Path.home() / ".claude" / "CLAUDE.md"),
+        ("Project", Path.home() / "work" / "code" / "CLAUDE.md"),
+    ]
+    import os
+    cwd_claude = Path(os.getcwd()) / "CLAUDE.md"
+    if cwd_claude.exists() and cwd_claude not in [f for _, f in candidates]:
+        candidates.append(("Cwd", cwd_claude))
+
+    found = [(label, p) for label, p in candidates if p.exists()]
+    if not found:
+        return "No CLAUDE.md files found."
+
+    lines = ["=== CLAUDE.md Optimization Report ===\n"]
+
+    for label, fpath in found:
+        content = fpath.read_text(encoding="utf-8", errors="replace")
+        tokens_est = max(1, len(content) // 4)
+        lines.append(f"\n## {label}: {fpath}")
+        lines.append(f"   Size: {len(content):,} chars (~{tokens_est:,} tokens)")
+
+        if tokens_est < 200:
+            lines.append("   Already lean. No action needed.")
+            continue
+
+        # Ask LLM to analyze
+        prompt = (
+            f"Analyze this CLAUDE.md file and identify content that should be moved "
+            f"out to reduce token usage. Anthropic recommends CLAUDE.md under 200 lines.\n\n"
+            f"```\n{content[:4000]}\n```\n\n"
+            f"For each section, classify as:\n"
+            f"- KEEP: Essential behavioral rules, preferences, workflows\n"
+            f"- MIGRATE: Static reference data (tables, lists, URLs, port numbers) "
+            f"→ better served by MCP teach() rules or save_task()\n"
+            f"- PRUNE: Outdated, redundant, or completed items\n\n"
+            f"Output a JSON array of objects with keys: section, action (KEEP/MIGRATE/PRUNE), "
+            f"reason (1 line), est_tokens (rough count).\n"
+            f"Output ONLY the JSON array."
+        )
+
+        try:
+            resp = httpx.post(
+                f"{OLLAMA_BASE}/api/generate",
+                json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
+                      "options": {"temperature": 0.0, "num_predict": 1000}},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            raw = resp.json().get("response", "")
+            raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+            # Try to parse JSON
+            m = re.search(r"\[.*\]", raw, re.DOTALL)
+            if m:
+                recs = json.loads(m.group())
+                migrate_tokens = 0
+                prune_tokens = 0
+                for rec in recs:
+                    action = rec.get("action", "KEEP")
+                    section = rec.get("section", "?")
+                    reason = rec.get("reason", "")
+                    est = rec.get("est_tokens", 0)
+                    icon = {"KEEP": "  ", "MIGRATE": "->", "PRUNE": "xx"}
+                    lines.append(f"   {icon.get(action, '??')} [{action}] {section}: {reason}")
+                    if action == "MIGRATE":
+                        migrate_tokens += est
+                    elif action == "PRUNE":
+                        prune_tokens += est
+
+                total_savings = migrate_tokens + prune_tokens
+                if total_savings > 0:
+                    lines.append(f"\n   Potential savings: ~{total_savings} tokens/session "
+                                 f"(migrate: ~{migrate_tokens}, prune: ~{prune_tokens})")
+                    lines.append(f"   To migrate content: use teach() for rules, save_task() for references")
+            else:
+                lines.append(f"   LLM analysis: {raw[:300]}")
+        except Exception as exc:
+            lines.append(f"   LLM error: {exc}")
+
+    return "\n".join(lines)
+
+
 # Map of slash command prefixes → local handlers
 _COMMAND_USAGE: dict[str, str] = {
     "status": "Show health check: Ollama, models, DB stats, hook, config.\n\nUsage: `/hub-status`",
@@ -5592,6 +5919,16 @@ _COMMAND_USAGE: dict[str, str] = {
         "Re-enable the full hook pipeline.\n\n"
         "Usage: `/hub-hook-enable`"
     ),
+    "sync_skills": (
+        "Re-index all skills from official + local plugin directories.\n"
+        "Detects new/updated/removed skills and reports changes.\n\n"
+        "Usage: `/hub-sync-skills`"
+    ),
+    "optimize_claude_md": (
+        "Analyze CLAUDE.md files with local LLM and suggest content to migrate to MCP DB.\n"
+        "Identifies static reference data that costs tokens on every message.\n\n"
+        "Usage: `/hub-optimize-claude-md`"
+    ),
 }
 
 _SLASH_COMMANDS: dict[str, str] = {
@@ -5642,6 +5979,8 @@ _SLASH_COMMANDS: dict[str, str] = {
     "/hub-skill-enable": "skill_enable",
     "/hub-hook-disable": "hook_disable",
     "/hub-hook-enable": "hook_enable",
+    "/hub-sync-skills": "sync_skills",
+    "/hub-optimize-claude-md": "optimize_claude_md",
 }
 
 
@@ -5902,6 +6241,10 @@ def _handle_slash_command(message: str) -> dict | None:
             return {"decision": "block",
                     "message": "Hook pipeline **enabled** (classification, triage, context injection).\n"
                                "Local execution state unchanged — check `/hub-configure local_execution_enabled`."}
+        elif action == "sync_skills":
+            return {"decision": "block", "message": _cmd_sync_skills()}
+        elif action == "optimize_claude_md":
+            return {"decision": "block", "message": _cmd_optimize_claude_md()}
     except Exception as exc:
         return {"decision": "block", "message": f"Error: {exc}"}
 

@@ -114,17 +114,7 @@ def search_skills(
     top_k: int = 5,
     use_rerank: bool = False,
 ) -> str:
-    """
-    Search skills by semantic similarity to the query.
-    Returns full content of the top matching skills — load them directly.
-
-    Args:
-        query:      Natural language description of the current task or topic.
-        top_k:      Number of skills to load with full content (default 5).
-                    Additional matches above the threshold are listed but not loaded.
-        use_rerank: If True, use deepseek-r1:1.5b to re-rank results for higher
-                    precision (slower, ~2-5s extra per candidate).
-    """
+    """Semantic skill search. Returns full content of top matches."""
     from .activity_log import LOG_FILE
 
     log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
@@ -170,10 +160,14 @@ def search_skills(
     ]
     header = "\n".join(header_lines)
 
+    max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
     parts: list[str] = [header]
     for c in loaded:
+        content = c['content'].strip()
+        if len(content) > max_skill_chars:
+            content = content[:max_skill_chars] + "\n\n<!-- truncated -->"
         parts.append(
-            f"<!-- skill: {c['id']} -->\n{c['content'].strip()}"
+            f"<!-- skill: {c['id']} -->\n{content}"
         )
 
     # Also check teachings for plugin suggestions
@@ -194,13 +188,7 @@ def search_skills(
 
 @mcp.tool()
 def suggest_plugins(query: str = "") -> str:
-    """
-    Suggest plugins (including disabled ones) that match the current task.
-    Combines embedding similarity, teaching rules, and session history.
-
-    Args:
-        query: Task description. Leave empty to reuse the last search query.
-    """
+    """Suggest disabled plugins matching the current task."""
     log_tool("suggest_plugins", query=query)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
@@ -253,14 +241,7 @@ def record_feedback(
     helpful: bool,
     query: str = "",
 ) -> str:
-    """
-    Record whether a skill was helpful, improving future search rankings.
-
-    Args:
-        skill_id: The skill id (e.g. "superpowers:brainstorm") or plugin id.
-        helpful:  True if it guided useful work; False if it was a mismatch.
-        query:    The original search query. Leave empty to reuse the last search.
-    """
+    """Record whether a skill was helpful for future ranking improvement."""
     log_tool("record_feedback", skill_id=skill_id, helpful=helpful)
     used_query = query or _last_search_state.get("query", "")
     used_vector = _last_search_state.get("vector", [])
@@ -278,20 +259,7 @@ def record_feedback(
 
 @mcp.tool()
 def teach(rule: str, suggest: str) -> str:
-    """
-    Add a persistent rule that maps task patterns to plugins or skills.
-    The rule is embedded and matched semantically against future queries.
-
-    Examples:
-        teach(rule="when I give a URL to check", suggest="chrome-devtools-mcp")
-        teach(rule="working on Terraform infrastructure", suggest="terraform")
-        teach(rule="debugging CSS or layout", suggest="chrome-devtools-mcp")
-        teach(rule="writing a Telegram bot", suggest="telegram")
-
-    Args:
-        rule:    Natural language description of when this suggestion applies.
-        suggest: Plugin short name or skill id to suggest.
-    """
+    """Add a persistent rule mapping task patterns to plugins or skills."""
     log_tool("teach", rule=rule, suggest=suggest)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
@@ -322,12 +290,7 @@ def teach(rule: str, suggest: str) -> str:
 
 @mcp.tool()
 def forget_teaching(teaching_id: int) -> str:
-    """
-    Remove a teaching rule by its ID.
-
-    Args:
-        teaching_id: The teaching ID (shown by list_teachings).
-    """
+    """Remove a teaching rule by its ID."""
     log_tool("forget_teaching", teaching_id=teaching_id)
     if _store.remove_teaching(teaching_id):
         return f"Teaching #{teaching_id} removed."
@@ -349,14 +312,7 @@ def list_teachings() -> str:
 
 @mcp.tool()
 def log_session(tool_name: str, plugin_id: str = "") -> str:
-    """
-    Record that a tool was used in this session (for passive learning).
-    Called by the Stop hook to log which plugins were actually used.
-
-    Args:
-        tool_name: The MCP tool that was called (e.g. "take_screenshot").
-        plugin_id: The plugin that owns the tool (e.g. "chrome-devtools-mcp@...").
-    """
+    """Record a tool usage in this session for passive learning."""
     log_tool("log_session", tool_name=tool_name, plugin_id=plugin_id)
     _store.log_session_tool(
         session_id=_session["id"],
@@ -379,16 +335,7 @@ def save_task(
     context: str = "",
     tags: str = "",
 ) -> str:
-    """
-    Save an open task/discussion for retrieval in future sessions.
-    The task stays "open" until you close_task() it.
-
-    Args:
-        title:   Short title (e.g. "MCP skill hub development").
-        summary: What was discussed, decided, or is in progress.
-        context: Extra context — plans, key decisions, file paths, etc.
-        tags:    Comma-separated tags for filtering (e.g. "mcp,ollama,sqlite").
-    """
+    """Save an open task for retrieval in future sessions."""
     log_tool("save_task", title=title, tags=tags)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
@@ -403,14 +350,7 @@ def save_task(
 
 @mcp.tool()
 def close_task(task_id: int, summary: str = "") -> str:
-    """
-    Close a task with LLM-compacted summary. Uses the local deepseek-r1:1.5b
-    to distill the conversation into a compact digest (~200 tokens).
-
-    Args:
-        task_id: Task ID from list_tasks().
-        summary: Optional final summary. If empty, compacts the existing summary.
-    """
+    """Close a task with LLM-compacted summary (~200 tokens)."""
     log_tool("close_task", task_id=task_id)
     task = _store.get_task(task_id)
     if not task:
@@ -443,15 +383,7 @@ def close_task(task_id: int, summary: str = "") -> str:
 @mcp.tool()
 def update_task(task_id: int, summary: str = "", context: str = "",
                 tags: str = "") -> str:
-    """
-    Update an open task with new information.
-
-    Args:
-        task_id: Task ID from list_tasks().
-        summary: New/appended summary text.
-        context: New/appended context.
-        tags:    Updated tags.
-    """
+    """Update an open task with new information."""
     log_tool("update_task", task_id=task_id)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
@@ -470,11 +402,7 @@ def update_task(task_id: int, summary: str = "", context: str = "",
 
 @mcp.tool()
 def reopen_task(task_id: int) -> str:
-    """Reopen a previously closed task.
-
-    Args:
-        task_id: Task ID from list_tasks(status="closed").
-    """
+    """Reopen a previously closed task."""
     log_tool("reopen_task", task_id=task_id)
     if _store.reopen_task(task_id):
         return f"Task #{task_id} reopened."
@@ -483,12 +411,7 @@ def reopen_task(task_id: int) -> str:
 
 @mcp.tool()
 def list_tasks(status: str = "open") -> str:
-    """
-    List tasks by status.
-
-    Args:
-        status: "open", "closed", or "all".
-    """
+    """List tasks. status: open (default), closed, or all."""
     log_tool("list_tasks", status=status)
     rows = _store.list_tasks(status)
     if not rows:
@@ -502,23 +425,14 @@ def list_tasks(status: str = "open") -> str:
 
 
 @mcp.tool()
-def search_context(query: str, top_k: int = 5) -> str:
-    """
-    Unified search across skills, open tasks, and teachings.
-    Returns a combined view of relevant context for the current task.
-    Use this at the start of a session to load everything relevant.
-
-    Args:
-        query: Natural language description of the task.
-        top_k: Max results per category.
-    """
-    log_tool("search_context", query=query, top_k=top_k)
+def search_context(query: str, top_k: int = 5, categories: str = "all") -> str:
+    """Unified search. categories: all (default), tasks, skills, closed, plugins (comma-separated)."""
+    log_tool("search_context", query=query, top_k=top_k, categories=categories)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
 
     query_vector = embed(query)
 
-    # Update session topic
     if not _session["topic"]:
         _session["topic"] = query
         _session["topic_vector"] = query_vector
@@ -526,54 +440,61 @@ def search_context(query: str, top_k: int = 5) -> str:
     _last_search_state["query"] = query
     _last_search_state["vector"] = query_vector
 
+    cats = {c.strip() for c in categories.split(",")}
+    show_all = "all" in cats
+
     parts: list[str] = []
 
     # 1. Open tasks
-    tasks = _store.search_tasks(query_vector, top_k=top_k, status="open")
-    if tasks:
-        task_lines = []
-        for t in tasks:
-            task_lines.append(
-                f"### Task #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
-                f"{t['summary']}\n"
-                + (f"Context: {t['context'][:300]}" if t.get('context') else "")
-            )
-        parts.append("## Open Tasks\n\n" + "\n\n".join(task_lines))
+    if show_all or "tasks" in cats:
+        tasks = _store.search_tasks(query_vector, top_k=top_k, status="open")
+        if tasks:
+            task_lines = []
+            for t in tasks:
+                task_lines.append(
+                    f"### Task #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
+                    f"{t['summary']}\n"
+                    + (f"Context: {t['context'][:300]}" if t.get('context') else "")
+                )
+            parts.append("## Open Tasks\n\n" + "\n\n".join(task_lines))
 
-    # 2. Closed tasks (compact digests)
-    closed = _store.search_tasks(query_vector, top_k=3, status="closed")
-    if closed:
-        closed_lines = []
-        for t in closed:
-            digest = t.get("compact", t["summary"])
-            closed_lines.append(
-                f"### Closed #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
-                f"{digest[:300]}"
-            )
-        parts.append("## Related Past Work\n\n" + "\n\n".join(closed_lines))
+    # 2. Closed tasks
+    if show_all or "closed" in cats:
+        closed = _store.search_tasks(query_vector, top_k=3, status="closed")
+        if closed:
+            closed_lines = []
+            for t in closed:
+                digest = t.get("compact", t["summary"])
+                closed_lines.append(
+                    f"### Closed #{t['id']}: {t['title']} (sim={t['similarity']:.2f})\n"
+                    f"{digest[:300]}"
+                )
+            parts.append("## Related Past Work\n\n" + "\n\n".join(closed_lines))
 
     # 3. Skills
-    skills = _store.search(query_vector, top_k=top_k)
-    if skills:
-        skill_lines = [f"- {s['id']}: {s['description'][:100]}" for s in skills]
-        parts.append("## Matching Skills\n\n" + "\n".join(skill_lines))
-        _last_search_state["skills"] = [s["id"] for s in skills]
+    if show_all or "skills" in cats:
+        skills = _store.search(query_vector, top_k=top_k)
+        if skills:
+            skill_lines = [f"- {s['id']}: {s['description'][:100]}" for s in skills]
+            parts.append("## Matching Skills\n\n" + "\n".join(skill_lines))
+            _last_search_state["skills"] = [s["id"] for s in skills]
 
     # 4. Plugin suggestions
-    suggestions = _store.suggest_plugins(query_vector)
-    if suggestions:
-        enabled_plugins: dict = {}
-        if SETTINGS_PATH.exists():
-            settings = json.loads(SETTINGS_PATH.read_text())
-            enabled_plugins = settings.get("enabledPlugins", {})
-        disabled = [s for s in suggestions[:3]
-                    if not enabled_plugins.get(s["plugin_id"], False)]
-        if disabled:
-            plug_lines = [f"- {s['short_name']}: {s['description'][:80]}" for s in disabled]
-            parts.append(
-                "## Disabled Plugins That May Help\n\n" + "\n".join(plug_lines) +
-                "\nUse toggle_plugin() to enable."
-            )
+    if show_all or "plugins" in cats:
+        suggestions = _store.suggest_plugins(query_vector)
+        if suggestions:
+            enabled_plugins: dict = {}
+            if SETTINGS_PATH.exists():
+                settings = json.loads(SETTINGS_PATH.read_text())
+                enabled_plugins = settings.get("enabledPlugins", {})
+            disabled = [s for s in suggestions[:3]
+                        if not enabled_plugins.get(s["plugin_id"], False)]
+            if disabled:
+                plug_lines = [f"- {s['short_name']}: {s['description'][:80]}" for s in disabled]
+                parts.append(
+                    "## Disabled Plugins That May Help\n\n" + "\n".join(plug_lines) +
+                    "\nUse toggle_plugin() to enable."
+                )
 
     if not parts:
         return "No relevant context found. Try index_skills() and index_plugins() first."
@@ -587,11 +508,7 @@ def search_context(query: str, top_k: int = 5) -> str:
 
 @mcp.tool()
 def index_skills() -> str:
-    """
-    Rebuild the skill index from all Claude Code plugin directories.
-    Run this once after installing or updating plugins.
-    Requires Ollama with nomic-embed-text: ollama pull nomic-embed-text
-    """
+    """Rebuild the skill index from all plugin directories."""
     log_tool("index_skills")
     if not ollama_available(EMBED_MODEL):
         return (
@@ -608,11 +525,7 @@ def index_skills() -> str:
 
 @mcp.tool()
 def index_plugins() -> str:
-    """
-    Index plugin descriptions for suggest_plugins().
-    Reads enabledPlugins from settings.json and indexes their descriptions
-    from the plugin manifest files.
-    """
+    """Index plugin descriptions for suggest_plugins()."""
     log_tool("index_plugins")
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
@@ -734,12 +647,7 @@ def index_plugins() -> str:
 
 @mcp.tool()
 def list_skills(plugin: str = "") -> str:
-    """
-    List all indexed skills with their descriptions.
-
-    Args:
-        plugin: Optional plugin name to filter by (e.g. "superpowers").
-    """
+    """List all indexed skills. Optional plugin filter."""
     rows = _store.list_skills()
     if plugin:
         rows = [r for r in rows if r["plugin"] == plugin]
@@ -751,15 +659,7 @@ def list_skills(plugin: str = "") -> str:
 
 @mcp.tool()
 def toggle_plugin(plugin_name: str, enabled: bool) -> str:
-    """
-    Enable or disable a plugin in ~/.claude/settings.json.
-    Change takes effect on the NEXT Claude Code session restart.
-
-    Args:
-        plugin_name: Plugin key as it appears in enabledPlugins
-                     (e.g. "superpowers@claude-plugins-official").
-        enabled:     True to enable, False to disable.
-    """
+    """Enable or disable a plugin. Takes effect on next session restart."""
     if not SETTINGS_PATH.exists():
         return f"Settings file not found: {SETTINGS_PATH}"
 
@@ -805,12 +705,7 @@ def session_stats() -> str:
 
 @mcp.tool()
 def configure(key: str = "", value: str = "") -> str:
-    """
-    View or update Skill Hub configuration.
-    Config file: ~/.claude/mcp-skill-hub/config.json
-
-    Without arguments: show current config.
-    With key+value: update a setting.
+    """View or update Skill Hub config. No args = show all. key+value = update.
 
     Common settings:
         reason_model    — LLM for re-ranking/compaction/classification
@@ -867,16 +762,7 @@ def configure(key: str = "", value: str = "") -> str:
 
 @mcp.tool()
 def optimize_memory(dry_run: bool = True) -> str:
-    """
-    Use the local LLM to analyze all memory files and recommend pruning.
-
-    Reads every .md file in the Claude auto-memory directory, sends them
-    to the local reasoning model, and returns a report with recommendations:
-    KEEP, PRUNE (stale/done), COMPACT (too verbose), or MERGE (duplicates).
-
-    Args:
-        dry_run: If True (default), only report recommendations.
-                 If False, apply PRUNE actions (delete files + update MEMORY.md).
+    """Analyze memory files with local LLM. Recommends KEEP/PRUNE/COMPACT/MERGE. dry_run=True for report only.
     """
     log_tool("optimize_memory", dry_run=dry_run)
 
@@ -1004,208 +890,115 @@ def optimize_memory(dry_run: bool = True) -> str:
 
 
 @mcp.tool()
-def status() -> str:
-    """
-    Show the health status of Skill Hub and its dependencies.
-
-    Checks:
-    - MCP server running (always true if this tool responds)
-    - Ollama reachable
-    - Embedding model available
-    - Reasoning model available
-    - Hook configured in settings.json
-    - Token profiling on/off
-    - Skill and task counts in the database
-    """
+def status(section: str = "summary") -> str:
+    """Skill Hub health check. section: summary (default), context, resources, tips, full."""
     import httpx
 
     cfg = _cfg.load_config()
     ollama_base = cfg.get("ollama_base", "http://localhost:11434")
     embed_model = cfg.get("embed_model", "nomic-embed-text")
     reason_model = cfg.get("reason_model", "deepseek-r1:1.5b")
-
-    lines: list[str] = ["=== Skill Hub Status ===\n"]
-
-    # MCP server
-    lines.append("MCP server:      ✓ running (this response proves it)")
-
-    # Ollama + models
-    try:
-        resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
-        available = [m["name"] for m in resp.json().get("models", [])]
-        lines.append(f"Ollama:          ✓ reachable at {ollama_base}")
-
-        embed_ok = any(embed_model in m for m in available)
-        lines.append(
-            f"Embed model:     {'✓' if embed_ok else '✗'} {embed_model}"
-            + ("" if embed_ok else f"  ← run: ollama pull {embed_model}")
-        )
-        reason_ok = any(reason_model in m for m in available)
-        lines.append(
-            f"Reason model:    {'✓' if reason_ok else '✗'} {reason_model}"
-            + ("" if reason_ok else f"  ← run: ollama pull {reason_model}")
-        )
-        if available:
-            lines.append(f"Other models:    {', '.join(m.split(':')[0] for m in available)}")
-    except Exception as exc:
-        lines.append(f"Ollama:          ✗ NOT reachable at {ollama_base} ({exc})")
-        lines.append(f"  ← start Ollama: brew services start ollama")
-
-    # Hook
-    hook_configured = False
-    if SETTINGS_PATH.exists():
-        try:
-            settings = json.loads(SETTINGS_PATH.read_text())
-            hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-            for group in hooks:
-                for h in group.get("hooks", []):
-                    if "intercept-task-commands" in h.get("command", ""):
-                        hook_configured = True
-        except Exception:
-            pass
-    hook_enabled = cfg.get("hook_enabled", True)
-    hook_status = (
-        "✓ configured and enabled" if hook_configured and hook_enabled
-        else ("configured but disabled (hook_enabled=false)" if hook_configured
-              else "✗ NOT configured — see README.md#install-the-hook")
-    )
-    lines.append(f"Hook:            {hook_status}")
-
-    # Token profiling
-    profiling = cfg.get("token_profiling", True)
-    lines.append(f"Token profiling: {'✓ on' if profiling else '○ off'}"
-                 + ("  ← configure(key='token_profiling', value='true') to enable"
-                    if not profiling else ""))
-
-    # DB stats
-    try:
-        rows = _store.list_skills()
-        skill_count = len(rows)
-        task_rows = _store.list_tasks("all")
-        task_count = len(task_rows)
-        open_tasks = sum(1 for r in task_rows if r["status"] == "open")
-        totals = _store.get_interception_totals()
-        saved = totals["total_tokens_saved"] or 0 if totals else 0
-        intercepted = totals["total_interceptions"] or 0 if totals else 0
-        lines.append(f"\nDatabase ({_store._conn.execute('PRAGMA database_list').fetchone()[2]}):")
-        lines.append(f"  Skills indexed:    {skill_count}")
-        lines.append(f"  Tasks:             {task_count} ({open_tasks} open)")
-        lines.append(f"  Intercepted cmds:  {intercepted} (~{saved:,} tokens saved)")
-    except Exception as exc:
-        lines.append(f"\nDatabase: error — {exc}")
-
-    # Config summary
-    lines.append(f"\nConfig ({_cfg.CONFIG_PATH}):")
-    lines.append(f"  embed_model={embed_model}, reason_model={reason_model}")
-    lines.append(f"  search_top_k={cfg.get('search_top_k')}, hook_timeout={cfg.get('hook_timeout_seconds')}s")
-
-    # Context usage — estimate token cost of always-loaded files
-    lines.append("\n=== Context Usage (estimated) ===\n")
+    show_all = section == "full"
 
     def _est_tokens(path: Path) -> int:
-        """Rough estimate: 1 token ≈ 4 chars."""
         try:
             return max(1, len(path.read_text(encoding="utf-8", errors="replace")) // 4)
         except OSError:
             return 0
 
-    context_files = [
-        ("User    ", Path.home() / ".claude" / "CLAUDE.md"),
-        ("Project ", Path.home() / "work" / "code" / "CLAUDE.md"),
-        ("AutoMem ", Path.home() / ".claude" / "projects" /
-         "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"),
-    ]
-    # Also check the working-directory CLAUDE.md dynamically
-    import os
-    cwd_claude = Path(os.getcwd()) / "CLAUDE.md"
-    if cwd_claude.exists() and cwd_claude not in [f for _, f in context_files]:
-        context_files.append(("Cwd     ", cwd_claude))
+    lines: list[str] = []
 
-    total_ctx = 0
-    for label, fpath in context_files:
-        if fpath.exists():
-            tok = _est_tokens(fpath)
-            total_ctx += tok
-            size_kb = fpath.stat().st_size / 1024
-            lines.append(f"  {label}  ~{tok:>5} tokens  ({size_kb:.1f} KB)  {fpath}")
-        else:
-            lines.append(f"  {label}  (not found)  {fpath}")
+    # --- Summary section (always shown) ---
+    if section in ("summary", "full"):
+        lines.append("=== Skill Hub Status ===\n")
+        lines.append("MCP server:      running")
 
-    lines.append(f"\n  Total always-loaded:  ~{total_ctx:,} tokens")
+        try:
+            resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
+            available = [m["name"] for m in resp.json().get("models", [])]
+            lines.append(f"Ollama:          reachable")
+            embed_ok = any(embed_model in m for m in available)
+            reason_ok = any(reason_model in m for m in available)
+            lines.append(f"Models:          embed={embed_model} ({'ok' if embed_ok else 'MISSING'}), "
+                         f"reason={reason_model} ({'ok' if reason_ok else 'MISSING'})")
+        except Exception:
+            lines.append(f"Ollama:          NOT reachable at {ollama_base}")
 
-    # Breakdown by category
-    lines.append("\n  Breakdown by category:")
-    mem_path = Path.home() / ".claude" / "projects" / \
-               "-Users-ccancellieri-work-code" / "memory"
-    if mem_path.exists():
-        cats: dict[str, int] = {}
-        for mf in sorted(mem_path.glob("*.md")):
-            if mf.name == "MEMORY.md":
-                continue
-            prefix = mf.stem.split("_")[0]
-            cats[prefix] = cats.get(prefix, 0) + _est_tokens(mf)
-        for cat, tok in sorted(cats.items(), key=lambda x: -x[1]):
-            lines.append(f"    {cat:<12} ~{tok:>5} tokens  (detail files, loaded on demand)")
+        try:
+            skill_count = len(_store.list_skills())
+            task_rows = _store.list_tasks("all")
+            open_tasks = sum(1 for r in task_rows if r["status"] == "open")
+            lines.append(f"DB:              {skill_count} skills, {len(task_rows)} tasks ({open_tasks} open)")
+        except Exception as exc:
+            lines.append(f"DB:              error — {exc}")
 
-    # System resource pressure
-    lines.append("\n=== System Resources ===\n")
-    s = snapshot(force=True)
-    pressure_icon = {"IDLE": "🟢", "LOW": "🟡", "MODERATE": "🟠", "HIGH": "🔴"}
-    lines.append(f"  Pressure:  {pressure_icon.get(s.pressure.name, '?')} {s.pressure.name}")
-    lines.append(f"  CPU load:  {s.cpu_load_1m:.0%} (normalized to {_get_cpu_info()} cores)")
-    lines.append(f"  Memory:    {s.memory_used_pct:.0%} used, {s.memory_available_mb}MB available / {s.total_memory_mb}MB total")
-    lines.append(f"  LLM gates: triage={'on' if s.pressure.value <= 2 else 'SKIP'}, "
-                 f"precompact={'on' if s.pressure.value <= 1 else 'SKIP'}, "
-                 f"digest={'on' if s.pressure.value <= 1 else 'SKIP'}, "
-                 f"optimize={'on' if s.pressure.value == 0 else 'SKIP'}")
+    # --- Context section ---
+    if section in ("context", "full"):
+        lines.append("\n=== Context Usage (estimated) ===\n")
+        context_files = [
+            ("User    ", Path.home() / ".claude" / "CLAUDE.md"),
+            ("Project ", Path.home() / "work" / "code" / "CLAUDE.md"),
+            ("AutoMem ", Path.home() / ".claude" / "projects" /
+             "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"),
+        ]
+        import os
+        cwd_claude = Path(os.getcwd()) / "CLAUDE.md"
+        if cwd_claude.exists() and cwd_claude not in [f for _, f in context_files]:
+            context_files.append(("Cwd     ", cwd_claude))
 
-    # Memory optimization tips
-    lines.append("\n=== Memory Optimization Tips ===\n")
-    mem_index_tok = _est_tokens(
-        Path.home() / ".claude" / "projects" /
-        "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
-    )
-    tips = []
-    if mem_index_tok > 1500:
-        tips.append(
-            f"  ✦ MEMORY.md index is ~{mem_index_tok} tokens — prune entries for "
-            f"completed/stale projects. Each removed line saves ~10-20 tokens every session."
+        total_ctx = 0
+        for label, fpath in context_files:
+            if fpath.exists():
+                tok = _est_tokens(fpath)
+                total_ctx += tok
+                lines.append(f"  {label}  ~{tok:>5} tokens  {fpath}")
+            else:
+                lines.append(f"  {label}  (not found)")
+        lines.append(f"\n  Total always-loaded:  ~{total_ctx:,} tokens")
+
+        mem_path = Path.home() / ".claude" / "projects" / \
+                   "-Users-ccancellieri-work-code" / "memory"
+        if mem_path.exists():
+            lines.append("\n  Breakdown by category:")
+            cats: dict[str, int] = {}
+            for mf in sorted(mem_path.glob("*.md")):
+                if mf.name == "MEMORY.md":
+                    continue
+                prefix = mf.stem.split("_")[0]
+                cats[prefix] = cats.get(prefix, 0) + _est_tokens(mf)
+            for cat, tok in sorted(cats.items(), key=lambda x: -x[1]):
+                lines.append(f"    {cat:<12} ~{tok:>5} tokens")
+
+    # --- Resources section ---
+    if section in ("resources", "full"):
+        lines.append("\n=== System Resources ===\n")
+        s = snapshot(force=True)
+        pressure_icon = {"IDLE": "G", "LOW": "Y", "MODERATE": "O", "HIGH": "R"}
+        lines.append(f"  Pressure:  [{pressure_icon.get(s.pressure.name, '?')}] {s.pressure.name}")
+        lines.append(f"  CPU load:  {s.cpu_load_1m:.0%} ({_get_cpu_info()} cores)")
+        lines.append(f"  Memory:    {s.memory_used_pct:.0%} used, {s.memory_available_mb}MB avail")
+
+    # --- Tips section ---
+    if section in ("tips", "full"):
+        lines.append("\n=== Memory Optimization Tips ===\n")
+        mem_index_tok = _est_tokens(
+            Path.home() / ".claude" / "projects" /
+            "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
         )
-    user_tok = _est_tokens(Path.home() / ".claude" / "CLAUDE.md")
-    if user_tok > 600:
-        tips.append(
-            f"  ✦ User CLAUDE.md (~{user_tok} tokens) — move static reference content "
-            f"(model lists, port tables) to MCP: save_task() or teach() rules, then delete from CLAUDE.md."
-        )
-    proj_tok = _est_tokens(Path.home() / "work" / "code" / "CLAUDE.md")
-    if proj_tok > 400:
-        tips.append(
-            f"  ✦ Project CLAUDE.md (~{proj_tok} tokens) — the routing table can be "
-            f"trimmed once projects are stable. Archive inactive project pointers."
-        )
-    tips.append(
-        "  ✦ Use search_context() at session start instead of pre-loading project memory files."
-    )
-    tips.append(
-        "  ✦ Closed tasks are compacted to ~200 tokens and searchable — "
-        "prefer close_task() over growing MEMORY.md with raw notes."
-    )
-    if not tips:
-        tips.append("  Context looks lean — no obvious savings available.")
-    lines.extend(tips)
+        if mem_index_tok > 1500:
+            lines.append(f"  - MEMORY.md ~{mem_index_tok} tokens — prune stale entries")
+        user_tok = _est_tokens(Path.home() / ".claude" / "CLAUDE.md")
+        if user_tok > 600:
+            lines.append(f"  - User CLAUDE.md ~{user_tok} tokens — move reference content to MCP")
+        lines.append("  - Use search_context() instead of pre-loading memory files")
+        lines.append("  - Use close_task() to compact notes (~200 tokens each)")
 
     return "\n".join(lines)
 
 
 @mcp.tool()
 def token_stats() -> str:
-    """
-    Show token savings from hook interceptions.
-
-    Displays estimated Claude API tokens saved by the UserPromptSubmit hook
-    intercepting task commands before they reach Claude. Enable/disable
-    profiling with configure(key='token_profiling', value='true|false').
-    """
+    """Show estimated token savings from hook interceptions."""
     totals = _store.get_interception_totals()
     if not totals or not totals["total_interceptions"]:
         enabled = _cfg.get("token_profiling")
@@ -1242,18 +1035,8 @@ def token_stats() -> str:
 
 
 @mcp.tool()
-def list_models() -> str:
-    """
-    List Ollama models installed on this machine, showing which ones are
-    configured for Skill Hub and recommendations by hardware tier.
-
-    The two model roles:
-    - embed_model  — converts text to vectors for semantic search (always running)
-    - reason_model — LLM used for re-ranking results, compacting tasks, and
-                     classifying hook commands (runs only when needed)
-
-    Use pull_model() to download a new model, then configure() to activate it.
-    """
+def list_models(show_recommendations: bool = False) -> str:
+    """List installed Ollama models. show_recommendations=True for hardware guide."""
     import httpx
 
     cfg = _cfg.load_config()
@@ -1261,87 +1044,44 @@ def list_models() -> str:
     current_embed = cfg.get("embed_model", "nomic-embed-text")
     current_reason = cfg.get("reason_model", "deepseek-r1:1.5b")
 
-    lines = ["=== Ollama Models ===\n"]
+    lines = [f"Configured: embed={current_embed}, reason={current_reason}\n"]
 
-    # What the two roles do
-    lines.append("Model roles:")
-    lines.append("  embed_model  — Converts text to semantic vectors.")
-    lines.append("                 Used for ALL searches (search_skills, suggest_plugins,")
-    lines.append("                 search_context). Runs once per query, very fast.")
-    lines.append("                 Current: " + current_embed)
-    lines.append("")
-    lines.append("  reason_model — Small local LLM. Used for:")
-    lines.append("                 • Re-ranking search results (use_rerank=True)")
-    lines.append("                 • Compacting tasks on close_task()")
-    lines.append("                 • Classifying hook commands (save/close/list)")
-    lines.append("                 Runs only when needed, heavier than embed.")
-    lines.append("                 Current: " + current_reason)
-    lines.append("")
-
-    # Installed models
     try:
         resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
         installed = resp.json().get("models", [])
         if installed:
-            lines.append("Installed models:")
+            lines.append("Installed:")
             for m in installed:
                 name = m["name"]
                 size_gb = m.get("size", 0) / 1_073_741_824
                 role = ""
                 if current_embed in name:
-                    role = "  ← embed_model (active)"
+                    role = "  <- embed_model"
                 elif current_reason in name:
-                    role = "  ← reason_model (active)"
+                    role = "  <- reason_model"
                 lines.append(f"  {name:<35} {size_gb:.1f} GB{role}")
         else:
-            lines.append("No models installed yet.")
+            lines.append("No models installed.")
     except Exception as exc:
         lines.append(f"Ollama not reachable ({exc})")
 
-    # Recommendations table
-    lines.append("\nReasoning models (reason_model):")
-    lines.append("  Model                  Size    RAM     Notes")
-    lines.append("  deepseek-r1:1.5b       1.1 GB  8 GB    Minimal, fast hook classification")
-    lines.append("  deepseek-r1:3b         2.1 GB  8 GB    Good quality/speed for 8-16 GB RAM")
-    lines.append("  deepseek-r1:7b         4.7 GB  16 GB   Recommended — MacBook Pro sweet spot")
-    lines.append("  deepseek-r1:8b         5.2 GB  16 GB   Llama3 architecture variant")
-    lines.append("  deepseek-r1:14b        9 GB    32 GB   Best quality for 32 GB RAM")
-    lines.append("  qwen2.5-coder:3b       2 GB    8 GB    Code-focused, fast")
-    lines.append("  qwen2.5-coder:7b       4.7 GB  16 GB   Code-focused reasoning")
-    lines.append("  phi4-mini              2.5 GB  8 GB    Microsoft, strong for its size")
-    lines.append("  gemma3:4b              3.3 GB  8 GB    Google, strong instruction following")
-    lines.append("")
-    lines.append("Embedding models (embed_model):")
-    lines.append("  nomic-embed-text       274 MB  any     Default — fast, good quality")
-    lines.append("  mxbai-embed-large      669 MB  16 GB+  Higher quality embeddings")
-    lines.append("")
-    lines.append("To install a model:   pull_model(model='deepseek-r1:7b')")
-    lines.append("To activate a model:  configure(key='reason_model', value='deepseek-r1:7b')")
-    lines.append("                      configure(key='embed_model', value='mxbai-embed-large')")
-    lines.append("After changing embed_model, run index_skills() to rebuild vectors.")
+    if show_recommendations:
+        lines.append("\nReasoning models (reason_model):")
+        lines.append("  Model                  Size    RAM     Notes")
+        lines.append("  deepseek-r1:1.5b       1.1 GB  8 GB    Minimal, fast")
+        lines.append("  deepseek-r1:7b         4.7 GB  16 GB   Recommended")
+        lines.append("  deepseek-r1:14b        9 GB    32 GB   Best quality")
+        lines.append("  qwen2.5-coder:7b       4.7 GB  16 GB   Code-focused")
+        lines.append("\nEmbedding models (embed_model):")
+        lines.append("  nomic-embed-text       274 MB  any     Default")
+        lines.append("  mxbai-embed-large      669 MB  16 GB+  Higher quality")
 
     return "\n".join(lines)
 
 
 @mcp.tool()
 def pull_model(model: str) -> str:
-    """
-    Pull (download) an Ollama model to this machine.
-
-    This runs `ollama pull <model>` and streams progress. The model becomes
-    available immediately after for configure(key='reason_model'/'embed_model').
-
-    Common models:
-        nomic-embed-text    — 274 MB — default embed model
-        mxbai-embed-large   — 669 MB — higher-quality embeddings
-        deepseek-r1:1.5b    — 1.1 GB — fast reasoning, 8 GB RAM
-        deepseek-r1:7b      — 4.7 GB — good quality, 16 GB RAM
-        deepseek-r1:14b     — 9 GB   — best quality, 32 GB RAM
-        qwen2.5-coder:7b    — 4.7 GB — code-focused reasoning
-
-    Args:
-        model: Model name as shown on hub.ollama.ai (e.g. "deepseek-r1:7b")
-    """
+    """Download an Ollama model. Use configure() to activate it after pulling."""
     import subprocess
 
     if not model or "/" in model or ";" in model or "|" in model or "&" in model:
@@ -1376,35 +1116,14 @@ def pull_model(model: str) -> str:
 
 @mcp.tool()
 def exhaustion_save(context: str = "") -> str:
-    """
-    Auto-save the current session when Claude is exhausted or rate-limited.
-
-    Uses the local LLM to generate a structured task save with title, summary,
-    decisions, next steps, and files modified. The saved task can be resumed
-    later with search_context() or list_tasks().
-
-    Call this when you detect Claude is running low on context or quota.
-    Also available as /exhaustion-save slash command (0 Claude tokens).
-
-    Args:
-        context: Description of current work state. If empty, uses recent
-                 session messages from the hook pipeline.
-    """
+    """Auto-save session state when Claude is exhausted or rate-limited."""
     from .cli import _cmd_exhaustion_save
     return _cmd_exhaustion_save(context)
 
 
 @mcp.tool()
 def search_web(query: str, top_k: int = 5) -> str:
-    """
-    Search the web using the local SearXNG instance and summarize results
-    with the local LLM.
-
-    Returns search results with titles, URLs, and snippets, plus an
-    LLM-generated summary. Requires SearXNG running (see install.py --searxng).
-
-    Use this when the user needs current information from the web, or when
-    skill search and task memory don't have relevant results.
+    """Search the web via local SearXNG and summarize with local LLM.
 
     Args:
         query: The search query.
