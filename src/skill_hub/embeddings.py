@@ -6,7 +6,7 @@ import re
 import httpx
 
 from . import config as _cfg
-from .activity_log import log_llm, llm_timer
+from .activity_log import get_logger, log_llm, llm_timer
 
 # These module-level names are kept for backwards compatibility with imports,
 # but always read the live config value.
@@ -481,9 +481,9 @@ Respond with ONLY this JSON:
         else:
             reason = f"low_quality:{quality:.2f}"
 
-    log_llm("smart_memory_quality",
-            model=chosen_model, quality=f"{quality:.2f}",
-            escalate=escalate, reason=reason)
+    # demoted to DEBUG — quality already shown in the STOP "memory saved" line
+    get_logger().debug("   smart_memory_quality: quality=%s escalate=%s reason=%s",
+                       f"{quality:.2f}", escalate, reason)
 
     return {
         "result": entry,

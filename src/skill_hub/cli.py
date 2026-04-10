@@ -1142,16 +1142,18 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
         _resolved_cmd = _interpolate(cmd)
         rc, out = _run_shell(cmd, timeout=int(step.get("timeout", 30)))
         _exit_codes[var_name] = rc
+        _exit_str = "ok" if rc == 0 else f"exit {rc}"
         log_skill_step(name, "SHELL", f"$ {_resolved_cmd[:120]}",
-                       result=f"rc={rc} ({len(out)} chars)", ok=rc == 0)
+                       result=f"{_exit_str} ({len(out)} chars)", ok=rc == 0)
 
         # if_empty: run fallback command when output is empty
         if not out.strip() and step.get("if_empty"):
             _fallback_cmd = _interpolate(step["if_empty"])
             rc, out = _run_shell(step["if_empty"])
             _exit_codes[var_name] = rc
+            _exit_str = "ok" if rc == 0 else f"exit {rc}"
             log_skill_step(name, "SHELL", f"(fallback) $ {_fallback_cmd[:120]}",
-                           result=f"rc={rc} ({len(out)} chars)", ok=rc == 0)
+                           result=f"{_exit_str} ({len(out)} chars)", ok=rc == 0)
 
         # on_fail: run recovery command on non-zero exit
         if rc != 0 and step.get("on_fail"):
@@ -1160,13 +1162,14 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
             step_outputs.append(f"$ {_resolved_cmd}\n(failed, recovering...)")
             step_outputs.append(f"$ {_recovery_cmd}\n{recovery_out}")
             log_skill_step(name, "SHELL", f"(recover) $ {_recovery_cmd[:120]}",
-                           result=f"{len(recovery_out)} chars")
+                           result=f"ok ({len(recovery_out)} chars)")
             # retry: re-run original command after recovery
             if step.get("retry"):
                 rc, out = _run_shell(cmd)
                 _exit_codes[var_name] = rc
+                _exit_str = "ok" if rc == 0 else f"exit {rc}"
                 log_skill_step(name, "SHELL", f"(retry) $ {_resolved_cmd[:120]}",
-                               result=f"rc={rc}", ok=rc == 0)
+                               result=_exit_str, ok=rc == 0)
             else:
                 out = recovery_out
 
@@ -1445,9 +1448,20 @@ def _dynamic_context_stage(
         lifecycle_parts.append(f"-dropped: {', '.join(dropped)}")
     lifecycle_str = " | ".join(lifecycle_parts) if lifecycle_parts else "initial load"
 
+    # INFO: counts only;  DEBUG: full skill names
+    _count_parts = []
+    if kept:
+        _count_parts.append(f"kept {len(kept)}")
+    if added:
+        _count_parts.append(f"+{len(added)}")
+    if dropped:
+        _count_parts.append(f"-{len(dropped)}")
+    _count_str = ", ".join(_count_parts) or "initial"
+
     _total_chars = sum(len(p) for p in parts)
     log_step(f"context: {_human_size(_total_chars)}, "
-             f"{len(loaded_names)} skills ({lifecycle_str})")
+             f"{len(loaded_names)} skills ({_count_str})")
+    log_detail(f"context skills: {lifecycle_str}")
 
     header = (
         f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
@@ -2942,9 +2956,7 @@ def _cmd_session_end(session_id: str, last_message: str,
                     for t in _tools:
                         t["context_hint"] = _hint
                     _store.save_tool_examples_batch(_tools)
-                    log_event("CAPTURE",
-                              f"{len(_tools)} tool calls captured "
-                              f"(offset {_offset}→{_new_offset})")
+                    log_event("CAPTURE", f"{len(_tools)} tool calls captured")
                 _store.update_transcript_offset(session_id, _new_offset)
             _store.close()
         except Exception as exc:

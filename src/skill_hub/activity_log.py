@@ -250,17 +250,22 @@ def log_skill_step(skill_name: str, step_type: str, detail: str,
 
     Output format:
       SKILL [git-push] SHELL  $ git push origin main  ->  ok (42 chars)
-      SKILL [git-push] LLM    model=qwen2.5:7b prompt=120ch  ->  "feat(iam): extract..."
+      SKILL [git-push] SHELL  $ git rev-parse --is-inside-work-tree  ->  exit 128 (81 chars)
+      SKILL [git-push] LLM    model=qwen2.5:7b prompt=120ch  ->  "feat(iam): extract..."  (ok)
       SKILL [git-push] IF     dirty contains "M" -> goto:stash  (matched)
       SKILL [git-push] GOTO   -> do_push
       SKILL [git-push] STOP   Rebase conflict -- resolve manually
     """
-    status = "ok" if ok else "FAIL"
     result_str = f"  ->  {result}" if result else ""
-    get_logger().info(
-        "SKILL [%s] %-6s %s%s  (%s)",
-        skill_name, step_type, detail, result_str, status,
-    )
+    if step_type == "SHELL":
+        # exit status is embedded in result ("ok (N chars)" or "exit N (N chars)") — skip suffix
+        get_logger().info("SKILL [%s] %-6s %s%s", skill_name, step_type, detail, result_str)
+    else:
+        status = "ok" if ok else "FAIL"
+        get_logger().info(
+            "SKILL [%s] %-6s %s%s  (%s)",
+            skill_name, step_type, detail, result_str, status,
+        )
 
 
 def log_banner() -> None:
