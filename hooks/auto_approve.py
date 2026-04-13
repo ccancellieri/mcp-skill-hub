@@ -20,10 +20,37 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+# Built-in preset bundles for adaptive windows + task_type overrides.
+# Users can reference these by name in config (prefix_bundle / task_type_bundles).
+# "all_non_denied" is a sentinel: when active, we approve anything not denied
+# (same semantics as the legacy binary night-mode window).
+READ_ONLY_BUNDLE = [
+    "sed -n", "head", "tail", "grep", "rg", "find", "wc",
+    "file", "stat", "ls", "cat", "tree", "which", "echo", "pwd",
+    "git status", "git diff", "git log", "git branch", "git show",
+]
+BUILD_BUNDLE = [
+    "pytest", "uv run pytest", "npm test", "npm run", "make",
+    "uv run", "python -m pytest", "ruff", "mypy", "pyright",
+]
+DEPLOY_BUNDLE = [
+    "docker build", "docker compose", "kubectl get", "kubectl describe",
+    "gh pr", "gh run",
+]
+
+BUILTIN_BUNDLES: dict[str, list[str]] = {
+    "read_only": READ_ONLY_BUNDLE,
+    "build": BUILD_BUNDLE,
+    "deploy": DEPLOY_BUNDLE,
+    "research": READ_ONLY_BUNDLE,  # alias
+}
+ALL_NON_DENIED = "all_non_denied"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import verdict_cache  # local module, stdlib-only  # noqa: E402
@@ -190,6 +217,15 @@ def llm_classify(tool_name: str, command: str, examples: list[dict],
     return decision, confidence, str(parsed.get("reason", ""))[:200]
 
 
+def _hour_in_window(h: int, start: int, end: int) -> bool:
+    """True if hour h is in [start, end) handling overnight wrap (start>end)."""
+    if start == end:
+        return False
+    if start < end:
+        return start <= h < end
+    return h >= start or h < end
+
+
 def _in_night_window(cfg: dict) -> bool:
     """True if current hour falls within auto_proceed_window (shared semantics)."""
     window = cfg.get("auto_proceed_window")
@@ -200,16 +236,154 @@ def _in_night_window(cfg: dict) -> bool:
         end = int(window.get("end_hour", 7))
     except (TypeError, ValueError):
         return False
-    if start == end:
-        return False
-    h = datetime.now().hour
-    if start < end:
-        return start <= h < end
-    return h >= start or h < end
+    return _hour_in_window(datetime.now().hour, start, end)
 
 
-def decide(tool_name: str, tool_input: dict, allow: dict) -> tuple[str, str]:
-    """Return (decision, reason). decision ∈ {"approve", "block", ""}."""
+def active_adaptive_window(cfg: dict, now_hour: int | None = None) -> dict | None:
+    """Return the first matching adaptive window for the current hour, or None.
+
+    Config schema:
+        "adaptive_windows": [
+            {"name":"evening","start_hour":18,"end_hour":23,"prefix_bundle":"read_only"},
+            {"name":"night","start_hour":23,"end_hour":7,"prefix_bundle":"all_non_denied"}
+        ]
+    """
+    windows = cfg.get("adaptive_windows")
+    if not isinstance(windows, list):
+        return None
+    h = datetime.now().hour if now_hour is None else now_hour
+    for w in windows:
+        if not isinstance(w, dict):
+            continue
+        try:
+            s = int(w.get("start_hour"))
+            e = int(w.get("end_hour"))
+        except (TypeError, ValueError):
+            continue
+        if _hour_in_window(h, s, e):
+            return w
+    return None
+
+
+def resolve_bundle(name: str, cfg: dict) -> list[str]:
+    """Resolve a bundle name to a list of prefixes.
+
+    Config may override/extend via top-level "prefix_bundles" dict (name -> list).
+    Returns the sentinel name as-is inside a 1-item list for all_non_denied,
+    handled separately by caller.
+    """
+    if name == ALL_NON_DENIED:
+        return []
+    user_bundles = cfg.get("prefix_bundles")
+    if isinstance(user_bundles, dict) and name in user_bundles:
+        raw = user_bundles[name]
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+    return list(BUILTIN_BUNDLES.get(name, []))
+
+
+def task_type_prefixes(marker: dict, cfg: dict) -> list[str]:
+    """Map active_task.task_type -> extra safe prefixes via task_type_bundles.
+
+    Config:
+        "task_type_bundles": {"research": "read_only", "build": "build"}
+    Values may be a bundle NAME (str) or an inline list of prefixes.
+    """
+    ttype = marker.get("task_type")
+    if not isinstance(ttype, str) or not ttype:
+        return []
+    mapping = cfg.get("task_type_bundles")
+    if not isinstance(mapping, dict):
+        return []
+    spec = mapping.get(ttype)
+    if isinstance(spec, list):
+        return [str(x) for x in spec if x]
+    if isinstance(spec, str):
+        return resolve_bundle(spec, cfg)
+    return []
+
+
+def _split_bash_tokens(cmd: str) -> tuple[list[str], list[str]]:
+    """Return (unquoted_tokens, quoted_tokens) using shlex.
+
+    We re-scan the raw string with shlex.shlex(posix=False) to know whether
+    each token originated inside quotes. Tokens inside quotes go to the
+    "quoted" list and are EXCLUDED from deny-regex scoping.
+    """
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    unquoted: list[str] = []
+    quoted: list[str] = []
+    # shlex.shlex in posix mode loses quoting info. Walk manually instead.
+    # Strategy: tokenise with posix=True to get logical tokens, then for each
+    # token find its position in the original string and check if it sits
+    # inside a quoted span.
+    try:
+        tokens = list(shlex.split(cmd, posix=True))
+    except ValueError:
+        # Unbalanced quotes — treat the entire string as unquoted (safe side:
+        # deny patterns still scan everything, same as the legacy behavior).
+        return [cmd], []
+    # Compute quoted character mask over cmd.
+    mask = [False] * len(cmd)
+    in_q: str | None = None
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if in_q:
+            if c == in_q:
+                in_q = None
+            else:
+                mask[i] = True
+            i += 1
+            continue
+        if c in ("'", '"'):
+            in_q = c
+        i += 1
+    # For each token, locate its first occurrence after the scan cursor and
+    # check whether its span overlaps a quoted region.
+    cursor = 0
+    for tok in tokens:
+        if not tok:
+            continue
+        idx = cmd.find(tok, cursor)
+        if idx < 0:
+            # Couldn't locate (e.g. due to unescaping) — be conservative and
+            # treat as unquoted so deny patterns still fire.
+            unquoted.append(tok)
+            continue
+        end = idx + len(tok)
+        # If ANY char of the token span is inside a quoted region, classify
+        # as quoted. (Mixed cases are rare; commit -m "..." produces a pure
+        # quoted-inside token post-shlex.)
+        if any(mask[idx:end]):
+            quoted.append(tok)
+        else:
+            unquoted.append(tok)
+        cursor = end
+    return unquoted, quoted
+
+
+def scoped_deny_haystack(cmd: str) -> str:
+    """Return the deny-pattern scan target: unquoted tokens joined by spaces.
+
+    Quoted arguments (commit messages, echo strings, grep patterns) are
+    excluded so benign text inside them can't trigger a deny match.
+    """
+    unquoted, _ = _split_bash_tokens(cmd)
+    return " ".join(unquoted)
+
+
+def decide(tool_name: str, tool_input: dict, allow: dict,
+           bundle_name: str | None = None, cfg: dict | None = None
+           ) -> tuple[str, str]:
+    """Return (decision, reason). decision ∈ {"approve", "block", ""}.
+
+    `bundle_name`, when provided, activates either a named prefix bundle
+    (approve if cmd matches any prefix in the bundle) or the
+    "all_non_denied" sentinel (approve anything not denied).
+    """
+    cfg = cfg or {}
     if tool_name in allow.get("safe_tools", []):
         return "approve", f"tool '{tool_name}' in safe_tools"
 
@@ -217,13 +391,24 @@ def decide(tool_name: str, tool_input: dict, allow: dict) -> tuple[str, str]:
         cmd = extract_bash_command(tool_input)
         if not cmd:
             return "", ""
+        # Deny scan: only on unquoted tokens. This fixes the bug where
+        # `git commit -m "... rm -rf / ..."` got blocked because its message
+        # contained the literal deny string.
+        scan = scoped_deny_haystack(cmd)
         for pat in allow.get("deny_patterns", []):
             try:
-                if re.search(pat, cmd):
+                if re.search(pat, scan):
                     return "block", f"matched deny_pattern: {pat}"
             except re.error:
                 continue
-        for prefix in allow.get("safe_bash_prefixes", []):
+        # Adaptive window bundle (if any).
+        if bundle_name == ALL_NON_DENIED:
+            return "approve", "adaptive window: all_non_denied"
+        window_prefixes: list[str] = []
+        if bundle_name:
+            window_prefixes = resolve_bundle(bundle_name, cfg)
+        all_prefixes = list(allow.get("safe_bash_prefixes", [])) + window_prefixes
+        for prefix in all_prefixes:
             if cmd == prefix or cmd.startswith(prefix + " ") or cmd.startswith(prefix + "\n"):
                 return "approve", f"matched safe_bash_prefix: {prefix}"
     return "", ""
@@ -241,31 +426,44 @@ def main() -> int:
 
     allow = load_allow_list(cwd)
 
+    cfg = verdict_cache.load_config()
+
     # Per-task permissive override: if an active task has auto_approve=True,
     # ADD its task_safe_prefixes to the allow-list (never reduces safety).
+    # task_type (if present on the marker) maps to a preset bundle via
+    # cfg["task_type_bundles"] and is also added additively.
     marker = load_active_task_override()
     if marker.get("auto_approve") is True:
         extra = task_safe_prefixes_from_marker(marker)
-        if extra:
-            allow["safe_bash_prefixes"] = list(allow.get("safe_bash_prefixes", [])) + extra
-            log(f"task_override  task={marker.get('task_id')}  "
-                f"added_prefixes={len(extra)}")
+        tt_extra = task_type_prefixes(marker, cfg)
+        combined = extra + tt_extra
+        if combined:
+            allow["safe_bash_prefixes"] = (
+                list(allow.get("safe_bash_prefixes", [])) + combined
+            )
+            log(
+                f"task_override  task={marker.get('task_id')}  "
+                f"task_type={marker.get('task_type')!r}  "
+                f"added_prefixes={len(combined)} "
+                f"(explicit={len(extra)}, task_type={len(tt_extra)})"
+            )
     # auto_approve is False/None -> no-op (fall through to normal chain).
 
-    decision, reason = decide(tool_name, tool_input, allow)
+    # Resolve adaptive time-tier. New schema takes precedence; legacy
+    # auto_approve_night_mode + auto_proceed_window remains as fallback.
+    window = active_adaptive_window(cfg)
+    bundle_name = None
+    if window is not None:
+        bundle_name = window.get("prefix_bundle")
+        log(f"adaptive_window  name={window.get('name')!r}  bundle={bundle_name!r}")
+    elif _in_night_window(cfg) and cfg.get("auto_approve_night_mode", True):
+        # Legacy behavior: binary night-mode = all_non_denied.
+        bundle_name = ALL_NON_DENIED
+
+    decision, reason = decide(tool_name, tool_input, allow,
+                               bundle_name=bundle_name, cfg=cfg)
 
     preview = (extract_bash_command(tool_input) if tool_name == "Bash" else "")[:80]
-
-    # Static deny is terminal. Otherwise try cache → optional LLM.
-    cfg = verdict_cache.load_config()
-
-    # Night-mode / auto-accept-all: when enabled AND within the configured
-    # window, approve any tool that isn't explicitly denied. Deny-patterns
-    # still win (rm -rf /, git push --force, DROP TABLE, ...). Principle:
-    # "after 23, follow suggestions and never stop."
-    if decision != "block" and _in_night_window(cfg) and cfg.get(
-            "auto_approve_night_mode", True):
-        decision, reason = "approve", "night-mode auto-accept"
     if decision != "deny" and tool_name == "Bash":
         cmd = extract_bash_command(tool_input)
         if cmd:

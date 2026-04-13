@@ -1,6 +1,7 @@
 """Settings route — live config editor grouped by prefix buckets."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -13,6 +14,9 @@ router = APIRouter()
 _BUCKETS = [
     ("auto_approve", "Auto-approve"),
     ("auto_proceed", "Auto-proceed"),
+    ("adaptive_windows", "Adaptive windows"),
+    ("prefix_bundles", "Prefix bundles"),
+    ("task_type_bundles", "Task-type bundles"),
     ("vector", "Vector"),
     ("router", "Router"),
     ("dashboard", "Dashboard"),
@@ -51,21 +55,29 @@ def _group_config(cfg: dict) -> dict[str, list[dict]]:
         bucket = _bucket_for(key)
         entry = {"key": key, "value": val, "type": _field_type(val)}
         if entry["type"] == "dict":
-            entry["children"] = [
-                {
-                    "key": f"{key}.{k}",
-                    "value": v,
-                    "type": _field_type(v),
-                }
-                for k, v in val.items()
-            ]
+            # Nested dicts (e.g. task_type_bundles with list values) don't
+            # flatten well — render them as a JSON textarea instead.
+            if any(isinstance(v, (dict, list)) for v in val.values()):
+                entry["json_text"] = json.dumps(val, indent=2)
+                entry["json_mode"] = True
+            else:
+                entry["json_mode"] = False
+                entry["children"] = [
+                    {
+                        "key": f"{key}.{k}",
+                        "value": v,
+                        "type": _field_type(v),
+                    }
+                    for k, v in val.items()
+                ]
         elif entry["type"] == "list":
-            # only render flat (primitive) lists; complex lists become read-only JSON
+            # Flat (primitive) lists stay comma-separated; complex lists
+            # (e.g. adaptive_windows) become editable JSON textareas.
             if all(isinstance(x, (str, int, float, bool)) for x in val):
                 entry["display"] = ", ".join(str(x) for x in val)
                 entry["flat_list"] = True
             else:
-                entry["display"] = ""
+                entry["json_text"] = json.dumps(val, indent=2)
                 entry["flat_list"] = False
         groups[bucket].append(entry)
     return groups
@@ -144,7 +156,11 @@ async def settings_save(request: Request) -> HTMLResponse:
     changed = 0
     rendered_roots: set[str] = set()
     for fk in form_keys:
-        rendered_roots.add(fk.split(".", 1)[0])
+        # __json__.<key> -> treat <key> as the rendered root.
+        if fk.startswith("__json__."):
+            rendered_roots.add(fk.split(".", 1)[1].split(".", 1)[0])
+        else:
+            rendered_roots.add(fk.split(".", 1)[0])
     for rb in rendered_bools:
         rendered_roots.add(rb.split(".", 1)[0])
 
@@ -152,6 +168,19 @@ async def settings_save(request: Request) -> HTMLResponse:
         t = _field_type(orig)
         if key not in rendered_roots:
             # Field wasn't on the page (e.g. complex list) — skip.
+            continue
+        # JSON-textarea override (complex lists / nested dicts).
+        json_key = f"__json__.{key}"
+        if json_key in form_keys:
+            raw = str(form.get(json_key) or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if parsed != orig:
+                        cfg[key] = parsed
+                        changed += 1
+                except json.JSONDecodeError:
+                    pass
             continue
         if t == "dict":
             new_dict = dict(orig)

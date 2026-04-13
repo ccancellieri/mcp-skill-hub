@@ -162,7 +162,59 @@ opens the URL in the default browser on first boot.
 
 Target idle RSS <60MB. Loopback-only bind; no auth.
 
-## 7. Vector-similarity classifier
+## 7. Adaptive allowance (time tiers + task-type bundles)
+
+The binary 23:00-07:00 night window is deprecated in favour of tiered
+`adaptive_windows`. Each entry names a `prefix_bundle` active during its
+hour range; the first matching window wins. Built-in bundles:
+
+- `read_only` — `sed -n`, `head`, `tail`, `grep`, `rg`, `find`, `wc`,
+  `file`, `stat`, `ls`, `cat`, `tree`, `which`, `echo`, `pwd`, and
+  `git status|diff|log|branch|show`.
+- `build` — `pytest`, `uv run pytest`, `npm test|run`, `make`,
+  `ruff`, `mypy`, `pyright`, `uv run`, `python -m pytest`.
+- `deploy` — `docker build`, `docker compose`, `kubectl get|describe`,
+  `gh pr`, `gh run`.
+- `all_non_denied` — sentinel: approve anything not matching a
+  `deny_pattern` (legacy night-mode behavior).
+
+Config (seeded by `install.py`):
+
+```json
+{
+  "adaptive_windows": [
+    {"name": "evening", "start_hour": 18, "end_hour": 23, "prefix_bundle": "read_only"},
+    {"name": "night",   "start_hour": 23, "end_hour": 7,  "prefix_bundle": "all_non_denied"}
+  ],
+  "prefix_bundles": { "my_custom": ["npm run lint", "npm run build"] },
+  "task_type_bundles": { "research": "read_only", "build": "build", "deploy": "deploy" }
+}
+```
+
+**Task-type bundles.** The active task marker at
+`~/.claude/mcp-skill-hub/state/active_task.json` may carry a `task_type`
+field. When the per-task permissive override is ON
+(`set_task_auto_approve(enabled=True)`), the bundle mapped by
+`task_type_bundles[task_type]` is added **additively** to the task's own
+`task_safe_prefixes`. It never reduces safety.
+
+**Deny-pattern scoping (bug fix).** `deny_patterns` are now matched only
+against *unquoted* tokens of the Bash command (parsed via `shlex`).
+This fixes a regression where commit messages like
+`git commit -m "remove rm -rf / from deny list"` were incorrectly
+blocked because the literal `rm -rf /` appeared inside the quoted
+message. The pattern still blocks the actual invocation
+`rm -rf /` as before. Covered by
+`tests/test_auto_approve_adaptive.py`.
+
+Priority chain (updated):
+**static deny (scoped) > pinned > user_approved exact >
+vector-similar (≥ threshold) > adaptive window bundle >
+llm cache > static allow > prompt**.
+
+Edit any of the above live from the **Settings** tab of the dashboard.
+
+## 8. Vector-similarity classifier
 
 Between the exact verdict-cache lookup and the optional LLM classifier,
 `auto_approve.py` now runs a pure-python cosine search over

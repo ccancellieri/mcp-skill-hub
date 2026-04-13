@@ -23,6 +23,10 @@
               <input type="number" name="{{ e.key }}" value="{{ e.value }}">
             {% elif e.type == 'float' %}
               <input type="number" step="any" name="{{ e.key }}" value="{{ e.value }}">
+            {% elif e.type == 'dict' and e.json_mode %}
+              <textarea name="__json__.{{ e.key }}" rows="8"
+                        style="width:100%;font-family:monospace;font-size:12px">{{ e.json_text }}</textarea>
+              <div class="muted">JSON object. Invalid JSON on save is ignored.</div>
             {% elif e.type == 'dict' %}
               <div class="nested">
                 {% for c in e.children %}
@@ -46,7 +50,9 @@
                 <input type="text" name="{{ e.key }}" value="{{ e.display }}"
                        placeholder="comma-separated">
               {% else %}
-                <span class="muted">(complex list — edit config.json directly)</span>
+                <textarea name="__json__.{{ e.key }}" rows="8"
+                          style="width:100%;font-family:monospace;font-size:12px">{{ e.json_text }}</textarea>
+                <div class="muted">JSON array. Invalid JSON on save is ignored.</div>
               {% endif %}
             {% else %}
               <input type="text" name="{{ e.key }}" value="{{ e.value }}">

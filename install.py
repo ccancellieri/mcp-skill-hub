@@ -300,6 +300,25 @@ def seed_auto_proceed_defaults():
         # cache, vector or LLM, briefly poll the dashboard's question queue.
         "ask_user_on_ambiguous": False,
         "ask_user_timeout_s": 3.0,
+        # Adaptive allowance: tiered time windows. First match wins. A window's
+        # prefix_bundle is a key into the built-in bundles (read_only, build,
+        # deploy) or into user-defined "prefix_bundles". The sentinel
+        # "all_non_denied" approves anything not matching a deny_pattern
+        # (legacy night-mode behavior).
+        "adaptive_windows": [
+            {"name": "evening", "start_hour": 18, "end_hour": 23,
+             "prefix_bundle": "read_only"},
+            {"name": "night", "start_hour": 23, "end_hour": 7,
+             "prefix_bundle": "all_non_denied"},
+        ],
+        # Task-type -> bundle mapping. Active task marker may carry
+        # "task_type"; matching prefixes are ADDED additively (never reduce
+        # safety). Value may be a bundle name (str) or an inline list.
+        "task_type_bundles": {
+            "research": "read_only",
+            "build": "build",
+            "deploy": "deploy",
+        },
     }
     for k, v in defaults.items():
         if k not in cfg:
