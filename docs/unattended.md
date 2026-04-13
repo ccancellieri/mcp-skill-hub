@@ -111,34 +111,56 @@ interrupted work. Marker is single-shot: deleted after one consume.
 No wrapper, no retries in shell — the next session you open in VS Code
 automatically picks up where the last one died.
 
-## 6. Dashboard v2 (interactive)
+## 6. Dashboard v3 (FastAPI suite)
 
-`render_dashboard()` (and every `close_task`) now boots a tiny stdlib
-`http.server.ThreadingHTTPServer` on loopback and returns its URL
-(default `http://127.0.0.1:8765/`). The server is lazy-started, single
-instance per MCP process, shuts down when MCP exits.
+`render_dashboard()` (and every `close_task`) boots a FastAPI + HTMX +
+Alpine.js webapp via uvicorn in a daemon thread on loopback
+(default `http://127.0.0.1:8765/`). Singleton per MCP process; bind
+failure returns `None` and falls back to the static HTML snapshot at
+`~/.claude/mcp-skill-hub/reports/dashboard.html`. No Node, no CDN —
+HTMX/Alpine vendored locally.
 
-Features in the UI:
-- **Verdicts tab** — browse, filter, delete, flip (allow↔deny), pin,
-  bulk-promote selected commands to `~/.claude/skill-hub-allow.yml`.
-- **Tasks tab** — rename, delete, merge (concatenates summaries into a
-  new open task and closes originals), teach-from-task.
-- **Skills tab** — usage stats (injections, helpful %, feedback score).
-- **Vector Viz** — 2D random-projection scatter of skills / tasks /
-  teachings / verdicts. Click a point for details.
-- **Classifier** — paste a command to see its nearest verdict-cache
-  neighbor and whether it would auto-approve at the current threshold.
+Tabs:
+- **Dashboard** — KPIs, sparklines, auto-approve breakdown, LLM
+  latency, cache hit stats.
+- **Settings** — live-edit `config.json` grouped by section; writes
+  through on form POST.
+- **Verdicts** — filter/sort, delete, flip allow↔deny, pin/unpin,
+  bulk-promote to `~/.claude/skill-hub-allow.yml`.
+- **Tasks** — open/closed panels, rename, edit, close, reopen, merge,
+  delete, teach-from-task modal, text + semantic search. Per-task
+  **auto-approve override** toggle (force on/off for this task only).
+- **Skills** — most-used table, plugin filter, details drawer.
+- **Teachings** — list, add, delete, search.
+- **Logs** — WebSocket live tail of `hook-debug.log` with level/source
+  filters, pause/resume, regex highlight, download.
+- **Vector** — 2D random-projection scatter over skills / tasks /
+  teachings / verdicts; similarity halo on click.
+- **Intents** — chrome-devtools intent queue at
+  `~/.claude/mcp-skill-hub/state/chrome_intents.jsonl`; enqueue/list/
+  mark-done. Stop hook injects a `systemMessage` telling Claude to
+  drain via chrome-devtools MCP.
+- **Questions** — SSE stream for hook-initiated prompts; toast
+  notifications with answer buttons. `auto_approve.py` short-polls
+  (3s) on ambiguous commands when enabled.
 
-Config keys (in `~/.claude/mcp-skill-hub/config.json`):
+New config keys (`~/.claude/mcp-skill-hub/config.json`):
 ```
 "dashboard_server_enabled": true,
-"dashboard_server_port": 8765
+"dashboard_server_port": 8765,
+"dashboard_auto_open_browser": false,
+"ask_user_on_ambiguous": false,
+"ask_user_timeout_s": 3.0,
+"auto_approve_night_mode": false
 ```
 
-If the port is busy or the server fails to bind, we silently fall back
-to the static HTML snapshot at
-`~/.claude/mcp-skill-hub/reports/dashboard.html` — `close_task` never
-fails because of the dashboard.
+`auto_approve_night_mode` = auto-accept any question that times out,
+scoped to the configured `auto_proceed_window`. `ask_user_on_ambiguous`
+routes uncached/unclassified commands to the Questions tab instead of
+falling through to the normal prompt. `dashboard_auto_open_browser`
+opens the URL in the default browser on first boot.
+
+Target idle RSS <60MB. Loopback-only bind; no auth.
 
 ## 7. Vector-similarity classifier
 
