@@ -32,7 +32,7 @@ from pathlib import Path
 # (same semantics as the legacy binary night-mode window).
 READ_ONLY_BUNDLE = [
     "sed -n", "head", "tail", "grep", "rg", "find", "wc",
-    "file", "stat", "ls", "cat", "tree", "which", "echo", "pwd",
+    "file", "stat", "ls", "cat", "tree", "which", "echo", "pwd", "cd",
     "git status", "git diff", "git log", "git branch", "git show",
 ]
 BUILD_BUNDLE = [
@@ -364,6 +364,130 @@ def _split_bash_tokens(cmd: str) -> tuple[list[str], list[str]]:
     return unquoted, quoted
 
 
+def _quote_mask(cmd: str) -> list[bool]:
+    """Return a per-character mask where True means the char is inside quotes."""
+    mask = [False] * len(cmd)
+    in_q: str | None = None
+    i = 0
+    while i < len(cmd):
+        c = cmd[i]
+        if in_q:
+            if c == "\\" and i + 1 < len(cmd):
+                # Skip escaped char inside double quotes.
+                mask[i] = True
+                mask[i + 1] = True
+                i += 2
+                continue
+            if c == in_q:
+                in_q = None
+            else:
+                mask[i] = True
+            i += 1
+            continue
+        if c in ("'", '"'):
+            in_q = c
+        i += 1
+    return mask
+
+
+# Shell operators that separate compound commands. Order matters: longer first.
+_COMPOUND_OPS = ("&&", "||", ";", "|")
+
+
+def split_compound_segments(cmd: str) -> list[str]:
+    """Split a shell command string into segments on `&&`, `||`, `;`, `|`.
+
+    Operators inside single or double quotes are ignored. Returns trimmed
+    segments, dropping empties. If the command has no operators (or they are
+    all inside quotes), returns [cmd.strip()].
+    """
+    if not cmd:
+        return []
+    mask = _quote_mask(cmd)
+    segments: list[str] = []
+    start = 0
+    i = 0
+    n = len(cmd)
+    while i < n:
+        if mask[i]:
+            i += 1
+            continue
+        matched = None
+        for op in _COMPOUND_OPS:
+            if cmd.startswith(op, i) and not any(mask[i:i + len(op)]):
+                # Don't treat `|` as a split when it's actually `||` already
+                # consumed above (order handles this since `||` comes first).
+                matched = op
+                break
+        if matched is not None:
+            seg = cmd[start:i].strip()
+            if seg:
+                segments.append(seg)
+            i += len(matched)
+            start = i
+            continue
+        i += 1
+    tail = cmd[start:].strip()
+    if tail:
+        segments.append(tail)
+    return segments or [cmd.strip()]
+
+
+def _cd_target_ok(segment: str, cfg: dict) -> bool:
+    """Return True if `segment` is `cd <path>` targeting HOME or a workspace dir.
+
+    Accepts `cd`, `cd -`, `cd ~`, `cd ~/...`, `cd $HOME/...`, or absolute paths
+    under HOME or any entry in cfg['workspace_dirs'] (list of str).
+    """
+    try:
+        tokens = shlex.split(segment, posix=True)
+    except ValueError:
+        return False
+    if not tokens or tokens[0] != "cd":
+        return False
+    if len(tokens) == 1:
+        return True  # bare `cd` -> HOME
+    if len(tokens) > 2:
+        # `cd path && other` was already split; extra tokens here are flags.
+        # Accept `cd -` (previous dir) but nothing else multi-arg.
+        return False
+    target = tokens[1]
+    if target in ("-", "~"):
+        return True
+    if target.startswith("~/"):
+        return True
+    # Expand env vars and user.
+    expanded = os.path.expanduser(os.path.expandvars(target))
+    home = str(Path.home())
+    workspace_dirs = [home]
+    extra = cfg.get("workspace_dirs") if isinstance(cfg, dict) else None
+    if isinstance(extra, list):
+        workspace_dirs.extend(str(p) for p in extra if p)
+    # Resolve relative paths against CWD — but for safety only accept absolute
+    # paths or `~`-relative paths. Relative `cd foo` is allowed only if foo
+    # contains no `..` traversal beyond workspace roots, which we can't check
+    # without the runtime CWD; accept plain names without `/` conservatively.
+    if not expanded.startswith("/"):
+        # Relative path without `..` — accept (conservative, still bounded by
+        # CWD which is inside a workspace anyway when the hook fires).
+        return ".." not in expanded.split("/")
+    for root in workspace_dirs:
+        root_abs = os.path.abspath(root).rstrip("/") + "/"
+        if (expanded + "/").startswith(root_abs) or expanded == root_abs.rstrip("/"):
+            return True
+    return False
+
+
+def _segment_matches_prefix(segment: str, prefixes: list[str]) -> str | None:
+    """Return the matching prefix for `segment`, or None."""
+    for prefix in prefixes:
+        if (segment == prefix
+                or segment.startswith(prefix + " ")
+                or segment.startswith(prefix + "\n")):
+            return prefix
+    return None
+
+
 def scoped_deny_haystack(cmd: str) -> str:
     """Return the deny-pattern scan target: unquoted tokens joined by spaces.
 
@@ -408,9 +532,31 @@ def decide(tool_name: str, tool_input: dict, allow: dict,
         if bundle_name:
             window_prefixes = resolve_bundle(bundle_name, cfg)
         all_prefixes = list(allow.get("safe_bash_prefixes", [])) + window_prefixes
-        for prefix in all_prefixes:
-            if cmd == prefix or cmd.startswith(prefix + " ") or cmd.startswith(prefix + "\n"):
+
+        # Split compound commands on &&, ||, ;, | (respecting quotes).
+        segments = split_compound_segments(cmd)
+        if len(segments) == 1:
+            prefix = _segment_matches_prefix(segments[0], all_prefixes)
+            if prefix is not None:
                 return "approve", f"matched safe_bash_prefix: {prefix}"
+            # Also honor `cd <safe-path>` as a single segment.
+            if _cd_target_ok(segments[0], cfg):
+                return "approve", "cd to workspace/home path"
+            return "", ""
+        # Compound: every segment must match a prefix (or be a safe `cd`).
+        matched_prefixes: list[str] = []
+        for seg in segments:
+            if _cd_target_ok(seg, cfg):
+                matched_prefixes.append("cd")
+                continue
+            p = _segment_matches_prefix(seg, all_prefixes)
+            if p is None:
+                return "", ""
+            matched_prefixes.append(p)
+        return "approve", (
+            f"all {len(segments)} segments in allow-list "
+            f"({', '.join(sorted(set(matched_prefixes)))})"
+        )
     return "", ""
 
 

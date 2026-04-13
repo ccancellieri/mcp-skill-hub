@@ -16,6 +16,12 @@ safe_bash_prefixes:
   - ls
   - pwd
   - cat
+  - cd
+  - echo
+  - wc
+  - head
+  - tail
+  - grep
   - npm test
   - pytest
   - uv run pytest
