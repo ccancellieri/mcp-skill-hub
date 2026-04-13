@@ -29,6 +29,60 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import verdict_cache  # local module, stdlib-only  # noqa: E402
 
 LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
+ACTIVE_TASK_MARKER = (
+    Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
+)
+
+
+def load_active_task_override() -> dict:
+    """Read active task marker. Returns {} if absent/invalid."""
+    if not ACTIVE_TASK_MARKER.exists():
+        return {}
+    try:
+        return json.loads(ACTIVE_TASK_MARKER.read_text()) or {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def task_safe_prefixes_from_marker(marker: dict) -> list[str]:
+    """Extract per-task extra safe_bash_prefixes from the active task marker.
+
+    Prefixes live in the task's DB row under context JSON key
+    'task_safe_prefixes'. The marker may also embed them directly.
+    """
+    # Inline on the marker (fast path; server may choose to denormalize).
+    inline = marker.get("task_safe_prefixes")
+    if isinstance(inline, list):
+        return [str(p) for p in inline if p]
+    # Fallback: read task context from the DB.
+    task_id = marker.get("task_id")
+    if not isinstance(task_id, int):
+        return []
+    db = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
+    if not db.exists():
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT context FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return []
+        # context may be plain text OR JSON; try JSON.
+        try:
+            ctx = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return []
+        prefixes = ctx.get("task_safe_prefixes") if isinstance(ctx, dict) else None
+        if isinstance(prefixes, list):
+            return [str(p) for p in prefixes if p]
+    except Exception:  # noqa: BLE001
+        return []
+    return []
 
 
 def log(msg: str) -> None:
@@ -168,6 +222,18 @@ def main() -> int:
     cwd = Path(data.get("cwd") or os.getcwd())
 
     allow = load_allow_list(cwd)
+
+    # Per-task permissive override: if an active task has auto_approve=True,
+    # ADD its task_safe_prefixes to the allow-list (never reduces safety).
+    marker = load_active_task_override()
+    if marker.get("auto_approve") is True:
+        extra = task_safe_prefixes_from_marker(marker)
+        if extra:
+            allow["safe_bash_prefixes"] = list(allow.get("safe_bash_prefixes", [])) + extra
+            log(f"task_override  task={marker.get('task_id')}  "
+                f"added_prefixes={len(extra)}")
+    # auto_approve is False/None -> no-op (fall through to normal chain).
+
     decision, reason = decide(tool_name, tool_input, allow)
 
     preview = (extract_bash_command(tool_input) if tool_name == "Bash" else "")[:80]

@@ -368,6 +368,14 @@ class SkillStore:
             )
             self._conn.commit()
 
+        # Per-task auto-approve toggle (permissive override).
+        task_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        if "auto_approve" not in task_cols:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN auto_approve INTEGER"
+            )
+            self._conn.commit()
+
         emb_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(embeddings)")}
         if "norm" not in emb_cols:
             # Pre-stored L2 norm: avoids recomputing sqrt(sum(x²)) per skill per search.
@@ -770,6 +778,35 @@ class SkillStore:
         return self._conn.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
+
+    def get_open_task_for_session(self, session_id: str) -> sqlite3.Row | None:
+        """Return the most recently created open task for a session, if any."""
+        if not session_id:
+            return None
+        return self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' AND session_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (session_id,)
+        ).fetchone()
+
+    def set_task_auto_approve(self, task_id: int, enabled: bool | None) -> bool:
+        """Set per-task auto_approve flag. None clears (global behavior)."""
+        val = None if enabled is None else (1 if enabled else 0)
+        cur = self._conn.execute(
+            "UPDATE tasks SET auto_approve = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (val, task_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_task_auto_approve(self, task_id: int) -> bool | None:
+        row = self._conn.execute(
+            "SELECT auto_approve FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None or row["auto_approve"] is None:
+            return None
+        return bool(row["auto_approve"])
 
     def search_tasks(self, query_vector: list[float], top_k: int = 3,
                      status: str = "all", min_sim: float = 0.4) -> list[dict]:

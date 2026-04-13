@@ -22,19 +22,33 @@ Logs: `~/.claude/mcp-skill-hub/logs/hook-debug.log` (grep `AUTO_APPROVE`).
 
 ## 2. Auto-proceed on long plans (Stop)
 
-Enable once in `~/.claude/mcp-skill-hub/config.json`:
+Default config (seeded by `install.py`):
 
 ```json
 {
   "auto_proceed": true,
+  "auto_proceed_window": {"start_hour": 0, "end_hour": 24},
   "auto_proceed_max": 20
 }
 ```
 
-When Claude stops and the newest plan under `~/.claude/plans/` still has
-`- [ ]` items, the hook re-feeds `proceed` automatically. Counter per session
-is tracked in `~/.claude/mcp-skill-hub/state/auto_proceed.json`; once the cap
-is reached, normal Stop resumes.
+When Claude stops, the hook re-feeds `proceed` automatically if ANY of these
+three signals match (logged as `AUTO_PROCEED signal=...`):
+
+1. **`plan_checklist`** — newest plan file under `~/.claude/plans/` contains
+   `- [ ]` items (existing behavior).
+2. **`open_task`** — the skill-hub SQLite DB has an `open` task whose
+   `session_id` matches the current Stop-hook session. Created by
+   `mcp__skill-hub__save_task`; cleared by `close_task`.
+3. **`recent_marker`** — a plan file was modified in the last 60 minutes and
+   contains the literal marker `<!-- auto-proceed -->` on any line. Use this
+   for prose-only plans without checklists.
+
+Counter per session is tracked in
+`~/.claude/mcp-skill-hub/state/auto_proceed.json`; once the cap is reached,
+normal Stop resumes. The active open task is also mirrored at
+`~/.claude/mcp-skill-hub/state/active_task.json` for hooks that need it
+without touching the DB.
 
 Env overrides (if you want it on only for a single session):
 `SKILL_HUB_AUTO_PROCEED=1`, `SKILL_HUB_MAX_PROCEEDS=50`.

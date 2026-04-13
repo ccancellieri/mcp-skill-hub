@@ -270,8 +270,12 @@ def seed_auto_proceed_defaults():
         with open(CONFIG_JSON) as f:
             cfg = json.load(f)
     changed = False
-    if "auto_proceed_window" not in cfg and "auto_proceed" not in cfg:
-        cfg["auto_proceed_window"] = {"start_hour": 23, "end_hour": 7}
+    if "auto_proceed" not in cfg:
+        cfg["auto_proceed"] = True
+        changed = True
+    if "auto_proceed_window" not in cfg:
+        # Relaxed default: always-on window. Env vars still override.
+        cfg["auto_proceed_window"] = {"start_hour": 0, "end_hour": 24}
         changed = True
     if "auto_proceed_max" not in cfg:
         cfg["auto_proceed_max"] = 20
@@ -300,7 +304,7 @@ def seed_auto_proceed_defaults():
     if changed:
         with open(CONFIG_JSON, "w") as f:
             json.dump(cfg, f, indent=2)
-        print(f"  Auto-proceed window seeded: 23:00 -> 07:00 (edit {CONFIG_JSON} to change)")
+        print(f"  Auto-proceed enabled (always-on window; edit {CONFIG_JSON} to change)")
     else:
         print("  auto_proceed settings already present.")
 

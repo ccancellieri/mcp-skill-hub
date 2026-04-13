@@ -65,6 +65,38 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 _store = SkillStore()
 
+_ACTIVE_TASK_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
+
+
+def _write_active_task_marker(task_id: int, session_id: str, title: str,
+                              auto_approve: bool | None) -> None:
+    """Write active task marker so hooks can read it without touching the DB."""
+    try:
+        _ACTIVE_TASK_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _ACTIVE_TASK_MARKER.write_text(json.dumps({
+            "task_id": task_id,
+            "session_id": session_id,
+            "title": title,
+            "auto_approve": auto_approve,
+        }, indent=2))
+    except OSError:
+        pass
+
+
+def _clear_active_task_marker(task_id: int | None = None) -> None:
+    """Remove active task marker. If task_id given, only remove if it matches."""
+    try:
+        if task_id is not None and _ACTIVE_TASK_MARKER.exists():
+            try:
+                cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
+                if cur.get("task_id") != task_id:
+                    return
+            except (OSError, json.JSONDecodeError):
+                pass
+        _ACTIVE_TASK_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 # Warm up the FastAPI dashboard in a daemon thread so it's ready before
 # the first close_task / render_dashboard call. Safe no-op if disabled or
 # the port is busy.
@@ -354,6 +386,7 @@ def save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
     )
+    _write_active_task_marker(tid, _session["id"], title, auto_approve=None)
     return f"Task #{tid} saved (open): \"{title}\"\nWill surface in future search_context() calls."
 
 
@@ -380,6 +413,7 @@ def close_task(task_id: int, summary: str = "") -> str:
     compact_vector = embed(f"{digest.get('title', '')}: {digest.get('summary', '')}")
 
     _store.close_task(task_id, compact_text, compact_vector)
+    _clear_active_task_marker(task_id)
 
     # Refresh benefit/cost dashboard; never fail close_task on render error.
     dash_line = ""
@@ -402,6 +436,43 @@ def close_task(task_id: int, summary: str = "") -> str:
         f"Decisions: {digest.get('decisions', [])}"
         f"{dash_line}"
     )
+
+
+@mcp.tool()
+def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
+    """Toggle per-task permissive auto-approve override.
+
+    enabled=True  -> permissive: the task's own safe_bash_prefixes (stored in
+                    context JSON under 'task_safe_prefixes') are ADDED to the
+                    global allow-list while this task is active.
+    enabled=False -> explicit opt-out (no-op for hook; never reduces safety).
+    enabled=None  -> clear; fall back to global behavior.
+    """
+    log_tool("set_task_auto_approve", task_id=task_id, enabled=enabled)
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    ok = _store.set_task_auto_approve(task_id, enabled)
+    if not ok:
+        return f"Task #{task_id}: no change."
+    # Update active marker if this task is the currently active one.
+    try:
+        if _ACTIVE_TASK_MARKER.exists():
+            cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
+            if cur.get("task_id") == task_id:
+                _write_active_task_marker(
+                    task_id, cur.get("session_id", _session["id"]),
+                    cur.get("title", task["title"]), auto_approve=enabled,
+                )
+        elif task["session_id"] == _session["id"] and task["status"] == "open":
+            _write_active_task_marker(
+                task_id, task["session_id"], task["title"],
+                auto_approve=enabled,
+            )
+    except (OSError, json.JSONDecodeError):
+        pass
+    label = "null" if enabled is None else str(bool(enabled)).lower()
+    return f"Task #{task_id} auto_approve set to {label}."
 
 
 @mcp.tool()

@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +24,9 @@ LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
 STATE = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "auto_proceed.json"
 CONFIG = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
 PLANS_DIR = Path.home() / ".claude" / "plans"
+DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
+RECENT_MARKER_MAX_AGE_S = 60 * 60  # 60 minutes
+RECENT_MARKER_LITERAL = "<!-- auto-proceed -->"
 
 
 def load_config() -> dict:
@@ -111,6 +116,42 @@ def newest_active_plan() -> Path | None:
     return None
 
 
+def has_open_task_for_session(session_id: str) -> bool:
+    """Return True if an open task exists for this session in the skill-hub DB."""
+    if not session_id or not DB_PATH.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM tasks WHERE status='open' AND session_id=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+
+def recent_marker_plan() -> Path | None:
+    """Return a plan modified in the last 60min containing the marker literal."""
+    if not PLANS_DIR.exists():
+        return None
+    now = time.time()
+    plans = sorted(PLANS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for p in plans:
+        try:
+            if now - p.stat().st_mtime > RECENT_MARKER_MAX_AGE_S:
+                continue
+            if RECENT_MARKER_LITERAL in p.read_text():
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def main() -> int:
     cfg = load_config()
     if not is_enabled(cfg):
@@ -129,26 +170,44 @@ def main() -> int:
 
     session_id = data.get("session_id") or "unknown"
 
+    # Multi-signal activation: plan checklist | open DB task | recent marker.
+    signal = "none"
+    source_label = ""
     plan = newest_active_plan()
-    if plan is None:
-        log(f"skip  reason=no_active_plan  session={session_id}")
+    if plan is not None:
+        signal = "plan_checklist"
+        source_label = f"plan {plan.name} has unchecked items"
+    elif has_open_task_for_session(session_id):
+        signal = "open_task"
+        source_label = f"open task for session {session_id}"
+    else:
+        marker_plan = recent_marker_plan()
+        if marker_plan is not None:
+            signal = "recent_marker"
+            plan = marker_plan
+            source_label = f"plan {marker_plan.name} has auto-proceed marker"
+
+    log(f"signal={signal}  session={session_id}")
+    if signal == "none":
+        log(f"skip  reason=no_active_signal  session={session_id}")
         return 0
 
     state = load_state()
-    sess = state.setdefault(session_id, {"count": 0, "plan": str(plan)})
+    plan_key = str(plan) if plan is not None else f"task:{session_id}"
+    sess = state.setdefault(session_id, {"count": 0, "plan": plan_key})
     if sess["count"] >= cap:
         log(f"skip  reason=max_proceeds_reached  session={session_id}  count={sess['count']}")
         return 0
 
     sess["count"] += 1
-    sess["plan"] = str(plan)
+    sess["plan"] = plan_key
     sess["last"] = datetime.now().isoformat(timespec="seconds")
     save_state(state)
 
-    log(f"PROCEED  session={session_id}  count={sess['count']}  plan={plan.name}")
+    log(f"PROCEED  session={session_id}  count={sess['count']}  signal={signal}")
     out = {
         "decision": "block",
-        "reason": f"proceed (auto — {sess['count']}/{cap}, plan {plan.name} has unchecked items)",
+        "reason": f"proceed (auto — {sess['count']}/{cap}, {source_label})",
     }
     print(json.dumps(out))
     return 0
