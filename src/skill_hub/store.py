@@ -763,14 +763,16 @@ class SkillStore:
         return cur.rowcount > 0
 
     def list_tasks(self, status: str = "open") -> list[sqlite3.Row]:
+        cols = (
+            "id, title, summary, context, status, tags, session_id, "
+            "created_at, updated_at, closed_at"
+        )
         if status == "all":
             return self._conn.execute(
-                "SELECT id, title, summary, status, tags, created_at, updated_at, closed_at "
-                "FROM tasks ORDER BY updated_at DESC"
+                f"SELECT {cols} FROM tasks ORDER BY updated_at DESC"
             ).fetchall()
         return self._conn.execute(
-            "SELECT id, title, summary, status, tags, created_at, updated_at, closed_at "
-            "FROM tasks WHERE status = ? ORDER BY updated_at DESC",
+            f"SELECT {cols} FROM tasks WHERE status = ? ORDER BY updated_at DESC",
             (status,)
         ).fetchall()
 

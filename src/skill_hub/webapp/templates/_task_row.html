@@ -1,13 +1,27 @@
 {% set aa = t.get('auto_approve') %}
-<tr id="task-{{ t.id }}">
+{% set desc = (t.get('summary') or t.get('context') or '') %}
+{% set desc_short = desc[:140] %}
+<tr id="task-{{ t.id }}" x-data="{open:false}">
   <td>
     {% if panel == 'closed' %}
       <input type="checkbox" @change="toggle({{ t.id }}, $event.target.checked)">
+    {% endif %}
+    {% if desc %}
+      <button type="button" class="btn sm" @click="open=!open"
+              :title="open ? 'collapse' : 'expand description'"
+              x-text="open ? '▾' : '▸'"></button>
     {% endif %}
   </td>
   <td>
     <input type="text" value="{{ t.title }}" class="title-in"
            onkeydown="renameInline(event, {{ t.id }})">
+    {% if desc_short %}
+      <div class="muted desc-preview" x-show="!open"
+           style="font-size:12px; margin-top:2px; max-width:48ch;
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+        {{ desc_short }}{% if desc|length > 140 %}…{% endif %}
+      </div>
+    {% endif %}
   </td>
   <td class="muted">{{ t.tags or '' }}</td>
   <td class="muted">{{ t.created_at }}</td>
@@ -38,3 +52,19 @@
     {% endif %}
   </td>
 </tr>
+{% if desc %}
+<tr class="task-detail" x-show="open" x-transition x-cloak
+    style="background:rgba(255,255,255,0.02)">
+  <td></td>
+  <td colspan="6">
+    {% if t.get('summary') %}
+      <div style="margin-bottom:6px"><strong>Summary</strong></div>
+      <pre style="white-space:pre-wrap; margin:0 0 10px 0; font-size:12px; line-height:1.45">{{ t.summary }}</pre>
+    {% endif %}
+    {% if t.get('context') %}
+      <div style="margin-bottom:6px"><strong>Context</strong></div>
+      <pre style="white-space:pre-wrap; margin:0; font-size:12px; line-height:1.45">{{ t.context }}</pre>
+    {% endif %}
+  </td>
+</tr>
+{% endif %}
