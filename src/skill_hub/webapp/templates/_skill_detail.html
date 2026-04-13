@@ -1,0 +1,29 @@
+<div class="skill-detail-drawer">
+  <h3>{{ s.name }} <code class="muted">{{ s.id }}</code></h3>
+  <div class="muted">plugin: {{ s.plugin or '—' }} · target: {{ s.target or '—' }}
+    {% if norm is not none %} · ‖vec‖={{ '%.3f'|format(norm) }}{% endif %}
+  </div>
+  <p>{{ s.description or '' }}</p>
+  {% if s.content %}
+    <details>
+      <summary>content ({{ s.content|length }} chars)</summary>
+      <pre class="log-view">{{ s.content[:4000] }}{% if s.content|length > 4000 %}
+…truncated…{% endif %}</pre>
+    </details>
+  {% endif %}
+  <h4>recent feedback</h4>
+  {% if feedback %}
+    <table class="ttable">
+      <thead><tr><th>when</th><th>helpful</th><th>query</th></tr></thead>
+      <tbody>
+        {% for fb in feedback %}
+          <tr>
+            <td class="muted">{{ fb.created_at }}</td>
+            <td>{% if fb.helpful %}<span class="tag allow">+</span>{% else %}<span class="tag deny">−</span>{% endif %}</td>
+            <td>{{ (fb.query or '')[:120] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}<div class="muted">no feedback yet</div>{% endif %}
+</div>

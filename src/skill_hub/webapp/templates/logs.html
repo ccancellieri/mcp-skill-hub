@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}logs{% endblock %}
+{% block content %}
+<h1 class="page-h">Logs</h1>
+<div x-data="logsPage()" x-init="init()">
+  <div class="filter-bar">
+    <select x-model="levelFilter">
+      <option value="">(all levels)</option>
+      <option value="hook">hook</option>
+      <option value="router">router</option>
+      <option value="intercept">intercept</option>
+      <option value="stop">stop</option>
+      <option value="error">error</option>
+    </select>
+    <input type="text" x-model="sourceFilter" placeholder="source regex (e.g. hook|router)">
+    <button type="button" class="btn" @click="paused = !paused"
+            :class="paused ? 'off' : 'on'">
+      <span x-text="paused ? 'resume' : 'pause'"></span>
+    </button>
+    <button type="button" class="btn" @click="clear()">clear</button>
+    <span class="muted" x-text="'buffer: ' + lines.length"></span>
+    <span class="muted" x-text="ws_state"></span>
+    <a class="btn" href="/logs/download?source=hook-debug&lines=5000">download hook-debug</a>
+    <a class="btn" href="/logs/download?source=activity&lines=5000">download activity</a>
+  </div>
+
+  <pre class="log-view" id="log-view"><template x-for="l in visibleLines" :key="l.n">
+<span :class="'level-' + l.level" x-text="l.pretty"></span>
+</template></pre>
+</div>
+<script>
+function logsPage() {
+  return {
+    lines: [],
+    counter: 0,
+    paused: false,
+    levelFilter: '',
+    sourceFilter: '',
+    ws_state: 'connecting…',
+    ws: null,
+    MAX: 500,
+    init() {
+      this.connect();
+    },
+    connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      try {
+        this.ws = new WebSocket(proto + '://' + location.host + '/ws/logs');
+      } catch (e) { this.ws_state = 'error'; return; }
+      this.ws.onopen = () => { this.ws_state = 'connected'; };
+      this.ws.onclose = () => {
+        this.ws_state = 'disconnected — retrying';
+        setTimeout(() => this.connect(), 2000);
+      };
+      this.ws.onerror = () => { this.ws_state = 'error'; };
+      this.ws.onmessage = (ev) => {
+        if (this.paused) return;
+        let j; try { j = JSON.parse(ev.data); } catch(e) { return; }
+        j.n = ++this.counter;
+        j.pretty = (j.ts ? '[' + j.ts + '] ' : '') +
+                   (j.source ? j.source.toUpperCase().padEnd(10) + ' ' : '') +
+                   j.text;
+        this.lines.push(j);
+        if (this.lines.length > this.MAX) this.lines.splice(0, this.lines.length - this.MAX);
+        this.$nextTick(() => {
+          const box = document.getElementById('log-view');
+          if (box) box.scrollTop = box.scrollHeight;
+        });
+      };
+    },
+    get visibleLines() {
+      let out = this.lines;
+      if (this.levelFilter) out = out.filter(l => l.level === this.levelFilter);
+      if (this.sourceFilter) {
+        let re; try { re = new RegExp(this.sourceFilter, 'i'); } catch(e) { return out; }
+        out = out.filter(l => re.test(l.source) || re.test(l.text));
+      }
+      return out;
+    },
+    clear() { this.lines = []; this.counter = 0; }
+  };
+}
+</script>
+{% endblock %}

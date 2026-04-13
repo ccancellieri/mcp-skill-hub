@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}skills{% endblock %}
+{% block content %}
+<h1 class="page-h">Skills <span class="muted">({{ rows|length }})</span></h1>
+<div x-data="skillsPage()">
+  <div class="filter-bar">
+    <input type="text" x-model="q" placeholder="search name / id…">
+    <select x-model="target">
+      <option value="">(any target)</option>
+      {% for t in targets %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <select x-model="sortBy">
+      <option value="injections">sort: injections</option>
+      <option value="feedback">sort: feedback score</option>
+      <option value="name">sort: name</option>
+      <option value="last">sort: last used</option>
+    </select>
+  </div>
+
+  <table class="vtable">
+    <thead>
+      <tr>
+        <th style="width:40px"></th>
+        <th>id</th><th>name</th><th>plugin/target</th>
+        <th>inj</th><th>helpful</th><th>score</th><th>last used</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="skill-rows">
+      {% for r in rows %}{% include "_skill_row.html" %}{% endfor %}
+    </tbody>
+  </table>
+
+  <section class="card" style="margin-top:18px">
+    <h2>Details</h2>
+    <div id="skill-detail-drawer">
+      <div class="muted">click “view” on a row to inspect details here</div>
+    </div>
+  </section>
+</div>
+<script>
+function skillsPage() {
+  return {
+    q: '', target: '', sortBy: 'injections',
+    init() {
+      this.$watch('q', () => this.apply());
+      this.$watch('target', () => this.apply());
+      this.$watch('sortBy', () => this.apply());
+    },
+    apply() {
+      const tbody = document.getElementById('skill-rows');
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      const q = this.q.toLowerCase();
+      const tgt = this.target;
+      rows.forEach(tr => {
+        const txt = tr.innerText.toLowerCase();
+        let show = !q || txt.includes(q);
+        if (show && tgt) show = tr.innerText.includes(tgt);
+        tr.style.display = show ? '' : 'none';
+      });
+      // sort
+      const key = this.sortBy;
+      const pinned = rows.filter(r => r.querySelector('.btn.on'));
+      const rest = rows.filter(r => !r.querySelector('.btn.on'));
+      const get = (tr, k) => {
+        const tds = tr.querySelectorAll('td');
+        if (k === 'injections') return -parseFloat(tds[4].innerText) || 0;
+        if (k === 'feedback') return -parseFloat(tds[6].innerText) || 0;
+        if (k === 'name') return tds[2].innerText;
+        if (k === 'last') return -(Date.parse(tds[7].innerText) || 0);
+        return 0;
+      };
+      rest.sort((a,b) => get(a,key) > get(b,key) ? 1 : -1);
+      const tb = tbody;
+      [...pinned, ...rest].forEach(r => tb.appendChild(r));
+    }
+  };
+}
+</script>
+{% endblock %}

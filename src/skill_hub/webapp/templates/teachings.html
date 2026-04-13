@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}teachings{% endblock %}
+{% block content %}
+<h1 class="page-h">Teachings <span class="muted">({{ rows|length }})</span></h1>
+
+<section class="card">
+  <h2>Add teaching{% if not embed_ok %} <span class="warn">— embeddings offline, rule will be stored without vector</span>{% endif %}</h2>
+  <form hx-post="/teachings/add" hx-target="#teach-rows" hx-swap="innerHTML"
+        class="settings-form" style="margin-top:8px">
+    <label>rule
+      <textarea name="rule" rows="2" required
+                placeholder="when the user asks X, suggest Y"></textarea>
+    </label>
+    <div class="filter-bar">
+      <label>action
+        <select name="action">
+          {% for a in actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>target type
+        <select name="target_type">
+          {% for tt in target_types %}<option value="{{ tt }}">{{ tt }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>target id (optional)
+        <input type="number" name="target_id" style="width:100px">
+      </label>
+      <label>weight
+        <input type="number" name="weight" step="0.1" value="1.0" style="width:80px">
+      </label>
+      <button type="submit" class="btn">add</button>
+    </div>
+  </form>
+  <div id="teach-status"></div>
+</section>
+
+<section class="search-bar" style="margin-top:14px">
+  <input type="text" placeholder="search rules (semantic with LIKE fallback)…"
+         hx-get="/teachings/search" hx-trigger="keyup changed delay:300ms"
+         hx-target="#teach-rows" hx-swap="innerHTML"
+         name="q">
+</section>
+
+<table class="vtable">
+  <thead><tr>
+    <th style="width:55px">id</th>
+    <th>rule</th><th>action</th><th>target</th><th>weight</th><th></th>
+  </tr></thead>
+  <tbody id="teach-rows">
+    {% for t in rows %}{% include "_teaching_row.html" %}{% endfor %}
+  </tbody>
+</table>
+{% endblock %}

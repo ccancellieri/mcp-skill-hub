@@ -1,0 +1,30 @@
+{% set tot = (r.helpful or 0) + (r.unhelpful or 0) %}
+<tr id="sk-{{ r.id|replace(':','_')|replace('.','_')|replace('/','_') }}">
+  <td>
+    <button class="btn sm {% if r.pinned %}on{% endif %}"
+            hx-post="/skills/{{ r.id }}/pin"
+            hx-target="#sk-{{ r.id|replace(':','_')|replace('.','_')|replace('/','_') }}"
+            hx-swap="outerHTML"
+            title="pin to top">{% if r.pinned %}📌{% else %}·{% endif %}</button>
+  </td>
+  <td><code>{{ r.id }}</code></td>
+  <td>{{ r.name }}</td>
+  <td class="muted">{{ r.plugin or '' }}{% if r.target %} / {{ r.target }}{% endif %}</td>
+  <td>{{ r.injections or 0 }}</td>
+  <td>
+    {% if tot %}
+      <span class="bar-wrap" title="{{ r.helpful }} helpful / {{ r.unhelpful }} unhelpful">
+        <span class="bar-fill" style="width: {{ r.helpful_pct or 0 }}%"></span>
+        <span class="bar-text">{{ r.helpful_pct }}%</span>
+      </span>
+    {% else %}<span class="muted">—</span>{% endif %}
+  </td>
+  <td>{{ '%.3f'|format(r.feedback_score or 1.0) }}</td>
+  <td class="muted">{{ r.last_used or '' }}</td>
+  <td>
+    <button class="btn sm"
+            hx-get="/skills/{{ r.id }}/detail"
+            hx-target="#skill-detail-drawer"
+            hx-swap="innerHTML">view</button>
+  </td>
+</tr>
