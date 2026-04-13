@@ -109,7 +109,7 @@ def route(
     t2_threshold: float = float(cfg.get("router_tier2_confidence_gate", 0.85))
     if confidence < t2_threshold:
         t2_start = time.monotonic()
-        t2 = ollama_client.classify(prompt, cfg)
+        t2 = ollama_client.classify(prompt, cfg, cwd=cwd)
         tier2_ms = int((time.monotonic() - t2_start) * 1000)
         if t2 is not None:
             complexity   = t2.complexity
@@ -127,7 +127,7 @@ def route(
     t3_threshold: float = float(cfg.get("router_haiku_threshold", 0.7))
     if confidence < t3_threshold and haiku_client.is_enabled(cfg):
         t3_start = time.monotonic()
-        h = haiku_client.classify(prompt, cfg, msg_count)
+        h = haiku_client.classify(prompt, cfg, msg_count, cwd=cwd)
         tier3_ms = int((time.monotonic() - t3_start) * 1000)
         if h is not None:
             complexity   = h.complexity

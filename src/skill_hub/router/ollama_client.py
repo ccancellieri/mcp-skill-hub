@@ -8,6 +8,7 @@ unavailable or times out.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -48,7 +49,11 @@ class ClassifierResult:
     confidence: float = 0.5
 
 
-def classify(prompt: str, cfg: dict[str, Any] | None = None) -> ClassifierResult | None:
+def classify(
+    prompt: str,
+    cfg: dict[str, Any] | None = None,
+    cwd: str = "",
+) -> ClassifierResult | None:
     """Call local Ollama to classify *prompt*.
 
     Returns ``None`` on any error so the caller can fall back gracefully.
@@ -60,7 +65,13 @@ def classify(prompt: str, cfg: dict[str, Any] | None = None) -> ClassifierResult
     model: str = cfg.get("router_ollama_model", "qwen2.5:3b")
     timeout: float = float(cfg.get("router_tier2_timeout", 10.0))
 
-    full_prompt = _CLASSIFY_PROMPT.format(prompt=prompt[:1500])
+    # Prepend project context so the LLM knows which codebase it's routing for
+    project_prefix = ""
+    if cwd:
+        project_name = os.path.basename(cwd.rstrip("/"))
+        project_prefix = f"Project context: {project_name} ({cwd})\n\n"
+
+    full_prompt = project_prefix + _CLASSIFY_PROMPT.format(prompt=prompt[:1500])
 
     try:
         resp = httpx.post(

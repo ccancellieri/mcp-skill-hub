@@ -39,6 +39,7 @@ def _build_prompt(
     cfg: dict[str, Any],
     msg_count: int,
     current_config_summary: str,
+    cwd: str = "",
 ) -> str:
     tasks: list[str] = []
 
@@ -73,10 +74,16 @@ def _build_prompt(
 
     schema = "{\n  " + ",\n  ".join(tasks) + "\n}"
 
+    project_line = ""
+    if cwd:
+        project_name = os.path.basename(cwd.rstrip("/"))
+        project_line = f"Project context: {project_name} ({cwd})\n\n"
+
     return (
         "You are a coding-assistant meta-router. Analyse the user message and "
         "return ONLY a JSON object with these fields (no prose, no markdown):\n\n"
         f"{schema}\n\n"
+        f"{project_line}"
         f"User message:\n{prompt[:2000]}\n\nJSON:"
     )
 
@@ -113,6 +120,7 @@ def classify(
     prompt: str,
     cfg: dict[str, Any] | None = None,
     msg_count: int = 0,
+    cwd: str = "",
 ) -> HaikuResult | None:
     """Call Haiku with a batched prompt. Returns None on any error."""
     if cfg is None:
@@ -129,7 +137,7 @@ def classify(
     ]
     config_summary = json.dumps({k: cfg.get(k) for k in relevant_keys if k in cfg})
 
-    system_msg = _build_prompt(prompt, cfg, msg_count, config_summary)
+    system_msg = _build_prompt(prompt, cfg, msg_count, config_summary, cwd=cwd)
 
     try:
         resp = httpx.post(
