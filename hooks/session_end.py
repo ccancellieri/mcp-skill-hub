@@ -15,6 +15,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import verdict_cache  # noqa: E402
+
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 IS_WINDOWS = sys.platform == "win32"
 CLI = SCRIPT_DIR / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / ("skill-hub-cli.exe" if IS_WINDOWS else "skill-hub-cli")
@@ -75,7 +78,8 @@ def log(msg: str):
         elapsed = time.monotonic() - _t0
         ts = datetime.now().strftime("%H:%M:%S")
         with open(DEBUG_LOG, "a") as f:
-            f.write(f"[{ts}] [{elapsed:6.1f}s] STOP       {msg}\n")
+            tag = verdict_cache.task_tag()
+            f.write(f"[{ts}] [{elapsed:6.1f}s] STOP       {tag}{msg}\n")
     except OSError:
         pass
 

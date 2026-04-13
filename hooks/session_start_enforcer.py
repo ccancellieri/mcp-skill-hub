@@ -14,6 +14,9 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import verdict_cache  # noqa: E402
+
 DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
 RESUME_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "needs_resume.json"
 
@@ -49,7 +52,8 @@ def log(msg: str):
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%H:%M:%S")
         with open(DEBUG_LOG, "a") as f:
-            f.write(f"[{ts}] [  0.0s] ENFORCER   {msg}\n")
+            tag = verdict_cache.task_tag()
+            f.write(f"[{ts}] [  0.0s] ENFORCER   {tag}{msg}\n")
     except OSError:
         pass
 

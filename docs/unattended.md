@@ -130,6 +130,13 @@ Tabs:
 - **Tasks** — open/closed panels, rename, edit, close, reopen, merge,
   delete, teach-from-task modal, text + semantic search. Per-task
   **auto-approve override** toggle (force on/off for this task only).
+  Expanding a row reveals a per-task **Logs** section
+  (`GET /tasks/{id}/logs`, lazy-loaded via HTMX, optional WebSocket
+  live tail at `/tasks/{id}/logs/ws`). Lines are filtered by the
+  `task=<id>` token that hook `log()` helpers prepend whenever
+  `~/.claude/mcp-skill-hub/state/active_task.json` points at a task —
+  see `hooks/verdict_cache.py::task_tag()`. Untagged legacy lines
+  remain in the global `/logs` view but are not shown per-task.
 - **Skills** — most-used table, plugin filter, details drawer.
 - **Teachings** — list, add, delete, search.
 - **Logs** — WebSocket live tail of `hook-debug.log` with level/source

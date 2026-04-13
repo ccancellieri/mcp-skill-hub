@@ -14,6 +14,7 @@ from .routes import logs as logs_routes
 from .routes import questions as questions_routes
 from .routes import settings as settings_routes
 from .routes import skills as skills_routes
+from .routes import task_logs as task_logs_routes
 from .routes import tasks as tasks_routes
 from .routes import teachings as teachings_routes
 from .routes import vector as vector_routes
@@ -43,6 +44,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(settings_routes.router)
     app.include_router(verdicts_routes.router)
     app.include_router(tasks_routes.router)
+    app.include_router(task_logs_routes.router)
     app.include_router(skills_routes.router)
     app.include_router(teachings_routes.router)
     app.include_router(logs_routes.router)

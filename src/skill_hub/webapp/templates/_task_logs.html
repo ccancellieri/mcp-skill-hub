@@ -1,0 +1,28 @@
+{# Per-task log partial — lazy-loaded into _task_row.html detail section. #}
+<div x-data="{live:false, ws:null, lines: {{ lines|tojson }},
+              toggleLive() {
+                if (this.live) { this.ws && this.ws.close(); this.ws=null; this.live=false; return; }
+                const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+                this.ws = new WebSocket(`${proto}://${location.host}/tasks/{{ task_id }}/logs/ws`);
+                this.ws.onmessage = (e) => {
+                  try { const d = JSON.parse(e.data); this.lines.push(`[${d.ts}] ${d.text}`); if (this.lines.length > 500) this.lines.shift(); } catch(_) {}
+                };
+                this.ws.onclose = () => { this.live = false; this.ws = null; };
+                this.live = true;
+              },
+              copyAll() { navigator.clipboard && navigator.clipboard.writeText(this.lines.join('\n')); }}">
+  <div style="margin:6px 0; display:flex; gap:6px; align-items:center">
+    <button class="btn sm" hx-get="/tasks/{{ task_id }}/logs"
+            hx-target="closest .task-logs-wrap" hx-swap="innerHTML">refresh</button>
+    <button class="btn sm" @click="copyAll()">copy</button>
+    <a class="btn sm" href="/logs/download?source=hook-debug&lines=5000"
+       target="_blank" rel="noopener">download</a>
+    <button class="btn sm" :class="live ? 'on' : ''" @click="toggleLive()"
+            x-text="live ? 'live: on' : 'live: off'"></button>
+    <span class="muted" style="font-size:11px">task={{ task_id }} · last 200</span>
+  </div>
+  <pre style="white-space:pre-wrap; max-height:360px; overflow:auto;
+              background:rgba(0,0,0,0.25); padding:8px; margin:0;
+              font-size:12px; line-height:1.4"
+       x-text="lines.length ? lines.join('\n') : '(no tagged lines yet)'"></pre>
+</div>

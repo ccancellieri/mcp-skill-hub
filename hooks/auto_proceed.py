@@ -20,6 +20,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import verdict_cache  # noqa: E402
+
 LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
 STATE = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "auto_proceed.json"
 CONFIG = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
@@ -76,7 +79,8 @@ def log(msg: str) -> None:
     try:
         LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG, "a") as f:
-            f.write(f"[{datetime.now():%H:%M:%S}] AUTO_PROCEED {msg}\n")
+            tag = verdict_cache.task_tag()
+            f.write(f"[{datetime.now():%H:%M:%S}] AUTO_PROCEED {tag}{msg}\n")
     except OSError:
         pass
 

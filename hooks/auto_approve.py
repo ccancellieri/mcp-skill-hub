@@ -116,7 +116,8 @@ def log(msg: str) -> None:
     try:
         LOG.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG, "a") as f:
-            f.write(f"[{datetime.now():%H:%M:%S}] AUTO_APPROVE {msg}\n")
+            tag = verdict_cache.task_tag()
+            f.write(f"[{datetime.now():%H:%M:%S}] AUTO_APPROVE {tag}{msg}\n")
     except OSError:
         pass
 

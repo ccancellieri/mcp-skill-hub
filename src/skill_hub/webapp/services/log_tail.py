@@ -9,7 +9,7 @@ import asyncio
 import re
 from collections import deque
 from pathlib import Path
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator, Callable, Iterable
 
 import aiofiles
 
@@ -74,6 +74,7 @@ async def tail_files(
     paths: Iterable[Path],
     seed_lines: int = 200,
     poll_interval: float = 0.2,
+    predicate: Callable[[str], bool] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield parsed log entries from ``paths`` forever.
 
@@ -87,6 +88,8 @@ async def tail_files(
         offsets[p] = pos
         src = p.stem
         for ln in seed:
+            if predicate is not None and not predicate(ln):
+                continue
             yield parse_line(ln, default_source=src)
 
     while True:
@@ -114,6 +117,8 @@ async def tail_files(
             src = p.stem
             for ln in chunk.splitlines():
                 any_new = True
+                if predicate is not None and not predicate(ln):
+                    continue
                 yield parse_line(ln, default_source=src)
         if not any_new:
             await asyncio.sleep(poll_interval)

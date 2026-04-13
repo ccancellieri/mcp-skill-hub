@@ -17,6 +17,39 @@ from pathlib import Path
 
 DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "command_verdicts.db"
 CONFIG_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
+ACTIVE_TASK_MARKER = (
+    Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
+)
+
+
+def active_task_id() -> int | None:
+    """Return the task_id from the active task marker, or None.
+
+    Safe against missing/invalid markers — always returns None on any failure
+    so legacy behaviour is preserved.
+    """
+    try:
+        if not ACTIVE_TASK_MARKER.exists():
+            return None
+        data = json.loads(ACTIVE_TASK_MARKER.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    tid = data.get("task_id")
+    if isinstance(tid, bool):
+        return None
+    if isinstance(tid, int):
+        return tid
+    if isinstance(tid, str) and tid.isdigit():
+        return int(tid)
+    return None
+
+
+def task_tag() -> str:
+    """Return ``task=<id> `` string if an active task exists, else ``''``."""
+    tid = active_task_id()
+    return f"task={tid} " if tid is not None else ""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS command_verdicts (

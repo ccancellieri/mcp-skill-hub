@@ -1,7 +1,7 @@
 {% set aa = t.get('auto_approve') %}
 {% set desc = (t.get('summary') or t.get('context') or '') %}
 {% set desc_short = desc[:140] %}
-<tr id="task-{{ t.id }}" x-data="{open:false}">
+<tr id="task-{{ t.id }}" x-data="{open:false, logsLoaded:false}">
   <td>
     {% if panel == 'closed' %}
       <input type="checkbox" @change="toggle({{ t.id }}, $event.target.checked)">
@@ -52,7 +52,6 @@
     {% endif %}
   </td>
 </tr>
-{% if desc %}
 <tr class="task-detail" x-show="open" x-transition x-cloak
     style="background:rgba(255,255,255,0.02)">
   <td></td>
@@ -63,8 +62,12 @@
     {% endif %}
     {% if t.get('context') %}
       <div style="margin-bottom:6px"><strong>Context</strong></div>
-      <pre style="white-space:pre-wrap; margin:0; font-size:12px; line-height:1.45">{{ t.context }}</pre>
+      <pre style="white-space:pre-wrap; margin:0 0 10px 0; font-size:12px; line-height:1.45">{{ t.context }}</pre>
     {% endif %}
+    <div style="margin-bottom:6px"><strong>Logs</strong></div>
+    <div class="task-logs-wrap"
+         x-init="$watch('open', v => { if (v && !logsLoaded) { logsLoaded = true; htmx.ajax('GET', '/tasks/{{ t.id }}/logs', {target: $el, swap: 'innerHTML'}); } })">
+      <div class="muted" style="font-size:11px">loading…</div>
+    </div>
   </td>
 </tr>
-{% endif %}
