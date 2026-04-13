@@ -185,7 +185,38 @@ def main() -> int:
                     decision, reason = "approve", (
                         f"cache hit ({hit['source']}, hits={hit['hit_count']})"
                     )
-                elif not decision and cfg.get("auto_approve_llm"):
+                # Vector-similarity classifier: between exact cache and LLM.
+                if (not decision and not hit
+                        and cfg.get("vector_autoapprove_enabled", True)):
+                    try:
+                        # Import skill_hub.embeddings lazily; if unavailable,
+                        # silently skip and fall through to LLM / prompt.
+                        import importlib.util
+                        spec = importlib.util.find_spec("skill_hub.embeddings")
+                        if spec is not None:
+                            from skill_hub.embeddings import embed  # type: ignore
+                            vec = embed(cmd)
+                            thresh = float(cfg.get(
+                                "vector_autoapprove_threshold", 0.88))
+                            vhit = verdict_cache.search_by_vector(
+                                conn, vec, threshold=thresh,
+                                source_filter="user_approved",
+                            )
+                            if vhit:
+                                decision, reason = "approve", (
+                                    f"vector sim={vhit['similarity']:.3f} "
+                                    f"≥ {thresh} (from {vhit['source']})"
+                                )
+                                # Cache as vector-source so next exact match
+                                # is O(1).
+                                verdict_cache.put_with_vector(
+                                    conn, tool_name, cmd, "allow", "vector",
+                                    vec, confidence=vhit["similarity"],
+                                )
+                                log(f"VECTOR hit sim={vhit['similarity']:.3f}")
+                    except Exception as e:  # noqa: BLE001
+                        log(f"VECTOR error={e}")
+                if not decision and cfg.get("auto_approve_llm"):
                     try:
                         base = cfg.get("ollama_base_url", "http://localhost:11434")
                         model = cfg.get("auto_approve_model",

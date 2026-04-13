@@ -283,6 +283,14 @@ def seed_auto_proceed_defaults():
         "auto_approve_confidence": 0.85,
         "auto_approve_verdict_ttl_days": 30,
         "auto_approve_timeout_s": 4.0,
+        # Interactive dashboard server (stdlib http.server, loopback only).
+        "dashboard_server_enabled": True,
+        "dashboard_server_port": 8765,
+        # Vector-similarity classifier (faster than LLM, never denies).
+        "vector_autoapprove_enabled": True,
+        "vector_autoapprove_threshold": 0.88,
+        # Learn-from-Claude-sessions: harvest approvals into verdict cache.
+        "learn_from_claude_sessions": False,
     }
     for k, v in defaults.items():
         if k not in cfg:

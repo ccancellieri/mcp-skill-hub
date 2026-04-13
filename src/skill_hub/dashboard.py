@@ -523,6 +523,34 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def render_interactive(store: Any) -> str | None:
+    """Boot the interactive dashboard HTTP server and return its URL.
+
+    Returns None if the server cannot start (e.g. port busy or config disabled).
+    Caller should fall back to render() for a static HTML snapshot.
+    """
+    try:
+        from . import dashboard_server  # local import to avoid hard dep
+    except ImportError:
+        return None
+    # Read config for port + enabled flag.
+    cfg_path = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
+    cfg: dict[str, Any] = {}
+    try:
+        import json as _json
+        cfg = _json.loads(cfg_path.read_text())
+    except (OSError, Exception):  # noqa: BLE001
+        pass
+    if cfg.get("dashboard_server_enabled") is False:
+        return None
+    port = int(cfg.get("dashboard_server_port", 8765))
+    try:
+        return dashboard_server.start(store, port=port)
+    except Exception as e:  # noqa: BLE001
+        _log.warning("render_interactive failed: %s", e)
+        return None
+
+
 def render(store: Any, out_path: Path = OUT_PATH,
            log_path: Path = LOG_PATH) -> Path:
     """Aggregate metrics and write the HTML file. Returns the path on success."""

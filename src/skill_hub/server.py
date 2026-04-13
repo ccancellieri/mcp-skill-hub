@@ -376,8 +376,12 @@ def close_task(task_id: int, summary: str = "") -> str:
     # Refresh benefit/cost dashboard; never fail close_task on render error.
     dash_line = ""
     try:
-        dash_path = _dashboard.render(_store)
-        dash_line = f"\nDashboard: file://{dash_path}"
+        url = _dashboard.render_interactive(_store)
+        if url:
+            dash_line = f"\nDashboard: {url}"
+        else:
+            dash_path = _dashboard.render(_store)
+            dash_line = f"\nDashboard: file://{dash_path}"
     except Exception as e:  # noqa: BLE001
         import logging
         logging.getLogger(__name__).warning("dashboard render failed: %s", e)
@@ -1012,6 +1016,14 @@ def status(section: str = "summary") -> str:
 def render_dashboard() -> str:
     """Regenerate the benefit/cost HTML dashboard. Returns a clickable file:// URL."""
     log_tool("render_dashboard")
+    url = _dashboard.render_interactive(_store)
+    if url:
+        # Also write a static snapshot as a fallback artifact.
+        try:
+            _dashboard.render(_store)
+        except Exception:  # noqa: BLE001
+            pass
+        return f"Interactive dashboard at {url}"
     path = _dashboard.render(_store)
     return f"Dashboard written to file://{path}"
 

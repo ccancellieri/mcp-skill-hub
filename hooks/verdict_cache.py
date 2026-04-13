@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -60,11 +61,24 @@ def hash_key(tool_name: str, command: str) -> str:
     return hashlib.sha1(_canon(tool_name, command).encode()).hexdigest()
 
 
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: add vector + pinned columns if missing."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(command_verdicts)")}
+    if "vector" not in cols:
+        conn.execute("ALTER TABLE command_verdicts ADD COLUMN vector TEXT")
+    if "pinned" not in cols:
+        conn.execute(
+            "ALTER TABLE command_verdicts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.commit()
+
+
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=2.0)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    _ensure_columns(conn)
     return conn
 
 
@@ -110,6 +124,110 @@ def put(conn: sqlite3.Connection, tool_name: str, command: str,
         (key, tool_name, command[:2000], decision, source, confidence, now, now),
     )
     conn.commit()
+
+
+def delete(conn: sqlite3.Connection, cmd_hash: str) -> bool:
+    cur = conn.execute("DELETE FROM command_verdicts WHERE cmd_hash = ?", (cmd_hash,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_pinned(conn: sqlite3.Connection, cmd_hash: str, pinned: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE command_verdicts SET pinned = ? WHERE cmd_hash = ?",
+        (1 if pinned else 0, cmd_hash),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_decision(conn: sqlite3.Connection, cmd_hash: str, decision: str) -> bool:
+    cur = conn.execute(
+        "UPDATE command_verdicts SET decision = ? WHERE cmd_hash = ?",
+        (decision, cmd_hash),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def put_with_vector(conn: sqlite3.Connection, tool_name: str, command: str,
+                    decision: str, source: str, vector: list[float] | None,
+                    confidence: float = 1.0) -> None:
+    """Like put(), but also stores the embedding vector (JSON)."""
+    key = hash_key(tool_name, command)
+    now = int(time.time())
+    priority = {"static": 0, "claude_session": 1, "llm": 1,
+                "vector": 1, "user_approved": 2}
+    existing = conn.execute(
+        "SELECT source, pinned FROM command_verdicts WHERE cmd_hash = ?", (key,)
+    ).fetchone()
+    if existing:
+        if existing["pinned"]:
+            return
+        if priority.get(source, 0) < priority.get(existing["source"], 0):
+            return
+    vec_json = json.dumps(vector) if vector else None
+    conn.execute(
+        "INSERT INTO command_verdicts "
+        "  (cmd_hash, tool_name, command, decision, source, confidence, "
+        "   created_at, last_used_at, vector) "
+        "VALUES (?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(cmd_hash) DO UPDATE SET "
+        "  decision=excluded.decision, source=excluded.source, "
+        "  confidence=excluded.confidence, last_used_at=excluded.last_used_at, "
+        "  vector=COALESCE(excluded.vector, command_verdicts.vector)",
+        (key, tool_name, command[:2000], decision, source, confidence,
+         now, now, vec_json),
+    )
+    conn.commit()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+def search_by_vector(conn: sqlite3.Connection, vector: list[float],
+                     threshold: float = 0.88,
+                     source_filter: str = "user_approved") -> dict | None:
+    """Cosine search over stored vectors. Returns best match above threshold or None."""
+    if not vector:
+        return None
+    query = (
+        "SELECT * FROM command_verdicts "
+        "WHERE vector IS NOT NULL AND decision='allow' "
+    )
+    params: list = []
+    if source_filter:
+        query += "AND source = ? "
+        params.append(source_filter)
+    rows = conn.execute(query, params).fetchall()
+    best_sim = 0.0
+    best_row = None
+    for row in rows:
+        try:
+            vec = json.loads(row["vector"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        sim = _cosine(vector, vec)
+        if sim > best_sim:
+            best_sim = sim
+            best_row = row
+    if best_row and best_sim >= threshold:
+        d = dict(best_row)
+        d["similarity"] = best_sim
+        return d
+    return None
 
 
 def recent_examples(conn: sqlite3.Connection, n: int = 6) -> list[dict]:

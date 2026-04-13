@@ -96,3 +96,58 @@ interrupted work. Marker is single-shot: deleted after one consume.
 
 No wrapper, no retries in shell — the next session you open in VS Code
 automatically picks up where the last one died.
+
+## 6. Dashboard v2 (interactive)
+
+`render_dashboard()` (and every `close_task`) now boots a tiny stdlib
+`http.server.ThreadingHTTPServer` on loopback and returns its URL
+(default `http://127.0.0.1:8765/`). The server is lazy-started, single
+instance per MCP process, shuts down when MCP exits.
+
+Features in the UI:
+- **Verdicts tab** — browse, filter, delete, flip (allow↔deny), pin,
+  bulk-promote selected commands to `~/.claude/skill-hub-allow.yml`.
+- **Tasks tab** — rename, delete, merge (concatenates summaries into a
+  new open task and closes originals), teach-from-task.
+- **Skills tab** — usage stats (injections, helpful %, feedback score).
+- **Vector Viz** — 2D random-projection scatter of skills / tasks /
+  teachings / verdicts. Click a point for details.
+- **Classifier** — paste a command to see its nearest verdict-cache
+  neighbor and whether it would auto-approve at the current threshold.
+
+Config keys (in `~/.claude/mcp-skill-hub/config.json`):
+```
+"dashboard_server_enabled": true,
+"dashboard_server_port": 8765
+```
+
+If the port is busy or the server fails to bind, we silently fall back
+to the static HTML snapshot at
+`~/.claude/mcp-skill-hub/reports/dashboard.html` — `close_task` never
+fails because of the dashboard.
+
+## 7. Vector-similarity classifier
+
+Between the exact verdict-cache lookup and the optional LLM classifier,
+`auto_approve.py` now runs a pure-python cosine search over
+`user_approved` verdict rows that have stored embeddings. If the best
+match is above `vector_autoapprove_threshold` (default 0.88), the
+command is approved with `source=vector` and re-cached under its own
+hash (so the next exact match is O(1)).
+
+Priority chain: **static deny > pinned > user_approved exact >
+vector-similar (≥ threshold) > llm cache > static allow > prompt**.
+
+Safety: the vector classifier never denies — it can only upgrade
+"unknown" to "allow", same guarantee as the LLM classifier. Static
+`deny_patterns` remain the only path to a deny.
+
+Config keys:
+```
+"vector_autoapprove_enabled": true,
+"vector_autoapprove_threshold": 0.88,
+"learn_from_claude_sessions": false
+```
+
+Typical latency: ~10ms embed + ~1ms/1000 rows cosine, vs 150-500ms for
+the Ollama LLM fallback.

@@ -794,6 +794,134 @@ class SkillStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
 
+    def delete_task(self, task_id: int) -> bool:
+        cur = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def rename_task_title(self, task_id: int, title: str) -> bool:
+        cur = self._conn.execute(
+            "UPDATE tasks SET title = ?, updated_at = datetime('now') WHERE id = ?",
+            (title, task_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def merge_tasks(self, task_ids: list[int]) -> int:
+        """Concatenate summaries into a new open task; mark originals closed.
+
+        Returns the new task id (0 on failure).
+        """
+        if not task_ids:
+            return 0
+        rows = self._conn.execute(
+            f"SELECT id, title, summary, context, tags FROM tasks "
+            f"WHERE id IN ({','.join('?' * len(task_ids))})",
+            task_ids,
+        ).fetchall()
+        if not rows:
+            return 0
+        title = "Merged: " + " + ".join(r["title"][:40] for r in rows)
+        parts = []
+        ctx_parts = []
+        tags: list[str] = []
+        for r in rows:
+            parts.append(f"## Task #{r['id']}: {r['title']}\n{r['summary']}")
+            if r["context"]:
+                ctx_parts.append(f"### From #{r['id']}\n{r['context']}")
+            if r["tags"]:
+                tags.append(r["tags"])
+        summary = "\n\n".join(parts)
+        context = "\n\n".join(ctx_parts)
+        merged_tags = ",".join(sorted({t.strip() for s in tags for t in s.split(",") if t.strip()}))
+        cur = self._conn.execute(
+            "INSERT INTO tasks (title, summary, context, tags, vector, status) "
+            "VALUES (?, ?, ?, ?, NULL, 'open')",
+            (title[:200], summary, context, merged_tags),
+        )
+        new_id = cur.lastrowid or 0
+        # Mark originals closed pointing to new task
+        for tid in task_ids:
+            self._conn.execute(
+                "UPDATE tasks SET status='closed', closed_at=datetime('now'), "
+                "compact=?, updated_at=datetime('now') WHERE id = ?",
+                (json.dumps({"merged_into": new_id}), tid),
+            )
+        self._conn.commit()
+        return new_id
+
+    def search_tasks_text(self, query: str, status: str = "all") -> list[sqlite3.Row]:
+        pattern = f"%{query}%"
+        where_status = "" if status == "all" else "AND status = ?"
+        params: list = [pattern, pattern, pattern]
+        if status != "all":
+            params.append(status)
+        return self._conn.execute(
+            f"SELECT id, title, summary, status, tags, created_at, updated_at, "
+            f"closed_at FROM tasks "
+            f"WHERE (title LIKE ? OR summary LIKE ? OR tags LIKE ?) {where_status} "
+            f"ORDER BY updated_at DESC LIMIT 100",
+            params,
+        ).fetchall()
+
+    def get_skill_usage_stats(self) -> list[dict]:
+        """Aggregate skill usage from feedback (injection counts proxy).
+
+        We don't have a direct skill_id column on context_injections, so we
+        approximate usage = feedback rows per skill + recency.
+        """
+        rows = self._conn.execute("""
+            SELECT s.id, s.name, s.plugin, s.target,
+                   COALESCE(s.feedback_score, 1.0) as feedback_score,
+                   COALESCE(fb.injections, 0) as injections,
+                   COALESCE(fb.helpful, 0) as helpful,
+                   COALESCE(fb.unhelpful, 0) as unhelpful,
+                   fb.last_used
+            FROM skills s
+            LEFT JOIN (
+                SELECT skill_id,
+                       COUNT(*) as injections,
+                       SUM(helpful) as helpful,
+                       SUM(1 - helpful) as unhelpful,
+                       MAX(created_at) as last_used
+                FROM feedback
+                GROUP BY skill_id
+            ) fb ON fb.skill_id = s.id
+            ORDER BY injections DESC, feedback_score DESC
+            LIMIT 200
+        """).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            tot = (d["helpful"] or 0) + (d["unhelpful"] or 0)
+            d["helpful_pct"] = round(100 * (d["helpful"] or 0) / tot, 1) if tot else None
+            out.append(d)
+        return out
+
+    def get_skills_for_task(self, task_id: int) -> list[dict]:
+        """Return skills referenced during the task's session.
+
+        Joins tasks.session_id -> session_log.tool_used (MCP tool) best-effort,
+        plus any feedback rows recorded close to the task window.
+        """
+        row = self._conn.execute(
+            "SELECT session_id, created_at, closed_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return []
+        sid = row["session_id"]
+        if not sid:
+            return []
+        rows = self._conn.execute("""
+            SELECT tool_used, plugin_id, COUNT(*) as n
+            FROM session_log
+            WHERE session_id = ?
+            GROUP BY tool_used, plugin_id
+            ORDER BY n DESC
+        """, (sid,)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_skill_content(self, skill_id: str) -> str | None:
         row = self._conn.execute(
             "SELECT content FROM skills WHERE id = ?", (skill_id,)
