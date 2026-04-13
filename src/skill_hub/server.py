@@ -65,6 +65,14 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 _store = SkillStore()
 
+# Warm up the FastAPI dashboard in a daemon thread so it's ready before
+# the first close_task / render_dashboard call. Safe no-op if disabled or
+# the port is busy.
+try:
+    _dashboard.render_interactive(_store)
+except Exception:  # noqa: BLE001
+    pass
+
 # Watchdog auto-reindex — starts silently if watchdog is installed
 import atexit as _atexit
 from .watcher import start_watcher, stop_watcher as _stop_watcher

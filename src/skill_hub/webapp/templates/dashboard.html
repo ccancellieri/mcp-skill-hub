@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}dashboard{% endblock %}
+{% block content %}
+<section class="kpi-grid">
+  <div class="kpi"><div class="kpi-label">Tokens saved</div>
+    <div class="kpi-value">{{ "{:,}".format(m.tokens_saved) }}</div>
+    <div class="kpi-sub">sum of interception estimates</div></div>
+  <div class="kpi"><div class="kpi-label">Net savings</div>
+    <div class="kpi-value">{{ "{:+,}".format(m.net) }}</div>
+    <div class="kpi-sub">minus ~{{ "{:,}".format(m.llm_cost_eq) }} tok local-LLM</div></div>
+  <div class="kpi"><div class="kpi-label">Tasks closed / open</div>
+    <div class="kpi-value">{{ m.tasks_closed }} / {{ m.tasks_open }}</div>
+    <div class="kpi-sub">lifetime</div></div>
+  <div class="kpi"><div class="kpi-label">Skills indexed</div>
+    <div class="kpi-value">{{ "{:,}".format(m.skills) }}</div>
+    <div class="kpi-sub">across plugins</div></div>
+  <div class="kpi"><div class="kpi-label">Teachings</div>
+    <div class="kpi-value">{{ "{:,}".format(m.teachings) }}</div>
+    <div class="kpi-sub">explicit rules</div></div>
+  <div class="kpi"><div class="kpi-label">Feedback helpful</div>
+    <div class="kpi-value">{% if m.helpful + m.unhelpful %}{{ m.helpful_pct }}%{% else %}&mdash;{% endif %}</div>
+    <div class="kpi-sub">{{ m.helpful }} up / {{ m.unhelpful }} down</div></div>
+</section>
+
+<section class="row">
+  <div class="card">
+    <h2>Auto-approve hook</h2>
+    <table>
+      <tr><th>decision</th><th>count</th></tr>
+      <tr><td>allow</td><td>{{ "{:,}".format(m.approve) }}</td></tr>
+      <tr><td>deny</td><td>{{ "{:,}".format(m.deny) }}</td></tr>
+      <tr><td>pass-through</td><td>{{ "{:,}".format(m.pass_through) }}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Auto-proceed &amp; resume</h2>
+    <table>
+      <tr><td>auto-proceed fires</td><td>{{ "{:,}".format(m.auto_proceed_fires) }}</td></tr>
+      <tr><td>resume markers consumed</td><td>{{ "{:,}".format(m.resume_consumed) }}</td></tr>
+      <tr><td>intercept errors</td><td>{{ "{:,}".format(m.intercept_errors) }}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Verdict cache</h2>
+    <table>
+      <tr><td>total verdicts</td><td>{{ "{:,}".format(m.verdict_total) }}</td></tr>
+      <tr><td>total hits</td><td>{{ "{:,}".format(m.verdict_hits) }}</td></tr>
+      <tr><td>LLM samples</td><td>{{ "{:,}".format(m.llm_samples) }}</td></tr>
+    </table>
+  </div>
+</section>
+
+{% if m.log_missing %}
+<p class="warn">hook-debug.log not found — hook metrics unavailable until a session runs.</p>
+{% endif %}
+{% endblock %}

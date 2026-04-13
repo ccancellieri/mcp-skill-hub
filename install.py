@@ -286,6 +286,7 @@ def seed_auto_proceed_defaults():
         # Interactive dashboard server (stdlib http.server, loopback only).
         "dashboard_server_enabled": True,
         "dashboard_server_port": 8765,
+        "dashboard_auto_open_browser": False,
         # Vector-similarity classifier (faster than LLM, never denies).
         "vector_autoapprove_enabled": True,
         "vector_autoapprove_threshold": 0.88,

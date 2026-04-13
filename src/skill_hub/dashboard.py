@@ -523,29 +523,80 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def render_interactive(store: Any) -> str | None:
-    """Boot the interactive dashboard HTTP server and return its URL.
+_WEBAPP_SINGLETON: dict[str, Any] = {"url": None, "thread": None, "server": None}
 
-    Returns None if the server cannot start (e.g. port busy or config disabled).
-    Caller should fall back to render() for a static HTML snapshot.
+
+def render_interactive(store: Any) -> str | None:
+    """Boot the FastAPI webapp in a daemon thread and return its URL.
+
+    Singleton: subsequent calls return the already-running URL.
+    Returns None if config disables the server or the port bind fails.
     """
-    try:
-        from . import dashboard_server  # local import to avoid hard dep
-    except ImportError:
-        return None
-    # Read config for port + enabled flag.
+    if _WEBAPP_SINGLETON["url"]:
+        return _WEBAPP_SINGLETON["url"]
+
     cfg_path = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
     cfg: dict[str, Any] = {}
     try:
         import json as _json
         cfg = _json.loads(cfg_path.read_text())
-    except (OSError, Exception):  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         pass
     if cfg.get("dashboard_server_enabled") is False:
         return None
+
+    host = cfg.get("dashboard_server_host", "127.0.0.1")
     port = int(cfg.get("dashboard_server_port", 8765))
+
     try:
-        return dashboard_server.start(store, port=port)
+        import socket
+        import threading
+        import uvicorn
+        from .webapp import create_app
+
+        # Pre-bind check: fail fast and return None if port busy.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError as e:
+            _log.warning("dashboard port %s busy: %s", port, e)
+            probe.close()
+            return None
+        probe.close()
+
+        app = create_app(store)
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level="warning",
+            access_log=False, workers=1,
+        )
+        server = uvicorn.Server(config)
+        # Disable uvicorn's signal handlers: they can only install on the
+        # main thread, and we run in a daemon thread.
+        server.install_signal_handlers = lambda: None  # type: ignore[assignment]
+
+        def _run() -> None:
+            try:
+                server.run()
+            except Exception as e:  # noqa: BLE001
+                _log.warning("uvicorn crashed: %s", e)
+
+        t = threading.Thread(target=_run, name="skill-hub-webapp", daemon=True)
+        t.start()
+
+        url = f"http://{host}:{port}/"
+        _WEBAPP_SINGLETON["url"] = url
+        _WEBAPP_SINGLETON["thread"] = t
+        _WEBAPP_SINGLETON["server"] = server
+
+        if cfg.get("dashboard_auto_open_browser"):
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return url
     except Exception as e:  # noqa: BLE001
         _log.warning("render_interactive failed: %s", e)
         return None

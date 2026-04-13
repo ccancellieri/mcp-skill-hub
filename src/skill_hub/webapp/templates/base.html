@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>skill-hub — {% block title %}control{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">skill-hub</div>
+    <nav class="tabs">
+      {% set tabs = [
+        ('dashboard', 'Dashboard', '/'),
+        ('settings', 'Settings', '/settings'),
+        ('logs', 'Logs', '/logs'),
+        ('verdicts', 'Verdicts', '/verdicts'),
+        ('tasks', 'Tasks', '/tasks'),
+        ('skills', 'Skills', '/skills'),
+        ('teachings', 'Teachings', '/teachings'),
+        ('vector', 'Vector', '/vector'),
+        ('intents', 'Intents', '/intents'),
+        ('questions', 'Questions', '/questions'),
+      ] %}
+      {% for key, label, href in tabs %}
+        {% if key == 'dashboard' %}
+          <a href="{{ href }}" class="tab{% if active_tab == key %} active{% endif %}">{{ label }}</a>
+        {% else %}
+          <span class="tab disabled" title="coming in Phase 2+">{{ label }}</span>
+        {% endif %}
+      {% endfor %}
+    </nav>
+  </header>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

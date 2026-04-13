@@ -3175,6 +3175,7 @@ type: {mem_type}
 
 {content_text}
 """
+            mem_file.parent.mkdir(parents=True, exist_ok=True)
             mem_file.write_text(mem_content, encoding="utf-8")
 
             # Update index
