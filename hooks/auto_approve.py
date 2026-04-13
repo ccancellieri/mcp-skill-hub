@@ -609,6 +609,14 @@ def main() -> int:
     decision, reason = decide(tool_name, tool_input, allow,
                                bundle_name=bundle_name, cfg=cfg)
 
+    # Non-Bash tools (Edit, Write, ...) don't have deny scanning or prefix
+    # matching inside decide(). When the active window is "all_non_denied"
+    # (legacy night-mode semantics), approve any non-Bash tool outright —
+    # Bash is handled inside decide() with its deny scan.
+    if (not decision and bundle_name == ALL_NON_DENIED
+            and tool_name != "Bash"):
+        decision, reason = "approve", "adaptive window: all_non_denied (non-Bash)"
+
     preview = (extract_bash_command(tool_input) if tool_name == "Bash" else "")[:80]
     if decision != "deny" and tool_name == "Bash":
         cmd = extract_bash_command(tool_input)
