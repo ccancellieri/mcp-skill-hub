@@ -3063,6 +3063,8 @@ def _cmd_session_end(session_id: str, last_message: str,
     # 0. Context Bridge: live tool call capture — fast, no LLM, every Stop hook
     # Runs BEFORE anything else so even short sessions accumulate tool knowledge
     if (transcript_path and session_id
+            and transcript_path not in ("False", "True", "None")
+            and Path(transcript_path).is_file()
             and _cfg_mod.get("context_bridge_enabled") is not False):
         try:
             _store = SkillStore()
@@ -4262,15 +4264,46 @@ def _update_repo_context(session_id: str) -> None:
             resp = httpx.post(
                 f"{OLLAMA_BASE}/api/generate",
                 json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
+                      "format": "json",
                       "options": {"temperature": 0.0, "num_predict": 200}},
                 timeout=15.0,
             )
             resp.raise_for_status()
             raw = resp.json().get("response", "")
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-            m = re.search(r"\{.*\}", raw, re.DOTALL)
-            if m:
-                data = json.loads(m.group())
+            # Brace-balanced extraction: find first '{' and walk to its match.
+            data = None
+            start = raw.find("{")
+            if start >= 0:
+                depth = 0
+                in_str = False
+                esc = False
+                end = -1
+                for i in range(start, len(raw)):
+                    c = raw[i]
+                    if in_str:
+                        if esc:
+                            esc = False
+                        elif c == "\\":
+                            esc = True
+                        elif c == '"':
+                            in_str = False
+                        continue
+                    if c == '"':
+                        in_str = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                if end > start:
+                    try:
+                        data = json.loads(raw[start:end + 1])
+                    except json.JSONDecodeError:
+                        data = None
+            if data is not None:
                 # Build tool stats from examples
                 tool_counts: dict[str, int] = {}
                 for ex in repo_examples:
