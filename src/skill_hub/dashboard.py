@@ -36,9 +36,19 @@ TOKENS_PER_LLM_SECOND = 50
 # ---------------------------------------------------------------------------
 
 _RE_TIME_MS = re.compile(r"(?:cli_time|cli|time|total_time)=(\d+)ms")
+# Hooks log `decision=approve|block|pass` (or legacy allow|deny). Accept
+# both spellings and normalise to allow/deny/pass for downstream counters.
 _RE_AUTO_APPROVE = re.compile(
-    r"AUTO_APPROVE\s+(\S+)\s+decision=(allow|deny|pass)", re.IGNORECASE
+    r"AUTO_APPROVE\s+(?:task=\S+\s+)?(\S+)\s+decision=(approve|allow|block|deny|pass)",
+    re.IGNORECASE,
 )
+_DECISION_NORMALISE = {
+    "approve": "allow",
+    "allow": "allow",
+    "block": "deny",
+    "deny": "deny",
+    "pass": "pass",
+}
 _RE_AUTO_PROCEED = re.compile(r"AUTO_PROCEED\s+PROCEED", re.IGNORECASE)
 _RE_RESUME_CONSUME = re.compile(r"RESUME marker consumed")
 _RE_INTERCEPT_ERROR = re.compile(r"INTERCEPT.*(error|cli_failed_or_empty)")
@@ -85,7 +95,8 @@ def _parse_log(path: Path = LOG_PATH, max_bytes: int = LOG_TAIL_BYTES) -> dict[s
 
         m = _RE_AUTO_APPROVE.search(line)
         if m:
-            tool_name, decision = m.group(1), m.group(2).lower()
+            tool_name = m.group(1)
+            decision = _DECISION_NORMALISE.get(m.group(2).lower(), "pass")
             out["auto_approve"][decision] += 1
             out["auto_approve_tool"][tool_name] += 1
             out["by_day_approve"][day_key][decision] += 1
