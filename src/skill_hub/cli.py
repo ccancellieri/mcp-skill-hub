@@ -3230,6 +3230,7 @@ type: {mem_type}
             pass
 
     # 4. Implicit feedback — infer skill quality from session tool usage
+    from . import config as _cfg
     if session_id and _cfg.get("implicit_feedback_enabled") is not False:
         try:
             store = SkillStore()
@@ -4353,20 +4354,20 @@ def _evolve_skills(session_id: str) -> None:
 
     store = SkillStore()
     try:
-        # Get this session's tool examples
-        examples = store.get_recent_tool_examples(limit=50)
+        # Get this session's tool examples (sqlite3.Row -> dict for .get())
+        examples = [dict(r) for r in store.get_recent_tool_examples(limit=50)]
         if not examples:
             return
 
         # Build a summary of what Claude did this session, grouped by category
         claude_actions: dict[str, list[str]] = {}
         for ex in examples:
-            cat = ex.get("category", "general")
-            summary = ex.get("tool_input", "")[:200]
+            cat = ex.get("category") or "general"
+            summary = (ex.get("tool_input") or "")[:200]
             if ex.get("output_summary"):
                 summary += f" → {ex['output_summary'][:100]}"
             claude_actions.setdefault(cat, []).append(
-                f"{ex['tool_name']}: {summary}"
+                f"{ex.get('tool_name', '?')}: {summary}"
             )
 
         if not claude_actions:

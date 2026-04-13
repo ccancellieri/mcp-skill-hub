@@ -15,6 +15,33 @@ from datetime import datetime
 from pathlib import Path
 
 DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
+RESUME_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "needs_resume.json"
+
+
+def consume_resume_marker() -> str:
+    """If a previous session ended on api_error, return a resume reminder and
+    delete the marker. Empty string otherwise."""
+    if not RESUME_MARKER.exists():
+        return ""
+    try:
+        data = json.loads(RESUME_MARKER.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    try:
+        RESUME_MARKER.unlink()
+    except OSError:
+        pass
+    prev = data.get("session_id", "?")
+    plan = data.get("plan", "")
+    at = data.get("at", "")
+    msg = (
+        f"RESUME: the previous session ({prev}) ended on a transient API error at {at}. "
+    )
+    if plan:
+        msg += f"Active plan: ~/.claude/plans/{plan}. Continue from where it left off; re-read the plan file first."
+    else:
+        msg += "Inspect the last transcript and resume the interrupted work."
+    return msg
 
 
 def log(msg: str):
@@ -71,23 +98,24 @@ def main():
     else:
         log_cmd = f"tail -f {log_path}"
 
+    resume_msg = consume_resume_marker()
+    if resume_msg:
+        log(f"RESUME marker consumed  msg=\"{resume_msg[:80]}\"")
+
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 
-    print(
-        json.dumps(
-            {
-                "decision": "allow",
-                "systemMessage": (
-                    "SESSION START:\n"
-                    "1. Read project .memory/index.md if it exists in the working directory\n"
-                    "2. Follow CLAUDE.md multi-level context protocol\n"
-                    "\n"
-                    f"Hook activity log: {log_cmd}\n"
-                    "Mention the log command to the user so they can follow local LLM activity."
-                ),
-            }
-        )
+    system_msg = (
+        "SESSION START:\n"
+        "1. Read project .memory/index.md if it exists in the working directory\n"
+        "2. Follow CLAUDE.md multi-level context protocol\n"
+        "\n"
+        f"Hook activity log: {log_cmd}\n"
+        "Mention the log command to the user so they can follow local LLM activity."
     )
+    if resume_msg:
+        system_msg = resume_msg + "\n\n" + system_msg
+
+    print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 
 
 if __name__ == "__main__":

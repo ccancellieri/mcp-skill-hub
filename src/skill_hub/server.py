@@ -53,6 +53,7 @@ from .indexer import index_all
 from .activity_log import log_tool, log_llm, log_banner
 from .resource_monitor import should_run_llm, snapshot
 from .store import SkillStore
+from . import dashboard as _dashboard
 
 
 def _get_cpu_info() -> int:
@@ -371,12 +372,23 @@ def close_task(task_id: int, summary: str = "") -> str:
     compact_vector = embed(f"{digest.get('title', '')}: {digest.get('summary', '')}")
 
     _store.close_task(task_id, compact_text, compact_vector)
+
+    # Refresh benefit/cost dashboard; never fail close_task on render error.
+    dash_line = ""
+    try:
+        dash_path = _dashboard.render(_store)
+        dash_line = f"\nDashboard: file://{dash_path}"
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("dashboard render failed: %s", e)
+
     return (
         f"Task #{task_id} closed and compacted.\n"
         f"Title: {digest.get('title', 'N/A')}\n"
         f"Summary: {digest.get('summary', 'N/A')}\n"
         f"Tags: {digest.get('tags', 'N/A')}\n"
         f"Decisions: {digest.get('decisions', [])}"
+        f"{dash_line}"
     )
 
 
@@ -994,6 +1006,14 @@ def status(section: str = "summary") -> str:
         lines.append("  - Use close_task() to compact notes (~200 tokens each)")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def render_dashboard() -> str:
+    """Regenerate the benefit/cost HTML dashboard. Returns a clickable file:// URL."""
+    log_tool("render_dashboard")
+    path = _dashboard.render(_store)
+    return f"Dashboard written to file://{path}"
 
 
 @mcp.tool()

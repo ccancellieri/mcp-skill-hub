@@ -1,0 +1,35 @@
+# Per-project (or ~/.claude/) allow-list for skill-hub auto-approve hook.
+# Place at <project>/.claude/skill-hub-allow.yml or ~/.claude/skill-hub-allow.yml.
+# The hook merges both (global + project). Bash commands whose text starts with
+# any safe_bash_prefix auto-approve with zero prompts. deny_patterns (regex) win
+# over prefixes and block the call.
+#
+# Note: deny_patterns are Python regex. Use UNQUOTED YAML strings so backslashes
+# stay single (e.g. `\s` not `\\s`). PyYAML handles both; the fallback parser
+# expects unquoted.
+
+safe_bash_prefixes:
+  - git status
+  - git diff
+  - git log
+  - git branch
+  - ls
+  - pwd
+  - cat
+  - npm test
+  - pytest
+  - uv run pytest
+
+safe_tools:
+  - Read
+  - Grep
+  - Glob
+
+deny_patterns:
+  - rm\s+-rf\s+/
+  - rm\s+-rf\s+~
+  - git\s+push\s+.*--force
+  - git\s+reset\s+--hard
+  - :\(\)\s*\{.*\};:
+  - DROP\s+TABLE
+  - TRUNCATE\s+TABLE

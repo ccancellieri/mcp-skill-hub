@@ -261,6 +261,57 @@ def _hook_command(script_basename: str) -> str:
         return str(HOOKS_DIR / script_basename)
 
 
+def seed_auto_proceed_defaults():
+    """Seed auto_proceed_window (23:00-07:00) and auto_proceed_max if absent.
+    Only adds keys the user hasn't set; never overwrites."""
+    CONFIG_JSON.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {}
+    if CONFIG_JSON.exists():
+        with open(CONFIG_JSON) as f:
+            cfg = json.load(f)
+    changed = False
+    if "auto_proceed_window" not in cfg and "auto_proceed" not in cfg:
+        cfg["auto_proceed_window"] = {"start_hour": 23, "end_hour": 7}
+        changed = True
+    if "auto_proceed_max" not in cfg:
+        cfg["auto_proceed_max"] = 20
+        changed = True
+    # Adaptive auto-approve: cache is on by default (cheap, safe); LLM opt-in.
+    defaults = {
+        "auto_approve_learn": True,           # record user-approved cmds
+        "auto_approve_llm": False,            # opt-in: local-LLM classifier
+        "auto_approve_confidence": 0.85,
+        "auto_approve_verdict_ttl_days": 30,
+        "auto_approve_timeout_s": 4.0,
+    }
+    for k, v in defaults.items():
+        if k not in cfg:
+            cfg[k] = v
+            changed = True
+    if changed:
+        with open(CONFIG_JSON, "w") as f:
+            json.dump(cfg, f, indent=2)
+        print(f"  Auto-proceed window seeded: 23:00 -> 07:00 (edit {CONFIG_JSON} to change)")
+    else:
+        print("  auto_proceed settings already present.")
+
+
+def step_seed_allowlist(step: int, total: int):
+    """Copy examples/skill-hub-allow.yml to ~/.claude/ if not present."""
+    print(f"[{step}/{total}] Seeding global allow-list...")
+    dst = HOME / ".claude" / "skill-hub-allow.yml"
+    src = SCRIPT_DIR / "examples" / "skill-hub-allow.yml"
+    if dst.exists():
+        print(f"  Already present: {dst}")
+        return
+    if not src.exists():
+        print(f"  Skipped — template missing: {src}")
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(src, dst)
+    print(f"  Wrote {dst}")
+
+
 def step_install_hooks(step: int, total: int):
     """Register hooks in settings.json (idempotent)."""
     print(f"[{step}/{total}] Installing hooks...")
@@ -291,12 +342,42 @@ def step_install_hooks(step: int, total: int):
             "statusMessage": "Checking for task commands...",
         },
     ]
+    pre_tool_hooks = [
+        {
+            # Per-project auto-approve / auto-deny based on
+            # <cwd>/.claude/skill-hub-allow.yml. Returns permissionDecision
+            # "allow" or "deny"; otherwise passes through to default prompt.
+            "type": "command",
+            "command": _hook_command("auto-approve.sh"),
+            "timeout": 5,
+            "statusMessage": "Checking allow-list...",
+        },
+    ]
+    post_tool_hooks = [
+        {
+            # Observe successful Bash runs; record as "user_approved" verdicts
+            # so future identical/similar commands auto-approve from cache.
+            "type": "command",
+            "command": _hook_command("post-tool-observer.sh"),
+            "timeout": 5,
+            "statusMessage": "Recording approved command...",
+        },
+    ]
     stop_hooks = [
         {
             "type": "command",
             "command": _hook_command("session-end.sh"),
             "timeout": 45,
             "statusMessage": "Saving session memory...",
+        },
+        {
+            # Opt-in overnight auto-proceed (requires SKILL_HUB_AUTO_PROCEED=1).
+            # Re-feeds "proceed" to Claude while the active plan still has
+            # unchecked items, up to SKILL_HUB_MAX_PROCEEDS (default 20).
+            "type": "command",
+            "command": _hook_command("auto-proceed.sh"),
+            "timeout": 5,
+            "statusMessage": "Checking for plan continuation...",
         },
     ]
 
@@ -315,6 +396,22 @@ def step_install_hooks(step: int, total: int):
     for hook_def in user_prompt_hooks:
         if hook_def["command"] not in existing_cmds:
             ups[0].setdefault("hooks", []).append(hook_def)
+            changed = True
+            print(f"  + Added {Path(hook_def['command']).name}")
+
+    pre = hooks.setdefault("PreToolUse", [{"hooks": []}])
+    existing_pre_cmds = {h.get("command", "") for entry in pre for h in entry.get("hooks", [])}
+    for hook_def in pre_tool_hooks:
+        if hook_def["command"] not in existing_pre_cmds:
+            pre[0].setdefault("hooks", []).append(hook_def)
+            changed = True
+            print(f"  + Added {Path(hook_def['command']).name}")
+
+    post = hooks.setdefault("PostToolUse", [{"hooks": []}])
+    existing_post_cmds = {h.get("command", "") for entry in post for h in entry.get("hooks", [])}
+    for hook_def in post_tool_hooks:
+        if hook_def["command"] not in existing_post_cmds:
+            post[0].setdefault("hooks", []).append(hook_def)
             changed = True
             print(f"  + Added {Path(hook_def['command']).name}")
 
@@ -591,18 +688,21 @@ def main():
         do_vps = "vps" in mode or bool(vps_url)
 
     # Calculate total steps
-    total = 4  # core steps always
+    total = 4  # core steps always (package, ollama, mcp, hooks — seed adds one more inside main)
     if do_searxng:
         total += 1
     if do_vps:
         total += 1
 
     # Core steps
+    total += 1  # +1 for allow-list seeding
     step = 1
     step_install_package(step, total); step += 1
     interactive = mode == "interactive"
     step_check_ollama(step, total, interactive=interactive); step += 1
     step_register_mcp(step, total); step += 1
+    step_seed_allowlist(step, total); step += 1
+    seed_auto_proceed_defaults()
     step_install_hooks(step, total); step += 1
 
     # Optional steps

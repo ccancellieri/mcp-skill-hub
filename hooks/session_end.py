@@ -21,6 +21,52 @@ CLI = SCRIPT_DIR / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / ("skill-hub-
 DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
 
 _t0 = time.monotonic()
+RESUME_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "needs_resume.json"
+
+
+def check_api_error_and_mark(transcript: str, session_id: str) -> None:
+    """If the transcript tail mentions an api_error, write a resume marker.
+
+    session_start_enforcer reads it on the next launch and reminds Claude to
+    continue the interrupted work.
+    """
+    if not transcript:
+        return
+    p = Path(transcript)
+    if not p.exists():
+        return
+    try:
+        # Read only the tail — transcripts can be large.
+        with open(p, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return
+
+    markers = ("api_error", "Internal server error", "overloaded_error", "rate_limit")
+    if not any(m in tail for m in markers):
+        return
+
+    # Try to capture the last assistant activity and the newest plan path.
+    plans_dir = Path.home() / ".claude" / "plans"
+    plan_hint = ""
+    if plans_dir.exists():
+        plans = sorted(plans_dir.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True)
+        if plans:
+            plan_hint = plans[0].name
+
+    try:
+        RESUME_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        RESUME_MARKER.write_text(json.dumps({
+            "session_id": session_id,
+            "transcript": str(p),
+            "plan": plan_hint,
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }, indent=2))
+    except OSError:
+        pass
 
 
 def log(msg: str):
@@ -47,6 +93,12 @@ def main():
     stop_active = data.get("stop_hook_active", False)
 
     log(f"fired  session={session_id}  active={stop_active}  last_msg_len={len(last_msg)}  transcript={'yes' if transcript else 'no'}")
+
+    # Mark for resume if this session ended on an API error (best-effort).
+    try:
+        check_api_error_and_mark(transcript, session_id)
+    except Exception as e:  # noqa: BLE001
+        log(f"resume_check_error  {e}")
 
     # Don't re-enter if already in a stop hook cycle
     if stop_active:
