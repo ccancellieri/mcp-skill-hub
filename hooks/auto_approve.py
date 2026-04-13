@@ -190,6 +190,24 @@ def llm_classify(tool_name: str, command: str, examples: list[dict],
     return decision, confidence, str(parsed.get("reason", ""))[:200]
 
 
+def _in_night_window(cfg: dict) -> bool:
+    """True if current hour falls within auto_proceed_window (shared semantics)."""
+    window = cfg.get("auto_proceed_window")
+    if not isinstance(window, dict):
+        return False
+    try:
+        start = int(window.get("start_hour", 23))
+        end = int(window.get("end_hour", 7))
+    except (TypeError, ValueError):
+        return False
+    if start == end:
+        return False
+    h = datetime.now().hour
+    if start < end:
+        return start <= h < end
+    return h >= start or h < end
+
+
 def decide(tool_name: str, tool_input: dict, allow: dict) -> tuple[str, str]:
     """Return (decision, reason). decision ∈ {"approve", "block", ""}."""
     if tool_name in allow.get("safe_tools", []):
@@ -240,6 +258,14 @@ def main() -> int:
 
     # Static deny is terminal. Otherwise try cache → optional LLM.
     cfg = verdict_cache.load_config()
+
+    # Night-mode / auto-accept-all: when enabled AND within the configured
+    # window, approve any tool that isn't explicitly denied. Deny-patterns
+    # still win (rm -rf /, git push --force, DROP TABLE, ...). Principle:
+    # "after 23, follow suggestions and never stop."
+    if decision != "block" and _in_night_window(cfg) and cfg.get(
+            "auto_approve_night_mode", True):
+        decision, reason = "approve", "night-mode auto-accept"
     if decision != "deny" and tool_name == "Bash":
         cmd = extract_bash_command(tool_input)
         if cmd:
