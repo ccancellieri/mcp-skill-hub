@@ -64,3 +64,74 @@ th {
 tr:last-child td { border-bottom: none; }
 td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
 .warn { color: var(--warn); font-size: 12px; }
+.muted { color: var(--muted); font-size: 12px; }
+.page-h { font-size: 18px; margin: 0 0 14px; font-weight: 600; }
+
+/* buttons */
+.btn {
+  background: var(--line); color: var(--fg); border: 1px solid var(--line);
+  padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
+}
+.btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.sm { padding: 3px 8px; font-size: 11px; }
+.btn.danger:hover { background: var(--bad); }
+.btn.on { background: var(--good); color: #fff; border-color: var(--good); }
+.btn.off { background: var(--bad); color: #fff; border-color: var(--bad); }
+
+/* forms */
+input[type=text], input[type=number], textarea, select {
+  background: #0b1016; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 5px 8px; font: inherit;
+}
+input[type=checkbox] { accent-color: var(--accent); }
+label { display: block; margin: 6px 0; font-size: 12px; color: var(--muted); }
+label input, label textarea { display: block; width: 100%; margin-top: 3px; color: var(--fg); }
+
+/* settings */
+.settings-form { display: flex; flex-direction: column; gap: 14px; }
+.settings-section h2 { margin: 0; font-size: 13px; }
+.settings-fields { margin-top: 10px; display: grid; gap: 8px; }
+.field { display: grid; grid-template-columns: 260px 1fr; gap: 10px; align-items: center; }
+.field.sub { grid-template-columns: 180px 1fr; padding-left: 16px; }
+.field label { margin: 0; font-family: ui-monospace, monospace; font-size: 11px; }
+.field input[type=text], .field input[type=number] { width: 100%; }
+.nested { display: grid; gap: 4px; border-left: 2px solid var(--line); padding-left: 6px; }
+.save-bar { position: sticky; bottom: 0; padding: 10px 0; background: var(--bg); display: flex; gap: 12px; align-items: center; }
+.status.ok { color: var(--good); }
+.status.err { color: var(--bad); }
+
+/* verdicts */
+.filter-bar, .search-bar, .bulk-bar {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;
+}
+.filter-bar input, .filter-bar select { font-size: 12px; }
+.vtable, .ttable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vtable td, .vtable th, .ttable td, .ttable th {
+  padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left;
+  vertical-align: middle;
+}
+.vtable td { font-family: ui-monospace, monospace; }
+.tag {
+  display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.tag.allow, .tag.open { background: var(--good); color: #fff; }
+.tag.deny, .tag.closed { background: var(--bad); color: #fff; }
+
+/* tasks */
+.task-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .task-panels { grid-template-columns: 1fr; } }
+.ttable td:nth-child(n+2) { text-align: left; }
+.title-in { width: 100%; background: transparent; border: 1px solid transparent; }
+.title-in:focus { border-color: var(--accent); background: #0b1016; }
+
+/* dialog */
+dialog {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 18px; min-width: 380px; max-width: 600px;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
+dialog h3 { margin: 0 0 12px; font-size: 14px; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 12px 0 0; }
+

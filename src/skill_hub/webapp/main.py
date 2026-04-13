@@ -9,6 +9,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .routes import dashboard as dashboard_routes
+from .routes import settings as settings_routes
+from .routes import tasks as tasks_routes
+from .routes import verdicts as verdicts_routes
 
 PKG_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PKG_DIR / "static"
@@ -31,4 +34,7 @@ def create_app(store: Any) -> FastAPI:
         return {"ok": True}
 
     app.include_router(dashboard_routes.router)
+    app.include_router(settings_routes.router)
+    app.include_router(verdicts_routes.router)
+    app.include_router(tasks_routes.router)
     return app

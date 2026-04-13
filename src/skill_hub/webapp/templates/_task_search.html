@@ -1,0 +1,22 @@
+{% if q %}
+<section class="card">
+  <h2>Search results <span class="muted">({{ mode }}: {{ results|length }})</span></h2>
+  {% if error %}<p class="warn">{{ error }}</p>{% endif %}
+  {% if results %}
+  <table class="ttable">
+    <thead><tr><th>id</th><th>title</th><th>status</th><th>tags</th><th>sim</th></tr></thead>
+    <tbody>
+      {% for r in results %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.title }}</td>
+          <td><span class="tag {{ r.status }}">{{ r.status }}</span></td>
+          <td class="muted">{{ r.tags or '' }}</td>
+          <td>{% if r.get('similarity') %}{{ '%.3f'|format(r.similarity) }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}

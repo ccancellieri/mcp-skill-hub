@@ -25,11 +25,12 @@
         ('intents', 'Intents', '/intents'),
         ('questions', 'Questions', '/questions'),
       ] %}
+      {% set active_keys = ['dashboard', 'settings', 'verdicts', 'tasks'] %}
       {% for key, label, href in tabs %}
-        {% if key == 'dashboard' %}
+        {% if key in active_keys %}
           <a href="{{ href }}" class="tab{% if active_tab == key %} active{% endif %}">{{ label }}</a>
         {% else %}
-          <span class="tab disabled" title="coming in Phase 2+">{{ label }}</span>
+          <span class="tab disabled" title="coming in later phase">{{ label }}</span>
         {% endif %}
       {% endfor %}
     </nav>

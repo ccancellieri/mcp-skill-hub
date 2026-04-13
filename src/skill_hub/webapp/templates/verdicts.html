@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}verdicts{% endblock %}
+{% block content %}
+<h1 class="page-h">Verdicts <span class="muted">({{ rows|length }})</span></h1>
+<div x-data="verdictsPage()">
+  <form class="filter-bar"
+        hx-get="/verdicts/partial" hx-target="#verdict-rows" hx-swap="innerHTML"
+        hx-trigger="change from:select, change from:input[type=number], keyup changed delay:300ms from:input[type=text]">
+    <select name="tool">
+      <option value="">(any tool)</option>
+      {% for t in tools %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <select name="source">
+      <option value="">(any source)</option>
+      {% for s in sources %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+    <select name="decision">
+      <option value="">(any)</option>
+      <option value="allow">allow</option>
+      <option value="deny">deny</option>
+    </select>
+    <input type="number" name="min_hits" min="0" placeholder="min hits" style="width:90px">
+    <input type="text" name="q" placeholder="search command…">
+  </form>
+
+  <div class="bulk-bar">
+    <button type="button" class="btn" @click="bulkDelete()"
+            :disabled="!selected.length">Delete selected</button>
+    <button type="button" class="btn" @click="bulkPromote()"
+            :disabled="!selected.length">Promote to allow-list</button>
+    <span class="muted" x-text="selected.length + ' selected'"></span>
+  </div>
+
+  <table class="vtable">
+    <thead>
+      <tr>
+        <th style="width:30px"></th>
+        <th>tool</th><th>command</th><th>decision</th><th>source</th>
+        <th>conf</th><th>hits</th><th>pin</th><th>actions</th>
+      </tr>
+    </thead>
+    <tbody id="verdict-rows">
+      {% for r in rows %}{% include "_verdict_row.html" %}{% endfor %}
+    </tbody>
+  </table>
+</div>
+<script>
+function verdictsPage() {
+  return {
+    selected: [],
+    toggle(h, on) {
+      if (on) { if (!this.selected.includes(h)) this.selected.push(h); }
+      else { this.selected = this.selected.filter(x => x !== h); }
+    },
+    async bulkDelete() {
+      if (!confirm('Delete ' + this.selected.length + ' verdicts?')) return;
+      const r = await fetch('/verdicts/bulk/delete', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({hashes: this.selected})
+      });
+      if (r.ok) location.reload();
+    },
+    async bulkPromote() {
+      const r = await fetch('/verdicts/bulk/promote', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({hashes: this.selected})
+      });
+      const data = await r.json();
+      alert('Added ' + data.added + ' prefix(es): ' + (data.prefixes||[]).join(', '));
+    }
+  };
+}
+</script>
+{% endblock %}

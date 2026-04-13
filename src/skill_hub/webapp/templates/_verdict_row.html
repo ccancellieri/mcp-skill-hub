@@ -1,0 +1,19 @@
+<tr id="v-{{ r.cmd_hash }}">
+  <td><input type="checkbox" @change="toggle('{{ r.cmd_hash }}', $event.target.checked)"></td>
+  <td>{{ r.tool_name }}</td>
+  <td title="{{ r.command }}">{{ r.command[:80] }}{% if r.command|length > 80 %}…{% endif %}</td>
+  <td><span class="tag {{ r.decision }}">{{ r.decision }}</span></td>
+  <td class="muted">{{ r.source }}</td>
+  <td>{{ '%.3f'|format(r.confidence) }}</td>
+  <td>{{ r.hit_count }}</td>
+  <td>{% if r.pinned %}📌{% endif %}</td>
+  <td>
+    <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/flip"
+            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML">flip</button>
+    <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/pin"
+            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML">pin</button>
+    <button class="btn sm danger" hx-post="/verdicts/{{ r.cmd_hash }}/delete"
+            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML"
+            hx-confirm="Delete this verdict?">×</button>
+  </td>
+</tr>

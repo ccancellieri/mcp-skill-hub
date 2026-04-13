@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}tasks{% endblock %}
+{% block content %}
+<h1 class="page-h">Tasks</h1>
+
+<section class="search-bar" x-data="{q:'', mode:'text'}">
+  <input type="text" x-model="q" placeholder="search title / summary / tags…"
+         hx-get="/tasks/search" hx-trigger="keyup changed delay:300ms"
+         hx-target="#task-search-results" hx-swap="innerHTML"
+         hx-include="[name=mode]" name="q">
+  <label><input type="radio" name="mode" value="text" x-model="mode" checked> text</label>
+  <label>
+    <input type="radio" name="mode" value="semantic" x-model="mode"
+           {% if not embed_ok %}disabled{% endif %}>
+    semantic{% if not embed_ok %} <span class="muted" title="Ollama offline">(offline)</span>{% endif %}
+  </label>
+</section>
+<div id="task-search-results"></div>
+
+<div class="task-panels" x-data="tasksPage()">
+  <section class="card">
+    <h2>Open <span class="muted">({{ open_tasks|length }})</span></h2>
+    <table class="ttable">
+      <thead><tr>
+        <th></th><th>title</th><th>tags</th><th>created</th><th>session</th>
+        <th>auto</th><th>actions</th>
+      </tr></thead>
+      <tbody id="open-rows">
+        {% for t in open_tasks %}{% set panel='open' %}{% include "_task_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Closed <span class="muted">({{ closed_tasks|length }})</span></h2>
+    <div class="bulk-bar">
+      <button type="button" class="btn" @click="doMerge()"
+              :disabled="selected.length<2">Merge selected</button>
+      <span class="muted" x-text="selected.length + ' selected'"></span>
+    </div>
+    <table class="ttable">
+      <thead><tr>
+        <th></th><th>title</th><th>tags</th><th>created</th><th>session</th>
+        <th>auto</th><th>actions</th>
+      </tr></thead>
+      <tbody id="closed-rows">
+        {% for t in closed_tasks %}{% set panel='closed' %}{% include "_task_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<dialog id="dlg-edit">
+  <form method="dialog" onsubmit="submitEdit(event)">
+    <h3>Edit task <span id="edit-id"></span></h3>
+    <input type="hidden" name="_task_id" id="edit-task-id">
+    <label>summary<textarea name="summary" id="edit-summary" rows="4"></textarea></label>
+    <label>tags<input type="text" name="tags" id="edit-tags"></label>
+    <menu><button value="cancel">cancel</button><button type="submit" class="btn">save</button></menu>
+  </form>
+</dialog>
+
+<dialog id="dlg-close">
+  <form method="dialog" onsubmit="submitClose(event)">
+    <h3>Close task <span id="close-id"></span></h3>
+    <input type="hidden" id="close-task-id">
+    <label>compaction summary<textarea name="summary" rows="5" required></textarea></label>
+    <menu><button value="cancel">cancel</button><button type="submit" class="btn">close task</button></menu>
+  </form>
+</dialog>
+
+<dialog id="dlg-teach">
+  <form method="dialog" onsubmit="submitTeach(event)">
+    <h3>Teach from task <span id="teach-id"></span></h3>
+    <input type="hidden" id="teach-task-id">
+    <label>rule<input type="text" name="rule" required placeholder="when I ask about X, suggest…"></label>
+    <menu><button value="cancel">cancel</button><button type="submit" class="btn">save rule</button></menu>
+  </form>
+</dialog>
+
+<script>
+function tasksPage() {
+  return {
+    selected: [],
+    toggle(id, on) {
+      if (on) { if (!this.selected.includes(id)) this.selected.push(id); }
+      else { this.selected = this.selected.filter(x => x !== id); }
+    },
+    async doMerge() {
+      if (this.selected.length < 2) return;
+      const r = await fetch('/tasks/merge', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ids: this.selected})
+      });
+      if (r.ok) location.reload();
+    }
+  };
+}
+function openEdit(id, curSummary, curTags) {
+  document.getElementById('edit-id').textContent = '#' + id;
+  document.getElementById('edit-task-id').value = id;
+  document.getElementById('edit-summary').value = curSummary || '';
+  document.getElementById('edit-tags').value = curTags || '';
+  document.getElementById('dlg-edit').showModal();
+}
+async function submitEdit(ev) {
+  ev.preventDefault();
+  const id = document.getElementById('edit-task-id').value;
+  const f = new FormData(ev.target);
+  const r = await fetch('/tasks/'+id+'/update', {method:'POST', body:f});
+  if (r.ok) { document.getElementById('dlg-edit').close(); location.reload(); }
+}
+function openClose(id) {
+  document.getElementById('close-id').textContent = '#' + id;
+  document.getElementById('close-task-id').value = id;
+  document.getElementById('dlg-close').showModal();
+}
+async function submitClose(ev) {
+  ev.preventDefault();
+  const id = document.getElementById('close-task-id').value;
+  const f = new FormData(ev.target);
+  const r = await fetch('/tasks/'+id+'/close', {method:'POST', body:f});
+  if (r.ok) { document.getElementById('dlg-close').close(); location.reload(); }
+}
+function openTeach(id) {
+  document.getElementById('teach-id').textContent = '#' + id;
+  document.getElementById('teach-task-id').value = id;
+  document.getElementById('dlg-teach').showModal();
+}
+async function submitTeach(ev) {
+  ev.preventDefault();
+  const id = document.getElementById('teach-task-id').value;
+  const f = new FormData(ev.target);
+  const r = await fetch('/tasks/'+id+'/teach', {method:'POST', body:f});
+  const j = await r.json();
+  if (r.ok) { document.getElementById('dlg-teach').close(); alert('Teaching saved #' + j.teaching_id); }
+  else { alert('Error: ' + (j.error||r.status)); }
+}
+function renameInline(ev, id) {
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  const title = ev.target.value;
+  const f = new FormData(); f.set('title', title);
+  fetch('/tasks/'+id+'/title', {method:'PATCH', body:f})
+    .then(r => r.text()).then(html => {
+      const tr = ev.target.closest('tr');
+      const wrap = document.createElement('tbody');
+      wrap.innerHTML = html;
+      tr.replaceWith(wrap.firstElementChild);
+    });
+}
+function cycleAutoApprove(id, current) {
+  const next = current === null || current === undefined ? 'true'
+             : current === true ? 'false' : 'null';
+  fetch('/tasks/'+id+'/auto_approve?enabled='+next, {method:'POST'})
+    .then(r => r.text()).then(html => {
+      const cur = document.getElementById('task-'+id);
+      const wrap = document.createElement('tbody');
+      wrap.innerHTML = html;
+      cur.replaceWith(wrap.firstElementChild);
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,213 @@
+"""Tasks route — open/closed panels, CRUD, search, teaching, auto-approve."""
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+
+router = APIRouter()
+
+
+def _try_embed(text: str) -> list[float] | None:
+    """Return embedding vector or None if embeddings unavailable."""
+    try:
+        from ... import embeddings as _emb
+        vec = _emb.embed(text)
+        if vec and isinstance(vec, list):
+            return vec
+    except (ImportError, ConnectionError, OSError, Exception):
+        return None
+    return None
+
+
+def _row_to_dict(row) -> dict:
+    if row is None:
+        return {}
+    d = dict(row)
+    return d
+
+
+def _list_for_panel(store, status: str, limit: int | None = None) -> list[dict]:
+    rows = store.list_tasks(status=status)
+    out = []
+    for r in rows:
+        d = dict(r)
+        # attach auto_approve flag (best-effort; method doesn't throw)
+        try:
+            d["auto_approve"] = store.get_task_auto_approve(d["id"])
+        except Exception:
+            d["auto_approve"] = None
+        out.append(d)
+    if limit:
+        out = out[:limit]
+    return out
+
+
+@router.get("/tasks", response_class=HTMLResponse)
+def tasks_page(request: Request) -> Any:
+    store = request.app.state.store
+    open_tasks = _list_for_panel(store, "open")
+    closed_tasks = _list_for_panel(store, "closed", limit=50)
+    templates = request.app.state.templates
+    embed_ok = _try_embed("ping") is not None
+    return templates.TemplateResponse(
+        request,
+        "tasks.html",
+        {
+            "open_tasks": open_tasks,
+            "closed_tasks": closed_tasks,
+            "embed_ok": embed_ok,
+            "active_tab": "tasks",
+        },
+    )
+
+
+def _render_row(templates, request, task: dict, panel: str) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "_task_row.html", {"t": task, "panel": panel}
+    )
+
+
+@router.patch("/tasks/{task_id}/title", response_class=HTMLResponse)
+async def rename_task(task_id: int, request: Request) -> Any:
+    form = await request.form()
+    title = str(form.get("title", "")).strip()
+    if not title:
+        return HTMLResponse("title required", status_code=400)
+    store = request.app.state.store
+    store.rename_task_title(task_id, title)
+    row = store.get_task(task_id)
+    d = dict(row)
+    try:
+        d["auto_approve"] = store.get_task_auto_approve(task_id)
+    except Exception:
+        d["auto_approve"] = None
+    panel = "open" if d.get("status") == "open" else "closed"
+    return _render_row(request.app.state.templates, request, d, panel)
+
+
+@router.post("/tasks/{task_id}/update", response_class=HTMLResponse)
+async def update_task(task_id: int, request: Request) -> Any:
+    form = await request.form()
+    summary = str(form.get("summary", ""))
+    tags = str(form.get("tags", ""))
+    store = request.app.state.store
+    store.update_task(task_id, summary=summary, tags=tags)
+    row = store.get_task(task_id)
+    d = dict(row)
+    try:
+        d["auto_approve"] = store.get_task_auto_approve(task_id)
+    except Exception:
+        d["auto_approve"] = None
+    panel = "open" if d.get("status") == "open" else "closed"
+    return _render_row(request.app.state.templates, request, d, panel)
+
+
+@router.post("/tasks/{task_id}/close", response_class=HTMLResponse)
+async def close_task(task_id: int, request: Request) -> Any:
+    form = await request.form()
+    summary = str(form.get("summary", "")) or "closed via dashboard"
+    store = request.app.state.store
+    store.close_task(task_id, compact=summary, compact_vector=None)
+    row = store.get_task(task_id)
+    d = dict(row) if row else {}
+    d["auto_approve"] = None
+    return _render_row(request.app.state.templates, request, d, "closed")
+
+
+@router.post("/tasks/{task_id}/reopen", response_class=HTMLResponse)
+def reopen_task(task_id: int, request: Request) -> Any:
+    store = request.app.state.store
+    store.reopen_task(task_id)
+    row = store.get_task(task_id)
+    d = dict(row) if row else {}
+    try:
+        d["auto_approve"] = store.get_task_auto_approve(task_id)
+    except Exception:
+        d["auto_approve"] = None
+    return _render_row(request.app.state.templates, request, d, "open")
+
+
+@router.post("/tasks/{task_id}/delete", response_class=HTMLResponse)
+def delete_task(task_id: int, request: Request) -> HTMLResponse:
+    store = request.app.state.store
+    store.delete_task(task_id)
+    return HTMLResponse("")
+
+
+@router.post("/tasks/{task_id}/teach")
+async def teach_from_task(task_id: int, request: Request) -> JSONResponse:
+    form = await request.form()
+    rule = str(form.get("rule", "")).strip()
+    if not rule:
+        return JSONResponse({"error": "rule required"}, status_code=400)
+    store = request.app.state.store
+    vec = _try_embed(rule) or []
+    if not vec:
+        return JSONResponse(
+            {"error": "embeddings unavailable (Ollama offline?)"},
+            status_code=503,
+        )
+    tid = store.add_teaching(
+        rule=rule, rule_vector=vec, action="suggest",
+        target_type="task", target_id=str(task_id),
+    )
+    return JSONResponse({"teaching_id": tid})
+
+
+@router.post("/tasks/{task_id}/auto_approve", response_class=HTMLResponse)
+def auto_approve(task_id: int, enabled: str, request: Request) -> Any:
+    if enabled == "null":
+        val: bool | None = None
+    elif enabled == "true":
+        val = True
+    else:
+        val = False
+    store = request.app.state.store
+    store.set_task_auto_approve(task_id, val)
+    row = store.get_task(task_id)
+    d = dict(row) if row else {}
+    d["auto_approve"] = val
+    panel = "open" if d.get("status") == "open" else "closed"
+    return _render_row(request.app.state.templates, request, d, panel)
+
+
+class MergeBody(BaseModel):
+    ids: list[int]
+
+
+@router.post("/tasks/merge")
+def merge_tasks(body: MergeBody, request: Request) -> JSONResponse:
+    store = request.app.state.store
+    new_id = store.merge_tasks(body.ids)
+    return JSONResponse({"new_task_id": new_id})
+
+
+@router.get("/tasks/search", response_class=HTMLResponse)
+def search_tasks(request: Request, q: str = "", mode: str = "text") -> Any:
+    store = request.app.state.store
+    results: list[dict] = []
+    error = ""
+    if q:
+        if mode == "semantic":
+            vec = _try_embed(q)
+            if not vec:
+                error = "embeddings unavailable"
+            else:
+                results = store.search_tasks(vec, top_k=20, status="all")
+        else:
+            rows = store.search_tasks_text(q, status="all")
+            results = [dict(r) for r in rows]
+    for d in results:
+        try:
+            d["auto_approve"] = store.get_task_auto_approve(d["id"])
+        except Exception:
+            d["auto_approve"] = None
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "_task_search.html",
+        {"results": results, "q": q, "mode": mode, "error": error},
+    )

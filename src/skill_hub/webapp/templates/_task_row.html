@@ -1,0 +1,40 @@
+{% set aa = t.get('auto_approve') %}
+<tr id="task-{{ t.id }}">
+  <td>
+    {% if panel == 'closed' %}
+      <input type="checkbox" @change="toggle({{ t.id }}, $event.target.checked)">
+    {% endif %}
+  </td>
+  <td>
+    <input type="text" value="{{ t.title }}" class="title-in"
+           onkeydown="renameInline(event, {{ t.id }})">
+  </td>
+  <td class="muted">{{ t.tags or '' }}</td>
+  <td class="muted">{{ t.created_at }}</td>
+  <td class="muted">
+    {% if t.get('session_id') %}{{ t.session_id[:8] }}{% endif %}
+  </td>
+  <td>
+    <button class="btn sm {% if aa == True %}on{% elif aa == False %}off{% endif %}"
+            onclick="cycleAutoApprove({{ t.id }}, {% if aa is none %}null{% elif aa %}true{% else %}false{% endif %})">
+      {% if aa is none %}—{% elif aa %}ON{% else %}OFF{% endif %}
+    </button>
+  </td>
+  <td>
+    {% if panel == 'open' %}
+      <button class="btn sm"
+              onclick="openEdit({{ t.id }}, {{ (t.summary or '')|tojson }}, {{ (t.tags or '')|tojson }})">edit</button>
+      <button class="btn sm" onclick="openClose({{ t.id }})">close</button>
+      <button class="btn sm" onclick="openTeach({{ t.id }})">teach</button>
+      <button class="btn sm danger" hx-post="/tasks/{{ t.id }}/delete"
+              hx-target="#task-{{ t.id }}" hx-swap="outerHTML"
+              hx-confirm="Delete task #{{ t.id }}?">×</button>
+    {% else %}
+      <button class="btn sm" hx-post="/tasks/{{ t.id }}/reopen"
+              hx-target="#task-{{ t.id }}" hx-swap="outerHTML">reopen</button>
+      <button class="btn sm danger" hx-post="/tasks/{{ t.id }}/delete"
+              hx-target="#task-{{ t.id }}" hx-swap="outerHTML"
+              hx-confirm="Delete task #{{ t.id }}?">×</button>
+    {% endif %}
+  </td>
+</tr>
