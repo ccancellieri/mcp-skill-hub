@@ -135,6 +135,29 @@ def has_open_task_for_session(session_id: str) -> bool:
         return False
 
 
+_QUESTION_PATTERNS = [
+    re.compile(r"\(a\).{0,200}\(b\)", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\b(want me to|should i|shall i|do you want me to|let me know|confirm|pause here|keep going|push through)\b", re.IGNORECASE),
+    re.compile(r"\?\s*$"),
+]
+
+
+def last_message_is_clarifying_question(data: dict) -> bool:
+    """Detect a trailing clarifying question in the last assistant message.
+
+    Covers multi-choice ((a)/(b)/(c)), hedged asks ("want me to", "should I"),
+    and plain trailing '?'. Tuned to catch subagent pauses mid-task.
+    """
+    msg = (data.get("last_assistant_message") or "").strip()
+    if not msg:
+        return False
+    tail = msg[-1500:]
+    for pat in _QUESTION_PATTERNS:
+        if pat.search(tail):
+            return True
+    return False
+
+
 def recent_marker_plan() -> Path | None:
     """Return a plan modified in the last 60min containing the marker literal."""
     if not PLANS_DIR.exists():
@@ -186,6 +209,9 @@ def main() -> int:
             signal = "recent_marker"
             plan = marker_plan
             source_label = f"plan {marker_plan.name} has auto-proceed marker"
+        elif last_message_is_clarifying_question(data):
+            signal = "clarifying_question"
+            source_label = "assistant ended with a clarifying question"
 
     log(f"signal={signal}  session={session_id}")
     if signal == "none":
