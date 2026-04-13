@@ -50,7 +50,57 @@
   </div>
 </section>
 
+<section class="row">
+  <div class="card">
+    <h2>Live queues</h2>
+    <table>
+      <tr><td>intents pending</td>
+          <td><a href="/intents">{{ "{:,}".format(m.intents_pending) }}</a></td></tr>
+      <tr><td>questions open</td>
+          <td><a href="/questions">{{ "{:,}".format(m.questions_open) }}</a></td></tr>
+      <tr><td>dashboard RSS</td>
+          <td>{% if m.rss_mb is not none %}{{ m.rss_mb }} MiB{% else %}&mdash;{% endif %}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h2>Recent open tasks</h2>
+    {% if recent_tasks %}
+      <table>
+        <tr><th>id</th><th style="text-align:left">title</th></tr>
+        {% for t in recent_tasks %}
+          <tr>
+            <td><a href="/tasks#task-{{ t.id }}">#{{ t.id }}</a></td>
+            <td style="text-align:left">{{ t.title or "(untitled)" }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p class="muted">no open tasks &mdash; use <code>save_task</code> to track a thread.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h2>Top intercept types</h2>
+    {% if intercept_types %}
+      <table>
+        <tr><th style="text-align:left">type</th><th>hits</th><th>tokens</th></tr>
+        {% for r in intercept_types %}
+          <tr>
+            <td style="text-align:left"><code>{{ r.type }}</code></td>
+            <td>{{ "{:,}".format(r.n) }}</td>
+            <td>{{ "{:,}".format(r.tokens) }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <p class="muted">no interceptions recorded yet.</p>
+    {% endif %}
+  </div>
+</section>
+
 {% if m.log_missing %}
 <p class="warn">hook-debug.log not found — hook metrics unavailable until a session runs.</p>
+{% endif %}
+{% if m.intercept_errors %}
+<p class="warn">{{ m.intercept_errors }} intercept error(s) in the recent log tail — check <a href="/logs">logs</a>.</p>
 {% endif %}
 {% endblock %}

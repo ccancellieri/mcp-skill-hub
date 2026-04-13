@@ -26,6 +26,21 @@ _BUCKETS = [
     ("other", "Other"),
 ]
 
+_BUCKET_HELP = {
+    "auto_approve": "Controls the auto-approve hook — which tools/commands skip the confirm prompt.",
+    "auto_proceed": "Multi-signal auto-proceed after Stop hook fires (clarifying questions, timers, etc.).",
+    "adaptive_windows": "Tiered time windows that relax/tighten auto-approve based on recent outcomes.",
+    "prefix_bundles": "Command-prefix bundles granted as a group once any member is verdict-allowed.",
+    "task_type_bundles": "Per-task-type bundles: e.g. editing tasks unlock read-only bash by default.",
+    "vector": "Embedding store thresholds, index sizes, and vector-search knobs.",
+    "router": "Local-LLM router thresholds (haiku/ollama) and fallback rules.",
+    "dashboard": "FastAPI webapp host, port, and feature toggles.",
+    "embedding": "Ollama embedding model, dimension, batch size.",
+    "chrome": "chrome-devtools MCP intent queue (URL targets, default action).",
+    "questions": "Clarifying-question queue tuning (poll interval, TTL).",
+    "other": "Uncategorized keys.",
+}
+
 
 def _bucket_for(key: str) -> str:
     for prefix, _ in _BUCKETS[:-1]:
@@ -136,6 +151,7 @@ def settings_page(request: Request) -> Any:
         {
             "groups": groups,
             "buckets": _BUCKETS,
+            "bucket_help": _BUCKET_HELP,
             "active_tab": "settings",
         },
     )

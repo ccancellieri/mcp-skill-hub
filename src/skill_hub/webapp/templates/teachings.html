@@ -48,6 +48,11 @@
   </tr></thead>
   <tbody id="teach-rows">
     {% for t in rows %}{% include "_teaching_row.html" %}{% endfor %}
+    {% if not rows %}
+      <tr><td colspan="6" class="muted" style="text-align:center; padding:14px">
+        no teachings yet &mdash; add one above to persist a rule.
+      </td></tr>
+    {% endif %}
   </tbody>
 </table>
 {% endblock %}

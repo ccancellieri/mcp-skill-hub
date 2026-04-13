@@ -41,6 +41,11 @@
     </thead>
     <tbody id="verdict-rows">
       {% for r in rows %}{% include "_verdict_row.html" %}{% endfor %}
+      {% if not rows %}
+        <tr><td colspan="9" class="muted" style="text-align:center; padding:14px">
+          no verdicts cached &mdash; the auto-approve hook populates this after it runs.
+        </td></tr>
+      {% endif %}
     </tbody>
   </table>
 </div>

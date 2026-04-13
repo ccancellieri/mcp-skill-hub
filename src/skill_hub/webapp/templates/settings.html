@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}settings{% endblock %}
 {% block content %}
-<h1 class="page-h">Settings</h1>
+<h1 class="page-h">Settings
+  <span class="muted">— edit <code>~/.claude/mcp-skill-hub/config.json</code> live</span></h1>
 <form hx-post="/settings/save" hx-target="#save-status" hx-swap="innerHTML"
       class="settings-form">
   {% for prefix, label in buckets %}
@@ -12,6 +13,11 @@
         <span x-text="open?'▾':'▸'"></span> {{ label }}
         <span class="muted">({{ entries|length }})</span>
       </h2>
+      {% if bucket_help and bucket_help[prefix] %}
+        <div class="muted" x-show="open" style="margin:-4px 0 10px; font-size:12px">
+          {{ bucket_help[prefix] }}
+        </div>
+      {% endif %}
       <div x-show="open" class="settings-fields">
         {% for e in entries %}
           <div class="field">

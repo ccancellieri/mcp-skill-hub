@@ -4,7 +4,7 @@
 <h1 class="page-h">Chrome intents
   <span class="muted">({{ pending }} pending / {{ rows|length }} total)</span></h1>
 
-<section class="card" x-data="intentsApp()">
+<section class="card" x-data="intentsApp()" x-init="init()">
   <h2>Enqueue intent for chrome-devtools MCP</h2>
   <form @submit.prevent="submit()" class="settings-form" style="margin-top:8px">
     <label>url
@@ -36,6 +36,11 @@
       <th>note</th><th>status</th><th></th>
     </tr></thead>
     <tbody id="intent-rows">
+      <template x-if="rows.length === 0">
+        <tr><td colspan="7" class="muted" style="text-align:center; padding:14px">
+          no intents queued yet — enqueue one above to hand it to chrome-devtools
+        </td></tr>
+      </template>
       <template x-for="r in rows" :key="r.id">
         <tr>
           <td><code x-text="r.id"></code></td>

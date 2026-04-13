@@ -27,6 +27,11 @@
       </tr></thead>
       <tbody id="open-rows">
         {% for t in open_tasks %}{% set panel='open' %}{% include "_task_row.html" %}{% endfor %}
+        {% if not open_tasks %}
+          <tr><td colspan="7" class="muted" style="text-align:center; padding:14px">
+            no open tasks &mdash; <code>save_task</code> creates one.
+          </td></tr>
+        {% endif %}
       </tbody>
     </table>
   </section>
@@ -45,6 +50,11 @@
       </tr></thead>
       <tbody id="closed-rows">
         {% for t in closed_tasks %}{% set panel='closed' %}{% include "_task_row.html" %}{% endfor %}
+        {% if not closed_tasks %}
+          <tr><td colspan="7" class="muted" style="text-align:center; padding:14px">
+            no closed tasks yet.
+          </td></tr>
+        {% endif %}
       </tbody>
     </table>
   </section>

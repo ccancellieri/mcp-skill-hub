@@ -1,6 +1,7 @@
 """Dashboard route — KPIs, metrics, and home page."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -8,6 +9,20 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from ... import dashboard as _dashboard
 from ... import dashboard_api  # noqa: F401 (plan reference; future use)
+from ..services import intents_queue, questions_queue
+
+
+def _rss_mb() -> float | None:
+    """Best-effort resident-set size of this process in MiB (stdlib only)."""
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS returns bytes; Linux returns kilobytes.
+        if os.uname().sysname == "Darwin":
+            return round(rss / (1024 * 1024), 1)
+        return round(rss / 1024, 1)
+    except Exception:  # noqa: BLE001
+        return None
 
 router = APIRouter()
 
@@ -59,13 +74,60 @@ def api_metrics(request: Request) -> JSONResponse:
     return JSONResponse(_collect_metrics(store))
 
 
+def _recent_open_tasks(store: Any, limit: int = 5) -> list[dict]:
+    try:
+        rows = store.list_tasks(status="open")
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for r in rows[:limit]:
+        d = dict(r)
+        out.append({
+            "id": d.get("id"),
+            "title": (d.get("title") or "")[:80],
+            "tags": d.get("tags") or "",
+        })
+    return out
+
+
+def _intercept_by_type(store: Any, limit: int = 5) -> list[dict]:
+    try:
+        rows = store.get_interception_stats()
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for r in rows[:limit]:
+        out.append({
+            "type": r["command_type"],
+            "n": r["intercept_count"],
+            "tokens": r["total_tokens_saved"] or 0,
+        })
+    return out
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request) -> Any:
     store = request.app.state.store
     metrics = _collect_metrics(store)
+    metrics["rss_mb"] = _rss_mb()
+    try:
+        metrics["intents_pending"] = intents_queue.pending_count()
+    except Exception:  # noqa: BLE001
+        metrics["intents_pending"] = 0
+    try:
+        metrics["questions_open"] = len(questions_queue.list_open())
+    except Exception:  # noqa: BLE001
+        metrics["questions_open"] = 0
+    recent_tasks = _recent_open_tasks(store)
+    intercept_types = _intercept_by_type(store)
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"m": metrics, "active_tab": "dashboard"},
+        {
+            "m": metrics,
+            "recent_tasks": recent_tasks,
+            "intercept_types": intercept_types,
+            "active_tab": "dashboard",
+        },
     )
