@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}vector{% endblock %}
+{% block content %}
+<h1 class="page-h">Vector scatter <span class="muted">({{ count }} pts · {{ source }})</span></h1>
+<div x-data="{ source: '{{ source }}', limit: {{ limit }} }">
+  <div class="filter-bar">
+    <label>source
+      <select x-model="source"
+              @change="window.location = '/vector?source=' + source + '&limit=' + limit">
+        {% for s in sources %}
+          <option value="{{ s }}" {% if s == source %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>limit
+      <input type="number" x-model.number="limit" min="50" max="5000" step="50"
+             style="width:90px"
+             @change.debounce.500ms="window.location = '/vector?source=' + source + '&limit=' + limit">
+    </label>
+    <span class="muted">random projection · cached seed</span>
+  </div>
+  <div class="card" style="padding:8px; margin-top:12px">
+    {{ svg | safe }}
+  </div>
+  {% if groups %}
+    <div class="card" style="margin-top:12px">
+      <h2>Legend</h2>
+      <div style="display:flex; flex-wrap:wrap; gap:8px">
+        {% for g in groups %}
+          <span class="muted" style="font-size:12px">{{ g }}</span>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

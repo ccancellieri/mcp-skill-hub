@@ -296,6 +296,10 @@ def seed_auto_proceed_defaults():
         "vector_autoapprove_threshold": 0.88,
         # Learn-from-Claude-sessions: harvest approvals into verdict cache.
         "learn_from_claude_sessions": False,
+        # Ask-the-user fallback: when an unknown command isn't classified by
+        # cache, vector or LLM, briefly poll the dashboard's question queue.
+        "ask_user_on_ambiguous": False,
+        "ask_user_timeout_s": 3.0,
     }
     for k, v in defaults.items():
         if k not in cfg:

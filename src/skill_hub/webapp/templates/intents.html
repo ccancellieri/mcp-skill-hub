@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}intents{% endblock %}
+{% block content %}
+<h1 class="page-h">Chrome intents
+  <span class="muted">({{ pending }} pending / {{ rows|length }} total)</span></h1>
+
+<section class="card" x-data="intentsApp()">
+  <h2>Enqueue intent for chrome-devtools MCP</h2>
+  <form @submit.prevent="submit()" class="settings-form" style="margin-top:8px">
+    <label>url
+      <input type="text" x-model="url" required
+             placeholder="https://example.com or chrome://flags">
+    </label>
+    <div class="filter-bar">
+      <label>action
+        <select x-model="action">
+          <option value="navigate">navigate</option>
+          <option value="screenshot">screenshot</option>
+          <option value="snapshot">snapshot</option>
+          <option value="lighthouse">lighthouse</option>
+          <option value="performance">performance</option>
+        </select>
+      </label>
+      <label>note
+        <input type="text" x-model="note" placeholder="optional context for Claude">
+      </label>
+      <button type="submit" class="btn">enqueue</button>
+    </div>
+  </form>
+  <div x-text="status" class="status" style="margin-top:6px"></div>
+
+  <h2 style="margin-top:18px">Queue</h2>
+  <table class="vtable">
+    <thead><tr>
+      <th>id</th><th>created</th><th>action</th><th>url</th>
+      <th>note</th><th>status</th><th></th>
+    </tr></thead>
+    <tbody id="intent-rows">
+      <template x-for="r in rows" :key="r.id">
+        <tr>
+          <td><code x-text="r.id"></code></td>
+          <td x-text="new Date(r.created_at*1000).toLocaleTimeString()"></td>
+          <td x-text="r.action"></td>
+          <td><a :href="r.url" target="_blank" x-text="r.url"></a></td>
+          <td x-text="r.note"></td>
+          <td x-text="r.status"></td>
+          <td>
+            <button class="btn" @click="markDone(r.id)"
+                    x-show="r.status === 'pending'">done</button>
+            <button class="btn" @click="cancel(r.id)"
+                    x-show="r.status === 'pending'">cancel</button>
+          </td>
+        </tr>
+      </template>
+    </tbody>
+  </table>
+</section>
+
+<script>
+function intentsApp() {
+  return {
+    url: '', action: 'navigate', note: '', status: '',
+    rows: {{ rows | tojson }},
+    init() { setInterval(() => this.refresh(), 4000); },
+    async refresh() {
+      const r = await fetch('/intents/list');
+      const d = await r.json();
+      this.rows = d.rows;
+    },
+    async submit() {
+      const r = await fetch('/intents', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({url:this.url, action:this.action, note:this.note})
+      });
+      if (r.ok) {
+        this.status = 'enqueued';
+        this.url = ''; this.note = '';
+        await this.refresh();
+      } else {
+        this.status = 'error: ' + r.status;
+      }
+    },
+    async markDone(id) {
+      await fetch('/intents/' + id + '/done', {method:'POST'});
+      this.refresh();
+    },
+    async cancel(id) {
+      await fetch('/intents/' + id + '/cancel', {method:'POST'});
+      this.refresh();
+    },
+  };
+}
+</script>
+{% endblock %}

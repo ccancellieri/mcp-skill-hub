@@ -231,10 +231,40 @@ def main() -> int:
     save_state(state)
 
     log(f"PROCEED  session={session_id}  count={sess['count']}  signal={signal}")
-    out = {
-        "decision": "block",
-        "reason": f"proceed (auto — {sess['count']}/{cap}, {source_label})",
-    }
+
+    # If the chrome-intents queue has pending items, remind Claude to drain
+    # them via the chrome-devtools MCP before continuing.
+    extras = []
+    intents_path = (
+        Path.home() / ".claude" / "mcp-skill-hub" / "state"
+        / "chrome_intents.jsonl"
+    )
+    if intents_path.exists():
+        try:
+            pending = 0
+            for raw in intents_path.read_text().splitlines():
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("status") == "pending":
+                    pending += 1
+            if pending:
+                extras.append(
+                    f"{pending} chrome intent(s) pending — drain the queue "
+                    f"via the chrome-devtools MCP "
+                    f"(see /intents in the dashboard)."
+                )
+        except OSError:
+            pass
+
+    reason = f"proceed (auto — {sess['count']}/{cap}, {source_label})"
+    out: dict = {"decision": "block", "reason": reason}
+    if extras:
+        out["systemMessage"] = " | ".join(extras)
     print(json.dumps(out))
     return 0
 

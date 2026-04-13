@@ -25,7 +25,7 @@
         ('intents', 'Intents', '/intents'),
         ('questions', 'Questions', '/questions'),
       ] %}
-      {% set active_keys = ['dashboard', 'settings', 'verdicts', 'tasks', 'skills', 'teachings', 'logs'] %}
+      {% set active_keys = ['dashboard', 'settings', 'verdicts', 'tasks', 'skills', 'teachings', 'logs', 'vector', 'intents', 'questions'] %}
       {% for key, label, href in tabs %}
         {% if key in active_keys %}
           <a href="{{ href }}" class="tab{% if active_tab == key %} active{% endif %}">{{ label }}</a>

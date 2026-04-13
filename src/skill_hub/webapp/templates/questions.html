@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}questions{% endblock %}
+{% block content %}
+<h1 class="page-h">Questions
+  <span class="muted">({{ open_rows|length }} open)</span></h1>
+
+<div x-data="questionsApp()" x-init="init()">
+  <section class="card">
+    <h2>Open questions</h2>
+    <div x-show="open.length === 0" class="muted">no questions waiting</div>
+    <template x-for="q in open" :key="q.id">
+      <div class="card" style="margin-top:8px; border-left:3px solid #d6732b">
+        <div><b x-text="q.prompt"></b></div>
+        <div class="muted" style="font-size:12px"
+             x-show="q.command"
+             x-text="'(' + q.tool_name + ') ' + q.command"></div>
+        <div style="margin-top:6px">
+          <button class="btn" @click="answer(q.id, 'allow')">allow</button>
+          <button class="btn" @click="answer(q.id, 'deny')">deny</button>
+        </div>
+      </div>
+    </template>
+  </section>
+
+  <section class="card" style="margin-top:14px">
+    <h2>Recent</h2>
+    <table class="vtable">
+      <thead><tr>
+        <th>asked</th><th>prompt</th><th>tool</th>
+        <th>status</th><th>decision</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="q in recent" :key="q.id">
+          <tr>
+            <td x-text="new Date(q.created_at*1000).toLocaleTimeString()"></td>
+            <td x-text="q.prompt"></td>
+            <td x-text="q.tool_name"></td>
+            <td x-text="q.status"></td>
+            <td x-text="q.decision || ''"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </section>
+
+  <div id="toast-host" style="position:fixed; bottom:16px; right:16px;
+       display:flex; flex-direction:column; gap:8px; z-index:9999"></div>
+</div>
+
+<script>
+function questionsApp() {
+  return {
+    open: {{ open_rows | tojson }},
+    recent: {{ recent | tojson }},
+    init() {
+      this.connect();
+      setInterval(() => this.refresh(), 8000);
+    },
+    connect() {
+      try {
+        const es = new EventSource('/questions/stream');
+        es.addEventListener('snapshot', e => this.apply(JSON.parse(e.data)));
+        es.addEventListener('change', e => {
+          const data = JSON.parse(e.data);
+          // toast for any newly seen ids
+          const seen = new Set(this.open.map(q => q.id));
+          data.forEach(q => { if (!seen.has(q.id)) this.toast(q); });
+          this.apply(data);
+        });
+        es.onerror = () => { es.close(); setTimeout(() => this.connect(), 3000); };
+      } catch (e) { /* SSE unsupported */ }
+    },
+    apply(rows) { this.open = rows; this.refresh(); },
+    async refresh() {
+      const r = await fetch('/questions/list');
+      const d = await r.json();
+      this.open = d.open; this.recent = d.recent;
+    },
+    toast(q) {
+      const host = document.getElementById('toast-host');
+      if (!host) return;
+      const el = document.createElement('div');
+      el.className = 'card';
+      el.style.cssText = 'background:#1b2430; border:1px solid #d6732b; min-width:280px';
+      el.innerHTML = '<div><b>question:</b> ' +
+        (q.prompt || '').replace(/</g,'&lt;') + '</div>' +
+        '<div style="margin-top:6px">' +
+        '<button class="btn" data-d="allow">allow</button> ' +
+        '<button class="btn" data-d="deny">deny</button></div>';
+      el.querySelectorAll('button').forEach(b => b.onclick = async () => {
+        await this.answer(q.id, b.dataset.d);
+        el.remove();
+      });
+      host.appendChild(el);
+      setTimeout(() => el.remove(), 60000);
+    },
+    async answer(qid, decision) {
+      await fetch('/questions/' + qid + '/answer', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({decision: decision, reason: 'ui'})
+      });
+      this.refresh();
+    },
+  };
+}
+</script>
+{% endblock %}

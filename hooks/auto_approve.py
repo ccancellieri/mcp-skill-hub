@@ -334,6 +334,64 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 log(f"cache  error={e}")
 
+    # Ask-the-user fallback for ambiguous Bash commands when explicitly enabled.
+    if (not decision and tool_name == "Bash"
+            and cfg.get("ask_user_on_ambiguous", False)):
+        cmd_full = extract_bash_command(tool_input)
+        if cmd_full:
+            try:
+                ask_url = cfg.get("dashboard_server_url",
+                                  "http://127.0.0.1:8765")
+                host = cfg.get("dashboard_server_host", "127.0.0.1")
+                port = int(cfg.get("dashboard_server_port", 8765))
+                base = f"http://{host}:{port}"
+                body = json.dumps({
+                    "prompt": f"Allow this command? {cmd_full[:160]}",
+                    "command": cmd_full,
+                    "tool_name": tool_name,
+                }).encode()
+                req = urllib.request.Request(
+                    f"{base}/questions/ask", data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=2.0) as r:
+                    qdata = json.loads(r.read().decode())
+                qid = qdata.get("id")
+                if qid:
+                    timeout_s = float(cfg.get("ask_user_timeout_s", 3.0))
+                    poll_url = f"{base}/questions/{qid}/answer"
+                    deadline = datetime.now().timestamp() + timeout_s
+                    import time as _time
+                    answered = None
+                    while datetime.now().timestamp() < deadline:
+                        # Poll the list endpoint to see if status flipped.
+                        try:
+                            with urllib.request.urlopen(
+                                    f"{base}/questions/list", timeout=0.8
+                            ) as lr:
+                                payload = json.loads(lr.read().decode())
+                            for q in payload.get("recent", []):
+                                if (q.get("id") == qid
+                                        and q.get("status") == "answered"):
+                                    answered = q
+                                    break
+                            if answered:
+                                break
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _time.sleep(0.25)
+                    if answered:
+                        if answered.get("decision") == "allow":
+                            decision, reason = "approve", "user (ui) allowed"
+                        elif answered.get("decision") == "deny":
+                            decision, reason = "block", "user (ui) denied"
+                        log(f"ASK_USER  qid={qid}  -> {answered.get('decision')}")
+                    else:
+                        log(f"ASK_USER  qid={qid}  timeout (no answer)")
+            except Exception as e:  # noqa: BLE001
+                log(f"ASK_USER  error={e}")
+
     log(f"{tool_name}  decision={decision or 'pass'}  cmd=\"{preview}\"  reason={reason}")
 
     if decision == "approve":
