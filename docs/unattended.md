@@ -150,9 +150,21 @@ New config keys (`~/.claude/mcp-skill-hub/config.json`):
 "dashboard_server_port": 8765,
 "dashboard_auto_open_browser": false,
 "ask_user_on_ambiguous": false,
-"ask_user_timeout_s": 3.0,
+"ask_user_timeout_s": 10.0,
+"ask_on_deny": true,
 "auto_approve_night_mode": false
 ```
+
+`ask_on_deny` (default `true`) changes `deny_pattern` matches from hard
+blocks into user prompts: the hook POSTs a question to
+`/questions/ask` and short-polls `/questions/list` for up to
+`ask_user_timeout_s` (default 10s). Answering `allow` overrides the
+deny (and caches a `user_approved` verdict so the next run is instant);
+`deny` or timeout produces a hard block. A small hardcoded set of
+**catastrophic** patterns (fork bombs `:(){ :|:& };:`, `dd if=... of=/dev/...`)
+still block immediately without asking — those aren't recoverable. If the
+dashboard server is unreachable the hook falls back to the legacy block
+behavior.
 
 `auto_approve_night_mode` = auto-accept any question that times out,
 scoped to the configured `auto_proceed_window`. `ask_user_on_ambiguous`
@@ -199,12 +211,12 @@ field. When the per-task permissive override is ON
 `task_safe_prefixes`. It never reduces safety.
 
 **Deny-pattern scoping (bug fix).** `deny_patterns` are now matched only
-against *unquoted* tokens of the Bash command (parsed via `shlex`).
-This fixes a regression where commit messages like
-`git commit -m "remove rm -rf / from deny list"` were incorrectly
-blocked because the literal `rm -rf /` appeared inside the quoted
-message. The pattern still blocks the actual invocation
-`rm -rf /` as before. Covered by
+against *unquoted* fragments of the Bash command. The parser is a
+direct stateful walk of the raw command (not `shlex.split`), so nested
+escaped quotes such as `uv run python -c "print('rm -rf /')"` or
+`echo "outer \"rm -rf /\" inner"` no longer leak deny strings into the
+scan haystack. The pattern still blocks actual invocations like
+`rm -rf /` and `cd /tmp && rm -rf /`. Covered by
 `tests/test_auto_approve_adaptive.py`.
 
 Priority chain (updated):

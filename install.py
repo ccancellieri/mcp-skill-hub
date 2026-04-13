@@ -299,7 +299,11 @@ def seed_auto_proceed_defaults():
         # Ask-the-user fallback: when an unknown command isn't classified by
         # cache, vector or LLM, briefly poll the dashboard's question queue.
         "ask_user_on_ambiguous": False,
-        "ask_user_timeout_s": 3.0,
+        "ask_user_timeout_s": 10.0,
+        # Ask-on-deny: when a deny_pattern matches, escalate to the user via
+        # the dashboard question queue instead of hard-blocking. Catastrophic
+        # patterns (fork bombs, dd to raw device) always block immediately.
+        "ask_on_deny": True,
         # Adaptive allowance: tiered time windows. First match wins. A window's
         # prefix_bundle is a key into the built-in bundles (read_only, build,
         # deploy) or into user-defined "prefix_bundles". The sentinel

@@ -304,63 +304,75 @@ def task_type_prefixes(marker: dict, cfg: dict) -> list[str]:
 
 
 def _split_bash_tokens(cmd: str) -> tuple[list[str], list[str]]:
-    """Return (unquoted_tokens, quoted_tokens) using shlex.
+    """Return (unquoted_fragments, quoted_fragments) as raw substrings of cmd.
 
-    We re-scan the raw string with shlex.shlex(posix=False) to know whether
-    each token originated inside quotes. Tokens inside quotes go to the
-    "quoted" list and are EXCLUDED from deny-regex scoping.
+    Walks `cmd` character-by-character tracking quote state. Each maximal run
+    of unquoted text is collected as an unquoted fragment; the INNER contents
+    of each quoted run (between the opening and closing quote) are collected
+    as a quoted fragment. Escape handling:
+
+      - outside quotes: backslash escapes the next char (treated as unquoted
+        literal, included in the current unquoted run)
+      - inside '...' : no escaping, everything literal until closing '
+      - inside "..." : backslash only escapes \\, $, ", ` — other backslashes
+        are literal. Escaped char is consumed as part of the quoted content.
+
+    If quotes are unbalanced, the whole command is returned as a single
+    unquoted fragment (conservative: deny regex still scans everything).
     """
-    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
-    lex.whitespace_split = True
     unquoted: list[str] = []
     quoted: list[str] = []
-    # shlex.shlex in posix mode loses quoting info. Walk manually instead.
-    # Strategy: tokenise with posix=True to get logical tokens, then for each
-    # token find its position in the original string and check if it sits
-    # inside a quoted span.
-    try:
-        tokens = list(shlex.split(cmd, posix=True))
-    except ValueError:
-        # Unbalanced quotes — treat the entire string as unquoted (safe side:
-        # deny patterns still scan everything, same as the legacy behavior).
-        return [cmd], []
-    # Compute quoted character mask over cmd.
-    mask = [False] * len(cmd)
-    in_q: str | None = None
+    n = len(cmd)
     i = 0
-    while i < len(cmd):
+    cur_unq: list[str] = []
+    while i < n:
         c = cmd[i]
-        if in_q:
-            if c == in_q:
-                in_q = None
-            else:
-                mask[i] = True
-            i += 1
+        if c == "\\" and i + 1 < n:
+            # Outside quotes: backslash escape -> include next char literal.
+            cur_unq.append(cmd[i:i + 2])
+            i += 2
             continue
-        if c in ("'", '"'):
-            in_q = c
+        if c == "'":
+            # flush current unquoted
+            if cur_unq:
+                unquoted.append("".join(cur_unq))
+                cur_unq = []
+            # find closing single quote (no escaping inside)
+            j = cmd.find("'", i + 1)
+            if j < 0:
+                # unbalanced
+                return [cmd], []
+            quoted.append(cmd[i + 1:j])
+            i = j + 1
+            continue
+        if c == '"':
+            if cur_unq:
+                unquoted.append("".join(cur_unq))
+                cur_unq = []
+            # walk to closing double quote, honoring \ escapes for \, $, ", `
+            j = i + 1
+            inner: list[str] = []
+            closed = False
+            while j < n:
+                cj = cmd[j]
+                if cj == "\\" and j + 1 < n and cmd[j + 1] in ('\\', '$', '"', '`'):
+                    inner.append(cmd[j:j + 2])
+                    j += 2
+                    continue
+                if cj == '"':
+                    closed = True
+                    break
+                inner.append(cj)
+                j += 1
+            if not closed:
+                return [cmd], []
+            quoted.append("".join(inner))
+            i = j + 1
+            continue
+        cur_unq.append(c)
         i += 1
-    # For each token, locate its first occurrence after the scan cursor and
-    # check whether its span overlaps a quoted region.
-    cursor = 0
-    for tok in tokens:
-        if not tok:
-            continue
-        idx = cmd.find(tok, cursor)
-        if idx < 0:
-            # Couldn't locate (e.g. due to unescaping) — be conservative and
-            # treat as unquoted so deny patterns still fire.
-            unquoted.append(tok)
-            continue
-        end = idx + len(tok)
-        # If ANY char of the token span is inside a quoted region, classify
-        # as quoted. (Mixed cases are rare; commit -m "..." produces a pure
-        # quoted-inside token post-shlex.)
-        if any(mask[idx:end]):
-            quoted.append(tok)
-        else:
-            unquoted.append(tok)
-        cursor = end
+    if cur_unq:
+        unquoted.append("".join(cur_unq))
     return unquoted, quoted
 
 
@@ -489,13 +501,105 @@ def _segment_matches_prefix(segment: str, prefixes: list[str]) -> str | None:
 
 
 def scoped_deny_haystack(cmd: str) -> str:
-    """Return the deny-pattern scan target: unquoted tokens joined by spaces.
+    """Return the deny-pattern scan target: unquoted fragments joined by spaces.
 
     Quoted arguments (commit messages, echo strings, grep patterns) are
     excluded so benign text inside them can't trigger a deny match.
     """
     unquoted, _ = _split_bash_tokens(cmd)
     return " ".join(unquoted)
+
+
+# Catastrophic patterns that ALWAYS block immediately (never ask): fork bombs
+# and raw-device dd writes are unrecoverable if the user fat-fingers "allow".
+CATASTROPHIC_DENY_PATTERNS = (
+    r":\(\)\s*\{\s*:\s*\|\s*:.*;\s*\}\s*;\s*:",  # classic fork bomb
+    r"dd\s+if=.*\s+of=/dev/",                    # dd to raw device
+)
+
+
+def _is_catastrophic(pat: str) -> bool:
+    """True when `pat` (user regex) is one of the always-block patterns."""
+    for cp in CATASTROPHIC_DENY_PATTERNS:
+        if pat == cp:
+            return True
+    # Heuristic: if the user's pat text is a substring of a catastrophic
+    # pattern or vice-versa, treat as catastrophic too.
+    low = pat.lower()
+    if "dev/" in low and "dd" in low:
+        return True
+    if ":()" in pat and "|:" in pat:
+        return True
+    return False
+
+
+def _ask_user_about_deny(cmd: str, pat: str, cfg: dict) -> tuple[str, str] | None:
+    """Ask the dashboard question queue whether to allow a deny-matched cmd.
+
+    Returns (decision, reason) or None if the server is unreachable. Decision
+    is "approve" or "block". Timeout / explicit deny both return "block".
+    """
+    try:
+        host = cfg.get("dashboard_server_host", "127.0.0.1")
+        port = int(cfg.get("dashboard_server_port", 8765))
+        base = f"http://{host}:{port}"
+        body = json.dumps({
+            "prompt": (
+                f"Deny pattern `{pat}` matched in: `{cmd[:200]}`. "
+                "Allow anyway? (allow/deny)"
+            ),
+            "command": cmd,
+            "tool_name": "Bash",
+            "kind": "deny_override",
+            "pattern": pat,
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/questions/ask", data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=2.0) as r:
+            qdata = json.loads(r.read().decode())
+        qid = qdata.get("id")
+        if not qid:
+            return None
+        # Deny-class questions get a longer window (default 10s).
+        timeout_s = float(cfg.get("ask_user_timeout_s", 10.0))
+        deadline = datetime.now().timestamp() + timeout_s
+        import time as _time
+        answered = None
+        while datetime.now().timestamp() < deadline:
+            try:
+                with urllib.request.urlopen(
+                        f"{base}/questions/list", timeout=0.8
+                ) as lr:
+                    payload = json.loads(lr.read().decode())
+                for q in payload.get("recent", []):
+                    if (q.get("id") == qid
+                            and q.get("status") == "answered"):
+                        answered = q
+                        break
+                if answered:
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+            _time.sleep(0.25)
+        if answered and answered.get("decision") == "allow":
+            # Cache the user's override so next run is instant.
+            try:
+                conn = verdict_cache.connect()
+                verdict_cache.put(
+                    conn, "Bash", cmd, "allow", "user_approved", 1.0
+                )
+            except Exception as e:  # noqa: BLE001
+                log(f"ASK_DENY cache_put error={e}")
+            return "approve", f"user overrode deny: {pat}"
+        if answered and answered.get("decision") == "deny":
+            return "block", f"matched deny_pattern: {pat} (user confirmed)"
+        return "block", f"matched deny_pattern: {pat} (timeout)"
+    except Exception as e:  # noqa: BLE001
+        log(f"ASK_DENY error={e}")
+        return None
 
 
 def decide(tool_name: str, tool_input: dict, allow: dict,
@@ -522,6 +626,17 @@ def decide(tool_name: str, tool_input: dict, allow: dict,
         for pat in allow.get("deny_patterns", []):
             try:
                 if re.search(pat, scan):
+                    # Catastrophic patterns always block immediately.
+                    if _is_catastrophic(pat):
+                        return "block", (
+                            f"matched catastrophic deny_pattern: {pat}"
+                        )
+                    # Ask-on-deny: escalate to user via the question queue.
+                    if cfg.get("ask_on_deny", True):
+                        ans = _ask_user_about_deny(cmd, pat, cfg)
+                        if ans is not None:
+                            return ans
+                        # Server unreachable -> fall back to block.
                     return "block", f"matched deny_pattern: {pat}"
             except re.error:
                 continue

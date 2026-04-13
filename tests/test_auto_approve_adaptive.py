@@ -28,25 +28,81 @@ ALLOW_BASE = {
 def test_deny_scan_excludes_quoted_commit_message():
     cmd = 'git commit -m "remove rm -rf / from deny list"'
     unquoted, quoted = aa._split_bash_tokens(cmd)
-    assert "rm" not in unquoted
+    # Now unquoted/quoted are raw fragments (not shlex tokens).
+    joined_unq = " ".join(unquoted)
+    assert "rm -rf /" not in joined_unq
     # haystack excludes the message
     hay = aa.scoped_deny_haystack(cmd)
     assert "rm -rf /" not in hay
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE)
+    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
+                            cfg={"ask_on_deny": False})
     assert dec != "block", f"should not block, got reason={reason!r}"
+
+
+def test_bug1_uv_run_python_nested_quotes():
+    """Repro from bug report: shlex would unescape nested quotes and
+    misclassify `rm -rf /` as an unquoted token."""
+    cmd = "uv run python -c \"print('rm -rf /')\""
+    hay = aa.scoped_deny_haystack(cmd)
+    assert "rm -rf /" not in hay, f"haystack leaked deny string: {hay!r}"
+    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
+                            cfg={"ask_on_deny": False})
+    assert dec != "block", f"should not block; got reason={reason!r}"
+
+
+def test_bug1_escaped_double_quotes_inside_double_quotes():
+    cmd = 'echo "outer \\"rm -rf /\\" inner"'
+    hay = aa.scoped_deny_haystack(cmd)
+    assert "rm -rf /" not in hay, f"haystack leaked: {hay!r}"
+
+
+def test_bug1_git_commit_operators_in_message_not_compound():
+    cmd = 'git commit -m "message with ; && embedded"'
+    hay = aa.scoped_deny_haystack(cmd)
+    assert ";" not in hay
+    assert "&&" not in hay
+
+
+def test_bug1_cd_then_rm_unquoted_still_blocks():
+    cmd = "cd /tmp && rm -rf /"
+    hay = aa.scoped_deny_haystack(cmd)
+    assert "rm -rf /" in hay
 
 
 def test_deny_scan_still_blocks_literal_invocation():
     cmd = "rm -rf /"
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE)
+    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
+                            cfg={"ask_on_deny": False})
     assert dec == "block"
     assert "deny_pattern" in reason
 
 
 def test_deny_scan_blocks_even_with_other_quoted_args():
     cmd = 'rm -rf / --no-preserve-root  # "safe message"'
-    dec, _ = aa.decide("Bash", {"command": cmd}, ALLOW_BASE)
+    dec, _ = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
+                       cfg={"ask_on_deny": False})
     assert dec == "block"
+
+
+def test_deny_ask_on_deny_server_unreachable_falls_back_to_block():
+    # Point at a port nothing is listening on; should fall back to block.
+    cfg = {"ask_on_deny": True, "dashboard_server_port": 1}
+    dec, reason = aa.decide("Bash", {"command": "rm -rf /"},
+                            ALLOW_BASE, cfg=cfg)
+    assert dec == "block"
+    assert "deny_pattern" in reason
+
+
+def test_catastrophic_pattern_always_blocks_even_with_ask():
+    cfg = {"ask_on_deny": True, "dashboard_server_port": 1}
+    allow = dict(ALLOW_BASE)
+    allow["deny_patterns"] = [r"dd\s+if=.*\s+of=/dev/"]
+    dec, reason = aa.decide(
+        "Bash", {"command": "dd if=/dev/zero of=/dev/sda"},
+        allow, cfg=cfg,
+    )
+    assert dec == "block"
+    assert "catastrophic" in reason
 
 
 def test_read_only_bundle_matches_sed_in_evening_window():
@@ -87,7 +143,8 @@ def test_all_non_denied_sentinel_approves_unknown_command():
 def test_all_non_denied_still_blocks_deny_patterns():
     dec, _ = aa.decide(
         "Bash", {"command": "rm -rf /"},
-        ALLOW_BASE, bundle_name=aa.ALL_NON_DENIED, cfg={},
+        ALLOW_BASE, bundle_name=aa.ALL_NON_DENIED,
+        cfg={"ask_on_deny": False},
     )
     assert dec == "block"
 
@@ -174,6 +231,7 @@ def test_compound_user_example_approves():
 def test_compound_cd_then_rm_blocked():
     dec, reason = aa.decide(
         "Bash", {"command": "cd /tmp && rm -rf /"}, ALLOW_COMPOUND,
+        cfg={"ask_on_deny": False},
     )
     assert dec == "block", f"expected block, got {dec!r} reason={reason!r}"
     assert "deny_pattern" in reason
