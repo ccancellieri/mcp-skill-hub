@@ -1173,6 +1173,104 @@ def search_web(query: str, top_k: int = 5) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+def analyze_router_log(
+    top_n: int = 20,
+    propose_teachings: bool = True,
+) -> str:
+    """Analyse the prompt-router audit log to surface misclassifications and suggest teach() rules.
+
+    Reads router.jsonl, clusters verdicts by tier and model, identifies patterns
+    where confidence was low or where the user might have disagreed, and
+    optionally proposes teach() calls to improve future routing.
+
+    Args:
+        top_n: Number of recent entries to analyse (default 20).
+        propose_teachings: If True, include suggested teach() calls (default True).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from collections import Counter
+
+    log_path = _Path(_cfg.get("router_log") or
+                     _Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl")
+
+    if not log_path.exists():
+        return "Router log not found. The prompt-router hook must run at least once first."
+
+    entries: list[dict] = []
+    try:
+        lines = log_path.read_text().splitlines()
+        for line in lines[-top_n:]:
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(_json.loads(line))
+                except _json.JSONDecodeError:
+                    pass
+    except OSError as exc:
+        return f"Could not read router log: {exc}"
+
+    if not entries:
+        return "Router log is empty."
+
+    # ── Summary stats ────────────────────────────────────────────────────────
+    model_counts: Counter = Counter(e["verdict"]["model"] for e in entries)
+    tier_counts: Counter = Counter(e["verdict"]["tier_used"] for e in entries)
+    plan_count = sum(1 for e in entries if e["verdict"].get("plan_mode"))
+    avg_conf = sum(e["verdict"]["confidence"] for e in entries) / len(entries)
+    avg_lat = sum(e.get("latency_ms", 0) for e in entries) / len(entries)
+
+    lines_out: list[str] = [
+        f"## Router Log Analysis — last {len(entries)} prompts\n",
+        f"Model distribution: {dict(model_counts)}",
+        f"Tier distribution:  {dict(tier_counts)}",
+        f"Plan mode triggered: {plan_count}/{len(entries)}",
+        f"Avg confidence: {avg_conf:.2f}  |  Avg latency: {int(avg_lat)}ms\n",
+    ]
+
+    # ── Low-confidence entries ────────────────────────────────────────────────
+    low_conf = [e for e in entries if e["verdict"]["confidence"] < 0.65]
+    if low_conf:
+        lines_out.append(f"### Low-confidence verdicts ({len(low_conf)})")
+        for e in low_conf[:5]:
+            v = e["verdict"]
+            lines_out.append(
+                f"  - [{v['tier_used']}] conf={v['confidence']:.2f} "
+                f"→ {v['model']}  \"{e.get('prompt_preview', '')}\""
+            )
+
+    # ── Proposed teach() rules ────────────────────────────────────────────────
+    if propose_teachings and low_conf:
+        lines_out.append("\n### Suggested teach() calls to improve routing")
+        lines_out.append(
+            "Add these rules to help the router handle similar prompts with higher "
+            "confidence. Edit the suggest= arg to match the correct model.\n"
+        )
+        seen: set[str] = set()
+        for e in low_conf[:3]:
+            preview = e.get("prompt_preview", "")
+            if not preview or preview in seen:
+                continue
+            seen.add(preview)
+            v = e["verdict"]
+            model_val = v["model"]
+            lines_out.append(
+                f'teach(\n'
+                f'  rule="when the prompt resembles: {preview[:60]}",\n'
+                f'  suggest="model:{model_val}"\n'
+                f')'
+            )
+
+    # ── Tier-3 batch task usage ───────────────────────────────────────────────
+    tier3 = [e for e in entries if e["verdict"]["tier_used"] == 3]
+    if tier3:
+        lines_out.append(f"\n### Tier-3 (Haiku) calls: {len(tier3)}/{len(entries)}")
+        lines_out.append("Consider raising router_haiku_threshold if Haiku fires too often.")
+
+    return "\n".join(lines_out)
+
+
 def main() -> None:
     import sys
     log_banner()

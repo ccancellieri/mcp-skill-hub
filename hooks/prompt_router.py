@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: prompt router (cross-platform).
+
+Flow:
+  1. Read user prompt from stdin JSON
+  2. Call skill-hub-cli route --session-id <id> <cwd> <message>
+  3. Emit the resulting systemMessage / userMessage to stdout
+  4. Claude Code picks them up before Claude sees the prompt
+
+The hook adds no latency on Tier-1 paths (<10ms).
+Tier-2 (Ollama) adds ~200-500ms; Tier-3 (Haiku) ~500ms. Both are gated
+by confidence thresholds so they only fire when actually uncertain.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
+IS_WINDOWS = sys.platform == "win32"
+CLI = SCRIPT_DIR / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / (
+    "skill-hub-cli.exe" if IS_WINDOWS else "skill-hub-cli"
+)
+DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
+
+_t0 = time.monotonic()
+
+
+def log(msg: str) -> None:
+    try:
+        DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        elapsed = time.monotonic() - _t0
+        ts = datetime.now().strftime("%H:%M:%S")
+        with open(DEBUG_LOG, "a") as f:
+            f.write(f"[{ts}] [{elapsed:6.1f}s] ROUTER     {msg}\n")
+    except OSError:
+        pass
+
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, EOFError):
+        return
+
+    message = data.get("prompt", "") or data.get("userMessage", "")
+    message = message.replace("\n", " ").replace("\r", "").replace("\t", " ")
+    session_id = data.get("session_id", "")
+    cwd = data.get("cwd", os.getcwd())
+
+    preview = message[:80] + ("..." if len(message) > 80 else "")
+    log(f"fired  session={session_id}  len={len(message)}  msg=\"{preview}\"")
+
+    if not message:
+        log("skip  reason=empty_message")
+        return
+
+    cmd = [str(CLI), "route"]
+    if session_id:
+        cmd.extend(["--session-id", session_id])
+    if cwd:
+        cmd.extend(["--cwd", cwd])
+    cmd.append(message)
+
+    t_cli = time.monotonic()
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        log("error  route CLI timed out after 20s")
+        return
+    except OSError as e:
+        log(f"error  route CLI failed: {e}")
+        return
+
+    cli_ms = int((time.monotonic() - t_cli) * 1000)
+    log(f"cli  exit={result.returncode}  time={cli_ms}ms  stdout_len={len(result.stdout)}")
+
+    if result.returncode != 0 or not result.stdout.strip():
+        if result.stderr:
+            log(f"cli_stderr  {result.stderr.strip()[:200]}")
+        log("allow  reason=cli_failed_or_empty")
+        return
+
+    try:
+        cli_data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log(f"error  invalid JSON: {result.stdout[:200]}")
+        return
+
+    if not cli_data:
+        log("allow  reason=no_verdict")
+        return
+
+    output: dict = {"decision": "allow"}
+    if "systemMessage" in cli_data:
+        output["systemMessage"] = cli_data["systemMessage"]
+    if "userMessage" in cli_data:
+        output["userMessage"] = cli_data["userMessage"]
+
+    if len(output) > 1:
+        log(f"VERDICT  sys={bool(output.get('systemMessage'))}  user={bool(output.get('userMessage'))}  cli_time={cli_ms}ms")
+        print(json.dumps(output))
+    else:
+        log("allow  reason=empty_verdict")
+
+
+if __name__ == "__main__":
+    main()

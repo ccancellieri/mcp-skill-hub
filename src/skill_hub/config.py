@@ -230,6 +230,48 @@ _DEFAULTS = {
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")
     "log_dir": str(Path.home() / ".claude" / "mcp-skill-hub" / "logs"),
 
+    # ── Prompt Router ───────────────────────────────────────────────────────
+    # Three-tier classifier: Tier-1 heuristics → Tier-2 Ollama → Tier-3 Haiku
+    # Fired on every UserPromptSubmit via hooks/prompt-router.sh
+
+    # Master kill-switch (env SKILL_HUB_ROUTER_ENABLED=0 also works)
+    "router_enabled": True,
+
+    # Confidence threshold above which the router hard-switches the model
+    # in settings.json. Below: soft suggestion only.
+    "router_hard_switch_threshold": 0.9,
+
+    # JSONL audit log — one line per prompt, for analyze_router_log tool
+    "router_log": str(Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"),
+
+    # Tier 2: local Ollama classifier (separate from reason_model — lighter/faster)
+    # env SKILL_HUB_ROUTER_OLLAMA_MODEL overrides this
+    "router_ollama_model": "qwen2.5:3b",
+    # Tier-1 confidence below this triggers Tier-2 escalation
+    "router_tier2_confidence_gate": 0.85,
+    # Max seconds for Tier-2 Ollama call (routing must be fast)
+    "router_tier2_timeout": 10.0,
+
+    # Tier 3: Claude Haiku 4.5 batched call (opt-in)
+    # Enable with env SKILL_HUB_ROUTER_HAIKU=1 or set router_haiku_enabled=true
+    # Requires ANTHROPIC_API_KEY in environment
+    "router_haiku_enabled": False,
+    # Tier-2 confidence below this escalates to Tier-3 Haiku
+    "router_haiku_threshold": 0.7,
+    # Individually toggle each Haiku batch task (all default on when Haiku fires)
+    "router_haiku_classify": True,        # classification: complexity/ambiguity/scope
+    "router_haiku_settings_opt": True,    # config optimisation suggestion
+    "router_haiku_compact_hint": True,    # /compact recommendation
+    "router_haiku_subtask_decomp": True,  # multi-part prompt decomposition
+
+    # Auto-compact advisor: inject /compact suggestion when context is estimated
+    # to be ≥ this fraction full (based on session message count)
+    "router_compact_threshold": 0.70,
+
+    # Thin-prompt enrichment: for very short messages (<60 chars), prepend
+    # context from the active task to help Claude respond without clarifying
+    "router_enrich_thin_prompts": True,
+
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
     "extra_skill_dirs": [

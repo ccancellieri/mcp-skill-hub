@@ -6376,6 +6376,28 @@ def main() -> None:
         result = _cmd_session_end(session_id, last_message, transcript)
         print(json.dumps(result))
 
+    elif cmd == "route":
+        # Prompt router — called by hooks/prompt_router.py on every UserPromptSubmit.
+        # Args: [--session-id <id>] [--cwd <path>] <message>
+        session_id = ""
+        cwd = ""
+        filtered_args = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--session-id" and i + 1 < len(args):
+                session_id = args[i + 1]
+                i += 2
+            elif args[i] == "--cwd" and i + 1 < len(args):
+                cwd = args[i + 1]
+                i += 2
+            else:
+                filtered_args.append(args[i])
+                i += 1
+        message = " ".join(filtered_args) if filtered_args else sys.stdin.read()
+        from .router.route import route as _route
+        result = _route(message.strip(), session_id=session_id, cwd=cwd)
+        print(json.dumps(result))
+
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

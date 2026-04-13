@@ -277,6 +277,14 @@ def step_install_hooks(step: int, total: int):
             "statusMessage": "Checking session start protocol...",
         },
         {
+            # Prompt router: three-tier classifier (heuristics → Ollama → Haiku)
+            # Selects model, plan-mode, preloads skills before Claude responds.
+            "type": "command",
+            "command": _hook_command("prompt-router.sh"),
+            "timeout": 20,
+            "statusMessage": "Routing prompt...",
+        },
+        {
             "type": "command",
             "command": _hook_command("intercept-task-commands.sh"),
             "timeout": 45,
