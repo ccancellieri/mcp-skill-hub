@@ -111,7 +111,7 @@ class HaikuResult:
 def is_enabled(cfg: dict[str, Any]) -> bool:
     """Return True if Tier 3 is available (API key present + config enabled)."""
     env_flag = os.environ.get("SKILL_HUB_ROUTER_HAIKU", "")
-    config_flag = cfg.get("router_haiku_enabled", False)
+    config_flag = bool(((cfg.get("services") or {}).get("haiku_router") or {}).get("enabled", False))
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
     return has_key and (env_flag == "1" or config_flag)
 

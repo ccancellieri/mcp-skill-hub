@@ -77,10 +77,11 @@ def route(
     project_cfg = _project_override(cfg, cwd or os.getcwd())
 
     # Env var overrides
+    services = cfg.setdefault("services", {})
     if os.environ.get("SKILL_HUB_ROUTER_OLLAMA_MODEL"):
-        cfg["router_ollama_model"] = os.environ["SKILL_HUB_ROUTER_OLLAMA_MODEL"]
+        services.setdefault("ollama_router", {})["model"] = os.environ["SKILL_HUB_ROUTER_OLLAMA_MODEL"]
     if os.environ.get("SKILL_HUB_ROUTER_HAIKU") == "1":
-        cfg["router_haiku_enabled"] = True
+        services.setdefault("haiku_router", {})["enabled"] = True
     if os.environ.get("SKILL_HUB_ROUTER_ENABLED") == "0":
         return {}
 

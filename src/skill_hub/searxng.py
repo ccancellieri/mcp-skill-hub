@@ -154,7 +154,7 @@ def searxng_context(query: str) -> str | None:
     from . import config as _cfg
     from .embeddings import ollama_available, EMBED_MODEL
 
-    if not _cfg.get("searxng_enabled"):
+    if not _cfg.is_service_enabled("searxng"):
         return None
 
     # Skip if Ollama is unavailable — no point fetching without summarization

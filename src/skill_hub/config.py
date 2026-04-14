@@ -221,7 +221,7 @@ _DEFAULTS = {
     # Auto-detects localhost:8989 if searxng_url is empty.
     # The VPS SearXNG URL can be set explicitly (e.g. "http://vps-ip:8989").
     "searxng_url": "",         # explicit URL (VPS or custom) — empty = auto-detect
-    "searxng_enabled": True,
+    # searxng_enabled moved to services.searxng.enabled (see bottom of file)
     "searxng_top_k": 3,
     "searxng_timeout": 5,      # seconds for URL probe (is SearXNG reachable?)
     "searxng_search_timeout": 15,  # seconds for actual search (engines need time)
@@ -244,18 +244,16 @@ _DEFAULTS = {
     # JSONL audit log — one line per prompt, for analyze_router_log tool
     "router_log": str(Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"),
 
-    # Tier 2: local Ollama classifier (separate from reason_model — lighter/faster)
-    # env SKILL_HUB_ROUTER_OLLAMA_MODEL overrides this
-    "router_ollama_model": "qwen2.5:3b",
+    # Tier 2: local Ollama classifier — moved to services.ollama_router.model
+    # env SKILL_HUB_ROUTER_OLLAMA_MODEL still overrides it at runtime
     # Tier-1 confidence below this triggers Tier-2 escalation
     "router_tier2_confidence_gate": 0.85,
     # Max seconds for Tier-2 Ollama call (routing must be fast)
     "router_tier2_timeout": 10.0,
 
     # Tier 3: Claude Haiku 4.5 batched call (opt-in)
-    # Enable with env SKILL_HUB_ROUTER_HAIKU=1 or set router_haiku_enabled=true
+    # Enable via /control or env SKILL_HUB_ROUTER_HAIKU=1; stored as services.haiku_router.enabled
     # Requires ANTHROPIC_API_KEY in environment
-    "router_haiku_enabled": False,
     # Tier-2 confidence below this escalates to Tier-3 Haiku
     "router_haiku_threshold": 0.7,
     # Individually toggle each Haiku batch task (all default on when Haiku fires)
@@ -336,15 +334,109 @@ _DEFAULTS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Services + monitor — control-panel schema
+# ---------------------------------------------------------------------------
+
+_SERVICE_DEFAULTS = {
+    "auto_reconcile": True,
+    "ollama_daemon":   {"enabled": True, "auto_start": True, "auto_disable_under_pressure": False},
+    "ollama_router":   {"enabled": True, "auto_start": True, "auto_disable_under_pressure": False,
+                         "model": "qwen2.5:3b", "approx_ram_mb": 2000},
+    "ollama_embed":    {"enabled": True, "auto_start": True, "auto_disable_under_pressure": False,
+                         "model": "nomic-embed-text", "approx_ram_mb": 500},
+    "searxng":         {"enabled": True, "auto_start": True, "auto_disable_under_pressure": False,
+                         "container": "skill-hub-searxng"},
+    "watcher":         {"enabled": True, "auto_start": True, "auto_disable_under_pressure": False},
+    "haiku_router":    {"enabled": False, "auto_start": False, "auto_disable_under_pressure": False},
+}
+
+_MONITOR_DEFAULTS = {
+    "ram_free_mb_min": 2048,    # pressure threshold
+    "cpu_load_pct_max": 0.80,   # pressure threshold
+    "sustain_seconds": 30,      # time before auto-disable triggers
+}
+
+_DEFAULTS["services"] = _SERVICE_DEFAULTS
+_DEFAULTS["monitor"] = _MONITOR_DEFAULTS
+
+
+# Legacy top-level keys folded into the services/monitor dicts on load.
+# Tuple shape: (legacy_key, service_name, field) — service_name=None means
+# top-level is preserved (only delete the old key).
+_LEGACY_SERVICE_MAP = (
+    ("router_haiku_enabled", "haiku_router", "enabled"),
+    ("searxng_enabled",      "searxng",      "enabled"),
+    ("router_ollama_model",  "ollama_router", "model"),
+    ("embed_model_for_router", "ollama_embed", "model"),
+)
+
+
+def _migrate_legacy(cfg: dict) -> dict:
+    """Fold legacy top-level service keys into ``services.<svc>.<field>``.
+
+    Idempotent: if the services dict already carries the field, the legacy
+    key is simply deleted without overwriting.
+    """
+    services = cfg.setdefault("services", {})
+    if not isinstance(services, dict):
+        return cfg
+
+    changed = False
+    for legacy_key, svc_name, field in _LEGACY_SERVICE_MAP:
+        if legacy_key not in cfg:
+            continue
+        svc = services.setdefault(svc_name, {})
+        if not isinstance(svc, dict):
+            continue
+        # Only adopt the legacy value if the new location is absent — lets the
+        # user edit the new shape without being overridden by a stale top-level.
+        if field not in svc:
+            svc[field] = cfg[legacy_key]
+        del cfg[legacy_key]
+        changed = True
+
+    if changed:
+        # Persist the migrated shape so the next load is a no-op.
+        try:
+            save_config(cfg)
+        except OSError:
+            pass
+    return cfg
+
+
+def _merge_defaults(cfg: dict) -> dict:
+    """Deep-merge ``_DEFAULTS`` into ``cfg`` so nested keys (services.*) are filled in."""
+    for key, default in _DEFAULTS.items():
+        if key not in cfg:
+            cfg[key] = default if not isinstance(default, (dict, list)) else (
+                dict(default) if isinstance(default, dict) else list(default)
+            )
+            continue
+        if isinstance(default, dict) and isinstance(cfg[key], dict):
+            for sub_key, sub_default in default.items():
+                if sub_key not in cfg[key]:
+                    cfg[key][sub_key] = (
+                        dict(sub_default) if isinstance(sub_default, dict)
+                        else list(sub_default) if isinstance(sub_default, list)
+                        else sub_default
+                    )
+                elif isinstance(sub_default, dict) and isinstance(cfg[key][sub_key], dict):
+                    for leaf_key, leaf_default in sub_default.items():
+                        cfg[key][sub_key].setdefault(leaf_key, leaf_default)
+    return cfg
+
+
 def load_config() -> dict:
-    """Load config from file, falling back to defaults for missing keys."""
-    config = dict(_DEFAULTS)
+    """Load config from file, fold legacy keys, and fill defaults."""
+    config: dict = {}
     if CONFIG_PATH.exists():
         try:
-            user_config = json.loads(CONFIG_PATH.read_text())
-            config.update(user_config)
+            config = json.loads(CONFIG_PATH.read_text())
         except (json.JSONDecodeError, OSError):
-            pass
+            config = {}
+    config = _migrate_legacy(config)
+    config = _merge_defaults(config)
     return config
 
 
@@ -357,3 +449,17 @@ def save_config(config: dict) -> None:
 def get(key: str) -> str | int | float | bool:
     """Get a single config value."""
     return load_config().get(key, _DEFAULTS.get(key))
+
+
+def service_field(service_name: str, field: str, default=None):
+    """Read a field from ``services.<service_name>.<field>`` with default fallback."""
+    cfg = load_config()
+    svc = (cfg.get("services") or {}).get(service_name) or {}
+    if field in svc:
+        return svc[field]
+    base_default = (_SERVICE_DEFAULTS.get(service_name) or {})
+    return base_default.get(field, default)
+
+
+def is_service_enabled(service_name: str) -> bool:
+    return bool(service_field(service_name, "enabled", True))

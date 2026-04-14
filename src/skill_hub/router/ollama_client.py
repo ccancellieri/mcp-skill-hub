@@ -62,7 +62,7 @@ def classify(
         cfg = _cfg.load_config()
 
     ollama_base: str = cfg.get("ollama_base", "http://localhost:11434")
-    model: str = cfg.get("router_ollama_model", "qwen2.5:3b")
+    model: str = ((cfg.get("services") or {}).get("ollama_router") or {}).get("model") or "qwen2.5:3b"
     timeout: float = float(cfg.get("router_tier2_timeout", 10.0))
 
     # Prepend project context so the LLM knows which codebase it's routing for

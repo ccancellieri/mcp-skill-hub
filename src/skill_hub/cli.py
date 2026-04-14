@@ -1764,7 +1764,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     # Stage 4.1: SearXNG web RAG fallback — only when skill search returned nothing
     if not parts:
         from . import config as _cfg_inner
-        if _cfg_inner.get("searxng_enabled") and ollama_available(EMBED_MODEL):
+        if _cfg_inner.is_service_enabled("searxng") and ollama_available(EMBED_MODEL):
             try:
                 from .searxng import searxng_context
                 web_ctx = searxng_context(message[:300])
@@ -2579,8 +2579,8 @@ def _cmd_search_web(query: str) -> str:
     """Search the web via local SearXNG and summarize with local LLM."""
     from . import config as _cfg
 
-    if not _cfg.get("searxng_enabled"):
-        return "SearXNG is disabled. Enable: `/hub-configure searxng_enabled true`"
+    if not _cfg.is_service_enabled("searxng"):
+        return "SearXNG is disabled. Enable via the /control panel."
 
     from .searxng import (
         _resolve_searxng_url,

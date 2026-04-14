@@ -911,6 +911,172 @@ def index_plugins() -> str:
     return result
 
 
+MARKETPLACES_DIR = Path.home() / ".claude" / "plugins" / "marketplaces"
+
+
+def _run_git(cwd: Path, *args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+    """Run a git command in `cwd`. Returns (returncode, stdout, stderr)."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+
+
+def _default_branch(cwd: Path) -> str:
+    """Resolve origin's default branch; fallback to 'main'."""
+    rc, out, _ = _run_git(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if rc == 0 and out.startswith("origin/"):
+        return out.split("/", 1)[1]
+    return "main"
+
+
+def _skills_at_sha(cwd: Path, sha: str) -> set[str]:
+    """List top-level skill directory names under skills/ at a given commit."""
+    rc, out, _ = _run_git(cwd, "ls-tree", "--name-only", f"{sha}:skills")
+    if rc != 0:
+        return set()
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+@mcp.tool()
+def update_marketplace(name: str = "anthropic-agent-skills",
+                       dry_run: bool = False,
+                       reindex: bool = True) -> str:
+    """Pull the latest from a git-backed plugin marketplace and re-index its skills.
+
+    Runs `git fetch` and (unless dry_run) `git merge --ff-only` in
+    ~/.claude/plugins/marketplaces/<name>/. Aborts on non-git marketplaces,
+    dirty working trees, or non-fast-forward. After a successful pull,
+    triggers skill re-index when reindex=True.
+
+    Returns a human-readable report with before/after SHAs, commits pulled,
+    skills added/removed, and reindex outcome.
+    """
+    import time
+    log_tool("update_marketplace", name=name, dry_run=dry_run, reindex=reindex)
+    started_ms = int(time.time() * 1000)
+
+    path = MARKETPLACES_DIR / name
+    if not path.exists() or not path.is_dir():
+        return f"Marketplace not found: {path}"
+    if not (path / ".git").exists():
+        return (f"{name} is not a git clone (no .git/). "
+                f"This tool only updates git-backed marketplaces.")
+
+    rc, origin_url, err = _run_git(path, "remote", "get-url", "origin")
+    if rc != 0 or not origin_url:
+        return f"No origin remote in {name}: {err or 'not configured'}"
+
+    rc, status_out, err = _run_git(path, "status", "--porcelain")
+    if rc != 0:
+        return f"git status failed in {name}: {err}"
+    if status_out:
+        return (f"Dirty working tree in {name} — aborting to protect local edits. "
+                f"Resolve manually:\n  cd {path}\n  git status")
+
+    rc, before_sha, err = _run_git(path, "rev-parse", "HEAD")
+    if rc != 0:
+        return f"Could not read HEAD in {name}: {err}"
+
+    branch = _default_branch(path)
+
+    rc, _, err = _run_git(path, "fetch", "origin", branch, timeout=60.0)
+    if rc != 0:
+        return f"git fetch failed in {name}: {err}"
+
+    rc, fetched_sha, err = _run_git(path, "rev-parse", f"origin/{branch}")
+    if rc != 0:
+        return f"Could not resolve origin/{branch} in {name}: {err}"
+
+    if before_sha == fetched_sha:
+        return (f"{name}: already up to date at {before_sha[:8]} (branch {branch}).")
+
+    rc, ahead_out, _ = _run_git(
+        path, "rev-list", "--left-right", "--count", f"origin/{branch}...HEAD",
+    )
+    behind_ahead = ahead_out.split() if rc == 0 else ["?", "?"]
+    behind = behind_ahead[0] if behind_ahead else "?"
+    ahead = behind_ahead[1] if len(behind_ahead) > 1 else "?"
+    if ahead not in ("0", "?"):
+        return (f"{name}: local branch is {ahead} commit(s) ahead of "
+                f"origin/{branch} — non-fast-forward. Resolve manually.")
+
+    rc, commits_out, _ = _run_git(
+        path, "log", f"{before_sha}..{fetched_sha}", "--oneline",
+    )
+    commits = commits_out.splitlines() if rc == 0 else []
+    commit_count = len(commits)
+
+    skills_before = _skills_at_sha(path, before_sha)
+    skills_after = _skills_at_sha(path, fetched_sha)
+    added = sorted(skills_after - skills_before)
+    removed = sorted(skills_before - skills_after)
+
+    header = (f"{name}: origin={origin_url}\n"
+              f"branch={branch}  before={before_sha[:8]}  fetched={fetched_sha[:8]}\n"
+              f"behind={behind}  commits_pulled={commit_count}")
+
+    if dry_run:
+        lines = [f"[DRY RUN] {header}"]
+        if added:
+            lines.append(f"skills_added={len(added)}: {', '.join(added)}")
+        if removed:
+            lines.append(f"skills_removed={len(removed)}: {', '.join(removed)}")
+        if commits:
+            preview = "\n  ".join(commits[:10])
+            lines.append(f"commits (first 10):\n  {preview}")
+            if commit_count > 10:
+                lines.append(f"  ... and {commit_count - 10} more")
+        lines.append("(no changes applied — pass dry_run=False to pull)")
+        return "\n".join(lines)
+
+    rc, _, err = _run_git(
+        path, "merge", "--ff-only", f"origin/{branch}", timeout=60.0,
+    )
+    if rc != 0:
+        return (f"git merge --ff-only failed in {name}: {err}\n"
+                f"HEAD is unchanged at {before_sha[:8]}.")
+
+    rc, after_sha, _ = _run_git(path, "rev-parse", "HEAD")
+    if rc != 0 or after_sha != fetched_sha:
+        return (f"Merge reported success but HEAD did not advance to "
+                f"{fetched_sha[:8]} — got {after_sha[:8]}. Investigate manually.")
+
+    lines = [header,
+             f"pulled={before_sha[:8]}..{after_sha[:8]} ({commit_count} commit(s))"]
+    if added:
+        lines.append(f"skills_added={len(added)}: {', '.join(added)}")
+    if removed:
+        lines.append(f"skills_removed={len(removed)}: {', '.join(removed)}")
+    if commits:
+        preview = "\n  ".join(commits[:10])
+        lines.append(f"commits:\n  {preview}")
+        if commit_count > 10:
+            lines.append(f"  ... and {commit_count - 10} more")
+
+    if reindex:
+        if not ollama_available(EMBED_MODEL):
+            lines.append(f"reindex skipped: Ollama model '{EMBED_MODEL}' unavailable.")
+        else:
+            idx_count, idx_errors = index_all(_store)
+            lines.append(f"reindexed {idx_count} skills"
+                         + (f" (errors: {len(idx_errors)})" if idx_errors else ""))
+    else:
+        lines.append("reindex skipped (reindex=False)")
+
+    duration_ms = int(time.time() * 1000) - started_ms
+    lines.append(f"duration_ms={duration_ms}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def list_skills(plugin: str = "") -> str:
     """List all indexed skills. Optional plugin filter."""
@@ -1693,8 +1859,8 @@ def search_web(query: str, top_k: int = 5) -> str:
     )
     from . import config as _cfg
 
-    if not _cfg.get("searxng_enabled"):
-        return "SearXNG is disabled. Enable with: configure(key='searxng_enabled', value='true')"
+    if not _cfg.is_service_enabled("searxng"):
+        return "SearXNG is disabled. Enable via the /control panel or configure(key='services.searxng.enabled', value='true')."
 
     probe_timeout = float(_cfg.get("searxng_timeout") or 5)
     search_timeout = float(_cfg.get("searxng_search_timeout") or 15)
