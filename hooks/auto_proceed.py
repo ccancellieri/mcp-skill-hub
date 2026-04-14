@@ -102,7 +102,25 @@ def save_state(data: dict) -> None:
         log(f"state_save_error  {e}")
 
 
+_ARCHIVED_NAME_PREFIXES = ("_archived-", "_done-", "_superseded-")
+
+
+def is_archived_plan(plan_path: Path) -> bool:
+    """Skip plans flagged as archived — by filename prefix or first-line marker."""
+    name = plan_path.name
+    if name.startswith(_ARCHIVED_NAME_PREFIXES):
+        return True
+    try:
+        with plan_path.open("r") as fh:
+            first = fh.readline()
+    except OSError:
+        return False
+    return "[ARCHIVED" in first or "[DONE" in first or "[SUPERSEDED" in first
+
+
 def has_unchecked_items(plan_path: Path) -> bool:
+    if is_archived_plan(plan_path):
+        return False
     try:
         text = plan_path.read_text()
     except OSError:
@@ -171,6 +189,8 @@ def recent_marker_plan() -> Path | None:
     for p in plans:
         try:
             if now - p.stat().st_mtime > RECENT_MARKER_MAX_AGE_S:
+                continue
+            if is_archived_plan(p):
                 continue
             if RECENT_MARKER_LITERAL in p.read_text():
                 return p

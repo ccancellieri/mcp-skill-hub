@@ -16,17 +16,20 @@ INPUT=$(cat)
 
 echo "[$(date '+%H:%M:%S')] Stop hook raw input: ${INPUT:0:500}" >> "$DEBUG_LOG"
 
-# Extract fields from hook JSON — use IFS=tab to preserve spaces in values
-IFS=$'\t' read -r SESSION_ID LAST_MSG TRANSCRIPT STOP_ACTIVE <<< "$(echo "$INPUT" | python3 -c "
+# Extract fields from hook JSON — use \x01 (SOH) as separator so empty fields
+# don't collapse (tab is treated as whitespace by bash `read` and consecutive
+# whitespace-IFS delimiters merge, which misaligns columns when any field is empty).
+IFS=$'\x1f' read -r SESSION_ID LAST_MSG TRANSCRIPT STOP_ACTIVE <<< "$(echo "$INPUT" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-sid = d.get('session_id', '')
-last = d.get('last_assistant_message', '')[:2000]
+sid = d.get('session_id', '') or ''
+last = (d.get('last_assistant_message', '') or '')[:2000]
 # Escape newlines/tabs for shell
 last = last.replace(chr(10), ' ').replace(chr(13), '').replace(chr(9), ' ')
-transcript = d.get('transcript_path', '')
+transcript = d.get('transcript_path', '') or ''
 active = d.get('stop_hook_active', False)
-print(sid + chr(9) + last + chr(9) + transcript + chr(9) + str(active))
+SEP = chr(0x1f)
+print(sid + SEP + last + SEP + transcript + SEP + str(active))
 " 2>/dev/null)"
 
 echo "[$(date '+%H:%M:%S')] Stop hook — session=$SESSION_ID active=$STOP_ACTIVE" >> "$DEBUG_LOG"

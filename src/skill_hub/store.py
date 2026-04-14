@@ -236,6 +236,21 @@ class SkillStore:
                 created_at      TEXT DEFAULT (datetime('now'))
             );
 
+            -- Per-skill injection log: one row each time search_skills returns
+            -- a skill to the model. Used to compute the dashboard "inj" column
+            -- (actual usage, independent of feedback).
+            CREATE TABLE IF NOT EXISTS skill_injections (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id    TEXT NOT NULL,
+                query       TEXT,
+                session_id  TEXT,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_skill_inj_skill
+                ON skill_injections (skill_id);
+            CREATE INDEX IF NOT EXISTS idx_skill_inj_created
+                ON skill_injections (created_at);
+
             -- Semantic response cache: store Claude Q→A pairs for re-use
             CREATE TABLE IF NOT EXISTS response_cache (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -427,6 +442,16 @@ class SkillStore:
         self._conn.commit()
         # Invalidate in-process vector cache so the next search reloads
         self._vec_cache_valid = False
+
+    def log_skill_injection(self, skill_id: str, query: str = "",
+                            session_id: str | None = None) -> None:
+        """Record that a skill's content was returned to the model."""
+        self._conn.execute(
+            "INSERT INTO skill_injections (skill_id, query, session_id) "
+            "VALUES (?, ?, ?)",
+            (skill_id, query[:200] if query else "", session_id),
+        )
+        self._conn.commit()
 
     def record_feedback(self, skill_id: str, query: str,
                         query_vector: list[float], helpful: bool) -> None:
@@ -904,22 +929,28 @@ class SkillStore:
         ).fetchall()
 
     def get_skill_usage_stats(self) -> list[dict]:
-        """Aggregate skill usage from feedback (injection counts proxy).
+        """Aggregate skill usage.
 
-        We don't have a direct skill_id column on context_injections, so we
-        approximate usage = feedback rows per skill + recency.
+        Injections come from skill_injections (one row per search_skills hit).
+        Helpful/unhelpful counts and last_used come from the feedback table.
         """
         rows = self._conn.execute("""
             SELECT s.id, s.name, s.plugin, s.target,
                    COALESCE(s.feedback_score, 1.0) as feedback_score,
-                   COALESCE(fb.injections, 0) as injections,
+                   COALESCE(inj.injections, 0) as injections,
                    COALESCE(fb.helpful, 0) as helpful,
                    COALESCE(fb.unhelpful, 0) as unhelpful,
-                   fb.last_used
+                   COALESCE(inj.last_used, fb.last_used) as last_used
             FROM skills s
             LEFT JOIN (
                 SELECT skill_id,
                        COUNT(*) as injections,
+                       MAX(created_at) as last_used
+                FROM skill_injections
+                GROUP BY skill_id
+            ) inj ON inj.skill_id = s.id
+            LEFT JOIN (
+                SELECT skill_id,
                        SUM(helpful) as helpful,
                        SUM(1 - helpful) as unhelpful,
                        MAX(created_at) as last_used

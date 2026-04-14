@@ -189,6 +189,13 @@ def search_skills(
     _last_search_state["vector"] = query_vector
     _last_search_state["skills"] = [c["id"] for c in loaded]
 
+    # Log per-skill injections (one row per skill actually returned).
+    for c in loaded:
+        try:
+            _store.log_skill_injection(c["id"], query, _session.get("id"))
+        except Exception:
+            pass
+
     # Build summary header
     loaded_ids = [c["id"] for c in loaded]
     not_loaded_ids = [c["id"] for c in not_loaded]
