@@ -593,21 +593,28 @@ class SkillStore:
     # ------------------------------------------------------------------
     # Write
 
-    def upsert_skill(self, skill: Skill) -> None:
+    def upsert_skill(self, skill: Skill, content_hash: str | None = None) -> None:
         self._conn.execute("""
-            INSERT INTO skills (id, name, description, content, file_path, plugin, target)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO skills (id, name, description, content, file_path, plugin, target, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
-                name        = excluded.name,
-                description = excluded.description,
-                content     = excluded.content,
-                file_path   = excluded.file_path,
-                plugin      = excluded.plugin,
-                target      = excluded.target,
-                indexed_at  = datetime('now')
+                name         = excluded.name,
+                description  = excluded.description,
+                content      = excluded.content,
+                file_path    = excluded.file_path,
+                plugin       = excluded.plugin,
+                target       = excluded.target,
+                content_hash = excluded.content_hash,
+                indexed_at   = datetime('now')
         """, (skill.id, skill.name, skill.description, skill.content,
-              skill.file_path, skill.plugin, skill.target))
+              skill.file_path, skill.plugin, skill.target, content_hash))
         self._conn.commit()
+
+    def get_content_hash(self, skill_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT content_hash FROM skills WHERE id = ?", (skill_id,)
+        ).fetchone()
+        return row["content_hash"] if row else None
 
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
         norm = math.sqrt(sum(x * x for x in vector))
@@ -637,7 +644,7 @@ class SkillStore:
         f32_blob = struct.pack(f"{VEC_DIM}f", *vector)
         self._conn.execute("DELETE FROM skills_vec_bin WHERE skill_id = ?", (skill_id,))
         self._conn.execute(
-            "INSERT INTO skills_vec_bin (skill_id, embedding) VALUES (?, ?)",
+            "INSERT INTO skills_vec_bin (skill_id, embedding) VALUES (?, vec_bit(?))",
             (skill_id, bin_blob),
         )
         self._conn.execute("DELETE FROM skills_vec_f32 WHERE skill_id = ?", (skill_id,))
@@ -815,7 +822,7 @@ class SkillStore:
             """
             SELECT skill_id, distance
             FROM skills_vec_bin
-            WHERE embedding MATCH ? AND k = ?
+            WHERE embedding MATCH vec_bit(?) AND k = ?
             ORDER BY distance
             """,
             (qbin, rerank_k),

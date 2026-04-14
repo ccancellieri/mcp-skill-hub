@@ -257,6 +257,18 @@ configure(key="local_models", value='{"level_1":"qwen2.5-coder:3b","level_2":"qw
 
 ## Features
 
+### 0. Web Control Panel — `/control`
+
+A FastAPI control suite at `http://localhost:8765/control` owns service lifecycle end-to-end.
+
+- **Services tab** — Start/Stop the Ollama daemon, router model, embedding model, SearXNG Docker container, and file watcher. Toggling physically reclaims RAM/VRAM/CPU — not a soft bypass. Each card has `auto_start` and opt-in `auto_disable_under_pressure` checkboxes. State persists across reboots.
+- **Monitor bar** — live RAM / CPU load readings via `psutil`; sticky red banner + per-card hints appear when a "conservative" pressure threshold is sustained for 30 s. Suggests which service to stop.
+- **Install helpers** — missing Ollama / missing SearXNG container / pulled-but-not-loaded models each show an Install button that streams `brew install ollama`, `docker compose up -d`, or `ollama pull <model>` into the card log.
+- **Plugins tab** — every Claude Code plugin in one grid with enable/disable + one-click profile activation (from `config.profiles`). Layers on top of the existing `toggle_plugin()` primitive.
+- **Sticky banner** — when any service is disabled, every page shows `⚠ Disabled: …` so you never forget a feature is off.
+
+A 2-second reconciler daemon thread reads `~/.claude/mcp-skill-hub/config.json` on mtime change and aligns OS state to match the `services` dict — toggles take effect live, no restart.
+
 ### 1. Semantic Skill Search
 
 Describe your task — get matching skill content:

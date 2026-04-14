@@ -280,7 +280,9 @@ _DEFAULTS = {
     # in-Python cosine path.
     "vec_engine": "sqlite-vec",
     "binary_quant_enabled": True,
-    "rerank_top_k": 20,
+    # Binary KNN candidate pool size before float32 rerank. 60 yields ~97%
+    # recall@5 parity vs float32 on 1914 skills; tune up for more recall.
+    "rerank_top_k": 60,
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}

@@ -1,11 +1,27 @@
 """Scan ~/.claude/plugins for SKILL.md files, parse metadata, embed, store."""
 
+import hashlib
 import re
 from pathlib import Path
 
 from . import config as _cfg
 from .embeddings import embed, EMBED_MODEL
 from .store import Skill, SkillStore
+
+
+def _content_hash(name: str, description: str, content: str) -> str:
+    """Stable hash over the fields we actually embed + store.
+
+    Touching a SKILL.md that ends up producing identical parsed fields is a
+    no-op — no re-embed, no re-insert. Keeps incremental reindex cheap.
+    """
+    h = hashlib.sha256()
+    h.update(name.encode("utf-8", "replace"))
+    h.update(b"\x00")
+    h.update(description.encode("utf-8", "replace"))
+    h.update(b"\x00")
+    h.update(content.encode("utf-8", "replace"))
+    return h.hexdigest()
 
 # Plugin directories Claude Code uses
 PLUGIN_DIRS: list[Path] = [
@@ -88,25 +104,44 @@ def _plugin_from_id(skill_id: str) -> str:
 
 
 def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
-              use_rerank: bool = False) -> tuple[int, list[str]]:
+              use_rerank: bool = False,
+              changed_paths: set[Path] | None = None) -> tuple[int, list[str]]:
     """
     Walk all plugin directories, index every SKILL.md found (target=claude).
     Also index local JSON skills from local_skills_dir (target=local).
+    When ``changed_paths`` is provided, only files whose absolute path is in
+    that set are processed — enables watcher-driven incremental reindex.
+    Files whose ``content_hash`` matches the stored hash are skipped without
+    re-embedding.
+
     Returns (count_indexed, list_of_errors).
     """
     import json as _json
 
     indexed = 0
+    skipped = 0
     errors: list[str] = []
+
+    def _path_allowed(p: Path) -> bool:
+        if changed_paths is None:
+            return True
+        try:
+            return p.resolve() in changed_paths
+        except OSError:
+            return p in changed_paths
 
     def _index_skill_file(skill_file: Path, skill_id: str, plugin: str,
                           target: str = "claude") -> None:
-        nonlocal indexed
+        nonlocal indexed, skipped
         parsed = _parse_skill_file(skill_file)
         if not parsed:
             errors.append(f"parse failed: {skill_file}")
             return
         name, description, content = parsed
+        new_hash = _content_hash(name, description, content)
+        if store.get_content_hash(skill_id) == new_hash:
+            skipped += 1
+            return
         skill = Skill(
             id=skill_id,
             name=name,
@@ -116,7 +151,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             plugin=plugin,
             target=target,
         )
-        store.upsert_skill(skill)
+        store.upsert_skill(skill, content_hash=new_hash)
         embed_text = f"{name}: {description}" if description else name
         try:
             vector = embed(embed_text, model=embed_model)
@@ -169,6 +204,8 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
+            if not _path_allowed(skill_file):
+                continue
             skill_id = _skill_id_from_path(skill_file)
             _index_skill_file(skill_file, skill_id, _plugin_from_id(skill_id))
 
@@ -181,6 +218,8 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
+            if not _path_allowed(skill_file):
+                continue
             skill_id = f"{source}:{skill_file.parent.name}"
             _index_skill_file(skill_file, skill_id, source)
 
@@ -189,6 +228,8 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
                          "~/.claude/local-skills")).expanduser()
     if local_dir.exists():
         for json_file in sorted(local_dir.glob("*.json")):
+            if not _path_allowed(json_file):
+                continue
             _index_local_json(json_file)
 
     # Phase M2 — seed vector_index_config from plugin.json "vector_indexes".
