@@ -890,7 +890,34 @@ def index_plugins() -> str:
         )
         _index_plugin(source, source, desc)
 
-    # Index explicit extra_plugin_dirs entries
+    # Index explicit extra_plugin_dirs entries.
+    # If `base` itself contains plugin.json it IS the plugin; otherwise treat
+    # each subdirectory as a candidate plugin.
+    def _read_plugin_desc(plugin_dir: Path, fallback: str) -> tuple[str, str]:
+        """Return (short_name, description)."""
+        import json as _json
+        short_name = plugin_dir.name
+        desc = fallback
+        pj = plugin_dir / "plugin.json"
+        if pj.exists():
+            try:
+                data = _json.loads(pj.read_text(encoding="utf-8", errors="replace"))
+                short_name = data.get("name", short_name)
+                desc = data.get("description", desc) or desc
+                return short_name, desc
+            except Exception:
+                pass
+        rm = plugin_dir / "README.md"
+        if rm.exists():
+            try:
+                text = rm.read_text(encoding="utf-8", errors="replace")
+                para = re.search(r"\S.{20,}", re.sub(r"^#+.*$", "", text, flags=re.MULTILINE))
+                if para:
+                    desc = para.group(0)[:200].strip()
+            except Exception:
+                pass
+        return short_name, desc or f"Plugin: {short_name}"
+
     for entry in cfg.get("extra_plugin_dirs", []):
         if not entry.get("enabled", True):
             continue
@@ -898,30 +925,24 @@ def index_plugins() -> str:
         base = Path(entry["path"]).expanduser()
         if not base.exists():
             continue
-        # Each subdirectory is a plugin; read plugin.json or README.md for description
-        for plugin_dir in (d for d in base.iterdir() if d.is_dir()):
-            desc = entry.get("description", "")
-            for manifest in ("plugin.json", "README.md"):
-                mf = plugin_dir / manifest
-                if mf.exists():
-                    try:
-                        text = mf.read_text(encoding="utf-8", errors="replace")
-                        if manifest == "plugin.json":
-                            import json as _json
-                            data = _json.loads(text)
-                            desc = data.get("description", desc)
-                        else:
-                            # First paragraph of README
-                            para = re.search(r"\S.{20,}", re.sub(r"^#+.*$", "", text, flags=re.MULTILINE))
-                            if para:
-                                desc = para.group(0)[:200].strip()
-                        break
-                    except Exception:
-                        pass
-            if not desc:
-                desc = f"Plugin: {plugin_dir.name}"
-            plugin_key = f"{source}:{plugin_dir.name}"
-            _index_plugin(plugin_key, plugin_dir.name, desc)
+        if (base / "plugin.json").exists():
+            # Base IS a single plugin root.
+            short_name, desc = _read_plugin_desc(base, entry.get("description", ""))
+            _index_plugin(short_name, short_name, desc)
+        else:
+            # Container of plugins — each subdir with plugin.json (or README.md)
+            # becomes a plugin. Skip dotdirs and venv-like clutter.
+            for plugin_dir in sorted(d for d in base.iterdir() if d.is_dir()):
+                if plugin_dir.name.startswith(".") or plugin_dir.name in {
+                    "__pycache__", "node_modules", "venv", ".venv",
+                }:
+                    continue
+                if not (plugin_dir / "plugin.json").exists() and \
+                   not (plugin_dir / "README.md").exists():
+                    continue
+                short_name, desc = _read_plugin_desc(plugin_dir, entry.get("description", ""))
+                plugin_key = f"{source}:{plugin_dir.name}"
+                _index_plugin(plugin_key, short_name, desc)
 
     result = f"Indexed {indexed} plugins."
     if errors:

@@ -1160,8 +1160,11 @@ class SkillStore:
                     "session_score": 0.0,
                 }
 
-        # 2. Teaching-based boost
-        teachings = self.search_teachings(query_vector, min_sim=0.6)
+        # 2. Teaching-based boost — honour configurable min_sim so users can
+        # tune transparent triggering vs. precision.
+        from . import config as _cfg
+        teach_min = float(_cfg.get("teaching_min_similarity") or 0.5)
+        teachings = self.search_teachings(query_vector, min_sim=teach_min)
         for t in teachings:
             if t["target_type"] == "plugin":
                 pid = t["target_id"]
