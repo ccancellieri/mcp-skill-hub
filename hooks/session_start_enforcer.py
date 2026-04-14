@@ -72,6 +72,67 @@ def _check_profile_drift() -> str:
     )
 
 
+def _auto_switch_profile() -> str:
+    """Score profiles by tag overlap with the last N closed tasks and switch
+    to the best match (when it differs from the current active profile).
+
+    Opt-in via config ``profile_auto_switch_enabled`` (default False). The
+    switch writes ``~/.claude/settings.json`` but only takes effect on the
+    NEXT session — Claude Code has already loaded enabledPlugins by the time
+    this hook runs. Returns an advisory string when a switch occurred, or
+    empty string when no-op / disabled / nothing to do.
+    """
+    try:
+        from skill_hub import config as _cfg
+        from skill_hub.store import SkillStore
+        from skill_hub import profiles as _prof
+    except Exception:
+        return ""
+    if not _cfg.get("profile_auto_switch_enabled"):
+        return ""
+    try:
+        store = SkillStore()
+        window = int(_cfg.get("profile_auto_switch_window") or 5)
+        rows = store._conn.execute(
+            "SELECT tags FROM tasks WHERE status = 'closed' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (window,),
+        ).fetchall()
+        if not rows:
+            return ""
+        tag_counts: dict[str, int] = {}
+        for r in rows:
+            raw = (r["tags"] or "").strip()
+            if not raw:
+                continue
+            for tag in (t.strip().lower() for t in raw.split(",")):
+                if tag:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        if not tag_counts:
+            return ""
+        all_profiles = _prof.list_profiles(store)
+        best_name, best_score = "", 0
+        for p in all_profiles:
+            score = tag_counts.get(p["name"].lower(), 0)
+            if score > best_score:
+                best_name, best_score = p["name"], score
+        if not best_name or best_score < 2:
+            return ""
+        active = _prof.get_active_profile(store)
+        if active and active["name"] == best_name:
+            return ""
+        result = _prof.switch_profile(store, best_name)
+        if not result.get("changed_plugins"):
+            return ""
+        return (
+            f"AUTO-SWITCHED profile → {best_name!r} "
+            f"(matched {best_score}/{len(rows)} recent task tags). "
+            "Takes effect on next session restart."
+        )
+    except Exception:
+        return ""
+
+
 def log(msg: str):
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +192,10 @@ def main():
     if resume_msg:
         log(f"RESUME marker consumed  msg=\"{resume_msg[:80]}\"")
 
+    auto_switch_msg = _auto_switch_profile()
+    if auto_switch_msg:
+        log(f"PROFILE auto-switch  msg=\"{auto_switch_msg[:100]}\"")
+
     drift_msg = _check_profile_drift()
     if drift_msg:
         log(f"PROFILE drift detected  msg=\"{drift_msg[:100]}\"")
@@ -147,6 +212,8 @@ def main():
     )
     if resume_msg:
         system_msg = resume_msg + "\n\n" + system_msg
+    if auto_switch_msg:
+        system_msg = auto_switch_msg + "\n\n" + system_msg
     if drift_msg:
         system_msg = drift_msg + "\n\n" + system_msg
 
