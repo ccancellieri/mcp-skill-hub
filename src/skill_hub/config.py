@@ -270,6 +270,11 @@ _DEFAULTS = {
     # context from the active task to help Claude respond without clarifying
     "router_enrich_thin_prompts": True,
 
+    # User memory bridge — auto-index ~/.claude/projects/*/memory/*.md into
+    # the memory:user-project namespace so search_context surfaces user notes
+    # alongside skills and tasks. Set to False to disable.
+    "user_memory_enabled": True,
+
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
     "extra_skill_dirs": [

@@ -208,4 +208,13 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
     except Exception as exc:  # noqa: BLE001 — memory adapter must never break indexing
         errors.append(f"plugin memory index: {exc}")
 
+    # S1.6 — embed Claude Code's per-project auto-memory into memory:user-project
+    try:
+        from .memory_index import index_user_memory
+        user_mem_count = index_user_memory(store)
+        if user_mem_count:
+            indexed += user_mem_count
+    except Exception as exc:  # noqa: BLE001 — user memory is best-effort
+        errors.append(f"user memory index: {exc}")
+
     return indexed, errors

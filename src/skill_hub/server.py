@@ -105,12 +105,30 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
-# Watchdog auto-reindex — starts silently if watchdog is installed
+# Service registry + reconciler — owns watcher, Ollama, SearXNG lifecycle.
 import atexit as _atexit
-from .watcher import start_watcher, stop_watcher as _stop_watcher
-_watcher = start_watcher()
-if _watcher:
-    _atexit.register(_stop_watcher, _watcher)
+from .services.monitor import PressureTracker as _PressureTracker
+from .services.registry import (
+    ServiceRegistry as _ServiceRegistry,
+    set_registry as _set_registry,
+    set_pressure as _set_pressure,
+    start_reconciler as _start_reconciler,
+)
+
+_registry = _ServiceRegistry.build_from_config(_cfg.load_config())
+_pressure = _PressureTracker(load_config_callable=_cfg.load_config)
+_set_registry(_registry)
+_set_pressure(_pressure)
+
+if (_cfg.load_config().get("services") or {}).get("auto_reconcile", True):
+    _reconciler = _start_reconciler(
+        _registry,
+        _pressure,
+        config_path=_cfg.CONFIG_PATH,
+        load_config=_cfg.load_config,
+        interval_sec=2.0,
+    )
+    _atexit.register(_reconciler.stop)
 
 # In-process session tracking
 _session = {

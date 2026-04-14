@@ -212,3 +212,58 @@ def index_plugin_memory(store: Any) -> dict[str, int]:
             if indexed:
                 counts[ns] = counts.get(ns, 0) + indexed
     return counts
+
+
+USER_MEMORY_NAMESPACE = "memory:user-project"
+_USER_MEMORY_ROOT = Path.home() / ".claude" / "projects"
+
+
+def iter_user_memory_files() -> list[Path]:
+    """Return all .md files under ~/.claude/projects/*/memory/.
+
+    Claude Code stores per-project auto-memory under
+    ``~/.claude/projects/<encoded-cwd>/memory/``. Each project has one
+    ``MEMORY.md`` index plus individual memory files. We embed them all so
+    ``search_context`` can surface user memory alongside skills and tasks.
+    """
+    if not _USER_MEMORY_ROOT.exists():
+        return []
+    out: list[Path] = []
+    try:
+        for project_dir in _USER_MEMORY_ROOT.iterdir():
+            if not project_dir.is_dir():
+                continue
+            mem_dir = project_dir / "memory"
+            if not mem_dir.is_dir():
+                continue
+            for f in mem_dir.rglob("*.md"):
+                if f.is_file():
+                    out.append(f)
+    except OSError:
+        pass
+    return out
+
+
+def index_user_memory(store: Any) -> int:
+    """Embed user's Claude Code auto-memory files into ``memory:user-project``.
+
+    Returns the number of files successfully embedded. Never raises.
+    """
+    try:
+        from . import config as _cfg
+        if not _cfg.get("user_memory_enabled"):
+            return 0
+    except Exception:  # noqa: BLE001
+        pass
+
+    files = iter_user_memory_files()
+    if not files:
+        return 0
+    indexed = 0
+    for f in files:
+        # Use project dir name as the "plugin" label so chunks can be
+        # attributed back to the originating project.
+        project_label = f.parents[1].name if len(f.parents) >= 2 else "user"
+        if _embed_file(store, f, USER_MEMORY_NAMESPACE, project_label):
+            indexed += 1
+    return indexed

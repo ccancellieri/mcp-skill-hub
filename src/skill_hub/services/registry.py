@@ -23,6 +23,39 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+_SINGLETON: "ServiceRegistry | None" = None
+_SINGLETON_PRESSURE: "PressureTracker | None" = None
+
+
+def get_registry() -> "ServiceRegistry":
+    """Return the process-wide registry, building it from config on first call."""
+    global _SINGLETON
+    if _SINGLETON is None:
+        from .. import config as _cfg
+        _SINGLETON = ServiceRegistry.build_from_config(_cfg.load_config())
+    return _SINGLETON
+
+
+def set_registry(registry: "ServiceRegistry") -> None:
+    """Install a pre-built registry (called by server.py during startup)."""
+    global _SINGLETON
+    _SINGLETON = registry
+
+
+def get_pressure() -> "PressureTracker":
+    global _SINGLETON_PRESSURE
+    if _SINGLETON_PRESSURE is None:
+        from .monitor import PressureTracker
+        from .. import config as _cfg
+        _SINGLETON_PRESSURE = PressureTracker(load_config_callable=_cfg.load_config)
+    return _SINGLETON_PRESSURE
+
+
+def set_pressure(pressure: "PressureTracker") -> None:
+    global _SINGLETON_PRESSURE
+    _SINGLETON_PRESSURE = pressure
+
+
 _DEFAULT_SERVICES = (
     "ollama_daemon",
     "ollama_router",
