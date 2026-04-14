@@ -83,9 +83,13 @@ def _canon(tool_name: str, command: str) -> str:
     them segregated (Bash vs Write vs Edit).
     """
     s = command.strip()
+    s = re.sub(r"'[^']*'", "'STR'", s)           # single-quoted literals
+    s = re.sub(r'"[^"]*"', '"STR"', s)           # double-quoted literals
     s = re.sub(r"/[^\s'\"]+", "/PATH", s)        # absolute paths
+    s = re.sub(r"~[^\s'\"]*", "~/PATH", s)       # ~-relative paths
     s = re.sub(r"\b[0-9a-f]{7,40}\b", "HEX", s)  # commit shas / hashes
     s = re.sub(r"\b\d+\b", "N", s)               # numbers
+    s = re.sub(r"\s*(2>&1|>\s*\S+|<\s*\S+)", "", s)  # redirections
     s = re.sub(r"\s+", " ", s)
     return f"{tool_name}\x1f{s}"
 
