@@ -106,9 +106,9 @@ def _summarize_results(query: str, results: list[dict]) -> str:
     if not results:
         return ""
 
-    import httpx as _httpx
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL
+    from .embeddings import RERANK_MODEL
+    from .llm import LLMError, get_provider
 
     results_text = "\n".join(
         f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
@@ -116,28 +116,21 @@ def _summarize_results(query: str, results: list[dict]) -> str:
     )
 
     model = str(_cfg.get("reason_model") or RERANK_MODEL)
+    resolved = model if "/" in model else f"ollama/{model}"
     prompt = _SUMMARIZE_PROMPT.format(
         query=query[:200],
         results_text=results_text,
     )
 
     try:
-        resp = _httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.3, "num_predict": 220},
-            },
+        raw = get_provider().complete(
+            prompt, model=resolved,
+            max_tokens=220, temperature=0.3,
             timeout=float(_cfg.get("searxng_timeout") or 5) + 20,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "").strip()
-        # Strip think tags if present (DeepSeek R1)
+        ).strip()
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         return raw
-    except Exception:
+    except LLMError:
         return ""
 
 

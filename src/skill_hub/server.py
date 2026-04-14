@@ -1115,6 +1115,235 @@ def toggle_plugin(plugin_name: str, enabled: bool) -> str:
     return _toggle(plugin_name, enabled)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# S3 F-SELECT — profile-based plugin curation
+# ──────────────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_profiles() -> str:
+    """List saved plugin profiles; active profile prefixed with *."""
+    from . import profiles as _prof
+
+    profs = _prof.list_profiles(_store)
+    if not profs:
+        return "No profiles yet. Use create_profile(name=..., plugins=[...])."
+    lines = []
+    for p in profs:
+        flag = "*" if p["is_active"] else " "
+        enabled_count = sum(1 for v in p["plugins"].values() if v)
+        desc = f" — {p['description']}" if p["description"] else ""
+        lines.append(f"{flag} {p['name']} ({enabled_count} plugins){desc}")
+    return "Profiles:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def create_profile(name: str, plugins: str = "",
+                    description: str = "", overwrite: bool = False) -> str:
+    """Create or overwrite a plugin profile.
+
+    Args:
+        name: profile name (e.g. "geoid", "minimal")
+        plugins: comma-separated plugin ids to enable. Empty → snapshot current
+                 ``~/.claude/settings.json`` enabledPlugins.
+        description: human-readable blurb
+        overwrite: replace existing profile if True
+    """
+    from . import profiles as _prof
+    from . import plugin_registry as _plugins
+
+    if plugins.strip():
+        plugin_map: dict[str, bool] | list[str] = [
+            p.strip() for p in plugins.split(",") if p.strip()
+        ]
+    else:
+        plugin_map = dict(_plugins._load_settings().get("enabledPlugins") or {})
+        if not plugin_map:
+            return "error: no plugins in settings.json to snapshot"
+    try:
+        profile = _prof.create_profile(
+            _store, name, plugin_map, description=description, overwrite=overwrite,
+        )
+    except ValueError as exc:
+        return f"error: {exc}"
+    n = sum(1 for v in profile["plugins"].values() if v)
+    return f"profile {name!r} saved ({n} plugins enabled)"
+
+
+@mcp.tool()
+def switch_profile(name: str, dry_run: bool = False) -> str:
+    """Switch active profile; writes its plugin map into ~/.claude/settings.json.
+
+    Restart Claude Code for the change to take effect (harness bakes
+    enabledPlugins into the session prompt at startup).
+    """
+    from . import profiles as _prof
+
+    try:
+        out = _prof.switch_profile(_store, name, dry_run=dry_run)
+    except KeyError as exc:
+        return f"error: {exc}"
+    changed = out["changed_plugins"]
+    verb = "would change" if dry_run else "changed"
+    if not changed:
+        return f"profile {name!r} already matches settings.json (no changes)"
+    lines = [f"{verb} {len(changed)} plugin(s):"]
+    for pid, delta in changed.items():
+        lines.append(f"  - {pid}: {delta['before']} → {delta['after']}")
+    if not dry_run:
+        lines.append("Restart Claude Code to apply.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def delete_profile(name: str) -> str:
+    """Delete a saved profile by name."""
+    from . import profiles as _prof
+
+    return "deleted" if _prof.delete_profile(_store, name) else f"no such profile: {name}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# S4 F-ROUTE — ε-greedy bandit over model tiers
+# ──────────────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def route_to_model(
+    prompt: str = "",
+    complexity: float = 0.5,
+    domain_hints: str = "",
+) -> str:
+    """Pick a model tier for the given prompt via ε-greedy bandit.
+
+    Args:
+        prompt: user message (used for Tier-1 heuristic classification
+                if ``complexity`` is not explicitly set; ignored otherwise)
+        complexity: override 0.0-1.0 complexity score
+        domain_hints: comma-separated hints (debugging, architecture, testing...)
+
+    Returns a human summary; use ``bandit_stats`` for the full per-tier table.
+    """
+    from .router import bandit as _bandit
+    from .router.heuristics import classify as _h_classify
+
+    # Prefer explicit complexity; fall back to heuristic over the prompt.
+    if not 0.0 <= complexity <= 1.0:
+        return "error: complexity must be in [0.0, 1.0]"
+
+    hints = [h.strip() for h in domain_hints.split(",") if h.strip()]
+    if not hints and prompt:
+        sig = _h_classify(prompt)
+        if complexity == 0.5:  # caller left default → use heuristic
+            complexity = sig.complexity
+        hints = list(sig.domain_hints)
+
+    decision = _bandit.select_tier(_store, complexity, hints)
+    per_tier = decision.stats["per_tier"]
+    lines = [
+        f"→ tier={decision.tier}  model={decision.model or '(not configured)'}",
+        f"   confidence={decision.confidence:.2f}  {decision.reasoning}",
+        f"   bucket: task_class={decision.stats['task_class']}  domain={decision.stats['domain']}",
+        "   per-tier stats:",
+    ]
+    for t, s in per_tier.items():
+        lines.append(
+            f"     - {t}: trials={int(s['trials'])}  successes={s['successes']:.1f}  rate={s['rate']:.2f}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def record_model_reward(
+    tier: str,
+    success: float,
+    task_class: str = "",
+    domain: str = "_none",
+    complexity: float = -1.0,
+    domain_hints: str = "",
+) -> str:
+    """Record a reward for a ``(task_class, domain, tier)`` trial.
+
+    Provide ``task_class`` directly, or leave it empty and pass ``complexity``
+    + ``domain_hints`` so the bandit derives the bucket the same way
+    ``route_to_model`` did.
+    """
+    from .router import bandit as _bandit
+
+    if not task_class:
+        if complexity < 0.0:
+            return "error: provide task_class or complexity (0.0-1.0)"
+        hints = [h.strip() for h in domain_hints.split(",") if h.strip()]
+        task_class, domain = _bandit.bucket(complexity, hints)
+    try:
+        _bandit.record_reward(_store, tier, task_class, domain, success)
+    except ValueError as exc:
+        return f"error: {exc}"
+    return f"ok: reward recorded tier={tier} task_class={task_class} domain={domain} success={success:.2f}"
+
+
+@mcp.tool()
+def bandit_stats() -> str:
+    """Dump the full ``model_rewards`` table."""
+    from .router import bandit as _bandit
+
+    rows = _bandit.summary(_store)
+    if not rows:
+        return "No bandit data yet. Call route_to_model + record_model_reward to seed."
+    lines = [
+        f"{r['task_class']:<9} {r['domain']:<14} {r['tier']:<11} "
+        f"trials={r['trials']:<4} successes={r['successes']:<5.1f} rate={r['rate']:.2f}"
+        for r in rows
+    ]
+    return "model_rewards:\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def improve_prompt(text: str, rewriters: str = "") -> str:
+    """Apply S5 F-PROMPT rewriters and return the enriched prompt.
+
+    ``rewriters`` is a comma-separated list of rewriter names (see
+    ``list_prompt_rewriters``). Pass ``"all"`` to run every registered
+    rewriter; leave empty to use the default chain.
+    """
+    from .router import rewriters as _rw
+
+    names: list[str] | None
+    if not rewriters.strip():
+        names = None
+    else:
+        names = [n.strip() for n in rewriters.split(",") if n.strip()]
+    result = _rw.improve_prompt(text, _store, rewriters=names)
+    header = "applied: " + (", ".join(result.applied) if result.applied else "none")
+    notes = "\n".join(f"  - {n}" for n in result.notes)
+    return f"{header}\nnotes:\n{notes}\n\n---\n{result.prompt}"
+
+
+@mcp.tool()
+def list_prompt_rewriters() -> str:
+    """List registered prompt rewriters (S5 F-PROMPT)."""
+    from .router import rewriters as _rw
+
+    return "rewriters:\n" + "\n".join(f"  - {n}" for n in _rw.available())
+
+
+@mcp.tool()
+def auto_curate_plugins(stale_days: int = 14) -> str:
+    """Suggest plugins to disable — currently enabled but unused in the last N days.
+
+    Derived from ``session_log`` (populated automatically via post-tool hooks).
+    """
+    from . import profiles as _prof
+
+    candidates = _prof.auto_curate_candidates(_store, stale_days=stale_days)
+    if not candidates:
+        return f"No stale plugins — all enabled plugins had activity in the last {stale_days} days."
+    lines = [f"{len(candidates)} plugin(s) with no activity in the last {stale_days} days:"]
+    for c in candidates:
+        lines.append(f"  - {c['plugin_id']}  ({c['reason']})")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def session_stats() -> str:
     """Show most-used plugins from session history (passive learning data)."""

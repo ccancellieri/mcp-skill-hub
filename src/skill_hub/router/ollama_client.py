@@ -13,9 +13,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
 from .. import config as _cfg
+from ..llm import LLMError, get_provider
 
 
 _CLASSIFY_PROMPT = """\
@@ -73,27 +72,25 @@ def classify(
 
     full_prompt = project_prefix + _CLASSIFY_PROMPT.format(prompt=prompt[:1500])
 
+    # Route via pluggable LLM provider (litellm). ``model`` is resolved below
+    # in the same order of precedence:
+    #   1. explicit services.ollama_router.model  → wrapped as "ollama/<m>"
+    #   2. llm_providers.tier_cheap (if no explicit router model)
     try:
-        resp = httpx.post(
-            f"{ollama_base}/api/generate",
-            json={
-                "model": model,
-                "prompt": full_prompt,
-                "stream": False,
-                "options": {"temperature": 0.05, "num_predict": 150},
-            },
+        resolved = f"ollama/{model}" if model and "/" not in model else model
+        raw = get_provider().complete(
+            full_prompt,
+            model=resolved,
+            max_tokens=150,
+            temperature=0.05,
             timeout=timeout,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
-        # Strip any chain-of-thought blocks (e.g. deepseek-r1 <think>…</think>)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        # Extract JSON even if the model wraps it in extra text
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
             return None
         data: dict[str, Any] = json.loads(m.group())
-    except Exception:
+    except (LLMError, ValueError, json.JSONDecodeError):
         return None
 
     try:

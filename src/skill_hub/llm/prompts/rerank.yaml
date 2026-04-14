@@ -1,0 +1,10 @@
+name: rerank
+version: 1
+model_hint: tier_cheap
+template: |
+  You are a relevance judge. Given a user query and a skill description, reply
+  with a single JSON object: {{"score": <0.0-1.0>, "reason": "<one sentence>"}}.
+
+  Query: {query}
+  Skill name: {name}
+  Skill description: {description}

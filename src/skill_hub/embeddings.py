@@ -3,16 +3,43 @@
 import json
 import re
 
-import httpx
-
 from . import config as _cfg
 from .activity_log import get_logger, log_llm, llm_timer
+from .llm import LLMError, get_provider
 
 # These module-level names are kept for backwards compatibility with imports,
 # but always read the live config value.
 OLLAMA_BASE = _cfg.get("ollama_base")
 EMBED_MODEL = _cfg.get("embed_model")
 RERANK_MODEL = _cfg.get("reason_model")
+
+
+def _wrap_ollama(model: str) -> str:
+    """Ensure bare Ollama model names get the ``ollama/`` prefix litellm needs."""
+    return model if "/" in model else f"ollama/{model}"
+
+
+def _generate(
+    prompt: str,
+    *,
+    model: str,
+    timeout: float,
+    temperature: float = 0.2,
+    num_predict: int = 512,
+) -> str:
+    """Thin wrapper over ``LLMProvider.complete()`` matching the old
+    ``httpx.post(/api/generate).json()['response']`` shape. Returns ``""`` on
+    error so callers can keep their tolerant fallbacks."""
+    try:
+        return get_provider().complete(
+            prompt,
+            model=_wrap_ollama(model),
+            max_tokens=num_predict,
+            temperature=temperature,
+            timeout=timeout,
+        )
+    except LLMError:
+        return ""
 
 _RERANK_PROMPT = """\
 You are a relevance judge. Given a user query and a skill description, reply with a
@@ -44,19 +71,12 @@ def quantize_binary(vector: list[float]) -> bytes:
 
 
 def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
-    """Return embedding vector from Ollama."""
-    resp = httpx.post(
-        f"{OLLAMA_BASE}/api/embed",
-        json={"model": model, "input": text},
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    # Ollama returns {"embeddings": [[...]], ...}
-    embeddings = data.get("embeddings") or data.get("embedding")
-    if isinstance(embeddings[0], list):
-        return embeddings[0]
-    return embeddings
+    """Return embedding vector via the configured LLM provider."""
+    try:
+        vec = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout)
+    except LLMError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return vec if isinstance(vec, list) and (not vec or isinstance(vec[0], float)) else vec[0]
 
 
 def rerank(query: str, candidates: list[dict],
@@ -77,13 +97,7 @@ def rerank(query: str, candidates: list[dict],
             description=c.get("description", ""),
         )
         try:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False},
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "{}")
+            raw = _generate(prompt, model=model, timeout=60.0) or "{}"
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             result = json.loads(raw)
             score = float(result.get("score", 0.5))
@@ -129,13 +143,7 @@ def compact(content: str, model: str = RERANK_MODEL) -> dict:
     log_llm("compact", model=model, input_chars=len(content[:4000]))
     prompt = _COMPACT_PROMPT.format(content=content[:4000])
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        raw = _generate(prompt, model=model, timeout=120.0) or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # Extract JSON from response (handle markdown code blocks)
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -163,13 +171,7 @@ def rewrite_query(message: str, context: str = "",
     log_llm("rewrite_query", model=model)
     prompt = _REWRITE_PROMPT.format(message=message, context=context[:1000])
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
+        raw = _generate(prompt, model=model, timeout=30.0)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         if raw and len(raw) > 5:
             return raw
@@ -232,13 +234,7 @@ def optimize_context(entries: list[dict],
 
     results = []
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=300.0,  # longer timeout for many entries
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
+        raw = _generate(prompt, model=model, timeout=300.0)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
         # Extract all JSON objects from the response
@@ -310,13 +306,7 @@ def conversation_digest(messages: list[str],
     prompt = _CONVERSATION_DIGEST_PROMPT.format(content=content[:max_chars])
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        raw = _generate(prompt, model=model, timeout=60.0) or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -342,13 +332,7 @@ def exhaustion_save(content: str,
     prompt = _EXHAUSTION_SAVE_PROMPT.format(content=content[:max_chars])
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=120.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        raw = _generate(prompt, model=model, timeout=120.0) or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -425,18 +409,10 @@ Respond with ONLY this JSON:
 
     try:
         with llm_timer() as _t:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={
-                    "model": chosen_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.1, "num_predict": 500},
-                },
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "{}")
+            raw = _generate(
+                prompt, model=chosen_model, timeout=30.0,
+                temperature=0.1, num_predict=500,
+            ) or "{}"
         log_llm("smart_memory_write", model=chosen_model, duration=_t.duration,
                 input_chars=len(content))
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -604,13 +580,10 @@ def triage_message(message: str, context: str = "",
         prompt = f"{_seed}\n\n{prompt}"
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=int(_cfg.get("hook_llm_triage_timeout") or 30),
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        raw = _generate(
+            prompt, model=model,
+            timeout=float(_cfg.get("hook_llm_triage_timeout") or 30),
+        ) or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -725,18 +698,10 @@ def eval_skill_lifecycle(
 
     try:
         with llm_timer() as _t:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.0, "num_predict": 250},
-                },
-                timeout=15.0,
+            raw = _generate(
+                prompt, model=model, timeout=15.0,
+                temperature=0.0, num_predict=250,
             )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -778,18 +743,10 @@ def optimize_prompt(
 
     try:
         with llm_timer() as _t:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 400},
-                },
-                timeout=15.0,
-            )
-            resp.raise_for_status()
-            result = resp.json().get("response", "").strip()
+            result = _generate(
+                prompt, model=model, timeout=15.0,
+                temperature=0.2, num_predict=400,
+            ).strip()
         log_llm("optimize_prompt", model=model, duration=_t.duration,
                 message_len=len(message))
         # Reject obviously broken outputs
@@ -910,14 +867,10 @@ def verify_cache_hit(cached_query: str, cached_response: str,
         current_query=current_query[:300],
     )
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.0, "num_predict": 80}},
-            timeout=10.0,
+        raw = _generate(
+            prompt, model=model, timeout=10.0,
+            temperature=0.0, num_predict=80,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
@@ -937,14 +890,10 @@ def decompose_task(message: str, model: str = RERANK_MODEL) -> dict:
     log_llm("decompose_task", model=model, message_len=len(message))
     prompt = _DECOMPOSE_PROMPT.format(message=message[:1500])
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.0, "num_predict": 300}},
-            timeout=12.0,
+        raw = _generate(
+            prompt, model=model, timeout=12.0,
+            temperature=0.0, num_predict=300,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
@@ -973,14 +922,10 @@ def extract_error_pattern(response_text: str,
     log_llm("extract_error", model=model)
     prompt = _ERROR_EXTRACT_PROMPT.format(response=response_text[:1500])
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.0, "num_predict": 150}},
-            timeout=10.0,
+        raw = _generate(
+            prompt, model=model, timeout=10.0,
+            temperature=0.0, num_predict=150,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
@@ -999,14 +944,10 @@ def generate_auto_skill(canonical: str, count: int,
     log_llm("generate_auto_skill", model=model, canonical=canonical[:80])
     prompt = _AUTO_SKILL_PROMPT.format(canonical=canonical[:400], count=count)
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2, "num_predict": 500}},
-            timeout=20.0,
+        raw = _generate(
+            prompt, model=model, timeout=20.0,
+            temperature=0.2, num_predict=500,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # strip markdown fences if present
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()

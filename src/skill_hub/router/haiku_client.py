@@ -22,12 +22,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
 from .. import config as _cfg
+from ..llm import LLMError, get_provider
 
-_ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
-_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+_HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -140,27 +138,18 @@ def classify(
     system_msg = _build_prompt(prompt, cfg, msg_count, config_summary, cwd=cwd)
 
     try:
-        resp = httpx.post(
-            _ANTHROPIC_API,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": _HAIKU_MODEL,
-                "max_tokens": 400,
-                "messages": [{"role": "user", "content": system_msg}],
-            },
+        content = get_provider().complete(
+            system_msg,
+            model=_HAIKU_MODEL,
+            max_tokens=400,
+            temperature=0.2,
             timeout=15.0,
         )
-        resp.raise_for_status()
-        content = resp.json()["content"][0]["text"]
         m = re.search(r"\{.*\}", content, re.DOTALL)
         if not m:
             return None
         data: dict[str, Any] = json.loads(m.group())
-    except Exception:
+    except (LLMError, ValueError, json.JSONDecodeError):
         return None
 
     try:

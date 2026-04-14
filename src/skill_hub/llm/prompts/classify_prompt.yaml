@@ -1,0 +1,8 @@
+name: classify_prompt
+version: 1
+model_hint: tier_cheap
+template: |
+  Classify the user's prompt into one of: {categories}.
+  Reply JSON: {{"category": "<one-of>", "confidence": <0.0-1.0>, "reason": "<brief>"}}.
+
+  Prompt: {prompt}

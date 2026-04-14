@@ -1,0 +1,95 @@
+{# Models card — installed Ollama models, pull form, per-tier picker.
+
+   Refresh via HTMX from /control/llm/card.
+#}
+<div id="models-card" class="service-grid">
+
+  <div class="service-card">
+    <div class="service-head"><strong>LLM tiers</strong></div>
+    <table class="compact-table">
+      <thead><tr><th>tier</th><th>model</th><th>installed</th><th></th></tr></thead>
+      <tbody>
+        {% for tier in tier_keys %}
+          {% set current = tiers.get(tier, '') %}
+          <tr>
+            <td><code>{{ tier }}</code></td>
+            <td><code>{{ current or '—' }}</code></td>
+            <td>
+              {% if current.startswith('ollama/') %}
+                {% set short = current.split('/', 1)[1] %}
+                {% set names = installed | map(attribute='name') | list %}
+                {% if short in names %}<span class="dot-running">●</span>{% else %}<span class="dot-stopped">●</span>{% endif %}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>
+              <form hx-post="/control/llm/tier"
+                    hx-target="#models-card"
+                    hx-swap="outerHTML"
+                    style="display:inline-flex;gap:4px">
+                <input type="hidden" name="tier" value="{{ tier }}"/>
+                <select name="model_id">
+                  <option value="{{ current }}" selected>{{ current or 'pick model…' }}</option>
+                  {% for m in installed %}
+                    <option value="ollama/{{ m.name }}">ollama/{{ m.name }} ({{ m.size_gb }} GB)</option>
+                  {% endfor %}
+                  <option value="anthropic/claude-haiku-4-5">anthropic/claude-haiku-4-5</option>
+                  <option value="anthropic/claude-sonnet-4-6">anthropic/claude-sonnet-4-6</option>
+                </select>
+                <button type="submit">save</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="service-card">
+    <div class="service-head"><strong>Installed Ollama models</strong></div>
+    {% if installed %}
+      <table class="compact-table">
+        <thead><tr><th>name</th><th>size</th></tr></thead>
+        <tbody>
+          {% for m in installed %}
+          <tr><td><code>{{ m.name }}</code></td><td>{{ m.size_gb }} GB</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">Ollama not reachable or no models installed.</p>
+    {% endif %}
+  </div>
+
+  <div class="service-card">
+    <div class="service-head"><strong>Pull a new model</strong></div>
+    <form hx-post="/control/llm/pull"
+          hx-target="#models-card"
+          hx-swap="outerHTML">
+      <input type="text" name="model" placeholder="e.g. qwen2.5-coder:7b"
+             pattern="[A-Za-z0-9._:\-/]+" required/>
+      <button type="submit">pull</button>
+    </form>
+    <p class="muted">Large models can take several minutes. Progress log below.</p>
+
+    {% if pulls %}
+      <h4>Running / recent pulls</h4>
+      <ul>
+        {% for model, st in pulls.items() %}
+          <li>
+            <code>{{ model }}</code> — <strong>{{ st.status }}</strong>
+            <details>
+              <summary>log</summary>
+              <pre hx-get="/control/llm/pull-log/{{ model }}"
+                   hx-trigger="load, every 3s"
+                   hx-swap="innerHTML"
+                   style="max-height:240px;overflow:auto;font-size:.85em">
+              </pre>
+            </details>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+</div>

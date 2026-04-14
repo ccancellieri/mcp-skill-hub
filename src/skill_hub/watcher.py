@@ -125,6 +125,7 @@ class _DebounceHandler:
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self._last_changed: str = ""
+        self._pending_paths: set[Path] = set()
         self._reindexing: bool = False
         self._last_reindex_done: float = 0.0  # monotonic time of last completion
 
@@ -143,6 +144,10 @@ class _DebounceHandler:
             if (_time.monotonic() - self._last_reindex_done) < _MIN_REINDEX_INTERVAL:
                 return
             self._last_changed = src
+            try:
+                self._pending_paths.add(Path(src).resolve())
+            except OSError:
+                self._pending_paths.add(Path(src))
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._delay, self._do_reindex)
@@ -155,18 +160,23 @@ class _DebounceHandler:
             if self._reindexing:
                 return
             self._reindexing = True
+            paths = set(self._pending_paths)
+            self._pending_paths.clear()
 
         try:
             from .activity_log import log_event
             changed_name = Path(self._last_changed).name if self._last_changed else "unknown"
-            log_event("WATCHER", f"re-indexing skills (trigger: {changed_name})")
+            log_event("WATCHER",
+                      f"re-indexing skills (trigger: {changed_name}, "
+                      f"paths={len(paths)})")
 
             from .indexer import index_all
             from .store import SkillStore
             t0 = time.monotonic()
             _store = SkillStore()
             try:
-                count, errors = index_all(_store)
+                count, errors = index_all(_store,
+                                          changed_paths=paths or None)
             finally:
                 _store.close()
             elapsed = time.monotonic() - t0

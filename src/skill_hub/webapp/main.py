@@ -159,6 +159,7 @@ def create_app(store: Any) -> FastAPI:
     app.add_middleware(BannerMiddleware)
 
     app.include_router(dashboard_routes.router)
+    app.include_router(control_routes.llm_router)
     app.include_router(control_routes.router)
     app.include_router(control_plugins_routes.router)
     app.include_router(settings_routes.router)

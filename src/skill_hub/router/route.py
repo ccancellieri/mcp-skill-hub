@@ -257,6 +257,22 @@ def route(
     if enriched_msg:
         output["userMessage"] = enriched_msg
 
+    # ── S5 F-PROMPT: apply prompt rewriters (opt-in via config) ──────────────
+    if cfg.get("router_improve_prompt_enabled", False):
+        try:
+            from . import rewriters as _rw
+            from ..store import SkillStore
+
+            store = SkillStore()
+            try:
+                improved = _rw.improve_prompt(enriched_msg or prompt, store, cfg=cfg)
+            finally:
+                store.close()
+            if improved.applied:
+                output["userMessage"] = improved.prompt
+        except Exception:
+            pass
+
     if "systemMessage" not in output and "userMessage" not in output:
         return {}
 

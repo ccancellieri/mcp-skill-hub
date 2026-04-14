@@ -251,6 +251,17 @@ _DEFAULTS = {
     # Max seconds for Tier-2 Ollama call (routing must be fast)
     "router_tier2_timeout": 10.0,
 
+    # S4 F-ROUTE — ε-greedy bandit over tier_cheap/tier_mid/tier_smart
+    "router_bandit_enabled": True,
+    "router_bandit_epsilon": 0.1,
+
+    # S5 F-PROMPT — pluggable prompt rewriters. When enabled, the UserPromptSubmit
+    # hook runs the default_chain and appends the enrichment to the userMessage.
+    "router_improve_prompt_enabled": False,
+    "improve_prompt_default_chain": ["add_skill_context", "add_recent_tasks"],
+    "improve_prompt_skill_top_k": 3,
+    "improve_prompt_tasks_limit": 2,
+
     # Tier 3: Claude Haiku 4.5 batched call (opt-in)
     # Enable via /control or env SKILL_HUB_ROUTER_HAIKU=1; stored as services.haiku_router.enabled
     # Requires ANTHROPIC_API_KEY in environment
@@ -283,6 +294,22 @@ _DEFAULTS = {
     # Binary KNN candidate pool size before float32 rerank. 60 yields ~97%
     # recall@5 parity vs float32 on 1914 skills; tune up for more recall.
     "rerank_top_k": 60,
+
+    # S2 — pluggable LLM providers. Model strings use litellm syntax:
+    #   "ollama/<model>" for local Ollama
+    #   "anthropic/<model>" (requires ANTHROPIC_API_KEY)
+    #   "openai/<model>"    (requires OPENAI_API_KEY)
+    # tier_cheap: used for low-stakes reasoning (rerank, classify, summarise)
+    # tier_mid:   used for batched router escalation
+    # tier_smart: used for hard multi-step planning / final synthesis
+    "llm_providers": {
+        "tier_cheap": "ollama/qwen2.5-coder:3b",
+        "tier_mid":   "anthropic/claude-haiku-4-5",
+        "tier_smart": "anthropic/claude-sonnet-4-6",
+        "embed":      "ollama/nomic-embed-text",
+    },
+    # Default tier when code doesn't specify one.
+    "llm_default_tier": "tier_cheap",
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}

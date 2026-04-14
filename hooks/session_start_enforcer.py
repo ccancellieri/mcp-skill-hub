@@ -47,6 +47,31 @@ def consume_resume_marker() -> str:
     return msg
 
 
+def _check_profile_drift() -> str:
+    """Compare active profile (if any) to live enabledPlugins. Return advisory
+    string on mismatch, empty otherwise. Best-effort — never raises."""
+    try:
+        # Lazy import — hooks must stay fast even if skill-hub isn't installed.
+        from skill_hub.store import SkillStore
+        from skill_hub import profiles as _prof
+    except Exception:
+        return ""
+    try:
+        drift = _prof.detect_profile_drift(SkillStore())
+    except Exception:
+        return ""
+    if not drift:
+        return ""
+    missing = len(drift.get("missing") or {})
+    unexpected = len(drift.get("unexpected") or {})
+    return (
+        f"PROFILE DRIFT: active profile {drift['profile']!r} does not match "
+        f"~/.claude/settings.json enabledPlugins "
+        f"({missing} missing, {unexpected} unexpected). "
+        f"Run `switch_profile(name={drift['profile']!r})` then restart."
+    )
+
+
 def log(msg: str):
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +131,10 @@ def main():
     if resume_msg:
         log(f"RESUME marker consumed  msg=\"{resume_msg[:80]}\"")
 
+    drift_msg = _check_profile_drift()
+    if drift_msg:
+        log(f"PROFILE drift detected  msg=\"{drift_msg[:100]}\"")
+
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 
     system_msg = (
@@ -118,6 +147,8 @@ def main():
     )
     if resume_msg:
         system_msg = resume_msg + "\n\n" + system_msg
+    if drift_msg:
+        system_msg = drift_msg + "\n\n" + system_msg
 
     print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 

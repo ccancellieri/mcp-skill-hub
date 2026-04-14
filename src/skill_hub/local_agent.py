@@ -413,13 +413,15 @@ def plan_agent(message: str, context: str = "") -> dict:
 
     try:
         timeout = int((_cfg.get("remote_llm") or {}).get("timeout", 120))
-        resp = httpx.post(
-            f"{base_url.rstrip('/')}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        from .llm import LLMError, get_provider
+        resolved = model if "/" in model else f"ollama/{model}"
+        try:
+            raw = get_provider().complete(
+                prompt, model=resolved, max_tokens=512,
+                temperature=0.2, timeout=timeout,
+            )
+        except LLMError as exc:
+            return {"can_handle": False, "reason": str(exc), "model": model}
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:

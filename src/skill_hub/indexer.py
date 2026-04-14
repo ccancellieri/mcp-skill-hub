@@ -232,30 +232,35 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
                 continue
             _index_local_json(json_file)
 
-    # Phase M2 — seed vector_index_config from plugin.json "vector_indexes".
-    try:
-        from .plugin_registry import register_plugin_vector_indexes
-        register_plugin_vector_indexes(store)
-    except Exception as exc:  # noqa: BLE001 — never break indexing
-        errors.append(f"plugin vector_indexes register: {exc}")
+    # Skip the heavy whole-corpus passes (plugin memory, user memory, registry
+    # seeding) when we're doing a targeted incremental reindex.
+    if changed_paths is None:
+        # Phase M2 — seed vector_index_config from plugin.json "vector_indexes".
+        try:
+            from .plugin_registry import register_plugin_vector_indexes
+            register_plugin_vector_indexes(store)
+        except Exception as exc:  # noqa: BLE001 — never break indexing
+            errors.append(f"plugin vector_indexes register: {exc}")
 
-    # Plugin extension-point: A4 — embed each plugin's declared memory.reads globs
-    # into namespaced vectors (memory:<plugin> or per-index under memory.indexes).
-    try:
-        from .memory_index import index_plugin_memory
-        mem_counts = index_plugin_memory(store)
-        if mem_counts:
-            indexed += sum(mem_counts.values())
-    except Exception as exc:  # noqa: BLE001 — memory adapter must never break indexing
-        errors.append(f"plugin memory index: {exc}")
+        # A4 — embed each plugin's declared memory.reads globs into namespaced
+        # vectors (memory:<plugin> or per-index under memory.indexes).
+        try:
+            from .memory_index import index_plugin_memory
+            mem_counts = index_plugin_memory(store)
+            if mem_counts:
+                indexed += sum(mem_counts.values())
+        except Exception as exc:  # noqa: BLE001 — memory adapter must never break indexing
+            errors.append(f"plugin memory index: {exc}")
 
-    # S1.6 — embed Claude Code's per-project auto-memory into memory:user-project
-    try:
-        from .memory_index import index_user_memory
-        user_mem_count = index_user_memory(store)
-        if user_mem_count:
-            indexed += user_mem_count
-    except Exception as exc:  # noqa: BLE001 — user memory is best-effort
-        errors.append(f"user memory index: {exc}")
+        # S1.6 — embed Claude Code's per-project auto-memory into memory:user-project
+        try:
+            from .memory_index import index_user_memory
+            user_mem_count = index_user_memory(store)
+            if user_mem_count:
+                indexed += user_mem_count
+        except Exception as exc:  # noqa: BLE001 — user memory is best-effort
+            errors.append(f"user memory index: {exc}")
 
+    if skipped:
+        errors.append(f"info: skipped {skipped} unchanged skills (content_hash match)")
     return indexed, errors

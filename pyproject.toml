@@ -33,6 +33,8 @@ dependencies = [
     "aiofiles>=23",
     "psutil>=5.9",
     "sqlite-vec>=0.1.6",
+    "litellm>=1.52",
+    "pyyaml>=6.0",
 ]
 
 [project.urls]

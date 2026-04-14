@@ -16,6 +16,7 @@
     <div class="tab-row">
       <button class="tab-btn" :class="{active: tab==='services'}" @click="tab='services'">Services</button>
       <button class="tab-btn" :class="{active: tab==='plugins'}" @click="tab='plugins'">Plugins</button>
+      <button class="tab-btn" :class="{active: tab==='models'}" @click="tab='models'">Models</button>
     </div>
 
     <div x-show="tab==='services'" class="tab-panel">
@@ -41,6 +42,13 @@
          hx-trigger="revealed once"
          hx-swap="innerHTML">
       <p class="muted">Loading plugins…</p>
+    </div>
+
+    <div x-show="tab==='models'" class="tab-panel"
+         hx-get="/control/llm/card"
+         hx-trigger="revealed once"
+         hx-swap="innerHTML">
+      <p class="muted">Loading models…</p>
     </div>
   </div>
 </section>

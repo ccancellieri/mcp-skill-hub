@@ -1606,6 +1606,12 @@ Both logs rotate daily and are capped at 50 MB total.
 - [x] Implicit feedback — session-end correlates loaded skills vs tool usage, auto-records EMA signal
 - [x] Auto memory on close_task — smart_memory_write runs after every task compaction
 - [x] Training data export — JSONL export of all signal types for mlx-lm fine-tuning on Apple Silicon
+- [x] **S1 F-INDEX** — sqlite-vec binary-quant + float32 rerank (7.5× search speedup, 97.3% recall@5) + incremental hash-skip indexer
+- [x] **S2 F-LLM** — `LLMProvider` Protocol + litellm adapter; unified 14+ call sites (embeddings, haiku, searxng, local_agent, ollama_router) behind one surface; `/control/llm` dashboard model picker + tier-aware pull form
+- [x] **S3 F-SELECT** — named plugin profiles (`list_profiles`, `create_profile`, `switch_profile`, `auto_curate_plugins`) with SessionStart drift advisory
+- [x] **S4 F-ROUTE** — ε-greedy bandit over `tier_cheap`/`tier_mid`/`tier_smart` with Laplace smoothing; `route_to_model`, `record_model_reward`, `bandit_stats` MCP tools
+- [x] **S5 F-PROMPT** — pluggable prompt rewriters (`add_skill_context`, `add_recent_tasks`, `normalize_language`); `improve_prompt` + `list_prompt_rewriters` MCP tools; opt-in hook integration
+- [x] **S6 F-MEM** — unified sqlite-vec store for tasks + teachings (same binary-KNN + float32 rerank path as skills); mirror-on-write, delete-clean, startup backfill
 - [ ] OpenSearch backend — for scaling beyond local use
 
 ## License

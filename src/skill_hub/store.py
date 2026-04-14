@@ -463,6 +463,27 @@ class SkillStore:
                 to_level   TEXT,
                 reason     TEXT
             );
+
+            -- S3 F-SELECT: profile-based plugin curation
+            CREATE TABLE IF NOT EXISTS profiles (
+                name         TEXT PRIMARY KEY,
+                plugins_json TEXT NOT NULL,         -- JSON array of enabledPlugins entries
+                description  TEXT,
+                is_active    INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT DEFAULT (datetime('now')),
+                updated_at   TEXT DEFAULT (datetime('now'))
+            );
+
+            -- S4 F-ROUTE: ε-greedy bandit over model tiers
+            CREATE TABLE IF NOT EXISTS model_rewards (
+                task_class   TEXT NOT NULL,      -- trivial|simple|moderate|complex
+                domain       TEXT NOT NULL,      -- primary domain hint or "_none"
+                tier         TEXT NOT NULL,      -- tier_cheap|tier_mid|tier_smart
+                trials       INTEGER NOT NULL DEFAULT 0,
+                successes    REAL    NOT NULL DEFAULT 0.0,   -- EMA-compatible (partial rewards allowed)
+                updated_at   TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (task_class, domain, tier)
+            );
         """)
         self._conn.commit()
 
@@ -527,6 +548,32 @@ class SkillStore:
                 self._conn.execute(f"""
                     CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_f32 USING vec0(
                         skill_id TEXT PRIMARY KEY,
+                        embedding float[{VEC_DIM}]
+                    )
+                """)
+                # S6 F-MEM — unified vec0 store for tasks + teachings. Same
+                # binary-KNN + float32-rerank path as skills.
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_bin USING vec0(
+                        task_id INTEGER PRIMARY KEY,
+                        embedding bit[{VEC_DIM}]
+                    )
+                """)
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_f32 USING vec0(
+                        task_id INTEGER PRIMARY KEY,
+                        embedding float[{VEC_DIM}]
+                    )
+                """)
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_bin USING vec0(
+                        teaching_id INTEGER PRIMARY KEY,
+                        embedding bit[{VEC_DIM}]
+                    )
+                """)
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_f32 USING vec0(
+                        teaching_id INTEGER PRIMARY KEY,
                         embedding float[{VEC_DIM}]
                     )
                 """)
@@ -655,11 +702,13 @@ class SkillStore:
         self._conn.commit()
 
     def _backfill_vec_tables(self) -> None:
-        """Populate vec0 tables from the canonical ``embeddings`` table.
+        """Populate vec0 tables from canonical JSON-vector columns.
 
         Runs on startup when the vec engine is available. Skips rows already
         present (cheap idempotent) and rows with wrong dimensionality.
+        Covers: skills/embeddings, tasks, teachings (S1 + S6).
         """
+        # Skills
         existing = {
             row[0] for row in self._conn.execute(
                 "SELECT skill_id FROM skills_vec_bin"
@@ -685,7 +734,84 @@ class SkillStore:
             except Exception as exc:  # noqa: BLE001
                 _log.debug("backfill failed for %s: %s", sid, exc)
         if added:
-            _log.info("vec0 backfill: %d rows", added)
+            _log.info("vec0 skills backfill: %d rows", added)
+
+        # Tasks (S6)
+        self._backfill_secondary_vec(
+            "tasks",
+            "SELECT id, vector FROM tasks WHERE vector IS NOT NULL",
+            "task_id",
+            "tasks_vec_bin",
+            "tasks_vec_f32",
+        )
+        # Teachings (S6)
+        self._backfill_secondary_vec(
+            "teachings",
+            "SELECT id, rule_vector AS vector FROM teachings WHERE rule_vector IS NOT NULL",
+            "teaching_id",
+            "teachings_vec_bin",
+            "teachings_vec_f32",
+        )
+
+    def _backfill_secondary_vec(
+        self,
+        label: str,
+        select_sql: str,
+        id_col: str,
+        bin_tbl: str,
+        f32_tbl: str,
+    ) -> None:
+        existing = {
+            row[0] for row in self._conn.execute(
+                f"SELECT {id_col} FROM {bin_tbl}"
+            ).fetchall()
+        }
+        rows = self._conn.execute(select_sql).fetchall()
+        added = 0
+        for row in rows:
+            rid = row["id"] if "id" in row.keys() else row[0]
+            if rid in existing:
+                continue
+            try:
+                vec = json.loads(row["vector"])
+            except (TypeError, ValueError):
+                continue
+            if len(vec) != VEC_DIM:
+                continue
+            try:
+                self._write_secondary_vec_rows(rid, vec, id_col, bin_tbl, f32_tbl)
+                added += 1
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("backfill %s failed for %s: %s", label, rid, exc)
+        if added:
+            _log.info("vec0 %s backfill: %d rows", label, added)
+
+    def _write_secondary_vec_rows(
+        self,
+        row_id: int,
+        vector: list[float],
+        id_col: str,
+        bin_tbl: str,
+        f32_tbl: str,
+    ) -> None:
+        """Mirror a JSON vector into ``{bin_tbl}`` + ``{f32_tbl}`` virtual tables.
+
+        Used by tasks and teachings (S6). Keyed by ``id_col`` (integer PK).
+        """
+        from .embeddings import quantize_binary
+        bin_blob = quantize_binary(vector)
+        f32_blob = struct.pack(f"{VEC_DIM}f", *vector)
+        self._conn.execute(f"DELETE FROM {bin_tbl} WHERE {id_col} = ?", (row_id,))
+        self._conn.execute(
+            f"INSERT INTO {bin_tbl} ({id_col}, embedding) VALUES (?, vec_bit(?))",
+            (row_id, bin_blob),
+        )
+        self._conn.execute(f"DELETE FROM {f32_tbl} WHERE {id_col} = ?", (row_id,))
+        self._conn.execute(
+            f"INSERT INTO {f32_tbl} ({id_col}, embedding) VALUES (?, ?)",
+            (row_id, f32_blob),
+        )
+        self._conn.commit()
 
     def log_skill_injection(self, skill_id: str, query: str = "",
                             session_id: str | None = None) -> None:
@@ -883,11 +1009,22 @@ class SkillStore:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (rule, json.dumps(rule_vector), action, target_type, target_id, weight))
         self._conn.commit()
-        return cur.lastrowid or 0
+        teaching_id = cur.lastrowid or 0
+        self._mirror_teaching_vec(teaching_id, rule_vector)
+        return teaching_id
 
     def search_teachings(self, query_vector: list[float],
                          min_sim: float = 0.6) -> list[dict]:
-        """Find teachings whose rule matches the query semantically."""
+        """Find teachings whose rule matches the query semantically.
+
+        Uses the vec0 binary-KNN + float32 rerank path when available (S6);
+        falls back to the in-Python cosine loop otherwise.
+        """
+        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+            vec_results = self._search_teachings_vec(query_vector, min_sim)
+            if vec_results is not None:
+                return vec_results
+
         rows = self._conn.execute(
             "SELECT id, rule, rule_vector, action, target_type, target_id, weight "
             "FROM teachings"
@@ -903,6 +1040,59 @@ class SkillStore:
         results.sort(key=lambda x: x[0], reverse=True)
         return [r for _, r in results]
 
+    def _search_teachings_vec(self, query_vector: list[float],
+                              min_sim: float) -> list[dict] | None:
+        """S6 vec0 path for teachings. Returns None to signal fallback on failure."""
+        from . import config as _cfg
+        from .embeddings import quantize_binary
+
+        rerank_k = max(10, int(_cfg.get("rerank_top_k") or 20))
+        try:
+            qbin = quantize_binary(query_vector)
+            bin_rows = self._conn.execute(
+                """
+                SELECT teaching_id, distance
+                FROM teachings_vec_bin
+                WHERE embedding MATCH vec_bit(?) AND k = ?
+                ORDER BY distance
+                """,
+                (qbin, rerank_k),
+            ).fetchall()
+        except Exception:
+            return None
+        if not bin_rows:
+            return []
+        ids = [r["teaching_id"] for r in bin_rows]
+
+        qnorm = math.sqrt(sum(x * x for x in query_vector))
+        if qnorm == 0.0:
+            return []
+
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT id, rule, rule_vector, action, target_type, target_id, weight "
+            f"FROM teachings WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            try:
+                vec = json.loads(row["rule_vector"])
+            except (TypeError, ValueError):
+                continue
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if snorm == 0.0:
+                continue
+            dot = sum(a * b for a, b in zip(query_vector, vec))
+            sim = dot / (qnorm * snorm)
+            if sim < min_sim:
+                continue
+            scored.append((sim * float(row["weight"]), dict(row)))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored]
+
     def list_teachings(self) -> list[sqlite3.Row]:
         return self._conn.execute(
             "SELECT id, rule, action, target_type, target_id, weight FROM teachings "
@@ -912,6 +1102,13 @@ class SkillStore:
     def remove_teaching(self, teaching_id: int) -> bool:
         cur = self._conn.execute("DELETE FROM teachings WHERE id = ?", (teaching_id,))
         self._conn.commit()
+        if self._vec_engine == "sqlite-vec":
+            try:
+                self._conn.execute("DELETE FROM teachings_vec_bin WHERE teaching_id = ?", (teaching_id,))
+                self._conn.execute("DELETE FROM teachings_vec_f32 WHERE teaching_id = ?", (teaching_id,))
+                self._conn.commit()
+            except Exception:
+                pass
         return cur.rowcount > 0
 
     # ------------------------------------------------------------------
@@ -1050,7 +1247,9 @@ class SkillStore:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (title, summary, context, tags, json.dumps(vector), session_id))
         self._conn.commit()
-        return cur.lastrowid or 0
+        task_id = cur.lastrowid or 0
+        self._mirror_task_vec(task_id, vector)
+        return task_id
 
     def update_task(self, task_id: int, summary: str = "",
                     context: str = "", tags: str = "",
@@ -1074,6 +1273,8 @@ class SkillStore:
             f"UPDATE tasks SET {', '.join(parts)} WHERE id = ?", params
         )
         self._conn.commit()
+        if vector is not None and cur.rowcount > 0:
+            self._mirror_task_vec(task_id, vector)
         return cur.rowcount > 0
 
     def close_task(self, task_id: int, compact: str,
@@ -1091,7 +1292,32 @@ class SkillStore:
             WHERE id = ? AND status = 'open'
         """, params)
         self._conn.commit()
+        if compact_vector is not None and cur.rowcount > 0:
+            self._mirror_task_vec(task_id, compact_vector)
         return cur.rowcount > 0
+
+    def _mirror_task_vec(self, task_id: int, vector: list[float]) -> None:
+        """Best-effort mirror of a task vector into vec0 tables (S6)."""
+        if self._vec_engine != "sqlite-vec" or len(vector) != VEC_DIM:
+            return
+        try:
+            self._write_secondary_vec_rows(
+                task_id, vector, "task_id", "tasks_vec_bin", "tasks_vec_f32"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("task vec0 mirror failed for %d: %s", task_id, exc)
+
+    def _mirror_teaching_vec(self, teaching_id: int, vector: list[float]) -> None:
+        """Best-effort mirror of a teaching rule vector into vec0 tables (S6)."""
+        if self._vec_engine != "sqlite-vec" or len(vector) != VEC_DIM:
+            return
+        try:
+            self._write_secondary_vec_rows(
+                teaching_id, vector, "teaching_id",
+                "teachings_vec_bin", "teachings_vec_f32",
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("teaching vec0 mirror failed for %d: %s", teaching_id, exc)
 
     def reopen_task(self, task_id: int) -> bool:
         cur = self._conn.execute("""
@@ -1152,7 +1378,16 @@ class SkillStore:
 
     def search_tasks(self, query_vector: list[float], top_k: int = 3,
                      status: str = "all", min_sim: float = 0.4) -> list[dict]:
-        """Search tasks by semantic similarity."""
+        """Search tasks by semantic similarity.
+
+        Uses the vec0 binary-KNN + float32 rerank path when available (S6);
+        falls back to the in-Python cosine loop for legacy/short vectors.
+        """
+        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+            vec_results = self._search_tasks_vec(query_vector, top_k, status, min_sim)
+            if vec_results is not None:
+                return vec_results
+
         where = "" if status == "all" else f"AND t.status = '{status}'"
         rows = self._conn.execute(f"""
             SELECT t.id, t.title, t.summary, t.context, t.status,
@@ -1173,9 +1408,76 @@ class SkillStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
 
+    def _search_tasks_vec(self, query_vector: list[float], top_k: int,
+                          status: str, min_sim: float) -> list[dict] | None:
+        """S6 vec0 path for tasks. Returns None to signal fallback on failure."""
+        from . import config as _cfg
+        from .embeddings import quantize_binary
+
+        rerank_k = max(top_k, int(_cfg.get("rerank_top_k") or 20))
+        try:
+            qbin = quantize_binary(query_vector)
+            bin_rows = self._conn.execute(
+                """
+                SELECT task_id, distance
+                FROM tasks_vec_bin
+                WHERE embedding MATCH vec_bit(?) AND k = ?
+                ORDER BY distance
+                """,
+                (qbin, rerank_k),
+            ).fetchall()
+        except Exception:
+            return None
+        if not bin_rows:
+            return []
+        ids = [r["task_id"] for r in bin_rows]
+
+        qnorm = math.sqrt(sum(x * x for x in query_vector))
+        if qnorm == 0.0:
+            return []
+
+        placeholders = ",".join("?" * len(ids))
+        where = "" if status == "all" else f"AND t.status = '{status}'"
+        rows = self._conn.execute(
+            f"""
+            SELECT t.id, t.title, t.summary, t.context, t.status,
+                   t.tags, t.compact, t.vector, t.created_at, t.closed_at
+            FROM tasks t
+            WHERE t.id IN ({placeholders}) AND t.vector IS NOT NULL {where}
+            """,
+            ids,
+        ).fetchall()
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            try:
+                vec = json.loads(row["vector"])
+            except (TypeError, ValueError):
+                continue
+            snorm = math.sqrt(sum(x * x for x in vec))
+            if snorm == 0.0:
+                continue
+            dot = sum(a * b for a, b in zip(query_vector, vec))
+            sim = dot / (qnorm * snorm)
+            if sim < min_sim:
+                continue
+            d = dict(row)
+            d["similarity"] = sim
+            scored.append((sim, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
+
     def delete_task(self, task_id: int) -> bool:
         cur = self._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         self._conn.commit()
+        if self._vec_engine == "sqlite-vec":
+            try:
+                self._conn.execute("DELETE FROM tasks_vec_bin WHERE task_id = ?", (task_id,))
+                self._conn.execute("DELETE FROM tasks_vec_f32 WHERE task_id = ?", (task_id,))
+                self._conn.commit()
+            except Exception:
+                pass
         return cur.rowcount > 0
 
     def rename_task_title(self, task_id: int, title: str) -> bool:
