@@ -11,6 +11,7 @@
 3. State is persistent: a service toggled off stays off across hub restarts and machine reboots.
 4. Live effect on running sessions: the in-process MCP server reconciles to match config within ~2 seconds; hooks pick up changes on next prompt.
 5. Failures never block hooks — disabled services are skipped silently in the request path; a sticky banner reminds the user what is currently disabled.
+6. A second tab in the same panel surfaces every Claude Code plugin (e.g. `superpowers`, `career-skill-hub-plugin`, `telegram`, …) with one-click enable/disable and one-click profile activation — replacing the need to call the `toggle_plugin()` MCP tool by hand.
 
 ## Non-goals
 
@@ -154,6 +155,87 @@ If `services.auto_reconcile == false`, the loop is not started; changes only app
 ```
 
 `disabled_services` is injected via FastAPI middleware reading `app.state.disabled_services` (updated by the reconciler).
+
+## Plugins panel
+
+A second tab within `/control` (or a separate `/control/plugins` route — final URL choice deferred to implementation) that surfaces enable/disable for every plugin Claude Code knows about. The hub already implements the underlying mechanism via the `toggle_plugin()` MCP tool in `server.py`, which mutates `~/.claude/settings.json["enabledPlugins"]`. The panel is a thin UI on top of that existing primitive — no new persistence layer.
+
+### Data sources
+
+- **Plugin inventory** — `iter_enabled_plugins()` from `plugin_registry.py` plus the disabled set computed from all known plugin sources (`extra_plugin_dirs` + auto-discovered from `extra_skill_dirs`). For each plugin the panel needs: `id`, `short_name`, `source` label, `description` (from `plugin.json` or `README.md` first paragraph), `enabled: bool`, `path`.
+- **Profiles** — `config.services` is unrelated; profiles live in `config.profiles` (already defined). Panel surfaces them as a one-click "activate profile" row at the top.
+- **Active state** — `~/.claude/settings.json["enabledPlugins"]` (read-modify-write, same path used by `toggle_plugin()`).
+
+### Routes
+
+```
+GET  /control/plugins                      full plugin panel
+GET  /control/plugins/{plugin_id}/card     single plugin card refresh
+POST /control/plugins/{plugin_id}/toggle   flip enabled, return updated card
+POST /control/plugins/profile/{name}       activate a profile (bulk enable/disable)
+POST /control/plugins/reindex              trigger index_plugins() to pick up new dirs
+```
+
+All write routes call into the existing `server.toggle_plugin()` (or its underlying helper, refactored out of the MCP tool wrapper if needed) — no duplicate logic.
+
+### UI
+
+```
+┌─ Plugins ──────────────────────────────────────────────┐
+│ Profile: [ minimal ] [ backend ] [ frontend ] [ full ] │
+│          [ mcp-dev ] [ data ]   [ + save current ]     │
+│                                                         │
+│ [ Reindex plugin sources ]   42 plugins, 18 enabled    │
+└────────────────────────────────────────────────────────┘
+
+┌─ superpowers ────────────────────────── ● enabled ────┐
+│ Skills for plan/spec/TDD workflows. Source: official   │
+│ [ Disable ]                                            │
+└────────────────────────────────────────────────────────┘
+
+┌─ career-skill-hub-plugin ───────────── ● enabled ─────┐
+│ Career intelligence: skills, tasks, prompts.           │
+│ Source: ~/work/code/career-skill-hub-plugin            │
+│ [ Disable ]                                            │
+└────────────────────────────────────────────────────────┘
+
+┌─ telegram ──────────────────────────── ○ disabled ────┐
+│ Telegram bot configuration + access skills.           │
+│ Source: official                                       │
+│ [ Enable ]                                             │
+└────────────────────────────────────────────────────────┘
+```
+
+- Cards grouped by source label (`official`, `local`, per-directory label from `extra_plugin_dirs`).
+- Profile buttons highlight the currently-matching profile (if `enabledPlugins` matches a profile's set exactly).
+- A search box filters cards client-side by name/description.
+- Toggling a plugin requires a Claude Code restart to take full effect — card shows a transient "restart Claude Code to apply" hint after toggle (consistent with current `toggle_plugin()` behavior).
+
+### Out of scope for plugins panel
+
+- Installing new plugins from a marketplace.
+- Editing plugin source paths inline (use settings page or `extra_plugin_dirs` config).
+- Per-plugin skill-level toggles (skill enable/disable already handled elsewhere).
+
+### Testing additions
+
+| File | Coverage |
+|---|---|
+| `tests/test_routes_control_plugins.py` | toggle persists to `~/.claude/settings.json`; profile activation enables the right set |
+| `tests/test_plugin_panel_data.py` | inventory merging from enabled + disabled sources; description extraction from `plugin.json`/`README.md` |
+
+### File inventory additions
+
+**New:**
+- `src/skill_hub/webapp/routes/control_plugins.py`
+- `src/skill_hub/webapp/templates/control_plugins.html`
+- `src/skill_hub/webapp/templates/_plugin_card.html`
+- `tests/test_routes_control_plugins.py`
+- `tests/test_plugin_panel_data.py`
+
+**Modified:**
+- `src/skill_hub/server.py` — extract `toggle_plugin()` body into a reusable helper in `plugin_registry.py` so the route can call it without going through the MCP tool wrapper
+- `src/skill_hub/plugin_registry.py` — add `iter_all_plugins()` returning enabled + disabled with metadata; `apply_profile(name)` helper
 
 ## Config migration
 
