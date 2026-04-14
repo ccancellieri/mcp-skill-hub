@@ -143,8 +143,12 @@ def put(conn: sqlite3.Connection, tool_name: str, command: str,
         decision: str, source: str, confidence: float = 1.0) -> None:
     key = hash_key(tool_name, command)
     now = int(time.time())
-    # Priority: user_approved > llm > static (don't let llm overwrite user_approved)
-    priority = {"static": 0, "llm": 1, "user_approved": 2}
+    # Priority: user_approved > llm (any tier) > static
+    priority = {
+        "static": 0,
+        "llm": 1, "llm_l1": 1, "llm_l2": 1, "llm_l3": 1, "haiku": 1,
+        "user_approved": 2,
+    }
     existing = conn.execute(
         "SELECT source FROM command_verdicts WHERE cmd_hash = ?", (key,)
     ).fetchone()
@@ -193,8 +197,12 @@ def put_with_vector(conn: sqlite3.Connection, tool_name: str, command: str,
     """Like put(), but also stores the embedding vector (JSON)."""
     key = hash_key(tool_name, command)
     now = int(time.time())
-    priority = {"static": 0, "claude_session": 1, "llm": 1,
-                "vector": 1, "user_approved": 2}
+    priority = {
+        "static": 0,
+        "claude_session": 1, "llm": 1, "vector": 1,
+        "llm_l1": 1, "llm_l2": 1, "llm_l3": 1, "haiku": 1,
+        "user_approved": 2,
+    }
     existing = conn.execute(
         "SELECT source, pinned FROM command_verdicts WHERE cmd_hash = ?", (key,)
     ).fetchone()

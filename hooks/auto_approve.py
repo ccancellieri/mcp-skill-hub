@@ -218,6 +218,76 @@ def llm_classify(tool_name: str, command: str, examples: list[dict],
     return decision, confidence, str(parsed.get("reason", ""))[:200]
 
 
+def haiku_classify_command(tool_name: str, command: str, examples: list[dict],
+                            api_key: str, model: str, timeout: float
+                            ) -> tuple[str, float, str]:
+    """Tier-3 Haiku safety classifier. Same contract as llm_classify.
+
+    Stdlib-only (urllib) so the hook keeps cold-starting fast. Returns
+    ("unknown", 0.0, reason) on any network/parse error — the caller falls
+    through to the user prompt.
+    """
+    example_lines = []
+    for ex in examples[:6]:
+        example_lines.append(
+            f"- ({ex['tool_name']}) `{ex['command'][:120]}` -> {ex['decision']}"
+        )
+    user_prompt = (
+        "You are a safety classifier for shell commands invoked by Claude "
+        "Code. Return STRICT JSON of the form "
+        '{"decision":"allow"|"unknown","confidence":0..1,"reason":"..."}. '
+        "Rule: reply \"allow\" only when the command is clearly local, "
+        "reversible, read-only, or is a test/build command whose effects are "
+        "confined to the current repo. Anything that deletes, force-pushes, "
+        "touches credentials, pipes curl|bash, or writes to network/paths "
+        "outside the repo -> \"unknown\". Never reply \"deny\".\n\n"
+        "Recently user-approved examples (for calibration):\n"
+        + ("\n".join(example_lines) or "- (none yet)")
+        + f"\n\nCommand to classify (tool={tool_name}):\n{command}\n"
+    )
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 200,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return "unknown", 0.0, f"haiku error: {e}"
+    # Anthropic returns {content: [{type: "text", text: "..."}]}
+    try:
+        parts = data.get("content", [])
+        text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        # Strip possible code fences.
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        parsed = json.loads(text or "{}")
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return "unknown", 0.0, "haiku returned non-json"
+    decision = parsed.get("decision", "unknown")
+    if decision == "deny":
+        decision = "unknown"
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return decision, confidence, str(parsed.get("reason", ""))[:200]
+
+
 def _hour_in_window(h: int, start: int, end: int) -> bool:
     """True if hour h is in [start, end) handling overnight wrap (start>end)."""
     if start == end:
@@ -777,28 +847,75 @@ def main() -> int:
                     except Exception as e:  # noqa: BLE001
                         log(f"VECTOR error={e}")
                 if not decision and cfg.get("auto_approve_llm"):
-                    try:
-                        base = cfg.get("ollama_base_url", "http://localhost:11434")
-                        model = cfg.get("auto_approve_model",
-                                        cfg.get("local_models", {}).get("level_1",
-                                                                         "qwen2.5-coder:3b"))
-                        thresh = float(cfg.get("auto_approve_confidence", 0.85))
-                        timeout = float(cfg.get("auto_approve_timeout_s", 4.0))
-                        examples = verdict_cache.recent_examples(conn, n=6)
-                        llm_dec, conf, llm_reason = llm_classify(
-                            tool_name, cmd, examples, base, model, timeout
-                        )
-                        log(f"LLM  dec={llm_dec}  conf={conf:.2f}  "
-                            f"reason=\"{llm_reason[:60]}\"")
+                    # Tiered escalation: level_1 -> level_2 -> level_3 -> Haiku.
+                    # A tier that returns "allow" with confidence >= thresh
+                    # short-circuits; otherwise we escalate. Haiku only fires
+                    # when ANTHROPIC_API_KEY is set and haiku opt-in is on.
+                    base = cfg.get("ollama_base_url", "http://localhost:11434")
+                    thresh = float(cfg.get("auto_approve_confidence", 0.85))
+                    timeout = float(cfg.get("auto_approve_timeout_s", 4.0))
+                    examples = verdict_cache.recent_examples(conn, n=6)
+                    local_models = cfg.get("local_models", {}) or {}
+                    tier_names = cfg.get("auto_approve_tiers",
+                                         ["level_1", "level_2", "level_3"])
+                    best_conf = 0.0
+                    best_reason = ""
+                    for tier in tier_names:
+                        model = local_models.get(tier) or cfg.get(
+                            "auto_approve_model", "qwen2.5-coder:3b")
+                        source = f"llm_l{tier[-1]}" if tier.startswith("level_") else "llm"
+                        try:
+                            llm_dec, conf, llm_reason = llm_classify(
+                                tool_name, cmd, examples, base, model, timeout
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            log(f"LLM  tier={tier} error={e}")
+                            continue
+                        log(f"LLM  tier={tier}  dec={llm_dec}  "
+                            f"conf={conf:.2f}  reason=\"{llm_reason[:60]}\"")
                         if llm_dec == "allow" and conf >= thresh:
                             decision, reason = "approve", (
-                                f"llm allow conf={conf:.2f}: {llm_reason}"
+                                f"llm {tier} allow conf={conf:.2f}: {llm_reason}"
                             )
                             verdict_cache.put(
-                                conn, tool_name, cmd, "allow", "llm", conf
+                                conn, tool_name, cmd, "allow", source, conf
                             )
-                    except Exception as e:  # noqa: BLE001
-                        log(f"LLM  error={e}")
+                            break
+                        if conf > best_conf:
+                            best_conf, best_reason = conf, llm_reason
+                    # Final arbiter: Haiku. Fires when local tiers couldn't reach
+                    # the confidence threshold and Haiku is explicitly enabled.
+                    if (not decision
+                            and cfg.get("auto_approve_haiku_enabled", False)):
+                        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                        if api_key:
+                            h_model = cfg.get(
+                                "auto_approve_haiku_model",
+                                "claude-haiku-4-5-20251001")
+                            h_timeout = float(cfg.get(
+                                "auto_approve_haiku_timeout_s", 6.0))
+                            try:
+                                h_dec, h_conf, h_reason = haiku_classify_command(
+                                    tool_name, cmd, examples,
+                                    api_key, h_model, h_timeout,
+                                )
+                                log(f"HAIKU dec={h_dec}  conf={h_conf:.2f}  "
+                                    f"reason=\"{h_reason[:60]}\"")
+                                if h_dec == "allow" and h_conf >= thresh:
+                                    decision, reason = "approve", (
+                                        f"haiku allow conf={h_conf:.2f}: {h_reason}"
+                                    )
+                                    verdict_cache.put(
+                                        conn, tool_name, cmd,
+                                        "allow", "haiku", h_conf
+                                    )
+                            except Exception as e:  # noqa: BLE001
+                                log(f"HAIKU error={e}")
+                        else:
+                            log("HAIKU skipped: ANTHROPIC_API_KEY not set")
+                    if not decision:
+                        log(f"LLM  no-tier-approved best_conf={best_conf:.2f} "
+                            f"best_reason=\"{best_reason[:60]}\"")
             except Exception as e:  # noqa: BLE001
                 log(f"cache  error={e}")
 
