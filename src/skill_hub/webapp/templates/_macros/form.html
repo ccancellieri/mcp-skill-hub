@@ -1,0 +1,12 @@
+{# Plugin extension-point: A11 — shared form field macro. #}
+{% macro form_field(name, label, type='text', value='', help='', required=false, placeholder='') -%}
+<label class="field-label" for="f-{{ name }}">
+  <span>{{ label }}{% if required %} <em class="req">*</em>{% endif %}</span>
+  {% if type == 'textarea' %}
+    <textarea id="f-{{ name }}" name="{{ name }}"{% if required %} required{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}>{{ value }}</textarea>
+  {% else %}
+    <input id="f-{{ name }}" type="{{ type }}" name="{{ name }}" value="{{ value }}"{% if required %} required{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}>
+  {% endif %}
+  {% if help %}<small class="muted">{{ help }}</small>{% endif %}
+</label>
+{%- endmacro %}

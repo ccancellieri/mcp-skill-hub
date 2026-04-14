@@ -13,25 +13,15 @@
   <header class="topbar">
     <div class="brand">skill-hub</div>
     <nav class="tabs">
-      {% set tabs = [
-        ('dashboard', 'Dashboard', '/'),
-        ('settings', 'Settings', '/settings'),
-        ('logs', 'Logs', '/logs'),
-        ('verdicts', 'Verdicts', '/verdicts'),
-        ('tasks', 'Tasks', '/tasks'),
-        ('skills', 'Skills', '/skills'),
-        ('teachings', 'Teachings', '/teachings'),
-        ('vector', 'Vector', '/vector'),
-        ('intents', 'Intents', '/intents'),
-        ('questions', 'Questions', '/questions'),
-      ] %}
-      {% set active_keys = ['dashboard', 'settings', 'verdicts', 'tasks', 'skills', 'teachings', 'logs', 'vector', 'intents', 'questions'] %}
-      {% for key, label, href in tabs %}
-        {% if key in active_keys %}
-          <a href="{{ href }}" class="tab{% if active_tab == key %} active{% endif %}">{{ label }}</a>
-        {% else %}
-          <span class="tab disabled" title="coming in later phase">{{ label }}</span>
-        {% endif %}
+      {# Plugin extension-point: A1 — core_nav + plugin_nav are populated in
+         webapp/main.py::create_app(). Plugins declare web_mount in plugin.json. #}
+      {% set core_nav = request.app.state.core_nav if request else [] %}
+      {% set plugin_nav = request.app.state.plugin_nav if request else [] %}
+      {% for item in core_nav %}
+        <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+      {% endfor %}
+      {% for item in plugin_nav %}
+        <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
       {% endfor %}
     </nav>
   </header>

@@ -97,6 +97,26 @@
   </div>
 </section>
 
+{# Plugin extension-point: A2 — dashboard sections contributed by plugins.
+   Each plugin's web/dashboard_sections.py:get_sections() can return either
+   pre-rendered html or a (template, context) pair. #}
+{% if plugin_sections %}
+<section class="row">
+  {% for section in plugin_sections %}
+    <div class="card" id="section-{{ section.id }}">
+      {% if section.title %}<h2>{{ section.title }}</h2>{% endif %}
+      {% if section.html %}
+        {{ section.html|safe }}
+      {% elif section.template %}
+        {# Plugin-provided templates must be resolvable by the active Jinja
+           loader — typically the plugin sub-app's templates dir. #}
+        {% include section.template ignore missing %}
+      {% endif %}
+    </div>
+  {% endfor %}
+</section>
+{% endif %}
+
 {% if m.log_missing %}
 <p class="warn">hook-debug.log not found — hook metrics unavailable until a session runs.</p>
 {% endif %}

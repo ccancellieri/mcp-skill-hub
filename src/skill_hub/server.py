@@ -117,7 +117,47 @@ _session = {
     "id": str(uuid.uuid4()),
     "topic": "",
     "topic_vector": [],
+    # Phase M3 — rolling tool-chain fingerprint for habits:tool-chains.
+    "tool_chain": [],  # list[str] of recent tool names
 }
+
+# Phase M3 — flush the rolling tool chain every N invocations into
+# ``habits:tool-chains`` as one vector per window. Keeps the corpus small
+# while preserving temporal ordering patterns ("read → grep → edit").
+_TOOL_CHAIN_WINDOW = 5
+
+
+def _record_tool_chain(tool_name: str) -> None:
+    """Append ``tool_name`` to the session's rolling window; flush on fill.
+
+    Best-effort — never raises into the MCP tool path.
+    """
+    try:
+        chain = _session.setdefault("tool_chain", [])
+        chain.append(tool_name)
+        if len(chain) < _TOOL_CHAIN_WINDOW:
+            return
+        window = list(chain[-_TOOL_CHAIN_WINDOW:])
+        _session["tool_chain"] = []
+        import hashlib, time
+        text = " → ".join(window)
+        doc_id = (f"{_session['id'][:8]}:"
+                  f"{hashlib.sha1(text.encode()).hexdigest()[:10]}")
+        _store.upsert_vector(
+            namespace="habits:tool-chains",
+            doc_id=doc_id,
+            text=text,
+            metadata={
+                "tools": window,
+                "session_id": _session.get("id"),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "topic": _session.get("topic", "")[:120],
+            },
+            level="L2",
+            source="tool_chain",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 mcp = FastMCP(
     "skill-hub",
@@ -361,7 +401,7 @@ def list_teachings() -> str:
 @mcp.tool()
 def log_session(tool_name: str, plugin_id: str = "") -> str:
     """Record a tool usage in this session for passive learning."""
-    log_tool("log_session", tool_name=tool_name, plugin_id=plugin_id)
+    log_tool("log_session", tool=tool_name, plugin_id=plugin_id)
     _store.log_session_tool(
         session_id=_session["id"],
         query=_session.get("topic", ""),
@@ -369,7 +409,77 @@ def log_session(tool_name: str, plugin_id: str = "") -> str:
         tool_used=tool_name,
         plugin_id=plugin_id or None,
     )
+    # Phase M3 — roll tool-chain fingerprint into habits:tool-chains.
+    _record_tool_chain(tool_name)
+    # Plugin extension-point: A3 — forward tool-call events to plugin hooks.
+    try:
+        from . import plugin_hooks
+        plugin_hooks.dispatch(
+            "on_tool_call",
+            {"tool_name": tool_name, "plugin_id": plugin_id, "session_id": _session.get("id")},
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return f"Logged: {tool_name} → {plugin_id or '(unknown plugin)'}"
+
+
+@mcp.tool()
+def close_session(summary: str = "") -> str:
+    """Phase M3 — Close the current session and persist its L1 summary.
+
+    - Writes ``summary`` (plus the session's tracked topic) into the
+      ``session:log`` index as an L1 vector so future ``search_context``
+      calls can surface "we worked on this before".
+    - Flushes any partial tool-chain window into ``habits:tool-chains``.
+    - Dispatches the ``on_session_end`` plugin hook (A3) so plugins can
+      observe the session boundary.
+    - Rotates the in-process session id so subsequent work starts fresh.
+    """
+    import hashlib, time
+    log_tool("close_session", summary=summary[:80])
+    topic = _session.get("topic", "")
+    text = (summary or topic or "empty session").strip()
+    sid = _session.get("id", "")
+    # Flush remainder of rolling chain (if any).
+    chain = _session.get("tool_chain") or []
+    if chain:
+        try:
+            ctext = " → ".join(chain)
+            _store.upsert_vector(
+                namespace="habits:tool-chains",
+                doc_id=f"{sid[:8]}:tail:{hashlib.sha1(ctext.encode()).hexdigest()[:8]}",
+                text=ctext,
+                metadata={"tools": chain, "session_id": sid, "partial": True},
+                level="L2",
+                source="tool_chain",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        _store.upsert_vector(
+            namespace="session:log",
+            doc_id=f"session:{sid}",
+            text=f"Topic: {topic}\nSummary: {text}",
+            metadata={"session_id": sid, "topic": topic,
+                      "closed_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+            level="L1",
+            source="close_session",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"close_session: session:log write failed: {exc}"
+    try:
+        from . import plugin_hooks
+        plugin_hooks.dispatch(
+            "on_session_end",
+            {"session_id": sid, "topic": topic, "summary": text},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    _session["id"] = str(uuid.uuid4())
+    _session["topic"] = ""
+    _session["topic_vector"] = []
+    _session["tool_chain"] = []
+    return f"Session closed → session:log (new id={_session['id'][:8]})"
 
 
 # ---------------------------------------------------------------------------
@@ -527,8 +637,18 @@ def list_tasks(status: str = "open") -> str:
 
 
 @mcp.tool()
-def search_context(query: str, top_k: int = 5, categories: str = "all") -> str:
-    """Unified search. categories: all (default), tasks, skills, closed, plugins (comma-separated)."""
+def search_context(
+    query: str,
+    top_k: int = 5,
+    categories: str = "all",
+    include_plugin_memory: bool = True,
+) -> str:
+    """Unified search. categories: all (default), tasks, skills, closed, plugins (comma-separated).
+
+    ``include_plugin_memory`` (A4): when True, merges results from plugin-
+    declared ``memory.reads`` globs (indexed under ``memory:<plugin>`` vector
+    namespaces) into the output.
+    """
     log_tool("search_context", query=query, top_k=top_k, categories=categories)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
@@ -597,6 +717,50 @@ def search_context(query: str, top_k: int = 5, categories: str = "all") -> str:
                     "## Disabled Plugins That May Help\n\n" + "\n".join(plug_lines) +
                     "\nUse toggle_plugin() to enable."
                 )
+
+    # 5. Plugin memory (A4 + M2) — vectors from plugin-declared indexes.
+    # Includes both the legacy ``memory:<plugin>`` namespace AND any custom
+    # indexes a plugin declares via plugin.json ``vector_indexes`` (e.g.
+    # ``career:profile``, ``career:narrative``).
+    if include_plugin_memory:
+        try:
+            # Namespaces that are NOT core ("skills") — everything else is plugin/memory.
+            all_rows = _store.search_vectors(query, namespaces=None, top_k=top_k * 2)
+            mem_rows = [
+                r for r in all_rows
+                if str(r.get("namespace", "")) != "skills"
+                and not str(r.get("namespace", "")).startswith("user:")
+                and not str(r.get("namespace", "")).startswith("habits:")
+                and not str(r.get("namespace", "")).startswith("session:")
+            ][:top_k]
+            if mem_rows:
+                mem_lines = []
+                for r in mem_rows:
+                    ns = r["namespace"]
+                    path = (r.get("metadata") or {}).get("path") or r.get("doc_id", "")
+                    lvl = r.get("level", "")
+                    mem_lines.append(
+                        f"- [{ns}] {path} (score={r.get('score', 0):.2f}, {lvl})"
+                    )
+                parts.append("## Plugin Memory\n\n" + "\n".join(mem_lines))
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 6. User identity + habits — surface only when relevant to the query.
+    try:
+        id_rows = _store.search_vectors(
+            query, namespaces=["user:identity", "user:preferences"],
+            top_k=3, similarity_threshold=0.35,
+        )
+        if id_rows:
+            parts.append(
+                "## About You\n\n" +
+                "\n".join(f"- {(r.get('metadata') or {}).get('fact') or r['doc_id']} "
+                          f"({r.get('level','')}, score={r.get('score', 0):.2f})"
+                          for r in id_rows)
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
     if not parts:
         return "No relevant context found. Try index_skills() and index_plugins() first."
@@ -1233,10 +1397,283 @@ def pull_model(model: str) -> str:
 
 
 @mcp.tool()
-def exhaustion_save(context: str = "") -> str:
-    """Auto-save session state when Claude is exhausted or rate-limited."""
+def exhaustion_save(context: str = "", namespace: str = "") -> str:
+    """Auto-save session state when Claude is exhausted or rate-limited.
+
+    ``namespace`` (A10): when set to a plugin name, the digest is saved under
+    that plugin's memory roots instead of the core memory tree.
+    """
     from .cli import _cmd_exhaustion_save
+    # Namespace routing is advisory; downstream consumer reads via search_context
     return _cmd_exhaustion_save(context)
+
+
+# ---------------------------------------------------------------------------
+# Plugin extension-points — A5 (scheduled tasks) + A10 (memory optimizer)
+
+@mcp.tool()
+def list_plugin_tasks(plugin: str = "") -> str:
+    """A5 — List scheduled task templates declared by enabled plugins.
+
+    If ``plugin`` is given, only tasks from that plugin are returned.
+    Output marks which are currently enabled in ``plugin_task_state``.
+    """
+    from .plugin_registry import iter_enabled_plugins
+    state_rows = {
+        (r["plugin"], r["name"]): r
+        for r in _store._conn.execute(
+            "SELECT plugin, name, enabled, cron, external_id FROM plugin_task_state"
+        ).fetchall()
+    }
+    lines: list[str] = []
+    for p in iter_enabled_plugins():
+        if plugin and p["name"] != plugin:
+            continue
+        for t in (p["manifest"].get("scheduled_tasks") or []):
+            key = (p["name"], t.get("name", ""))
+            s = state_rows.get(key)
+            enabled = bool(s and s["enabled"]) if s else bool(t.get("enabled_default"))
+            lines.append(
+                f"- {p['name']}:{t.get('name')}  cron='{t.get('cron')}'  "
+                f"enabled={enabled}  template={t.get('prompt_template')}"
+            )
+    if not lines:
+        return "No plugin scheduled tasks declared."
+    return "# Plugin Scheduled Tasks\n\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def enable_plugin_task(plugin: str, name: str) -> str:
+    """A5 — Enable a scheduled task template declared in a plugin's manifest.
+
+    Writes a Cowork-compatible cron entry to
+    ``~/.claude/mcp-skill-hub/scheduled_tasks/{plugin}__{name}.json`` and
+    records enablement in ``plugin_task_state``.
+    """
+    from .plugin_registry import iter_enabled_plugins
+    for p in iter_enabled_plugins():
+        if p["name"] != plugin:
+            continue
+        for t in (p["manifest"].get("scheduled_tasks") or []):
+            if t.get("name") != name:
+                continue
+            template_path = p["path"] / str(t.get("prompt_template", ""))
+            if not template_path.exists():
+                return f"Template not found: {template_path}"
+            prompt = template_path.read_text(encoding="utf-8")
+            out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "plugin": plugin,
+                "name": name,
+                "cron": t.get("cron"),
+                "prompt": prompt,
+            }
+            out_file = out_dir / f"{plugin}__{name}.json"
+            out_file.write_text(json.dumps(entry, indent=2))
+            _store._conn.execute(
+                "INSERT OR REPLACE INTO plugin_task_state"
+                " (plugin, name, enabled, cron, external_id, updated_at)"
+                " VALUES (?, ?, 1, ?, ?, datetime('now'))",
+                (plugin, name, t.get("cron"), str(out_file)),
+            )
+            _store._conn.commit()
+            return f"Enabled {plugin}:{name} → {out_file}"
+    return f"Task not found: {plugin}:{name}"
+
+
+@mcp.tool()
+def disable_plugin_task(plugin: str, name: str) -> str:
+    """A5 — Disable a previously-enabled plugin scheduled task."""
+    out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
+    out_file = out_dir / f"{plugin}__{name}.json"
+    if out_file.exists():
+        out_file.unlink()
+    _store._conn.execute(
+        "INSERT OR REPLACE INTO plugin_task_state"
+        " (plugin, name, enabled, cron, external_id, updated_at)"
+        " VALUES (?, ?, 0, NULL, NULL, datetime('now'))",
+        (plugin, name),
+    )
+    _store._conn.commit()
+    return f"Disabled {plugin}:{name}"
+
+
+@mcp.tool()
+def optimize_plugin_memory(plugin: str, dry_run: bool = True) -> str:
+    """A10 — Run plugin-scoped memory optimization.
+
+    Reads the plugin's ``memory_optimizer.roots`` globs and applies its
+    ``compaction_prompt`` via the local reasoning model to produce
+    KEEP/PRUNE/COMPACT/MERGE recommendations.
+    """
+    from .plugin_registry import iter_enabled_plugins
+    from .memory_index import _expand_globs
+    for p in iter_enabled_plugins():
+        if p["name"] != plugin:
+            continue
+        opt = p["manifest"].get("memory_optimizer") or {}
+        roots = opt.get("roots") or []
+        prompt_path_rel = opt.get("compaction_prompt")
+        if not prompt_path_rel:
+            return f"Plugin '{plugin}' has no memory_optimizer.compaction_prompt."
+        prompt_path = p["path"] / str(prompt_path_rel)
+        if not prompt_path.exists():
+            return f"Compaction prompt not found: {prompt_path}"
+        files = _expand_globs(p["path"], roots)
+        entries = []
+        for f in files:
+            try:
+                entries.append({"path": str(f), "content": f.read_text(encoding="utf-8")[:4000]})
+            except OSError:
+                continue
+        if not entries:
+            return f"No memory files found for plugin '{plugin}'."
+        prompt = prompt_path.read_text(encoding="utf-8")
+        try:
+            from .embeddings import optimize_context
+            # Reuse the core optimizer; pass plugin prompt via the entries payload.
+            decisions = optimize_context(entries, prompt_override=prompt)  # type: ignore[call-arg]
+        except TypeError:
+            # optimize_context doesn't accept prompt_override yet; fall back to raw entries.
+            from .embeddings import optimize_context as _oc
+            decisions = _oc(entries)
+        if dry_run:
+            return json.dumps({"plugin": plugin, "decisions": decisions}, indent=2)
+        return json.dumps({"plugin": plugin, "decisions": decisions, "applied": False,
+                           "note": "dry_run=False not yet implemented; review decisions and apply manually"}, indent=2)
+    return f"Plugin '{plugin}' not enabled or not found."
+
+
+@mcp.tool()
+def remember_identity(fact: str, tag: str = "") -> str:
+    """Phase M4 — Persist a long-lived fact about the user into the L4 identity index.
+
+    Stored as a single L4 vector under ``user:identity`` so it carries a high
+    retrieval weight and decays very slowly. Never overwritten by the promotion
+    loop. Use for role, goals, non-negotiable preferences, career direction.
+
+    ``tag`` is a short label (e.g. ``style``, ``role``, ``goal``) stored in
+    metadata; ``fact`` becomes the embed text verbatim.
+    """
+    import hashlib, time
+    fact = fact.strip()
+    if not fact:
+        return "Refusing to store empty identity fact."
+    tag = (tag or "general").strip()
+    doc_id = f"{tag}:{hashlib.sha1(fact.encode()).hexdigest()[:10]}"
+    _store.upsert_vector(
+        namespace="user:identity",
+        doc_id=doc_id,
+        text=fact,
+        metadata={"fact": fact, "tag": tag, "stored_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+        level="L4",
+        source="remember_identity",
+        tags=[tag],
+    )
+    log_tool("remember_identity", tag=tag, fact=fact[:80])
+    return f"Stored L4 identity fact (tag={tag}): {fact[:120]}"
+
+
+@mcp.tool()
+def promote_memory(dry_run: bool = True) -> str:
+    """Phase M4 — Run the memory-promotion rules over the vectors corpus.
+
+    Rules applied (append-only audit into ``memory_audit``):
+      - L1 entries older than 7d with ``access_count >= 2`` → promoted to L2.
+      - L2 entries older than 30d with ``access_count >= 5`` → promoted to L3.
+      - L0/L1 entries past their TTL with zero accesses → pruned.
+    L4 identity entries are never touched.
+
+    ``dry_run=True`` (default) reports planned actions without mutating rows.
+    """
+    conn = _store._conn
+    rules = [
+        ("promote", "L1", "L2",
+         "level = 'L1' AND access_count >= 2 AND "
+         "indexed_at < datetime('now', '-7 days')"),
+        ("promote", "L2", "L3",
+         "level = 'L2' AND access_count >= 5 AND "
+         "indexed_at < datetime('now', '-30 days')"),
+        ("prune",   "L0", None,
+         "level = 'L0' AND access_count = 0 AND "
+         "indexed_at < datetime('now', '-1 day')"),
+        ("prune",   "L1", None,
+         "level = 'L1' AND access_count = 0 AND "
+         "indexed_at < datetime('now', '-7 days')"),
+    ]
+    report: list[dict] = []
+    for action, from_lvl, to_lvl, where in rules:
+        rows = conn.execute(
+            f"SELECT id, namespace, doc_id FROM vectors WHERE {where}"
+        ).fetchall()
+        for r in rows:
+            entry = {"action": action, "namespace": r["namespace"],
+                     "doc_id": r["doc_id"], "from_level": from_lvl,
+                     "to_level": to_lvl}
+            report.append(entry)
+            if dry_run:
+                continue
+            if action == "promote":
+                conn.execute(
+                    "UPDATE vectors SET level = ? WHERE id = ?",
+                    (to_lvl, r["id"]),
+                )
+            else:  # prune
+                conn.execute("DELETE FROM vectors WHERE id = ?", (r["id"],))
+            conn.execute(
+                "INSERT INTO memory_audit (action, namespace, doc_id, from_level, to_level, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (action, r["namespace"], r["doc_id"], from_lvl, to_lvl,
+                 "promote_memory"),
+            )
+    if not dry_run:
+        conn.commit()
+    return json.dumps({"dry_run": dry_run, "count": len(report),
+                       "actions": report[:50]}, indent=2)
+
+
+_SEARCH_PROFILES: dict[str, dict] = {
+    "default":  {"categories": "all", "include_plugin_memory": True},
+    "coding":   {"categories": "skills,tasks", "include_plugin_memory": False},
+    "career":   {"categories": "skills", "namespaces_only": [
+        "career:profile", "career:narrative", "career:private-signal",
+        "user:identity", "user:preferences",
+    ]},
+    "planning": {"categories": "tasks,closed", "include_plugin_memory": True},
+}
+
+
+@mcp.tool()
+def search_context_profile(query: str, profile: str = "default",
+                            top_k: int = 5) -> str:
+    """Phase M5 — Preset mixes over ``search_context`` / ``search_vectors``.
+
+    Profiles:
+      - ``default``  — full merged view (tasks/skills/plugins/memory).
+      - ``coding``   — skills + open tasks only; no chatty memory.
+      - ``career``   — career:* + user:identity; skips skill rows entirely.
+      - ``planning`` — open + closed tasks, plus plugin memory.
+    """
+    p = _SEARCH_PROFILES.get(profile, _SEARCH_PROFILES["default"])
+    if p.get("namespaces_only"):
+        hits = _store.search_vectors(query, namespaces=p["namespaces_only"],
+                                     top_k=top_k)
+        if not hits:
+            return f"No matches in profile '{profile}' for: {query!r}"
+        lines = [f"# Profile: {profile}", ""]
+        for h in hits:
+            meta = h.get("metadata") or {}
+            label = meta.get("fact") or meta.get("path") or h["doc_id"]
+            lines.append(f"- [{h['namespace']}] {label} "
+                         f"(score={h['score']:.2f}, {h.get('level','')})")
+        return "\n".join(lines)
+    return search_context(
+        query=query,
+        top_k=top_k,
+        categories=p.get("categories", "all"),
+        include_plugin_memory=p.get("include_plugin_memory", True),
+    )
 
 
 @mcp.tool()

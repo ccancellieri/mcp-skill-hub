@@ -1,13 +1,47 @@
+/* Plugin extension-point: A11 — design tokens.
+   Plugin sub-apps inherit these via the shared base.html; plugin CSS should
+   reference the var(--token-*) aliases below so they auto-theme. */
 :root {
-  --bg: #0f1419;
-  --panel: #161c24;
-  --line: #232b36;
-  --fg: #d7dde5;
-  --muted: #7d8896;
-  --accent: #3aa0ff;
-  --good: #4ad36b;
-  --bad: #e05555;
-  --warn: #e8a64b;
+  /* Colour tokens (canonical names) */
+  --color-bg:        #0f1419;
+  --color-surface:   #161c24;
+  --color-border:    #232b36;
+  --color-fg:        #d7dde5;
+  --color-muted:     #7d8896;
+  --color-accent:    #3aa0ff;
+  --color-good:      #4ad36b;
+  --color-bad:       #e05555;
+  --color-warn:      #e8a64b;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Radius + typography */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-lg: 18px;
+  --font-size-xl: 22px;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Legacy aliases — kept so existing selectors don't break. */
+  --bg:     var(--color-bg);
+  --panel:  var(--color-surface);
+  --line:   var(--color-border);
+  --fg:     var(--color-fg);
+  --muted:  var(--color-muted);
+  --accent: var(--color-accent);
+  --good:   var(--color-good);
+  --bad:    var(--color-bad);
+  --warn:   var(--color-warn);
 }
 * { box-sizing: border-box; }
 body {
@@ -167,3 +201,43 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .level-stop  { color: var(--muted); }
 .level-info  { color: var(--fg); }
 
+
+/* ── Plugin extension-point: A11 — shared macro styles ─────────────── */
+.kpi-default .kpi-value { color: var(--color-fg); }
+.kpi-good    .kpi-value { color: var(--color-good); }
+.kpi-bad     .kpi-value { color: var(--color-bad); }
+.kpi-warn    .kpi-value { color: var(--color-warn); }
+.kpi-delta   { font-size: var(--font-size-xs); color: var(--color-muted); margin-top: var(--space-1); }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
+.data-table th, .data-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.data-table.zebra tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+
+.field-label { display: block; margin: var(--space-2) 0; font-size: var(--font-size-sm); color: var(--color-muted); }
+.field-label input, .field-label textarea, .field-label select {
+  display: block; width: 100%; margin-top: var(--space-1);
+  background: #0b1016; color: var(--color-fg);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2); font: inherit;
+}
+.field-label .req { color: var(--color-bad); font-style: normal; }
+
+.toast {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  font-size: var(--font-size-sm); margin: var(--space-2) 0;
+}
+.toast-info  { border-left: 3px solid var(--color-accent); }
+.toast-good  { border-left: 3px solid var(--color-good); }
+.toast-warn  { border-left: 3px solid var(--color-warn); }
+.toast-bad   { border-left: 3px solid var(--color-bad); }
+.toast-msg   { flex: 1; }
+.toast-close {
+  background: transparent; border: 0; color: var(--color-muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 var(--space-1);
+}
+.toast-close:hover { color: var(--color-fg); }

@@ -20,6 +20,30 @@ from pathlib import Path
 DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
 SESSION_CONTEXT_FILE = Path.home() / ".claude" / "mcp-skill-hub" / "session-context.md"
 
+# Phase M1 — level-aware retrieval weights.
+# L0 ephemeral → L4 identity. See docs/plugin-extension-points.md.
+LEVEL_WEIGHTS: dict[str, float] = {
+    "L0": 0.3, "L1": 0.8, "L2": 1.0, "L3": 1.1, "L4": 1.3,
+}
+# Half-life defaults per level — recency decay exp(-age_days / half_life).
+LEVEL_HALF_LIFE_DAYS: dict[str, float] = {
+    "L0": 0.25, "L1": 7.0, "L2": 30.0, "L3": 180.0, "L4": 3650.0,
+}
+
+# Seeded index catalogue. Plugins may add more via plugin.json "indexes".
+# ``skills`` is the built-in skill corpus (L3). ``session:log`` captures
+# tool-call history at L1 for short-term recall.
+_DEFAULT_VECTOR_INDEXES: dict[str, dict] = {
+    "skills":              {"default_level": "L3", "half_life_days": 365.0},
+    "user:identity":       {"default_level": "L4", "half_life_days": 3650.0},
+    "user:preferences":    {"default_level": "L3", "half_life_days": 365.0},
+    "tasks:active":        {"default_level": "L1", "half_life_days": 14.0},
+    "tasks:retrospective": {"default_level": "L3", "half_life_days": 365.0},
+    "habits:tool-chains":  {"default_level": "L2", "half_life_days": 60.0},
+    "habits:prompts":      {"default_level": "L2", "half_life_days": 60.0},
+    "session:log":         {"default_level": "L1", "half_life_days": 3.0},
+}
+
 
 def _write_session_context_file(context_summary: str,
                                 recent_messages: list[str],
@@ -350,6 +374,69 @@ class SkillStore:
             );
             CREATE INDEX IF NOT EXISTS idx_skill_ver_name
                 ON skill_versions (skill_name);
+
+            -- Plugin extension-point: A7 — per-plugin schema bootstrap tracking.
+            CREATE TABLE IF NOT EXISTS plugin_migrations (
+                namespace   TEXT PRIMARY KEY,
+                schema_hash TEXT NOT NULL,
+                applied_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Plugin extension-point: A8 — namespaced vector corpus.
+            -- Generalises `embeddings` for non-skill documents. Existing
+            -- embeddings table is unchanged (backward compat).
+            CREATE TABLE IF NOT EXISTS vectors (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace   TEXT NOT NULL,
+                doc_id      TEXT NOT NULL,
+                model       TEXT,
+                vector      TEXT NOT NULL,   -- JSON float array
+                norm        REAL NOT NULL DEFAULT 0.0,
+                metadata    TEXT,            -- JSON blob (optional)
+                indexed_at  TEXT DEFAULT (datetime('now')),
+                UNIQUE(namespace, doc_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_vectors_namespace
+                ON vectors (namespace);
+
+            -- Plugin extension-point: A5 — scheduled task enablement state.
+            CREATE TABLE IF NOT EXISTS plugin_task_state (
+                plugin      TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 0,
+                cron        TEXT,
+                external_id TEXT,
+                updated_at  TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (plugin, name)
+            );
+
+            -- Phase M1 — per-index config for multi-level vector corpus.
+            -- ``name`` is the vector namespace (e.g. "skills", "career:profile",
+            -- "habits:tool-chains"). ``default_level`` and ``half_life_days``
+            -- drive level-aware retrieval scoring in search_vectors.
+            CREATE TABLE IF NOT EXISTS vector_index_config (
+                name              TEXT PRIMARY KEY,
+                embedding_model   TEXT,
+                chunk_size        INTEGER NOT NULL DEFAULT 0,
+                chunk_overlap     INTEGER NOT NULL DEFAULT 0,
+                default_level     TEXT NOT NULL DEFAULT 'L2',
+                half_life_days    REAL NOT NULL DEFAULT 30.0,
+                max_docs          INTEGER NOT NULL DEFAULT 0,
+                summarizer_prompt TEXT,
+                updated_at        TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Phase M1 — append-only audit trail for memory promotions/prunes.
+            CREATE TABLE IF NOT EXISTS memory_audit (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                at         TEXT DEFAULT (datetime('now')),
+                action     TEXT NOT NULL,  -- promote / prune / merge / identity
+                namespace  TEXT,
+                doc_id     TEXT,
+                from_level TEXT,
+                to_level   TEXT,
+                reason     TEXT
+            );
         """)
         self._conn.commit()
 
@@ -409,6 +496,42 @@ class SkillStore:
                     (norm, row["skill_id"]),
                 )
             self._conn.commit()
+
+        # Phase M1 — vectors: add level/recency/provenance columns.
+        vec_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(vectors)")}
+        _vec_additions = [
+            ("level",         "TEXT NOT NULL DEFAULT 'L2'"),
+            ("last_accessed", "TEXT"),
+            ("access_count",  "INTEGER NOT NULL DEFAULT 0"),
+            ("source",        "TEXT"),
+            ("project",       "TEXT"),
+            ("tags",          "TEXT"),  # JSON array
+        ]
+        for col, ddl in _vec_additions:
+            if col not in vec_cols:
+                self._conn.execute(f"ALTER TABLE vectors ADD COLUMN {col} {ddl}")
+        # Back-fill: skills namespace → L3, everything else stays default L2.
+        self._conn.execute(
+            "UPDATE vectors SET level = 'L3' WHERE namespace = 'skills' AND level = 'L2'"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vectors_level ON vectors (level)"
+        )
+        self._conn.commit()
+
+        # Seed default vector_index_config rows (idempotent — INSERT OR IGNORE).
+        for name, cfg in _DEFAULT_VECTOR_INDEXES.items():
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO vector_index_config
+                    (name, default_level, half_life_days, chunk_size, chunk_overlap, max_docs)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, cfg["default_level"], cfg["half_life_days"],
+                 cfg.get("chunk_size", 0), cfg.get("chunk_overlap", 0),
+                 cfg.get("max_docs", 0)),
+            )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Write
@@ -1755,3 +1878,309 @@ class SkillStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    # ------------------------------------------------------------------
+    # Plugin extension-point: A7 — plugin-scoped DB access
+    # See docs/plugin-extension-points.md
+    # ------------------------------------------------------------------
+
+    def plugin_db(self, namespace: str) -> "PluginStore":
+        """Return a namespace-guarded wrapper around the shared sqlite connection.
+
+        On first call per-process, if the plugin ships ``storage.schema``
+        (an SQL file containing only ``CREATE TABLE IF NOT EXISTS
+        plugin_{namespace}_*`` statements) the schema is applied and its
+        sha256 recorded in ``plugin_migrations``. Subsequent calls are no-ops
+        unless the schema file's hash changes.
+        """
+        if not namespace or not namespace.replace("_", "").isalnum():
+            raise ValueError(f"invalid plugin namespace: {namespace!r}")
+        ps = PluginStore(self._conn, namespace)
+        _maybe_apply_plugin_schema(self._conn, namespace)
+        return ps
+
+    # ------------------------------------------------------------------
+    # Plugin extension-point: A8 — namespaced vector index
+    # ------------------------------------------------------------------
+
+    def upsert_vector(self, namespace: str, doc_id: str, text: str,
+                      metadata: dict | None = None,
+                      model: str | None = None,
+                      level: str | None = None,
+                      source: str | None = None,
+                      project: str | None = None,
+                      tags: list[str] | None = None) -> None:
+        """Embed ``text`` and upsert into the shared ``vectors`` table.
+
+        Phase M1: ``level`` defaults to the namespace's ``default_level`` from
+        ``vector_index_config`` (falling back to L2). ``source``/``project``/
+        ``tags`` are opaque provenance fields used by retrieval profiles.
+        """
+        from .embeddings import embed as _embed, EMBED_MODEL
+        m = model or EMBED_MODEL
+        vec = _embed(text, model=m)
+        norm = math.sqrt(sum(x * x for x in vec))
+        meta_json = json.dumps(metadata) if metadata is not None else None
+        tags_json = json.dumps(tags) if tags else None
+        if level is None:
+            row = self._conn.execute(
+                "SELECT default_level FROM vector_index_config WHERE name = ?",
+                (namespace,),
+            ).fetchone()
+            level = (row["default_level"] if row else None) or "L2"
+        self._conn.execute(
+            """
+            INSERT INTO vectors (namespace, doc_id, model, vector, norm, metadata,
+                                 level, source, project, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(namespace, doc_id) DO UPDATE SET
+                model      = excluded.model,
+                vector     = excluded.vector,
+                norm       = excluded.norm,
+                metadata   = excluded.metadata,
+                level      = excluded.level,
+                source     = COALESCE(excluded.source,  vectors.source),
+                project    = COALESCE(excluded.project, vectors.project),
+                tags       = COALESCE(excluded.tags,    vectors.tags),
+                indexed_at = datetime('now')
+            """,
+            (namespace, doc_id, m, json.dumps(vec), norm, meta_json,
+             level, source, project, tags_json),
+        )
+        self._conn.commit()
+
+    def search_vectors(self, query: str,
+                       namespaces: list[str] | None = None,
+                       top_k: int = 5,
+                       similarity_threshold: float = 0.0,
+                       levels: list[str] | None = None,
+                       apply_level_weight: bool = True,
+                       apply_recency_decay: bool = True) -> list[dict]:
+        """Cosine-search the namespaced ``vectors`` table with level weighting.
+
+        Phase M1: multiplies raw cosine similarity by the entry's level weight
+        and an exponential recency-decay factor (``exp(-age_days / half_life)``).
+        ``levels=None`` keeps all levels; pass e.g. ``["L3","L4"]`` to drop
+        ephemeral chatter. Returns ``{namespace, doc_id, score, raw_score,
+        level, metadata}`` sorted by weighted score desc.
+        """
+        from .embeddings import embed as _embed
+        import time as _time
+        from datetime import datetime as _dt
+
+        qvec = _embed(query)
+        qnorm = math.sqrt(sum(x * x for x in qvec))
+        if qnorm == 0.0:
+            return []
+
+        where = []
+        params: list = []
+        if namespaces:
+            where.append(f"namespace IN ({','.join('?' * len(namespaces))})")
+            params.extend(namespaces)
+        if levels:
+            where.append(f"level IN ({','.join('?' * len(levels))})")
+            params.extend(levels)
+        sql = ("SELECT namespace, doc_id, vector, norm, metadata, level, indexed_at "
+               "FROM vectors")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+
+        # Cache per-namespace half-life to avoid N queries.
+        half_life_cache: dict[str, float] = {}
+        def _half_life(ns: str, lvl: str) -> float:
+            key = f"{ns}|{lvl}"
+            if key in half_life_cache:
+                return half_life_cache[key]
+            row = self._conn.execute(
+                "SELECT half_life_days FROM vector_index_config WHERE name = ?",
+                (ns,),
+            ).fetchone()
+            hl = float(row["half_life_days"]) if row else LEVEL_HALF_LIFE_DAYS.get(lvl, 30.0)
+            half_life_cache[key] = hl
+            return hl
+
+        now_ts = _time.time()
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            snorm = row["norm"] or 0.0
+            if snorm == 0.0:
+                continue
+            vec = json.loads(row["vector"])
+            dot = sum(a * b for a, b in zip(qvec, vec))
+            raw = dot / (qnorm * snorm)
+            if raw < similarity_threshold:
+                continue
+            lvl = row["level"] or "L2"
+            weight = LEVEL_WEIGHTS.get(lvl, 1.0) if apply_level_weight else 1.0
+            decay = 1.0
+            if apply_recency_decay and row["indexed_at"]:
+                try:
+                    ts = _dt.fromisoformat(row["indexed_at"]).timestamp()
+                    age_days = max(0.0, (now_ts - ts) / 86400.0)
+                    hl = _half_life(row["namespace"], lvl)
+                    if hl > 0:
+                        decay = math.exp(-age_days / hl)
+                except (TypeError, ValueError):
+                    pass
+            score = raw * weight * decay
+            meta = None
+            if row["metadata"]:
+                try:
+                    meta = json.loads(row["metadata"])
+                except (TypeError, ValueError):
+                    meta = None
+            scored.append((score, {
+                "namespace": row["namespace"],
+                "doc_id": row["doc_id"],
+                "score": score,
+                "raw_score": raw,
+                "level": lvl,
+                "metadata": meta,
+            }))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
+
+
+# ----------------------------------------------------------------------
+# Plugin extension-point: A7 — PluginStore wrapper
+# Enforces that writes touch only plugin_{namespace}_* tables. Reads on
+# core tables are allowed so plugins can correlate to session_log/tasks.
+# ----------------------------------------------------------------------
+
+import re as _re  # local import to avoid shuffling file headers
+
+_SQL_WRITE_RE = _re.compile(
+    r"\b(CREATE|INSERT|UPDATE|DELETE|DROP|ALTER|REPLACE|TRUNCATE)\b",
+    _re.IGNORECASE,
+)
+_SQL_TABLE_RE = _re.compile(
+    r"\b(?:FROM|INTO|UPDATE|TABLE|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)",
+    _re.IGNORECASE,
+)
+
+
+class PluginStore:
+    """Thin namespace-guarded wrapper around the shared sqlite connection.
+
+    Rejects DDL/DML touching any table whose name doesn't start with
+    ``plugin_{namespace}_``. Bare ``SELECT`` may reference core tables
+    (read-only correlation).
+    """
+
+    def __init__(self, conn: sqlite3.Connection, namespace: str) -> None:
+        self._conn = conn
+        self.namespace = namespace
+        self._prefix = f"plugin_{namespace}_"
+
+    def _guard(self, sql: str) -> None:
+        upper = sql.strip().upper()
+        is_write = bool(_SQL_WRITE_RE.search(upper))
+        if not is_write:
+            return  # read-only: any table is allowed
+        tables = _SQL_TABLE_RE.findall(sql)
+        for t in tables:
+            if not t.lower().startswith(self._prefix):
+                raise PermissionError(
+                    f"PluginStore({self.namespace!r}): write to table "
+                    f"{t!r} rejected — only {self._prefix}* tables allowed"
+                )
+
+    def execute(self, sql: str, params: tuple | list | dict = ()) -> sqlite3.Cursor:
+        self._guard(sql)
+        cur = self._conn.execute(sql, params)
+        self._conn.commit()
+        return cur
+
+    def fetch_all(self, sql: str, params: tuple | list | dict = ()) -> list[sqlite3.Row]:
+        self._guard(sql)
+        return self._conn.execute(sql, params).fetchall()
+
+    def fetch_one(self, sql: str, params: tuple | list | dict = ()) -> sqlite3.Row | None:
+        self._guard(sql)
+        return self._conn.execute(sql, params).fetchone()
+
+
+# Idempotent per-process cache of "already bootstrapped" namespaces
+_PLUGIN_SCHEMA_APPLIED: dict[str, str] = {}
+
+
+def _maybe_apply_plugin_schema(conn: sqlite3.Connection, namespace: str) -> None:
+    """Look up the plugin's ``storage.schema`` file and apply if changed.
+
+    Schema file must only contain ``CREATE TABLE IF NOT EXISTS plugin_{namespace}_*``
+    statements — any other statement causes the whole apply to abort.
+    """
+    import hashlib
+    try:
+        from .plugin_registry import iter_enabled_plugins
+    except Exception:  # noqa: BLE001
+        return
+
+    for p in iter_enabled_plugins():
+        storage = p["manifest"].get("storage") or {}
+        if storage.get("namespace") != namespace:
+            continue
+        schema_rel = storage.get("schema")
+        if not schema_rel:
+            return
+        schema_path = Path(p["path"]) / schema_rel
+        if not schema_path.exists():
+            return
+        try:
+            text = schema_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if _PLUGIN_SCHEMA_APPLIED.get(namespace) == sha:
+            return
+        row = conn.execute(
+            "SELECT schema_hash FROM plugin_migrations WHERE namespace = ?",
+            (namespace,),
+        ).fetchone()
+        if row is not None and row["schema_hash"] == sha:
+            _PLUGIN_SCHEMA_APPLIED[namespace] = sha
+            return
+
+        # Validate: every non-empty, non-comment statement must match the
+        # allowed pattern.
+        prefix = f"plugin_{namespace}_"
+        stmts = [s.strip() for s in text.split(";") if s.strip()]
+        allow_re = _re.compile(
+            r"^\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*\s+ON\s+)?" + _re.escape(prefix),
+            _re.IGNORECASE,
+        )
+        for stmt in stmts:
+            # Strip leading comments
+            cleaned = _re.sub(r"^\s*(--.*\n)+", "", stmt).strip()
+            if not cleaned:
+                continue
+            if not allow_re.match(cleaned):
+                # Log via stdlib; don't raise — keep plugin isolation soft.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "plugin %s: schema.sql rejected — statement outside "
+                    "plugin_%s_* table scope: %s",
+                    namespace, namespace, cleaned[:80],
+                )
+                return
+        try:
+            with conn:
+                conn.executescript(text)
+                conn.execute(
+                    "INSERT INTO plugin_migrations (namespace, schema_hash) "
+                    "VALUES (?, ?) "
+                    "ON CONFLICT(namespace) DO UPDATE SET "
+                    "schema_hash = excluded.schema_hash, "
+                    "applied_at = datetime('now')",
+                    (namespace, sha),
+                )
+            _PLUGIN_SCHEMA_APPLIED[namespace] = sha
+        except sqlite3.Error as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "plugin %s: schema apply failed: %s", namespace, exc,
+            )
+        return

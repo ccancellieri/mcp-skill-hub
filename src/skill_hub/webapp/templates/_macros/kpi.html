@@ -1,0 +1,12 @@
+{# Plugin extension-point: A11 — shared KPI card macro.
+   Usage: {% from "_macros/kpi.html" import kpi_card %}
+          {{ kpi_card("Tokens saved", "12,345", delta="+120", kind="good") }}
+   `kind` ∈ {default, good, bad, warn} — controls the accent colour class. #}
+{% macro kpi_card(title, value, delta=none, kind='default', sub='') -%}
+<div class="kpi kpi-{{ kind }}">
+  <div class="kpi-label">{{ title }}</div>
+  <div class="kpi-value">{{ value }}</div>
+  {% if delta is not none %}<div class="kpi-delta">{{ delta }}</div>{% endif %}
+  {% if sub %}<div class="kpi-sub">{{ sub }}</div>{% endif %}
+</div>
+{%- endmacro %}

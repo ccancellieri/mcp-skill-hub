@@ -1,0 +1,32 @@
+{# Plugin extension-point: A11 — shared data table macro.
+   `columns` is a list of column definitions: either strings (header label,
+   used as both key and label) or dicts {key, label, align?}.
+   `rows` is a list of dicts keyed by column.key. #}
+{% macro data_table(columns, rows, empty_message='No data') -%}
+{% set cols = [] %}
+{% for c in columns %}
+  {% if c is string %}
+    {% set _ = cols.append({'key': c, 'label': c, 'align': 'left'}) %}
+  {% else %}
+    {% set _ = cols.append({'key': c.key, 'label': c.label or c.key, 'align': c.align or 'left'}) %}
+  {% endif %}
+{% endfor %}
+<table class="data-table zebra">
+  <thead>
+    <tr>
+      {% for c in cols %}<th style="text-align:{{ c.align }}">{{ c.label }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% if rows %}
+      {% for row in rows %}
+        <tr>
+          {% for c in cols %}<td style="text-align:{{ c.align }}">{{ row[c.key] }}</td>{% endfor %}
+        </tr>
+      {% endfor %}
+    {% else %}
+      <tr><td colspan="{{ cols|length }}" class="muted">{{ empty_message }}</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{%- endmacro %}

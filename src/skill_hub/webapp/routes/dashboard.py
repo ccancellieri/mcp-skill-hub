@@ -105,6 +105,57 @@ def _intercept_by_type(store: Any, limit: int = 5) -> list[dict]:
     return out
 
 
+def collect_plugin_sections() -> list[dict]:
+    """Plugin extension-point: A2 — gather dashboard sections from plugins.
+
+    Each enabled plugin may ship ``web/dashboard_sections.py`` with a
+    ``get_sections() -> list[dict]`` function. Each section is a dict with
+    ``id``, ``title``, ``order`` plus either:
+      - ``html``: pre-rendered HTML string (marked safe in template), or
+      - ``template`` + ``context``: jinja template path (relative to plugin)
+        and a context dict.
+
+    Returns sections sorted by ``order`` (default 100). Failures per-plugin
+    are logged and skipped; never crash the dashboard.
+    """
+    import importlib.util
+    import logging
+    import sys
+    from pathlib import Path
+
+    log = logging.getLogger(__name__)
+    sections: list[dict] = []
+    try:
+        from ...plugin_registry import iter_enabled_plugins
+    except Exception:  # noqa: BLE001
+        return sections
+
+    for p in iter_enabled_plugins():
+        ds_py = Path(p["path"]) / "web" / "dashboard_sections.py"
+        if not ds_py.exists():
+            continue
+        mod_name = f"_skillhub_plugin_{p['path'].name}_dashboard_sections"
+        try:
+            spec = importlib.util.spec_from_file_location(mod_name, ds_py)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            spec.loader.exec_module(mod)
+            get_sections = getattr(mod, "get_sections", None)
+            if get_sections is None:
+                continue
+            for sec in get_sections() or []:
+                s = dict(sec)
+                s.setdefault("order", 100)
+                s.setdefault("plugin", p["name"])
+                sections.append(s)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("plugin %s dashboard_sections failed: %s", p["name"], exc)
+    sections.sort(key=lambda s: s.get("order", 100))
+    return sections
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request) -> Any:
     store = request.app.state.store
@@ -120,6 +171,8 @@ def index(request: Request) -> Any:
         metrics["questions_open"] = 0
     recent_tasks = _recent_open_tasks(store)
     intercept_types = _intercept_by_type(store)
+    # Plugin extension-point: A2 — see docs/plugin-extension-points.md
+    plugin_sections = collect_plugin_sections()
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -128,6 +181,7 @@ def index(request: Request) -> Any:
             "m": metrics,
             "recent_tasks": recent_tasks,
             "intercept_types": intercept_types,
+            "plugin_sections": plugin_sections,
             "active_tab": "dashboard",
         },
     )
