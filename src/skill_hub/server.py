@@ -1110,34 +1110,9 @@ def list_skills(plugin: str = "") -> str:
 @mcp.tool()
 def toggle_plugin(plugin_name: str, enabled: bool) -> str:
     """Enable or disable a plugin. Takes effect on next session restart."""
-    if not SETTINGS_PATH.exists():
-        return f"Settings file not found: {SETTINGS_PATH}"
+    from .plugin_registry import toggle as _toggle
 
-    settings = json.loads(SETTINGS_PATH.read_text())
-    plugins: dict = settings.setdefault("enabledPlugins", {})
-
-    # Resolve partial name match (e.g. "superpowers" → "superpowers@...")
-    if plugin_name not in plugins:
-        matches = [k for k in plugins if plugin_name in k]
-        if len(matches) == 1:
-            plugin_name = matches[0]
-        elif len(matches) > 1:
-            return (
-                f"Ambiguous: {matches}. "
-                f"Provide full key like '{matches[0]}'."
-            )
-        else:
-            if enabled:
-                plugin_name_full = f"{plugin_name}@claude-plugins-official"
-                plugins[plugin_name_full] = True
-                SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
-                return f"Added '{plugin_name_full}' as enabled (restart to apply)."
-            return f"Plugin '{plugin_name}' not found in settings."
-
-    plugins[plugin_name] = enabled
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
-    state = "enabled" if enabled else "disabled"
-    return f"Plugin '{plugin_name}' {state}. Restart Claude Code to apply."
+    return _toggle(plugin_name, enabled)
 
 
 @mcp.tool()

@@ -12,10 +12,22 @@ tasks        — saved/closed conversation digests for cross-session context
 """
 
 import json
+import logging
 import math
 import sqlite3
+import struct
 from dataclasses import dataclass
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
+
+try:  # Optional: sqlite-vec native ANN extension.
+    import sqlite_vec  # type: ignore
+except ImportError:  # pragma: no cover
+    sqlite_vec = None  # type: ignore
+
+# Nomic-embed-text produces 768-d vectors. Keep in sync with embed_model.
+VEC_DIM = 768
 
 DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
 SESSION_CONTEXT_FILE = Path.home() / ".claude" / "mcp-skill-hub" / "session-context.md"
@@ -116,12 +128,26 @@ class SkillStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        # In-process vector cache: avoids JSON deserialization of all embedding
-        # rows on every search() call.  Invalidated by upsert_embedding().
-        # Structure: {skill_id: (vector_as_list, pre_stored_norm)}
+        # Load sqlite-vec extension if available; falls back to legacy path.
+        self._vec_engine: str = "legacy"
+        if sqlite_vec is not None:
+            try:
+                self._conn.enable_load_extension(True)
+                sqlite_vec.load(self._conn)
+                self._conn.enable_load_extension(False)
+                self._vec_engine = "sqlite-vec"
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("sqlite-vec load failed, using legacy search: %s", exc)
+        # Legacy in-process vector cache (still used when vec engine unavailable).
         self._vec_cache: dict[str, tuple[list[float], float]] = {}
         self._vec_cache_valid: bool = False
         self._migrate()
+        if self._vec_engine == "sqlite-vec":
+            try:
+                self._backfill_vec_tables()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("vec0 backfill failed: %s", exc)
+                self._vec_engine = "legacy"
 
     def _migrate(self) -> None:
         self._conn.executescript("""
@@ -478,6 +504,37 @@ class SkillStore:
             )
             self._conn.commit()
 
+        skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
+        if "content_hash" not in skill_cols:
+            # S1.3 — enables incremental reindex (skip rows whose file content
+            # + metadata hash is unchanged).
+            self._conn.execute(
+                "ALTER TABLE skills ADD COLUMN content_hash TEXT"
+            )
+            self._conn.commit()
+
+        # S1.1 — sqlite-vec virtual tables for ANN. Binary is primary (fast
+        # Hamming KNN), float32 is the rerank oracle. Only created when the
+        # extension loaded successfully; everything else stays legacy.
+        if self._vec_engine == "sqlite-vec":
+            try:
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_bin USING vec0(
+                        skill_id TEXT PRIMARY KEY,
+                        embedding bit[{VEC_DIM}]
+                    )
+                """)
+                self._conn.execute(f"""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_f32 USING vec0(
+                        skill_id TEXT PRIMARY KEY,
+                        embedding float[{VEC_DIM}]
+                    )
+                """)
+                self._conn.commit()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("vec0 table creation failed: %s", exc)
+                self._vec_engine = "legacy"
+
         emb_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(embeddings)")}
         if "norm" not in emb_cols:
             # Pre-stored L2 norm: avoids recomputing sqrt(sum(x²)) per skill per search.
@@ -565,6 +622,63 @@ class SkillStore:
         self._conn.commit()
         # Invalidate in-process vector cache so the next search reloads
         self._vec_cache_valid = False
+        # Mirror into vec0 tables (binary + float32). Best-effort — never blocks
+        # the primary write.
+        if self._vec_engine == "sqlite-vec" and len(vector) == VEC_DIM:
+            try:
+                self._write_vec_rows(skill_id, vector)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("vec0 upsert failed for %s: %s", skill_id, exc)
+
+    def _write_vec_rows(self, skill_id: str, vector: list[float]) -> None:
+        """Mirror a float32 embedding into both vec0 virtual tables."""
+        from .embeddings import quantize_binary
+        bin_blob = quantize_binary(vector)
+        f32_blob = struct.pack(f"{VEC_DIM}f", *vector)
+        self._conn.execute("DELETE FROM skills_vec_bin WHERE skill_id = ?", (skill_id,))
+        self._conn.execute(
+            "INSERT INTO skills_vec_bin (skill_id, embedding) VALUES (?, ?)",
+            (skill_id, bin_blob),
+        )
+        self._conn.execute("DELETE FROM skills_vec_f32 WHERE skill_id = ?", (skill_id,))
+        self._conn.execute(
+            "INSERT INTO skills_vec_f32 (skill_id, embedding) VALUES (?, ?)",
+            (skill_id, f32_blob),
+        )
+        self._conn.commit()
+
+    def _backfill_vec_tables(self) -> None:
+        """Populate vec0 tables from the canonical ``embeddings`` table.
+
+        Runs on startup when the vec engine is available. Skips rows already
+        present (cheap idempotent) and rows with wrong dimensionality.
+        """
+        existing = {
+            row[0] for row in self._conn.execute(
+                "SELECT skill_id FROM skills_vec_bin"
+            ).fetchall()
+        }
+        rows = self._conn.execute(
+            "SELECT skill_id, vector FROM embeddings"
+        ).fetchall()
+        added = 0
+        for row in rows:
+            sid = row["skill_id"]
+            if sid in existing:
+                continue
+            try:
+                vec = json.loads(row["vector"])
+            except (TypeError, ValueError):
+                continue
+            if len(vec) != VEC_DIM:
+                continue
+            try:
+                self._write_vec_rows(sid, vec)
+                added += 1
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("backfill failed for %s: %s", sid, exc)
+        if added:
+            _log.info("vec0 backfill: %d rows", added)
 
     def log_skill_injection(self, skill_id: str, query: str = "",
                             session_id: str | None = None) -> None:
@@ -634,9 +748,16 @@ class SkillStore:
                target: str | None = None) -> list[dict]:
         """Return top-k skills by cosine similarity, boosted by pre-aggregated feedback score.
 
-        Uses an in-process vector cache to avoid JSON deserialization on every call.
-        Uses pre-stored L2 norms to avoid recomputing sqrt per skill per search.
+        When sqlite-vec is available: Hamming-KNN on binary vectors → float32
+        cosine rerank → feedback boost. Otherwise falls back to the legacy
+        in-process cache path.
         """
+        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+            try:
+                return self._search_vec(query_vector, top_k, similarity_threshold, target)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("sqlite-vec search failed, falling back: %s", exc)
+
         if not self._vec_cache_valid:
             self._load_vec_cache()
 
@@ -675,6 +796,70 @@ class SkillStore:
                 continue
             boost = float(row["feedback_score"] or 1.0)
             scored.append((sim * boost, dict(row)))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
+
+    def _search_vec(self, query_vector: list[float], top_k: int,
+                    similarity_threshold: float,
+                    target: str | None) -> list[dict]:
+        """sqlite-vec path: binary-KNN candidates → float32 rerank → boost."""
+        from . import config as _cfg
+        from .embeddings import quantize_binary
+
+        rerank_k = max(top_k, int(_cfg.get("rerank_top_k") or 20))
+        qbin = quantize_binary(query_vector)
+
+        # Stage 1: Hamming KNN on binary vectors.
+        bin_rows = self._conn.execute(
+            """
+            SELECT skill_id, distance
+            FROM skills_vec_bin
+            WHERE embedding MATCH ? AND k = ?
+            ORDER BY distance
+            """,
+            (qbin, rerank_k),
+        ).fetchall()
+        if not bin_rows:
+            return []
+        candidate_ids = [r["skill_id"] for r in bin_rows]
+
+        # Stage 2: float32 cosine rerank using pre-stored norms.
+        qnorm = math.sqrt(sum(x * x for x in query_vector))
+        if qnorm == 0.0:
+            return []
+
+        placeholders = ",".join("?" * len(candidate_ids))
+        meta_sql = f"""
+            SELECT s.id, s.name, s.description, s.content, s.plugin,
+                   s.target, s.feedback_score, e.vector, e.norm
+            FROM skills s
+            JOIN embeddings e ON e.skill_id = s.id
+            WHERE s.id IN ({placeholders})
+        """
+        params: list = list(candidate_ids)
+        if target:
+            meta_sql += " AND s.target = ?"
+            params.append(target)
+        rows = self._conn.execute(meta_sql, params).fetchall()
+
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            snorm = row["norm"] or 0.0
+            if snorm == 0.0:
+                continue
+            try:
+                vec = json.loads(row["vector"])
+            except (TypeError, ValueError):
+                continue
+            dot = sum(a * b for a, b in zip(query_vector, vec))
+            sim = dot / (qnorm * snorm)
+            if sim < similarity_threshold:
+                continue
+            boost = float(row["feedback_score"] or 1.0)
+            d = {k: row[k] for k in ("id", "name", "description", "content",
+                                      "plugin", "target", "feedback_score")}
+            scored.append((sim * boost, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]

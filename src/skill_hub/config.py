@@ -275,6 +275,13 @@ _DEFAULTS = {
     # alongside skills and tasks. Set to False to disable.
     "user_memory_enabled": True,
 
+    # Vector engine — "sqlite-vec" uses the native ANN extension with binary
+    # quantization + float32 rerank; any other value falls back to the legacy
+    # in-Python cosine path.
+    "vec_engine": "sqlite-vec",
+    "binary_quant_enabled": True,
+    "rerank_top_k": 20,
+
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
     "extra_skill_dirs": [

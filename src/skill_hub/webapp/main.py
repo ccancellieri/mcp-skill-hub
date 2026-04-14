@@ -16,6 +16,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 
 from .middleware.banner import BannerMiddleware
 from .routes import control as control_routes
+from .routes import control_plugins as control_plugins_routes
 from .routes import dashboard as dashboard_routes
 from .routes import intents as intents_routes
 from .routes import logs as logs_routes
@@ -159,6 +160,7 @@ def create_app(store: Any) -> FastAPI:
 
     app.include_router(dashboard_routes.router)
     app.include_router(control_routes.router)
+    app.include_router(control_plugins_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(verdicts_routes.router)
     app.include_router(tasks_routes.router)

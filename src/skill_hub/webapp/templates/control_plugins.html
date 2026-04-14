@@ -1,0 +1,29 @@
+{# Renders into the Plugins tab panel. Not extending base.html — embedded. #}
+<section class="plugins-panel">
+  <div class="plugins-header">
+    <div class="profile-row">
+      <span class="metric-label">Profile:</span>
+      {% for pname, prof in profiles.items() %}
+      <button class="btn sm{% if active_profile == pname %} on{% endif %}"
+              hx-post="/control/plugins/profile/{{ pname }}"
+              hx-target="closest .tab-panel"
+              hx-swap="innerHTML"
+              title="{{ prof.description or '' }}">{{ pname }}</button>
+      {% endfor %}
+      <button class="btn sm"
+              hx-post="/control/plugins/reindex"
+              hx-target="closest .tab-panel"
+              hx-swap="innerHTML">Reindex</button>
+    </div>
+    <div class="muted small">{{ total }} plugins, {{ enabled_total }} enabled</div>
+  </div>
+
+  {% for source, plugins in grouped.items() %}
+  <h3 class="plugin-source">{{ source }}</h3>
+  <div class="plugin-grid">
+    {% for p in plugins %}
+    {% include "_plugin_card.html" with context %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+</section>

@@ -331,3 +331,23 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
   border-radius: var(--radius-sm); font-size: 10px; max-height: 140px; overflow: auto;
 }
 .small { font-size: 11px; }
+
+.plugins-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+}
+.profile-row { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.plugin-source {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-muted); margin: 14px 0 6px; font-weight: 500;
+}
+.plugin-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+.plugin-card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.btn.sm { padding: 3px 10px; font-size: 11px; }

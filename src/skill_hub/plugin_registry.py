@@ -21,6 +21,36 @@ from . import config as _cfg
 
 _log = logging.getLogger(__name__)
 
+SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+
+
+def _load_settings() -> dict:
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        return json.loads(SETTINGS_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_settings(settings: dict) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2))
+
+
+def _enabled_map() -> dict[str, bool]:
+    return dict(_load_settings().get("enabledPlugins") or {})
+
+
+def _resolve_plugin_key(plugin_name: str, plugins: dict) -> str | None:
+    """Map a short name like 'superpowers' to the full 'superpowers@source' key."""
+    if plugin_name in plugins:
+        return plugin_name
+    matches = [k for k in plugins if k.split("@", 1)[0] == plugin_name]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
 
 def iter_enabled_plugins() -> Iterator[dict[str, Any]]:
     """Yield {name, path, manifest, source} for each enabled plugin directory.
@@ -60,6 +90,113 @@ def iter_enabled_plugins() -> Iterator[dict[str, Any]]:
                 "manifest": manifest,
                 "source": source,
             }
+
+
+def iter_all_plugins() -> Iterator[dict[str, Any]]:
+    """Yield every known plugin (enabled + disabled) with its `enabled: bool` flag.
+
+    Used by the /control plugins tab — the enabled filter in iter_enabled_plugins
+    is based on the *source* directory flag; here we also overlay the per-plugin
+    enabled state from ``~/.claude/settings.json["enabledPlugins"]``.
+    """
+    cfg = _cfg.load_config() if hasattr(_cfg, "load_config") else {}
+    enabled_map = _enabled_map()
+    # Reuse iter_enabled_plugins' parsing by briefly bypassing the source flag.
+    for entry in cfg.get("extra_plugin_dirs") or []:
+        base = Path(str(entry.get("path", ""))).expanduser()
+        if not base.exists():
+            continue
+        source = entry.get("source", "extra")
+        source_enabled = bool(entry.get("enabled", True))
+        candidates: list[Path] = []
+        if (base / "plugin.json").exists():
+            candidates.append(base)
+        else:
+            candidates.extend(d for d in base.iterdir() if d.is_dir())
+        for plugin_dir in candidates:
+            manifest: dict[str, Any] = {}
+            mf = plugin_dir / "plugin.json"
+            if mf.exists():
+                try:
+                    manifest = json.loads(mf.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    manifest = {}
+            plugin_name = manifest.get("name") or plugin_dir.name
+            full_key = next(
+                (k for k in enabled_map if k.split("@", 1)[0] == plugin_name),
+                plugin_name,
+            )
+            description = (
+                manifest.get("description")
+                or manifest.get("summary")
+                or ""
+            )
+            yield {
+                "name": plugin_name,
+                "full_key": full_key,
+                "path": plugin_dir,
+                "manifest": manifest,
+                "description": description,
+                "source": source,
+                "source_enabled": source_enabled,
+                "enabled": bool(enabled_map.get(full_key, False)) and source_enabled,
+            }
+
+
+def toggle(plugin_name: str, enabled: bool) -> str:
+    """Flip a plugin's enabled bit in ~/.claude/settings.json.
+
+    Accepts either the short name (``"superpowers"``) or the fully-qualified
+    key (``"superpowers@claude-plugins-official"``). Matches the semantics of
+    the MCP ``toggle_plugin`` tool so both call paths agree.
+    """
+    settings = _load_settings()
+    if not settings:
+        return f"Settings file not found: {SETTINGS_PATH}"
+    plugins: dict = settings.setdefault("enabledPlugins", {})
+    key = _resolve_plugin_key(plugin_name, plugins)
+    if key is None:
+        if enabled:
+            key = f"{plugin_name}@claude-plugins-official"
+            plugins[key] = True
+            _save_settings(settings)
+            return f"Added '{key}' as enabled (restart to apply)."
+        return f"Plugin '{plugin_name}' not found in settings."
+    plugins[key] = enabled
+    _save_settings(settings)
+    state = "enabled" if enabled else "disabled"
+    return f"Plugin '{key}' {state}. Restart Claude Code to apply."
+
+
+def apply_profile(profile_name: str) -> str:
+    """Enable every plugin in the named profile and disable the rest."""
+    cfg = _cfg.load_config() if hasattr(_cfg, "load_config") else {}
+    profiles = (cfg.get("profiles") or {})
+    profile = profiles.get(profile_name)
+    if profile is None:
+        return f"Profile '{profile_name}' not found. Known: {', '.join(profiles) or '(none)'}"
+
+    target = profile.get("plugins")
+    if target == "__all__":
+        target_names = None  # enable everything known
+    elif isinstance(target, list):
+        target_names = set(target)
+    else:
+        return f"Profile '{profile_name}' has malformed plugins field."
+
+    settings = _load_settings()
+    plugins: dict = settings.setdefault("enabledPlugins", {})
+    # Iterate over every key we know about (settings + discovered).
+    known_keys = set(plugins.keys())
+    for p in iter_all_plugins():
+        known_keys.add(p["full_key"])
+    for key in known_keys:
+        short = key.split("@", 1)[0]
+        should_enable = target_names is None or short in target_names
+        plugins[key] = should_enable
+    _save_settings(settings)
+    n_on = sum(1 for v in plugins.values() if v)
+    return f"Profile '{profile_name}' applied — {n_on} plugins enabled. Restart Claude Code to take effect."
 
 
 def load_web_mounts() -> list[dict[str, Any]]:

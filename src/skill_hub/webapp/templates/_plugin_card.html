@@ -1,0 +1,22 @@
+<div id="plugin-{{ p.full_key }}" class="plugin-card">
+  <div class="service-head">
+    <span class="status-dot {% if p.enabled %}dot-running{% else %}dot-stopped{% endif %}"></span>
+    <strong>{{ p.name }}</strong>
+    <span class="tag status-{% if p.enabled %}running{% else %}stopped{% endif %}">
+      {% if p.enabled %}enabled{% else %}disabled{% endif %}
+    </span>
+  </div>
+  {% if p.description %}
+  <p class="muted small">{{ p.description }}</p>
+  {% endif %}
+  <p class="muted small">Source: {{ p.source }} — {{ p.path }}</p>
+  <div class="service-actions">
+    <button class="btn {% if p.enabled %}off{% else %}on{% endif %}"
+            hx-post="/control/plugins/{{ p.full_key }}/toggle"
+            hx-target="#plugin-{{ p.full_key }}"
+            hx-swap="outerHTML">
+      {% if p.enabled %}Disable{% else %}Enable{% endif %}
+    </button>
+    <span class="muted small">restart Claude Code to apply</span>
+  </div>
+</div>
