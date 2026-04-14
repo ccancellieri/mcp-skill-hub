@@ -25,6 +25,13 @@
       {% endfor %}
     </nav>
   </header>
+  {% set _disabled = (request.state.disabled_services if request and request.state else []) %}
+  {% if _disabled %}
+  <div class="banner-warning">
+    ⚠ Disabled: {{ _disabled|join(", ") }}
+    <a href="/control">→ control panel</a>
+  </div>
+  {% endif %}
   <main class="content">
     {% block content %}{% endblock %}
   </main>

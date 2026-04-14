@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}control{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>Control Panel</h1>
+
+  <div id="monitor-bar"
+       hx-get="/control/monitor"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    {# Loaded immediately via HTMX. #}
+    <div class="monitor-bar placeholder">Loading resource monitor…</div>
+  </div>
+
+  <div class="tabs-sub" x-data="{ tab: 'services' }">
+    <div class="tab-row">
+      <button class="tab-btn" :class="{active: tab==='services'}" @click="tab='services'">Services</button>
+      <button class="tab-btn" :class="{active: tab==='plugins'}" @click="tab='plugins'">Plugins</button>
+    </div>
+
+    <div x-show="tab==='services'" class="tab-panel">
+      <div class="service-grid">
+        {% for svc in services %}
+        <div id="card-{{ svc.name }}"
+             class="service-card placeholder"
+             hx-get="/control/{{ svc.name }}/card"
+             hx-trigger="load, every 5s"
+             hx-swap="outerHTML">
+          <div class="service-head">
+            <div class="status-dot dot-stopped"></div>
+            <strong>{{ svc.label }}</strong>
+          </div>
+          <p class="muted">Loading…</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div x-show="tab==='plugins'" class="tab-panel"
+         hx-get="/control/plugins"
+         hx-trigger="revealed once"
+         hx-swap="innerHTML">
+      <p class="muted">Loading plugins…</p>
+    </div>
+  </div>
+</section>
+{% endblock %}

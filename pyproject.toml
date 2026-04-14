@@ -32,6 +32,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "aiofiles>=23",
     "psutil>=5.9",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.urls]

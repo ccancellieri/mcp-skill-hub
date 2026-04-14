@@ -45,6 +45,10 @@ class Service(ABC):
     def stop(self) -> tuple[bool, str]:
         """Stop the service. Return (ok, message). Never raise."""
 
+    def installable(self) -> bool:
+        """Whether an ``install()`` path exists — UI shows Install button if True."""
+        return False
+
     def install(self) -> tuple[bool, str] | None:
         """
         Attempt to install a missing prerequisite.

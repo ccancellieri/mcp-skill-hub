@@ -1,0 +1,87 @@
+{# Service card partial — swapped by HTMX every 5s and after any action. #}
+{% set status_class = {
+  "running":       "dot-running",
+  "stopped":       "dot-stopped",
+  "unavailable":   "dot-unavailable",
+  "transitioning": "dot-transitioning",
+}.get(status, "dot-stopped") %}
+
+<div id="card-{{ svc.name }}"
+     class="service-card {% if top_suggestion %}under-pressure{% endif %}"
+     hx-get="/control/{{ svc.name }}/card"
+     hx-trigger="every 5s"
+     hx-swap="outerHTML">
+
+  <div class="service-head">
+    <span class="status-dot {{ status_class }}" title="{{ status }}"></span>
+    <strong>{{ svc.label }}</strong>
+    <span class="tag status-{{ status }}">{{ status }}</span>
+  </div>
+
+  <p class="muted small">{{ svc.description }}</p>
+
+  {% if top_suggestion %}
+  <p class="pressure-hint">⚠ {{ top_suggestion }}</p>
+  {% endif %}
+
+  {% if not available %}
+  <p class="unavailable-reason">{{ reason }}</p>
+  {% endif %}
+
+  <div class="service-actions">
+    {% if status == "running" %}
+    <button class="btn off"
+            hx-post="/control/{{ svc.name }}/stop"
+            hx-target="#card-{{ svc.name }}"
+            hx-swap="outerHTML">Stop</button>
+    {% elif status in ("stopped", "transitioning") %}
+    <button class="btn on"
+            hx-post="/control/{{ svc.name }}/start"
+            hx-target="#card-{{ svc.name }}"
+            hx-swap="outerHTML"
+            {% if not available %}disabled{% endif %}>Start</button>
+    {% endif %}
+
+    {% if not available and has_installer %}
+    <button class="btn"
+            hx-post="/control/{{ svc.name }}/install"
+            hx-target="#card-{{ svc.name }}"
+            hx-swap="outerHTML">Install</button>
+    {% endif %}
+  </div>
+
+  {# Mutable fields: model name, container name, auto_* checkboxes. #}
+  <form class="service-config"
+        hx-post="/control/{{ svc.name }}/config"
+        hx-target="#card-{{ svc.name }}"
+        hx-swap="outerHTML"
+        hx-trigger="change">
+    {% if "model" in svc_cfg %}
+    <label>
+      <span>model</span>
+      <input type="text" name="model" value="{{ svc_cfg.get('model', '') }}">
+    </label>
+    {% endif %}
+    {% if "container" in svc_cfg %}
+    <label>
+      <span>container</span>
+      <input type="text" name="container" value="{{ svc_cfg.get('container', '') }}">
+    </label>
+    {% endif %}
+    <label class="checkbox">
+      <input type="checkbox" name="auto_start" {% if svc_cfg.get("auto_start", True) %}checked{% endif %}>
+      <span>auto_start</span>
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="auto_disable_under_pressure" {% if svc_cfg.get("auto_disable_under_pressure", False) %}checked{% endif %}>
+      <span>auto-disable under pressure</span>
+    </label>
+  </form>
+
+  {% if not available and has_installer %}
+  <pre class="install-log"
+       hx-get="/control/{{ svc.name }}/install-log"
+       hx-trigger="every 2s"
+       hx-swap="innerHTML">(install log will appear here)</pre>
+  {% endif %}
+</div>

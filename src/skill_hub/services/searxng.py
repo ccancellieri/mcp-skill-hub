@@ -79,6 +79,9 @@ class SearxngContainer(Service):
         code, out = _proc.run(["docker", "stop", "-t", "5", self.container], timeout=20)
         return code == 0, "stopped" if code == 0 else out.strip()[:200]
 
+    def installable(self) -> bool:
+        return _proc.which("docker") is not None
+
     def install(self) -> tuple[bool, str] | None:
         ok, msg = _docker_available()
         if not ok:

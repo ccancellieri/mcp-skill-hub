@@ -55,6 +55,9 @@ class OllamaDaemon(Service):
         code, out = _proc.run(["pkill", "-TERM", "-f", "ollama serve"], timeout=5)
         return code in (0, 1), "stopped" if code in (0, 1) else out.strip()
 
+    def installable(self) -> bool:
+        return _proc.which("brew") is not None
+
     def install(self) -> tuple[bool, str] | None:
         if _proc.which("brew") is None:
             return None
@@ -132,6 +135,9 @@ class OllamaModel(Service):
     def stop(self) -> tuple[bool, str]:
         code, out = _proc.run(["ollama", "stop", self.model], timeout=10)
         return code == 0, "unloaded" if code == 0 else out.strip()[:200]
+
+    def installable(self) -> bool:
+        return _proc.which("ollama") is not None
 
     def install(self) -> tuple[bool, str] | None:
         if _proc.which("ollama") is None:

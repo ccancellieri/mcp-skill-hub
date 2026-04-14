@@ -1,0 +1,36 @@
+{% if sample %}
+<div class="monitor-bar{% if sample.pressure %} pressure{% endif %}">
+  <div class="monitor-metric">
+    <span class="metric-label">RAM free</span>
+    <span class="metric-value">
+      {{ '{:,}'.format(sample.ram_free_mb) }} / {{ '{:,}'.format(sample.ram_total_mb) }} MB
+    </span>
+  </div>
+  <div class="monitor-metric">
+    <span class="metric-label">Load 1m</span>
+    <span class="metric-value">{{ '%.2f'|format(sample.cpu_load_1m) }} / {{ sample.cpu_count }}</span>
+  </div>
+  <div class="monitor-metric">
+    {% if sample.pressure %}
+    <span class="tag status-pressure">⚠ pressure</span>
+    {% else %}
+    <span class="tag status-ok">● headroom</span>
+    {% endif %}
+  </div>
+  {% if disabled_services %}
+  <div class="monitor-metric">
+    <span class="metric-label">disabled</span>
+    <span class="metric-value muted">{{ disabled_services|join(", ") }}</span>
+  </div>
+  {% endif %}
+</div>
+{% if suggestions %}
+<ul class="monitor-suggestions">
+  {% for s in suggestions %}
+  <li>{{ s }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% else %}
+<div class="monitor-bar placeholder">(no sample yet)</div>
+{% endif %}

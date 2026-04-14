@@ -24,6 +24,25 @@ Skill description: {description}
 """
 
 
+def quantize_binary(vector: list[float]) -> bytes:
+    """Pack a float vector's sign bits into bytes for sqlite-vec ``bit[N]`` storage.
+
+    Bit ``i`` is 1 iff ``vector[i] > 0``. Returns ``(len(vector) + 7) // 8`` bytes.
+    Raises ValueError if len(vector) is not a multiple of 8 (sqlite-vec
+    requires bit-packed dimensions to be byte-aligned).
+    """
+    n = len(vector)
+    if n % 8 != 0:
+        raise ValueError(
+            f"binary quantization requires dim % 8 == 0; got {n}"
+        )
+    out = bytearray(n // 8)
+    for i, x in enumerate(vector):
+        if x > 0.0:
+            out[i >> 3] |= 1 << (7 - (i & 7))
+    return bytes(out)
+
+
 def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
     """Return embedding vector from Ollama."""
     resp = httpx.post(

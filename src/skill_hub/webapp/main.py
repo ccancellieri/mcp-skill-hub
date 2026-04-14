@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
 
+from .middleware.banner import BannerMiddleware
+from .routes import control as control_routes
 from .routes import dashboard as dashboard_routes
 from .routes import intents as intents_routes
 from .routes import logs as logs_routes
@@ -37,6 +39,7 @@ _log = logging.getLogger(__name__)
 # ``app.state.plugin_nav`` — see base.html.
 _CORE_NAV: list[dict[str, Any]] = [
     {"key": "dashboard", "label": "Dashboard", "href": "/"},
+    {"key": "control", "label": "Control", "href": "/control"},
     {"key": "settings", "label": "Settings", "href": "/settings"},
     {"key": "logs", "label": "Logs", "href": "/logs"},
     {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
@@ -152,7 +155,10 @@ def create_app(store: Any) -> FastAPI:
     def healthz() -> dict:
         return {"ok": True}
 
+    app.add_middleware(BannerMiddleware)
+
     app.include_router(dashboard_routes.router)
+    app.include_router(control_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(verdicts_routes.router)
     app.include_router(tasks_routes.router)
