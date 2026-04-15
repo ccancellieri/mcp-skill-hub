@@ -673,12 +673,21 @@ document.addEventListener('DOMContentLoaded', () => {
 let _refDebounce = null;
 async function loadRefs(q) {
   clearTimeout(_refDebounce);
+  // Show loading indicator immediately
+  const container = document.getElementById('ref-results');
+  if (container && !container.firstChild) {
+    container.appendChild(_el('div',
+      'padding:10px 12px; color:var(--color-muted,#6c7086); font-size:11px', 'searching…'));
+  }
   _refDebounce = setTimeout(async () => {
     try {
       const r = await fetch('/tasks/refs?q=' + encodeURIComponent(q));
       if (r.ok) renderRefs(await r.json());
-    } catch(_) {}
-  }, 120);
+    } catch(_) {
+      const c = document.getElementById('ref-results');
+      if (c) { c.textContent = ''; c.appendChild(_el('div', 'padding:10px 12px; color:var(--color-muted,#6c7086); font-size:11px', 'failed to load')); }
+    }
+  }, 150);
 }
 
 // Safe DOM builder — builds nodes without innerHTML to avoid XSS
@@ -734,7 +743,17 @@ function renderRefs(data) {
         'skill:' + label, 'color:var(--color-accent,#89b4fa)', '\u26a1', label, s.description || ''));
     }
   }
-  if (!hasTasks && !hasSkills) {
+  const hasArticles = data.articles && data.articles.length;
+  if (hasArticles) {
+    container.appendChild(_sectionHeader('Articles', hasTasks || hasSkills));
+    for (const a of data.articles) {
+      const ns = a.namespace ? a.namespace.split(':')[0] : '';
+      container.appendChild(_refRow(
+        'doc:' + a.doc_id, 'color:var(--color-warn,#f9e2af)', '\u{1F4C4}',
+        a.display, ns));
+    }
+  }
+  if (!hasTasks && !hasSkills && !hasArticles) {
     container.appendChild(_el('div',
       'padding:10px 12px; color:var(--color-muted,#6c7086); font-size:11px', 'no results'));
   }

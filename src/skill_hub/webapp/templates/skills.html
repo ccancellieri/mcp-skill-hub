@@ -196,6 +196,10 @@
         {% for r in rows %}{% include "_skill_row.html" %}{% endfor %}
       </tbody>
     </table>
+    <div id="skill-empty" style="display:none; padding:32px; text-align:center;
+         color:var(--color-muted); font-size:12px">
+      No skills match your filters.
+    </div>
   </div>
 
   <div class="sk-detail-card">
@@ -254,6 +258,10 @@ function skillsPage() {
       });
       var tb = tbody;
       pinned.concat(rest).forEach(function (r) { tb.appendChild(r); });
+      // empty state
+      var visible = rows.filter(function (r) { return r.style.display !== 'none'; });
+      var emptyEl = document.getElementById('skill-empty');
+      if (emptyEl) emptyEl.style.display = visible.length ? 'none' : 'block';
     }
   };
 }

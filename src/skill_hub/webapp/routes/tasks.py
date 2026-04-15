@@ -266,20 +266,45 @@ def search_tasks(request: Request, q: str = "", mode: str = "text") -> Any:
     )
 
 
-def _parse_router_log(session_id: str) -> dict:
-    """Parse router.jsonl for model routing stats for a given session."""
+def _parse_router_log(
+    session_id: str,
+    created_at: str | None = None,
+    closed_at: str | None = None,
+) -> dict:
+    """Parse router.jsonl for model routing stats for a given task window.
+
+    Strategy:
+      1. Exact session_id match (fast path).
+      2. Time-window fallback: entries whose timestamp falls between
+         created_at and closed_at (or now for open tasks).
+         Needed because the MCP server's internal session UUID differs from
+         the Claude Code conversation UUID recorded in the router log.
+    """
     import json as _json
     from pathlib import Path
     from collections import Counter
+    from datetime import datetime
+
+    _EMPTY: dict = {"models": [], "plan_mode_count": 0, "tier_counts": {},
+                    "total_prompts": 0, "top_skills": [], "matched_by": "none"}
 
     router_log = Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"
     if not router_log.exists():
-        return {"models": [], "plan_mode_count": 0, "tier_counts": {}, "total_prompts": 0, "top_skills": []}
+        return _EMPTY.copy()
 
-    model_counter: Counter = Counter()
-    tier_counter: Counter = Counter()
-    plan_mode_count = 0
-    skills_counter: Counter = Counter()
+    # Parse task time window for fallback (stored as "YYYY-MM-DD HH:MM:SS")
+    ts_start: str | None = None
+    ts_end: str | None = None
+    try:
+        if created_at:
+            ts_start = created_at[:19].replace(" ", "T")  # ISO-compatible prefix
+        if closed_at:
+            ts_end = closed_at[:19].replace(" ", "T")
+    except Exception:
+        pass
+
+    by_session: list[dict] = []
+    by_time: list[dict] = []
 
     try:
         with router_log.open() as fh:
@@ -291,18 +316,46 @@ def _parse_router_log(session_id: str) -> dict:
                     entry = _json.loads(line)
                 except _json.JSONDecodeError:
                     continue
-                if entry.get("session_id") != session_id:
-                    continue
-                verdict = entry.get("verdict") or {}
-                model_counter[verdict.get("model", "unknown")] += 1
-                tier_counter[str(verdict.get("tier_used", 0))] += 1
-                if verdict.get("plan_mode"):
-                    plan_mode_count += 1
-                for sk in entry.get("preload_skills") or []:
-                    if sk:
-                        skills_counter[sk] += 1
+
+                # Exact session_id match
+                if session_id and entry.get("session_id") == session_id:
+                    by_session.append(entry)
+                    continue  # no need to check time window
+
+                # Time-window match (normalise "2026-04-15T20:57:48Z" → "2026-04-15T20:57:48")
+                if ts_start:
+                    raw_ts = (entry.get("ts") or "")[:19]
+                    if raw_ts >= ts_start and (ts_end is None or raw_ts <= ts_end):
+                        by_time.append(entry)
     except OSError:
         pass
+
+    entries = by_session if by_session else by_time
+    matched_by = "session_id" if by_session else ("time_window" if by_time else "none")
+
+    model_counter: Counter = Counter()
+    tier_counter: Counter = Counter()
+    plan_mode_count = 0
+    skills_counter: Counter = Counter()
+    tokens_saved = 0
+    compact_count = 0
+
+    for entry in entries:
+        verdict = entry.get("verdict") or {}
+        model_counter[verdict.get("model", "unknown")] += 1
+        # Support both old format (tier_used) and new format (tier)
+        tier = verdict.get("tier_used") or verdict.get("tier") or 1
+        tier_counter[str(tier)] += 1
+        if verdict.get("plan_mode"):
+            plan_mode_count += 1
+        # Support both old format (preload_skills top-level) and new (skills.preloaded)
+        skills_obj = entry.get("skills") or {}
+        for sk in (skills_obj.get("preloaded") or entry.get("preload_skills") or []):
+            if sk:
+                skills_counter[sk] += 1
+        tokens_saved += (entry.get("savings") or {}).get("tokens_estimated", 0) or 0
+        if (entry.get("compact") or {}).get("suggested"):
+            compact_count += 1
 
     total = sum(model_counter.values())
     models = [
@@ -319,21 +372,26 @@ def _parse_router_log(session_id: str) -> dict:
         "tier_counts": dict(tier_counter),
         "total_prompts": total,
         "top_skills": [{"name": n, "count": c} for n, c in skills_counter.most_common(5)],
+        "matched_by": matched_by,
+        "tokens_saved": tokens_saved,
+        "compact_count": compact_count,
     }
 
 
 @router.get("/tasks/{task_id}/stats/models")
 def task_model_stats(task_id: int, request: Request) -> JSONResponse:
-    """Return model routing stats for a task's session (from router.jsonl)."""
+    """Return model routing stats for a task's window (from router.jsonl)."""
     store = request.app.state.store
     task = store.get_task(task_id)
     if not task:
         return JSONResponse({"error": "task not found"}, status_code=404)
     task_dict = dict(task)
-    session_id = task_dict.get("session_id")
-    if not session_id:
-        return JSONResponse({"models": [], "total_prompts": 0, "session_id": None})
-    stats = _parse_router_log(session_id)
+    session_id = task_dict.get("session_id") or ""
+    stats = _parse_router_log(
+        session_id=session_id,
+        created_at=task_dict.get("created_at"),
+        closed_at=task_dict.get("closed_at"),
+    )
     stats["session_id"] = session_id
     return JSONResponse(stats)
 
@@ -346,8 +404,12 @@ def task_session_stats(task_id: int, request: Request) -> JSONResponse:
     if not task:
         return JSONResponse({"error": "task not found"}, status_code=404)
     task_dict = dict(task)
-    session_id = task_dict.get("session_id")
+    session_id = task_dict.get("session_id") or ""
+    closed_at = task_dict.get("closed_at")
+    created_at = task_dict.get("created_at")
 
+    # Try exact session_id match in session_context (only works when the MCP
+    # server UUID matches — legacy behaviour)
     message_count: int | None = None
     if session_id:
         try:
@@ -360,16 +422,30 @@ def task_session_stats(task_id: int, request: Request) -> JSONResponse:
         except Exception:
             pass
 
+    # Fallback: count router entries in the task time window.
+    # The MCP server's internal session UUID differs from the Claude Code
+    # conversation UUID, so the lookup above typically returns nothing.
+    if message_count is None and created_at:
+        try:
+            router_stats = _parse_router_log(
+                session_id=session_id,
+                created_at=created_at,
+                closed_at=closed_at,
+            )
+            if router_stats["total_prompts"] > 0:
+                message_count = router_stats["total_prompts"]
+        except Exception:
+            pass
+
     duration_hours: float | None = None
-    closed_at = task_dict.get("closed_at")
-    created_at = task_dict.get("created_at")
     if closed_at and created_at:
         try:
             from datetime import datetime
             fmt = "%Y-%m-%d %H:%M:%S"
             dt_close = datetime.strptime(closed_at[:19], fmt)
             dt_create = datetime.strptime(created_at[:19], fmt)
-            duration_hours = round((dt_close - dt_create).total_seconds() / 3600, 1)
+            delta = (dt_close - dt_create).total_seconds() / 3600
+            duration_hours = round(delta, 1) if delta >= 0.05 else None
         except Exception:
             pass
 
@@ -433,7 +509,49 @@ def task_refs(request: Request, q: str = "") -> JSONResponse:
     except Exception:
         skills = []
 
-    return JSONResponse({"tasks": tasks, "skills": skills})
+    # Articles — doc_id from vectors table (drafts, portfolio, memory docs)
+    # Excludes session/habit/task namespaces; surfaces plugin-indexed content only.
+    _article_ns_exclude = ("session:", "habits:", "tasks:", "skills")
+    articles: list[dict] = []
+    try:
+        if q:
+            art_rows = store._conn.execute(
+                "SELECT doc_id, namespace, metadata FROM vectors "
+                "WHERE lower(metadata) LIKE ? OR lower(doc_id) LIKE ? "
+                "ORDER BY indexed_at DESC LIMIT 10",
+                (f"%{q}%", f"%{q}%"),
+            ).fetchall()
+        else:
+            art_rows = store._conn.execute(
+                "SELECT doc_id, namespace, metadata FROM vectors "
+                "WHERE namespace NOT LIKE 'session:%' AND namespace NOT LIKE 'habits:%' "
+                "AND namespace NOT LIKE 'tasks:%' AND namespace != 'skills' "
+                "ORDER BY indexed_at DESC LIMIT 10"
+            ).fetchall()
+        import json as _json
+        for r in art_rows:
+            ns = r["doc_id"] if r else ""
+            skip = any(r["namespace"].startswith(p) for p in _article_ns_exclude)
+            if skip:
+                continue
+            try:
+                meta = _json.loads(r["metadata"] or "{}")
+            except Exception:
+                meta = {}
+            label = meta.get("title") or meta.get("type") or ""
+            doc_id = r["doc_id"]
+            # Use filename stem as display name if path-like
+            import os.path as _op
+            display = label or _op.basename(doc_id).replace(".md", "").replace("-", " ")
+            articles.append({
+                "doc_id": doc_id,
+                "namespace": r["namespace"],
+                "display": display[:60],
+            })
+    except Exception:
+        articles = []
+
+    return JSONResponse({"tasks": tasks, "skills": skills, "articles": articles})
 
 
 @router.post("/tasks/new")
