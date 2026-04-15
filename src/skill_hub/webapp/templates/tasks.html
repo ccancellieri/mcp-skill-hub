@@ -206,7 +206,18 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
   <form method="dialog" onsubmit="submitClose(event)">
     <h3>Close task <span id="close-id"></span></h3>
     <input type="hidden" id="close-task-id">
-    <label>compaction summary<textarea name="summary" rows="5" required></textarea></label>
+    <label style="margin-bottom:6px">
+      compaction summary
+      <span class="muted" style="font-size:10px; margin-left:6px">optional — leave blank to auto-generate</span>
+    </label>
+    <div style="position:relative">
+      <textarea id="close-summary" name="summary" rows="5"
+                placeholder="Leave blank to auto-generate from task content…"
+                style="width:100%; padding-right:90px"></textarea>
+      <button type="button" class="btn sm" id="btn-generate-summary"
+              style="position:absolute; top:6px; right:6px"
+              onclick="generateSummary()">generate</button>
+    </div>
     <menu><button value="cancel">cancel</button><button type="submit" class="btn">close task</button></menu>
   </form>
 </dialog>
@@ -299,6 +310,9 @@ function tasksApp() {
     openClose() {
       document.getElementById('close-id').textContent = '#' + this.selectedId;
       document.getElementById('close-task-id').value = this.selectedId;
+      // Pre-fill with title as a starting point
+      const ta = document.getElementById('close-summary');
+      if (ta) ta.value = this.selectedTask.title || '';
       document.getElementById('dlg-close').showModal();
     },
 
@@ -346,6 +360,25 @@ async function submitTeach(ev) {
   const j = await r.json();
   if (r.ok) { document.getElementById('dlg-teach').close(); alert('Teaching saved #' + j.teaching_id); }
   else { alert('Error: ' + (j.error||r.status)); }
+}
+async function generateSummary() {
+  const id = document.getElementById('close-task-id').value;
+  const btn = document.getElementById('btn-generate-summary');
+  const ta = document.getElementById('close-summary');
+  if (!id) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch('/tasks/' + id + '/suggest-summary');
+    if (r.ok) {
+      const j = await r.json();
+      ta.value = j.summary || '';
+      btn.textContent = j.source === 'llm' ? 'generated ✓' : 'title used ✓';
+    } else {
+      btn.textContent = 'failed';
+    }
+  } catch(_) { btn.textContent = 'failed'; }
+  setTimeout(() => { btn.disabled = false; btn.textContent = 'generate'; }, 2000);
 }
 </script>
 {% endblock %}

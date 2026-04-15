@@ -48,6 +48,7 @@ from . import config as _cfg
 from .embeddings import (
     embed, rerank, compact, rewrite_query, optimize_context,
     EMBED_MODEL, RERANK_MODEL, ollama_available,
+    _generate,
 )
 from .indexer import index_all
 from .activity_log import log_tool, log_llm, log_banner
@@ -504,6 +505,30 @@ def close_session(summary: str = "") -> str:
 # Tasks (cross-session context)
 
 
+def _generate_title(summary: str, context: str = "") -> str:
+    """Generate a short task title from content using local LLM, or extract first line."""
+    content = (summary or context or "").strip()
+    if not content:
+        return "Untitled task"
+    # Try local LLM first
+    if should_run_llm("title"):
+        try:
+            prompt = (
+                "Write a concise task title in 6 words or fewer that describes this work.\n"
+                "Reply with only the title, no punctuation at the end.\n\n"
+                f"{content[:600]}\n\nTitle:"
+            )
+            generated = _generate(prompt, model=RERANK_MODEL, timeout=15.0, num_predict=30)
+            generated = generated.strip().strip('"').strip("'")
+            if generated and len(generated) < 120:
+                return generated
+        except Exception:
+            pass
+    # Fallback: first non-empty line, capped at 80 chars
+    first_line = next((ln.strip() for ln in content.splitlines() if ln.strip()), content)
+    return first_line[:80]
+
+
 @mcp.tool()
 def save_task(
     title: str,
@@ -518,10 +543,15 @@ def save_task(
     than merging -- callers should deduplicate before saving.
     """
     log_tool("save_task", title=title, tags=tags)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
 
-    vector = embed(f"{title}: {summary}")
+    # Auto-generate title when caller leaves it blank or too short
+    if not title or len(title.strip()) < 4:
+        title = _generate_title(summary, context)
+
+    try:
+        vector = embed(f"{title}: {summary}")
+    except RuntimeError:
+        vector = []
     tid = _store.save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
@@ -1924,6 +1954,97 @@ def disable_plugin_task(plugin: str, name: str) -> str:
     )
     _store._conn.commit()
     return f"Disabled {plugin}:{name}"
+
+
+_CORE_SCHEDULED_TASKS: dict[str, dict] = {
+    "promote_memory": {
+        "cron": "0 3 * * 0",  # Sunday 3 AM
+        "description": "Weekly memory promotion: elevate frequently-accessed vectors, prune stale L0/L1.",
+        "enabled_default": False,
+        "prompt": (
+            "Run memory promotion. Call promote_memory(dry_run=False). "
+            "After it completes, report how many vectors were promoted or pruned "
+            "and which namespaces were most affected. "
+            "If no actions taken, confirm system is healthy."
+        ),
+    },
+    "index_skills": {
+        "cron": "30 2 * * 1",  # Monday 2:30 AM
+        "description": "Weekly skill re-index: refreshes embeddings for all installed skills.",
+        "enabled_default": False,
+        "prompt": (
+            "Run index_skills(). Report how many skills were indexed and any errors."
+        ),
+    },
+}
+
+
+@mcp.tool()
+def enable_core_task(name: str) -> str:
+    """Enable a built-in core scheduled task (e.g. promote_memory, index_skills).
+
+    Writes a cron entry to
+    ``~/.claude/mcp-skill-hub/scheduled_tasks/core__{name}.json`` and records
+    enablement in ``plugin_task_state``.
+    """
+    task = _CORE_SCHEDULED_TASKS.get(name)
+    if not task:
+        available = ", ".join(_CORE_SCHEDULED_TASKS)
+        return f"Unknown core task '{name}'. Available: {available}"
+    out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "plugin": "core",
+        "name": name,
+        "cron": task["cron"],
+        "prompt": task["prompt"],
+        "description": task["description"],
+    }
+    out_file = out_dir / f"core__{name}.json"
+    out_file.write_text(json.dumps(entry, indent=2))
+    _store._conn.execute(
+        "INSERT OR REPLACE INTO plugin_task_state"
+        " (plugin, name, enabled, cron, external_id, updated_at)"
+        " VALUES (?, ?, 1, ?, ?, datetime('now'))",
+        ("core", name, task["cron"], str(out_file)),
+    )
+    _store._conn.commit()
+    log_tool("enable_core_task", name=name)
+    return f"Enabled core:{name} → {out_file}\nCron: {task['cron']}"
+
+
+@mcp.tool()
+def disable_core_task(name: str) -> str:
+    """Disable a previously-enabled core scheduled task."""
+    out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
+    out_file = out_dir / f"core__{name}.json"
+    if out_file.exists():
+        out_file.unlink()
+    _store._conn.execute(
+        "INSERT OR REPLACE INTO plugin_task_state"
+        " (plugin, name, enabled, cron, external_id, updated_at)"
+        " VALUES (?, ?, 0, NULL, NULL, datetime('now'))",
+        ("core", name),
+    )
+    _store._conn.commit()
+    log_tool("disable_core_task", name=name)
+    return f"Disabled core:{name}"
+
+
+@mcp.tool()
+def list_core_tasks() -> str:
+    """List all built-in core scheduled tasks with their status (enabled/disabled)."""
+    rows = _store._conn.execute(
+        "SELECT name, enabled, cron FROM plugin_task_state WHERE plugin = 'core'",
+    ).fetchall()
+    state = {r["name"]: dict(r) for r in rows}
+    lines = ["Core scheduled tasks:\n"]
+    for name, task in _CORE_SCHEDULED_TASKS.items():
+        s = state.get(name, {})
+        status = "enabled" if s.get("enabled") else "disabled"
+        lines.append(f"  {name} [{status}]  cron={task['cron']}")
+        lines.append(f"    {task['description']}")
+    return "\n".join(lines)
 
 
 @mcp.tool()

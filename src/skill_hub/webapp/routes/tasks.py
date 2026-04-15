@@ -105,16 +105,69 @@ async def update_task(task_id: int, request: Request) -> Any:
     return _render_row(request.app.state.templates, request, d, panel)
 
 
+def _auto_compact(task: dict) -> str:
+    """Generate a compaction summary: LLM if available, otherwise task title."""
+    content = (task.get("summary") or task.get("context") or "").strip()
+    title = (task.get("title") or "").strip()
+    if not content:
+        return title or "closed via dashboard"
+    try:
+        from ... import embeddings as _emb
+        result = _emb.compact(content)
+        if isinstance(result, dict):
+            parts = [result.get("summary") or ""]
+            decisions = result.get("decisions") or []
+            if decisions:
+                parts.append("Decisions: " + "; ".join(str(d) for d in decisions[:3]))
+            return "\n".join(p for p in parts if p).strip() or title
+    except Exception:
+        pass
+    return title or content[:200]
+
+
 @router.post("/tasks/{task_id}/close", response_class=HTMLResponse)
 async def close_task(task_id: int, request: Request) -> Any:
     form = await request.form()
-    summary = str(form.get("summary", "")) or "closed via dashboard"
+    summary = str(form.get("summary", "")).strip()
     store = request.app.state.store
+    if not summary:
+        task = _row_to_dict(store.get_task(task_id))
+        summary = _auto_compact(task)
     store.close_task(task_id, compact=summary, compact_vector=None)
     row = store.get_task(task_id)
     d = dict(row) if row else {}
     d["auto_approve"] = None
     return _render_row(request.app.state.templates, request, d, "closed")
+
+
+@router.get("/tasks/{task_id}/suggest-summary")
+def suggest_summary(task_id: int, request: Request) -> JSONResponse:
+    """Return a suggested compaction summary (LLM or title fallback)."""
+    store = request.app.state.store
+    task = _row_to_dict(store.get_task(task_id))
+    if not task:
+        return JSONResponse({"summary": "", "source": "not_found"}, status_code=404)
+    content = (task.get("summary") or task.get("context") or "").strip()
+    title = (task.get("title") or "").strip()
+    if content:
+        try:
+            from ... import embeddings as _emb
+            result = _emb.compact(content)
+            if isinstance(result, dict) and (result.get("summary") or result.get("title")):
+                parts = []
+                if result.get("title") and result["title"] != "Untitled":
+                    parts.append(result["title"])
+                if result.get("summary"):
+                    parts.append(result["summary"])
+                decisions = result.get("decisions") or []
+                if decisions:
+                    parts.append("Decisions: " + "; ".join(str(d) for d in decisions[:3]))
+                text = "\n".join(p for p in parts if p).strip()
+                if text:
+                    return JSONResponse({"summary": text, "source": "llm"})
+        except Exception:
+            pass
+    return JSONResponse({"summary": title, "source": "title"})
 
 
 @router.post("/tasks/{task_id}/reopen", response_class=HTMLResponse)
