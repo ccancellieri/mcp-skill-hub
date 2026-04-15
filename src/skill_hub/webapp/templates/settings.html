@@ -2,146 +2,165 @@
 {% block title %}settings{% endblock %}
 {% block content %}
 <style>
-  .settings-layout {
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  .settings-wrap {
     display: grid;
-    grid-template-columns: 210px 1fr;
+    grid-template-columns: 220px 1fr;
     gap: 0;
     height: calc(100vh - 120px);
-    min-height: 500px;
-  }
-  @media (max-width: 800px) {
-    .settings-layout { grid-template-columns: 1fr; height: auto; }
-    .settings-nav { display: none; }
+    min-height: 520px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
   }
 
-  /* ── Left nav ─────────────────────────────────────────────────────── */
-  .settings-nav {
+  /* ── Left nav ────────────────────────────────────────────────────────── */
+  .s-nav {
     border-right: 1px solid var(--color-border);
-    background: #0a0e13;
+    background: #090d12;
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
-    padding: 10px 0 16px;
+    overflow: hidden;
+  }
+  .s-nav-top {
+    padding: 10px;
+    border-bottom: 1px solid var(--color-border);
     flex-shrink: 0;
   }
-  .settings-nav-group {
-    padding: 10px 14px 3px;
+  .s-nav-top input {
+    width: 100%;
+    font-size: 12px;
+    padding: 5px 9px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-fg);
+    outline: none;
+  }
+  .s-nav-top input:focus { border-color: var(--color-accent); }
+  .s-nav-top input::placeholder { color: var(--color-muted); }
+  .s-nav-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 0 14px;
+  }
+  .s-nav-group {
+    padding: 10px 12px 3px;
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: .1em;
     color: var(--color-muted);
     font-weight: 700;
-    opacity: 0.55;
-    flex-shrink: 0;
+    opacity: 0.5;
   }
-  .settings-nav-item {
+  .s-nav-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 7px 14px;
-    font-size: 12.5px;
+    padding: 6px 12px;
+    font-size: 12px;
     color: var(--color-muted);
     cursor: pointer;
     border-left: 2px solid transparent;
-    transition: all 0.12s;
-    gap: 8px;
+    transition: background 0.1s, color 0.1s;
+    gap: 6px;
+    user-select: none;
   }
-  .settings-nav-item:hover { color: var(--color-fg); background: rgba(255,255,255,0.03); }
-  .settings-nav-item.active {
+  .s-nav-item:hover { color: var(--color-fg); background: rgba(255,255,255,0.03); }
+  .s-nav-item.active {
     color: var(--color-fg);
     border-left-color: var(--color-accent);
-    background: rgba(58,160,255,0.08);
+    background: rgba(58,160,255,0.09);
   }
-  .nav-count {
-    font-size: 10px;
-    background: rgba(125,136,150,0.2);
+  .s-nav-badge {
+    font-size: 9.5px;
+    min-width: 18px;
+    text-align: center;
+    background: rgba(125,136,150,0.15);
     color: var(--color-muted);
-    padding: 1px 6px;
-    border-radius: 10px;
+    padding: 1px 5px;
+    border-radius: 9px;
     flex-shrink: 0;
   }
-  .settings-nav-item.active .nav-count {
+  .s-nav-item.active .s-nav-badge {
     background: rgba(58,160,255,0.2);
     color: var(--color-accent);
   }
 
-  /* ── Right panel ─────────────────────────────────────────────────── */
-  .settings-panel {
+  /* ── Right panel ─────────────────────────────────────────────────────── */
+  .s-panel {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--color-bg);
   }
-  .settings-panel-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 14px 20px 11px;
+  .s-panel-head {
+    padding: 12px 18px 10px;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
     flex-shrink: 0;
-    gap: 12px;
-  }
-  .settings-panel-title {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
-  }
-  .settings-panel-help {
-    font-size: 11.5px;
-    color: var(--color-muted);
-    margin-top: 2px;
-  }
-  .settings-panel-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex-shrink: 0;
+    gap: 14px;
   }
-  .settings-panel-body {
+  .s-panel-title-area { flex: 1; min-width: 0; }
+  .s-panel-title { font-size: 14px; font-weight: 700; color: var(--color-fg); }
+  .s-panel-help  { font-size: 11px; color: var(--color-muted); margin-top: 3px; line-height: 1.5; }
+  .s-panel-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .s-panel-body  { flex: 1; overflow-y: auto; padding: 10px 18px 18px; }
+
+  /* ── Field filter bar ────────────────────────────────────────────────── */
+  .s-field-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 8px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .s-field-bar input {
     flex: 1;
-    overflow-y: auto;
-    padding: 14px 20px;
+    min-width: 0;
+    font-size: 11.5px;
+    padding: 4px 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-fg);
+    outline: none;
   }
+  .s-field-bar input:focus { border-color: var(--color-accent); }
+  .s-field-bar input::placeholder { color: var(--color-muted); }
+  .s-field-bar-count { font-size: 10.5px; color: var(--color-muted); white-space: nowrap; flex-shrink: 0; }
 
-  /* Section display — visibility driven by Alpine x-show.
-     Inline display:none prevents FOUC on non-first sections. */
-
-  /* ── Field grid ──────────────────────────────────────────────────── */
-  .fields-grid { display: grid; gap: 2px; }
+  /* ── Fields ──────────────────────────────────────────────────────────── */
+  .fields-grid { display: grid; gap: 1px; }
   .sfield {
     display: grid;
-    grid-template-columns: 220px 1fr;
+    grid-template-columns: 210px 1fr;
     gap: 12px;
     align-items: start;
-    padding: 7px 10px;
+    padding: 8px 10px;
     border-radius: var(--radius-sm);
     transition: background 0.1s;
   }
-  .sfield:hover { background: rgba(255,255,255,0.02); }
-  .sfield-label {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    padding-top: 6px;
-  }
+  .sfield:hover { background: rgba(255,255,255,0.025); }
+  .sfield.s-match { background: rgba(58,160,255,0.07); }
+  .sfield-label { padding-top: 3px; }
   .sfield-key {
     font-family: ui-monospace, monospace;
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--color-fg);
     word-break: break-all;
+    line-height: 1.4;
   }
   .sfield-full-key {
     font-family: ui-monospace, monospace;
-    font-size: 10px;
+    font-size: 9.5px;
     color: var(--color-muted);
     word-break: break-all;
+    margin-top: 2px;
   }
-  .sfield-control {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
+  .sfield-control { display: flex; flex-direction: column; gap: 4px; }
   .sfield-control input[type=text],
   .sfield-control input[type=number] {
     width: 100%;
@@ -155,163 +174,194 @@
     padding: 6px 8px;
     resize: vertical;
   }
-  .sfield-hint { font-size: 10px; color: var(--color-muted); }
+  .sfield-hint { font-size: 10px; color: var(--color-muted); line-height: 1.4; }
 
-  /* Checkbox row */
-  .bool-row {
-    display: flex;
+  /* ── Toggle switch ───────────────────────────────────────────────────── */
+  .toggle-row { display: flex; align-items: center; gap: 9px; padding: 4px 0; cursor: pointer; }
+  .t-switch {
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 0;
+    width: 34px;
+    height: 20px;
+    flex-shrink: 0;
   }
-  .bool-row input[type=checkbox] { margin: 0; width: 14px; height: 14px; }
-  .bool-label { font-size: 12px; color: var(--color-fg); }
+  .t-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .t-track {
+    position: absolute;
+    inset: 0;
+    background: rgba(125,136,150,0.22);
+    border-radius: 20px;
+    border: 1px solid rgba(125,136,150,0.28);
+    transition: background 0.18s, border-color 0.18s;
+    cursor: pointer;
+  }
+  .t-switch input:checked + .t-track { background: var(--color-accent); border-color: var(--color-accent); }
+  .t-track::before {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    top: 2px; left: 2px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.18s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  }
+  .t-switch input:checked + .t-track::before { transform: translateX(14px); }
+  .t-label { font-size: 12px; color: var(--color-muted); transition: color 0.15s; }
+  .toggle-row:has(input:checked) .t-label { color: var(--color-fg); }
 
-  /* Nested fields */
+  /* ── Nested dict ─────────────────────────────────────────────────────── */
   .nested-fields {
     display: grid;
-    gap: 2px;
+    gap: 1px;
     border-left: 2px solid var(--color-border);
-    padding-left: 12px;
-    margin-top: 4px;
+    padding-left: 10px;
+    margin-top: 3px;
   }
   .sfield.sub {
-    grid-template-columns: 160px 1fr;
-    padding: 5px 8px;
+    grid-template-columns: 150px 1fr;
+    padding: 5px 6px;
   }
+  .sfield.sub .sfield-key { font-size: 11px; }
 
-  /* ── Autosave indicator ──────────────────────────────────────────── */
-  .save-indicator {
-    font-size: 11.5px;
+  /* ── Save feedback ───────────────────────────────────────────────────── */
+  .s-saving-txt {
+    font-size: 11px;
     color: var(--color-muted);
     opacity: 0;
-    transition: opacity 0.15s ease-in;
+    transition: opacity 0.15s;
     white-space: nowrap;
   }
-  .htmx-request .save-indicator { opacity: 1 !important; }
+  .htmx-request .s-saving-txt { opacity: 1 !important; }
+  .s-save-status { font-size: 12px; transition: opacity 0.4s; }
+  .s-save-status .status.ok  { color: var(--color-good); }
+  .s-save-status .status.err { color: var(--color-bad); }
 
-  /* Save status (autofades via Alpine) */
-  .save-status-wrap {
-    font-size: 12px;
-    transition: opacity 0.4s ease;
-  }
-  .save-status-wrap .status.ok { color: var(--color-good); }
-  .save-status-wrap .status.err { color: var(--color-bad); }
-
-  /* Mobile section picker */
-  .mobile-section-pick { display: none; padding: 10px 0 8px; }
+  /* ── Responsive ──────────────────────────────────────────────────────── */
   @media (max-width: 800px) {
-    .mobile-section-pick { display: block; }
-    .settings-layout { display: block; }
+    .settings-wrap { grid-template-columns: 1fr; height: auto; }
+    .s-nav { display: none; }
   }
 </style>
 
-{% set ns = namespace(first_non_empty='') %}
+{% set ns = namespace(first='') %}
 {% for prefix, label in buckets %}
-  {% if groups[prefix] and not ns.first_non_empty %}
-    {% set ns.first_non_empty = prefix %}
-  {% endif %}
+  {% if groups[prefix] and not ns.first %}{% set ns.first = prefix %}{% endif %}
 {% endfor %}
 
 <div class="page-h" style="margin-bottom:10px">
   Settings
-  <span class="muted">— <code>~/.claude/mcp-skill-hub/config.json</code></span>
+  <span class="muted" style="font-size:12px;font-weight:400">— <code>~/.claude/mcp-skill-hub/config.json</code></span>
 </div>
 
 <form hx-post="/settings/save"
-      hx-target="#save-status"
+      hx-target="#s-save-out"
       hx-swap="innerHTML"
       hx-trigger="change delay:1200ms, submit"
-      hx-indicator=".save-indicator"
-      x-data="{
-        active: '{{ ns.first_non_empty }}',
-        fadeTimer: null,
-        onSaved() {
-          const el = document.getElementById('save-status');
-          if (!el) return;
-          el.parentElement.style.opacity = '1';
-          clearTimeout(this.fadeTimer);
-          this.fadeTimer = setTimeout(() => {
-            el.parentElement.style.opacity = '0';
-          }, 3000);
-        }
-      }"
-      @htmx:after-swap.window="onSaved()"
-      class="settings-form">
+      hx-indicator=".s-saving-txt"
+      x-data="settingsPage('{{ ns.first }}')"
+      @htmx:after-swap.window="onSaved()">
 
-  <div class="settings-layout">
+  <div class="settings-wrap">
 
     {# ── Left nav ── #}
-    <nav class="settings-nav">
-      {% set ns2 = namespace(last_group='') %}
-      {% for prefix, label in buckets %}
-        {% set entries = groups[prefix] %}
-        {% if entries %}
-          {# Emit group header when group changes #}
-          {% if prefix in nav_groups and nav_groups[prefix] != ns2.last_group %}
-            {% set ns2.last_group = nav_groups[prefix] %}
-            <div class="settings-nav-group">{{ nav_groups[prefix] }}</div>
+    <nav class="s-nav">
+      <div class="s-nav-top">
+        <input x-model="navQ"
+               @input="navQ = $event.target.value"
+               placeholder="filter sections…"
+               autocomplete="off" spellcheck="false"
+               type="text">
+      </div>
+      <div class="s-nav-list">
+        {% set ns2 = namespace(last_group='') %}
+        {% for prefix, label in buckets %}
+          {% set entries = groups[prefix] %}
+          {% if entries %}
+            {% if prefix in nav_groups and nav_groups[prefix] != ns2.last_group %}
+              {% set ns2.last_group = nav_groups[prefix] %}
+              <div class="s-nav-group" x-show="!navQ">{{ nav_groups[prefix] }}</div>
+            {% endif %}
+            <div class="s-nav-item"
+                 :class="{ active: active === '{{ prefix }}' }"
+                 x-show="!navQ || '{{ label|lower }}'.includes(navQ.toLowerCase())"
+                 @click="switchSection('{{ prefix }}')">
+              <span>{{ label }}</span>
+              <span class="s-nav-badge">{{ entries|length }}</span>
+            </div>
           {% endif %}
-          <div class="settings-nav-item"
-               :class="{ active: active === '{{ prefix }}' }"
-               @click="active = '{{ prefix }}'">
-            <span>{{ label }}</span>
-            <span class="nav-count">{{ entries|length }}</span>
-          </div>
-        {% endif %}
-      {% endfor %}
+        {% endfor %}
+      </div>
     </nav>
 
     {# ── Right panel ── #}
-    <div class="settings-panel">
-      <div class="settings-panel-header">
+    <div class="s-panel">
+      <div class="s-panel-head">
         {% for prefix, label in buckets %}
           {% if groups[prefix] %}
-            <div x-show="active === '{{ prefix }}'"
-                 style="flex:1; min-width:0{% if prefix != ns.first_non_empty %}; display:none{% endif %}">
-              <div class="settings-panel-title">{{ label }}</div>
+            <div class="s-panel-title-area"
+                 x-show="active === '{{ prefix }}'"
+                 {% if prefix != ns.first %}style="display:none"{% endif %}>
+              <div class="s-panel-title">{{ label }}</div>
               {% if bucket_help and bucket_help[prefix] %}
-                <div class="settings-panel-help">{{ bucket_help[prefix] }}</div>
+                <div class="s-panel-help">{{ bucket_help[prefix] }}</div>
               {% endif %}
             </div>
           {% endif %}
         {% endfor %}
-        <div class="settings-panel-actions">
-          <span class="save-indicator">Saving…</span>
-          <div class="save-status-wrap" style="opacity:0">
-            <div id="save-status"></div>
+        <div class="s-panel-actions">
+          <span class="s-saving-txt">Saving…</span>
+          <div class="s-save-status" style="opacity:0">
+            <div id="s-save-out"></div>
           </div>
-          <button type="submit" class="btn btn-sm">Save</button>
+          <button type="submit" class="btn sm">Save</button>
         </div>
       </div>
 
-      <div class="settings-panel-body">
+      <div class="s-panel-body">
         {% for prefix, label in buckets %}
           {% set entries = groups[prefix] %}
           {% if entries %}
-          <div class="settings-section-content"
+          <div data-prefix="{{ prefix }}"
                x-show="active === '{{ prefix }}'"
-               {% if prefix != ns.first_non_empty %}style="display:none"{% endif %}>
+               {% if prefix != ns.first %}style="display:none"{% endif %}>
+            <div class="s-field-bar">
+              <input type="text"
+                     x-model="fieldQ"
+                     @input="fieldQ = $event.target.value"
+                     placeholder="filter keys…"
+                     autocomplete="off" spellcheck="false">
+              <span class="s-field-bar-count"
+                    x-text="fieldMatchCount({{ entries|length }}) + ' / {{ entries|length }}'"></span>
+            </div>
             <div class="fields-grid">
               {% for e in entries %}
-                <div class="sfield {% if e.type == 'dict' and not e.json_mode %}dict-parent{% endif %}">
+                {% set short = e.key[e.key.find('.')+1:] if '.' in e.key else e.key %}
+                <div class="sfield{% if e.type == 'dict' and not e.json_mode %} dict-parent{% endif %}"
+                     data-key="{{ e.key }}"
+                     :class="{ 's-match': fieldQ && '{{ e.key }}'.includes(fieldQ) }"
+                     x-show="!fieldQ || '{{ e.key }}'.includes(fieldQ)">
                   <div class="sfield-label">
-                    {# Show short key (strip prefix) for readability #}
-                    {% set short = e.key[e.key.find('.')+1:] if '.' in e.key else e.key %}
                     {% if short != e.key %}
-                      <span class="sfield-key">{{ short }}</span>
-                      <span class="sfield-full-key">{{ e.key }}</span>
+                      <div class="sfield-key">{{ short }}</div>
+                      <div class="sfield-full-key">{{ e.key }}</div>
                     {% else %}
-                      <span class="sfield-key">{{ e.key }}</span>
+                      <div class="sfield-key">{{ e.key }}</div>
                     {% endif %}
                   </div>
                   <div class="sfield-control">
                     {% if e.type == 'bool' %}
                       <input type="hidden" name="__bool__" value="{{ e.key }}">
-                      <div class="bool-row">
-                        <input type="checkbox" name="{{ e.key }}"{% if e.value %} checked{% endif %}>
-                        <span class="bool-label">{% if e.value %}enabled{% else %}disabled{% endif %}</span>
-                      </div>
+                      <label class="toggle-row">
+                        <span class="t-switch">
+                          <input type="checkbox" name="{{ e.key }}"
+                                 {% if e.value %}checked{% endif %}
+                                 onchange="var lb=this.closest('.toggle-row').querySelector('.t-label');if(lb)lb.textContent=this.checked?'enabled':'disabled'">
+                          <span class="t-track"></span>
+                        </span>
+                        <span class="t-label">{{ 'enabled' if e.value else 'disabled' }}</span>
+                      </label>
                     {% elif e.type == 'int' %}
                       <input type="number" name="{{ e.key }}" value="{{ e.value }}">
                     {% elif e.type == 'float' %}
@@ -329,16 +379,21 @@
                             <div class="sfield-control">
                               {% if c.type == 'bool' %}
                                 <input type="hidden" name="__bool__" value="{{ c.key }}">
-                                <div class="bool-row">
-                                  <input type="checkbox" name="{{ c.key }}"{% if c.value %} checked{% endif %}>
-                                  <span class="bool-label">{% if c.value %}enabled{% else %}disabled{% endif %}</span>
-                                </div>
+                                <label class="toggle-row">
+                                  <span class="t-switch">
+                                    <input type="checkbox" name="{{ c.key }}"
+                                           {% if c.value %}checked{% endif %}
+                                           onchange="var lb=this.closest('.toggle-row').querySelector('.t-label');if(lb)lb.textContent=this.checked?'on':'off'">
+                                    <span class="t-track"></span>
+                                  </span>
+                                  <span class="t-label">{{ 'on' if c.value else 'off' }}</span>
+                                </label>
                               {% elif c.type == 'int' %}
                                 <input type="number" name="{{ c.key }}" value="{{ c.value }}">
                               {% elif c.type == 'float' %}
                                 <input type="number" step="any" name="{{ c.key }}" value="{{ c.value }}">
                               {% else %}
-                                <input type="text" name="{{ c.key }}" value="{{ c.value }}">
+                                <input type="text" name="{{ c.key }}" value="{{ c.value or '' }}">
                               {% endif %}
                             </div>
                           </div>
@@ -354,7 +409,7 @@
                         <span class="sfield-hint">JSON array — invalid JSON on save is ignored.</span>
                       {% endif %}
                     {% else %}
-                      <input type="text" name="{{ e.key }}" value="{{ e.value }}">
+                      <input type="text" name="{{ e.key }}" value="{{ e.value or '' }}">
                     {% endif %}
                   </div>
                 </div>
@@ -364,9 +419,45 @@
           {% endif %}
         {% endfor %}
       </div>
-    </div>{# end settings-panel #}
+    </div>
 
-  </div>{# end settings-layout #}
-
+  </div>
 </form>
+
+<script>
+function settingsPage(initial) {
+  return {
+    active: initial,
+    navQ: '',
+    fieldQ: '',
+    fadeTimer: null,
+
+    switchSection(prefix) {
+      this.active = prefix;
+      this.fieldQ = '';
+    },
+
+    fieldMatchCount(total) {
+      if (!this.fieldQ) return total;
+      const section = document.querySelector(`[data-prefix="${this.active}"]`);
+      if (!section) return total;
+      let n = 0;
+      section.querySelectorAll('.sfield[data-key]').forEach(el => {
+        if ((el.dataset.key || '').includes(this.fieldQ)) n++;
+      });
+      return n;
+    },
+
+    onSaved() {
+      const el = document.getElementById('s-save-out');
+      if (!el) return;
+      el.parentElement.style.opacity = '1';
+      clearTimeout(this.fadeTimer);
+      this.fadeTimer = setTimeout(() => {
+        el.parentElement.style.opacity = '0';
+      }, 3000);
+    }
+  };
+}
+</script>
 {% endblock %}
