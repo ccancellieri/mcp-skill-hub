@@ -102,6 +102,102 @@ def _check_profile_drift() -> str:
     )
 
 
+def _ensure_open_tasks() -> str:
+    """Scan MEMORY.md for PARTIAL/DEFERRED/ongoing entries that have no open task.
+
+    Creates open tasks directly (Python API, no LLM cost) for any work that
+    is tracked in memory but missing from the task list. Returns a brief
+    advisory string listing created tasks, or empty string on no-op / error.
+
+    Opt-out via config ``task_auto_create_enabled`` (default True).
+    """
+    try:
+        from skill_hub import config as _cfg
+        if _cfg.get("task_auto_create_enabled") is False:
+            return ""
+    except Exception:
+        pass
+
+    try:
+        from skill_hub.store import SkillStore
+        import re
+
+        memory_index = Path.home() / ".claude" / "projects" / "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
+        # Fall back to scanning memory dirs that might exist
+        if not memory_index.exists():
+            memory_dirs = list(Path.home().glob(".claude/projects/*/memory/MEMORY.md"))
+            if not memory_dirs:
+                return ""
+            memory_index = memory_dirs[0]
+
+        text = memory_index.read_text(encoding="utf-8", errors="replace")
+
+        # Patterns that indicate unfinished work
+        partial_pattern = re.compile(
+            r"PARTIAL|DEFERRED|WIP|ongoing|in.progress|wave-\d+ files remain|not yet|remain",
+            re.IGNORECASE,
+        )
+        # Extract lines with links: - [title](file.md) — description
+        link_re = re.compile(r"^[-*]\s+\[([^\]]+)\]\([^)]+\)\s*[—–-]+\s*(.+)$", re.MULTILINE)
+
+        candidates: list[tuple[str, str]] = []  # (title, description)
+        for m in link_re.finditer(text):
+            title, desc = m.group(1).strip(), m.group(2).strip()
+            if partial_pattern.search(desc):
+                candidates.append((title, desc))
+
+        if not candidates:
+            return ""
+
+        store = SkillStore()
+        # Get all open task titles (lower-cased for fuzzy dedup)
+        open_rows = store.list_tasks(status="open")
+        open_titles_lower = {dict(r)["title"].lower() for r in open_rows}
+
+        created: list[str] = []
+        for title, desc in candidates:
+            # Skip if a task with a very similar title already exists (substring match)
+            title_lower = title.lower()
+            already_exists = any(
+                title_lower in existing or existing in title_lower
+                for existing in open_titles_lower
+            )
+            if already_exists:
+                continue
+
+            # Derive tags from description keywords
+            tags_raw = []
+            for word in re.findall(r"\b(geoid|dynastore|mcp-skill-hub|pyright|duckdb|iceberg|ogc|stac|airflow|fao)\b", desc, re.IGNORECASE):
+                tags_raw.append(word.lower())
+            tags = ",".join(dict.fromkeys(tags_raw))  # dedup, preserve order
+
+            store.save_task(
+                title=title,
+                summary=f"[auto-created from memory index]\n{desc}",
+                vector=[],
+                context="",
+                tags=tags,
+                session_id="",
+            )
+            open_titles_lower.add(title_lower)
+            created.append(title)
+
+        store.close()
+
+        if not created:
+            return ""
+        names = "; ".join(f'"{t}"' for t in created[:3])
+        extra = f" (+{len(created)-3} more)" if len(created) > 3 else ""
+        return f"AUTO-TASKS: created {len(created)} open task(s) from memory — {names}{extra}. Visit /tasks to review."
+
+    except Exception as exc:
+        try:
+            log(f"ensure_open_tasks error: {exc}")
+        except Exception:
+            pass
+        return ""
+
+
 def _auto_switch_profile() -> str:
     """Score profiles by tag overlap with the last N closed tasks and switch
     to the best match (when it differs from the current active profile).
@@ -234,6 +330,10 @@ def main():
     if drift_msg:
         log(f"PROFILE drift detected  msg=\"{drift_msg[:100]}\"")
 
+    tasks_msg = _ensure_open_tasks()
+    if tasks_msg:
+        log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
+
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 
     system_msg = (
@@ -252,6 +352,8 @@ def main():
         system_msg = auto_switch_msg + "\n\n" + system_msg
     if drift_msg:
         system_msg = drift_msg + "\n\n" + system_msg
+    if tasks_msg:
+        system_msg = tasks_msg + "\n\n" + system_msg
 
     print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 
