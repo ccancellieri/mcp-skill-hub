@@ -198,12 +198,12 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
     <input type="hidden" name="_task_id" id="edit-task-id">
     <label>summary<textarea name="summary" id="edit-summary" rows="4"></textarea></label>
     <label>tags<input type="text" name="tags" id="edit-tags"></label>
-    <menu><button value="cancel">cancel</button><button type="submit" class="btn">save</button></menu>
+    <menu><button type="button" onclick="document.getElementById('dlg-edit').close()">cancel</button><button type="submit" class="btn">save</button></menu>
   </form>
 </dialog>
 
 <dialog id="dlg-close">
-  <form method="dialog" onsubmit="submitClose(event)">
+  <form onsubmit="submitClose(event)">
     <h3>Close task <span id="close-id"></span></h3>
     <input type="hidden" id="close-task-id">
     <label style="margin-bottom:6px">
@@ -218,16 +218,16 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
               style="position:absolute; top:6px; right:6px"
               onclick="generateSummary()">generate</button>
     </div>
-    <menu><button value="cancel">cancel</button><button type="submit" class="btn">close task</button></menu>
+    <menu><button type="button" onclick="document.getElementById('dlg-close').close()">cancel</button><button type="submit" class="btn">close task</button></menu>
   </form>
 </dialog>
 
 <dialog id="dlg-teach">
-  <form method="dialog" onsubmit="submitTeach(event)">
+  <form onsubmit="submitTeach(event)">
     <h3>Teach from task <span id="teach-id"></span></h3>
     <input type="hidden" id="teach-task-id">
     <label>rule<input type="text" name="rule" required placeholder="when I ask about X, suggest…"></label>
-    <menu><button value="cancel">cancel</button><button type="submit" class="btn">save rule</button></menu>
+    <menu><button type="button" onclick="document.getElementById('dlg-teach').close()">cancel</button><button type="submit" class="btn">save rule</button></menu>
   </form>
 </dialog>
 
