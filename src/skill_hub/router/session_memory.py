@@ -75,6 +75,7 @@ def build_session_memory(
         max_tokens=max_tokens,
         temperature=0.1,
         timeout=60.0,
+        cache=True,  # ephemeral cache_control on Anthropic tiers
     )
     return text.strip()
 
@@ -105,6 +106,7 @@ def update_session_memory(
         max_tokens=max_tokens,
         temperature=0.1,
         timeout=60.0,
+        cache=True,  # ephemeral cache_control on Anthropic tiers
     )
     return text.strip()
 

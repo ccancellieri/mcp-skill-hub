@@ -32,9 +32,14 @@ class LLMProvider(Protocol):
         temperature: float = 0.2,
         timeout: float = 60.0,
         stop: list[str] | None = None,
+        cache: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> str:
-        """Single-turn text completion. Returns generated text."""
+        """Single-turn text completion. Returns generated text.
+
+        ``cache=True`` attaches an ephemeral ``cache_control`` marker to the
+        last user content block for Anthropic models; no-op elsewhere.
+        """
         ...
 
     def chat(
@@ -46,6 +51,7 @@ class LLMProvider(Protocol):
         max_tokens: int = 512,
         temperature: float = 0.2,
         timeout: float = 60.0,
+        cache: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> str:
         """Multi-turn chat. ``messages`` is a list of ``{role, content}`` dicts

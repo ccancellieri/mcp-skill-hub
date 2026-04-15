@@ -19,6 +19,21 @@ def _wrap_ollama(model: str) -> str:
     return model if "/" in model else f"ollama/{model}"
 
 
+def _ollama_services_enabled() -> tuple[bool, bool]:
+    """Return (daemon_enabled, embed_enabled) from live config."""
+    cfg = _cfg.load_config()
+    services = cfg.get("services") or {}
+    daemon_on = bool((services.get("ollama_daemon") or {}).get("enabled", True))
+    embed_on = bool((services.get("ollama_embed") or {}).get("enabled", True))
+    return daemon_on, embed_on
+
+
+def _embed_is_enabled() -> bool:
+    """Return False when ollama_embed or ollama_daemon is disabled in config."""
+    daemon_on, embed_on = _ollama_services_enabled()
+    return daemon_on and embed_on
+
+
 def _generate(
     prompt: str,
     *,
@@ -72,6 +87,8 @@ def quantize_binary(vector: list[float]) -> bytes:
 
 def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
     """Return embedding vector via the configured LLM provider."""
+    if not _embed_is_enabled():
+        raise RuntimeError("ollama_embed service is disabled")
     try:
         vec = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout)
     except LLMError as exc:
@@ -965,7 +982,9 @@ def generate_auto_skill(canonical: str, count: int,
 
 
 def ollama_available(model: str = EMBED_MODEL) -> bool:
-    """Check whether the required Ollama model is available."""
+    """Check whether the required Ollama model is available and services are enabled."""
+    if not _embed_is_enabled():
+        return False
     try:
         resp = httpx.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
         models = [m["name"] for m in resp.json().get("models", [])]

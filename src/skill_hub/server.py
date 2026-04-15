@@ -511,7 +511,12 @@ def save_task(
     context: str = "",
     tags: str = "",
 ) -> str:
-    """Save an open task for retrieval in future sessions."""
+    """Save an open task for retrieval in future sessions.
+
+    Parallel-safe: each call creates an independent row (distinct task IDs).
+    Two concurrent calls with identical args produce two separate tasks rather
+    than merging -- callers should deduplicate before saving.
+    """
     log_tool("save_task", title=title, tags=tags)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
@@ -527,7 +532,12 @@ def save_task(
 
 @mcp.tool()
 def close_task(task_id: int, summary: str = "") -> str:
-    """Close a task with LLM-compacted summary (~200 tokens)."""
+    """Close a task with LLM-compacted summary (~200 tokens).
+
+    Parallel-safe: concurrent closes of the same task_id are idempotent --
+    the second call finds status='closed' and returns early without
+    overwriting the first compaction.
+    """
     log_tool("close_task", task_id=task_id)
     task = _store.get_task(task_id)
     if not task:
@@ -613,7 +623,12 @@ def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
 @mcp.tool()
 def update_task(task_id: int, summary: str = "", context: str = "",
                 tags: str = "") -> str:
-    """Update an open task with new information."""
+    """Update an open task with new information.
+
+    Parallel-safe: SQLite serialises writes. Concurrent updates to the
+    same task_id use last-write-wins semantics -- no corruption, no silent
+    data loss.
+    """
     log_tool("update_task", task_id=task_id)
     if not ollama_available(EMBED_MODEL):
         return f"Ollama model '{EMBED_MODEL}' not found."
@@ -1284,6 +1299,9 @@ def record_model_reward(
     domain_hints: str = "",
 ) -> str:
     """Record a reward for a ``(task_class, domain, tier)`` trial.
+
+    Parallel-safe: upsert is a single atomic SQLite statement. Concurrent
+    calls accumulate trials and successes without loss.
 
     Provide ``task_class`` directly, or leave it empty and pass ``complexity``
     + ``domain_hints`` so the bandit derives the bucket the same way

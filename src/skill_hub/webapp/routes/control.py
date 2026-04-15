@@ -62,11 +62,22 @@ def _render_card(request: Request, svc_name: str) -> HTMLResponse:
     )
 
 
+# Services that cannot function without the Ollama daemon.
+_OLLAMA_DEPENDENTS = frozenset({"ollama_router", "ollama_embed"})
+
+
 def _save_enabled(svc_name: str, enabled: bool) -> None:
     cfg = _cfg.load_config()
     services = cfg.setdefault("services", {})
-    entry = services.setdefault(svc_name, {})
-    entry["enabled"] = enabled
+    services.setdefault(svc_name, {})["enabled"] = enabled
+    # Cascade: disabling the daemon makes its dependents useless too.
+    # Re-enabling the daemon does NOT auto-enable dependents — user controls that.
+    if svc_name == "ollama_daemon" and not enabled:
+        for dep in _OLLAMA_DEPENDENTS:
+            services.setdefault(dep, {})["enabled"] = False
+    # Cascade: re-enabling a dependent service implies the daemon must be on.
+    if svc_name in _OLLAMA_DEPENDENTS and enabled:
+        services.setdefault("ollama_daemon", {})["enabled"] = True
     _cfg.save_config(cfg)
 
 
@@ -117,6 +128,11 @@ def control_stop(request: Request, svc: str) -> Any:
         return HTMLResponse("unknown service", status_code=404)
     service.stop()
     _save_enabled(svc, False)
+    if svc == "ollama_daemon":
+        for dep in _OLLAMA_DEPENDENTS:
+            dep_svc = reg.get(dep)
+            if dep_svc is not None:
+                dep_svc.stop()
     return _render_card(request, svc)
 
 
@@ -129,6 +145,11 @@ def control_toggle(request: Request, svc: str) -> Any:
     if service.status() == "running":
         service.stop()
         _save_enabled(svc, False)
+        if svc == "ollama_daemon":
+            for dep in _OLLAMA_DEPENDENTS:
+                dep_svc = reg.get(dep)
+                if dep_svc is not None:
+                    dep_svc.stop()
     else:
         service.start()
         _save_enabled(svc, True)
