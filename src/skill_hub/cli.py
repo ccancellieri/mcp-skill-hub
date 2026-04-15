@@ -3399,6 +3399,7 @@ type: {mem_type}
                     continue  # not enough signal
 
                 # Build a brief journal note
+                from datetime import datetime
                 _date = datetime.now().strftime("%Y-%m-%d")
                 _snippet = context_pieces[-1][:200].replace("\n", " ") if context_pieces else ""
                 _note = (
