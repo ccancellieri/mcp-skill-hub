@@ -584,8 +584,13 @@ def close_task(task_id: int, summary: str = "") -> str:
     digest = compact(content)
     compact_text = json.dumps(digest, indent=2)
 
-    # Re-embed the compacted summary for better future matching
-    compact_vector = embed(f"{digest.get('title', '')}: {digest.get('summary', '')}")
+    # Re-embed the compacted summary for better future matching.
+    # Optional: if the embed service is disabled, close without a vector
+    # (store leaves the existing vector column untouched).
+    try:
+        compact_vector = embed(f"{digest.get('title', '')}: {digest.get('summary', '')}")
+    except RuntimeError:
+        compact_vector = None
 
     _store.close_task(task_id, compact_text, compact_vector)
     _clear_active_task_marker(task_id)
