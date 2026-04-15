@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..services import log_tail
 
@@ -52,6 +52,13 @@ def task_logs(task_id: int, request: Request) -> Any:
         "_task_logs.html",
         {"task_id": task_id, "lines": lines},
     )
+
+
+@router.get("/tasks/{task_id}/logs/raw", response_class=PlainTextResponse)
+def task_logs_raw(task_id: int) -> Any:
+    """Plain-text log lines for the Alpine.js task detail view."""
+    lines = _filtered_tail(task_id, max_lines=200)
+    return PlainTextResponse("\n".join(lines))
 
 
 @router.websocket("/tasks/{task_id}/logs/ws")

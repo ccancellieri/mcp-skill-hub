@@ -52,4 +52,25 @@
     </div>
   </div>
 </section>
+
+<section class="panel" style="margin-top:16px" x-data="{open: true}">
+  <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+    <h2 style="margin:0; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-muted)">
+      MCP Server Log
+    </h2>
+    <button class="btn sm" @click="open=!open" x-text="open ? 'hide' : 'show'"></button>
+    <a class="btn sm" href="/logs" target="_blank" rel="noopener">full logs →</a>
+    <span class="muted" style="font-size:11px; margin-left:auto">live · 5s refresh</span>
+  </div>
+  <pre x-show="open" x-transition
+       id="ctrl-log-view"
+       class="log-view"
+       style="height:220px; margin:0"
+       hx-get="/control/log-tail"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML"
+       hx-on::after-request="this.scrollTop = this.scrollHeight">
+    <span class="level-stop">loading…</span>
+  </pre>
+</section>
 {% endblock %}
