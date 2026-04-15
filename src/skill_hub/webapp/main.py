@@ -189,6 +189,9 @@ def create_app(store: Any) -> FastAPI:
             sub_app = _load_plugin_subapp(plugin_path)
             if sub_app is None:
                 continue
+            # Pass parent app's shared state to the sub-app (store, templates, etc.)
+            sub_app.state.parent_store = app.state.store
+            sub_app.state.parent_templates = app.state.templates
             try:
                 app.mount(cfg["mount"], sub_app, name=cfg["plugin_name"])
             except Exception as exc:  # noqa: BLE001
