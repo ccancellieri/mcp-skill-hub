@@ -123,12 +123,35 @@ background thread and their output is discarded. Non-zero exits are logged
 but never propagate. Kill-switch: `PLUGIN_HOOKS_DISABLED=1`. Dispatch is
 centralized in `skill_hub.plugin_hooks.dispatch(event, payload)`.
 
-Current emit sites: `log_session` tool → `on_tool_call`. Session lifecycle
-hooks reserved for a future emit site.
+Current emit sites:
+- `log_session` tool → `on_tool_call` (synchronous, vetoes supported)
+- `close_session(summary)` → `on_session_end` (synchronous)
 
 ## A4 — Memory adapter
 
-Plugins declare memory roots to include in the shared search corpus:
+Plugins declare memory roots to include in the shared search corpus. Two
+declaration styles are supported:
+
+**M2 — per-index routing (preferred):**
+
+```json
+"memory": {
+  "indexes": [
+    {"name": "career:profile",   "level": "L3", "reads": ["refs/**/*.md"]},
+    {"name": "career:narrative", "level": "L2", "reads": ["state/drafts/**/*.md",
+                                                           "state/portfolio/**/*.md"]},
+    {"name": "career:private-signal", "level": "L2",
+     "reads": ["~/.claude/.../memory/private/**/*.md"]}
+  ],
+  "writes": ["~/.claude/mcp-skill-hub/my_plugin/**"]
+}
+```
+
+Each index entry embeds its glob-matched files into a named namespace at the
+declared level. Chunk settings come from the matching `vector_index_config` row
+(auto-created via `vector_indexes`).
+
+**Legacy — flat reads (backward-compat):**
 
 ```json
 "memory": {
@@ -137,12 +160,12 @@ Plugins declare memory roots to include in the shared search corpus:
 }
 ```
 
-Each matching `.md`/`.markdown`/`.txt` file is embedded into the namespace
-`memory:<plugin_name>` via `SkillStore.upsert_vector`. `search_context(query,
-include_plugin_memory=True)` merges these into the unified output under a
-"Plugin Memory" section. `writes` is advisory metadata (dashboard display /
-audit). Indexing happens inside `index_plugins()` via
-`skill_hub.memory_index.index_plugin_memory(store)`. Size cap per file: 200 kB.
+Legacy reads land in `memory:<plugin_name>` at level L2.
+
+In both styles, `search_context(query, include_plugin_memory=True)` merges
+results into the "Plugin Memory" section. `writes` is advisory (audit /
+dashboard). Size cap: 200 kB per file. Indexing runs inside `index_plugins()`
+via `skill_hub.memory_index.index_plugin_memory(store)`.
 
 ## A5 — Scheduled task templates
 
@@ -186,6 +209,57 @@ prompt against its roots via `embeddings.optimize_context` and returns
 KEEP/PRUNE/COMPACT/MERGE decisions. `exhaustion_save(context, namespace)`
 routes per-plugin digests to the right memory tree. `search_context` honors
 per-plugin relevance filters when surfacing private memory matches.
+
+## M2 — Named vector indexes (per-plugin config)
+
+Plugins declare the indexing configuration for each namespace they use:
+
+```json
+"vector_indexes": [
+  {
+    "name":           "career:profile",
+    "default_level":  "L3",
+    "half_life_days": 365,
+    "chunk_size":     4000,
+    "chunk_overlap":  400
+  },
+  {
+    "name":           "career:narrative",
+    "default_level":  "L2",
+    "half_life_days": 60,
+    "chunk_size":     3000,
+    "chunk_overlap":  300
+  }
+]
+```
+
+These rows are upserted into `vector_index_config` when `index_plugins()` runs.
+They control: default level for new vectors, recency decay half-life, and
+chunking for large files. Missing rows fall back to global defaults
+(L2, 30d, 4000/400).
+
+---
+
+## Memory levels L0–L4
+
+Every vector has a `level` tag that drives retrieval weighting and TTL:
+
+| Level | Scope | Half-life | Weight | Examples |
+|-------|-------|-----------|--------|---------|
+| L0 | ephemeral | 6h | 0.3 | scratch notes, single-turn tool outputs |
+| L1 | session | 7d | 0.8 | active task state, open decisions |
+| L2 | working | 30d | 1.0 | drafts, recent bugs, in-progress refs |
+| L3 | stable | 180d | 1.1 | decisions, patterns, feedback rules |
+| L4 | identity | 10y | 1.3 | role, career direction, preferences |
+
+Retrieval score formula: `score = cosine × level_weight × exp(-age_days / half_life)`.
+
+Promotion path: L1 (age>7d, access≥2) → L2; L2 (age>30d, access≥5) → L3.
+Run `promote_memory(dry_run=True)` to preview, `promote_memory(dry_run=False)`
+to apply. Core tasks `enable_core_task("promote_memory")` schedules this weekly.
+
+L4 is write-only via `remember_identity(fact, tag)` — never auto-promoted or
+auto-pruned.
 
 ---
 
