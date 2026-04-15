@@ -65,12 +65,31 @@ def _distinct(col: str) -> list[str]:
 @router.get("/verdicts", response_class=HTMLResponse)
 def verdicts_page(request: Request) -> Any:
     rows = _fetch_rows()
+    # inline stats
+    total = len(rows)
+    allow_n = sum(1 for r in rows if r.get("decision") == "allow")
+    deny_n  = sum(1 for r in rows if r.get("decision") == "deny")
+    total_hits = sum(r.get("hit_count") or 0 for r in rows)
+    avg_conf = (
+        sum(r.get("confidence") or 0 for r in rows) / total
+        if total else 0.0
+    )
+    pinned_n = sum(1 for r in rows if r.get("pinned"))
+    stats = {
+        "total": total,
+        "allow": allow_n,
+        "deny": deny_n,
+        "total_hits": total_hits,
+        "avg_conf": round(avg_conf, 3),
+        "pinned": pinned_n,
+    }
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
         "verdicts.html",
         {
             "rows": rows,
+            "stats": stats,
             "tools": _distinct("tool_name"),
             "sources": _distinct("source"),
             "active_tab": "verdicts",

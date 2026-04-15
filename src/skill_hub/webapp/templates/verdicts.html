@@ -1,77 +1,222 @@
 {% extends "base.html" %}
 {% block title %}verdicts{% endblock %}
 {% block content %}
-<h1 class="page-h">Verdicts <span class="muted">({{ rows|length }})</span></h1>
-<div x-data="verdictsPage()">
-  <form class="filter-bar"
-        hx-get="/verdicts/partial" hx-target="#verdict-rows" hx-swap="innerHTML"
-        hx-trigger="change from:select, change from:input[type=number], keyup changed delay:300ms from:input[type=text]">
-    <select name="tool">
-      <option value="">(any tool)</option>
-      {% for t in tools %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
-    </select>
-    <select name="source">
-      <option value="">(any source)</option>
-      {% for s in sources %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-    </select>
-    <select name="decision">
-      <option value="">(any)</option>
-      <option value="allow">allow</option>
-      <option value="deny">deny</option>
-    </select>
-    <input type="number" name="min_hits" min="0" placeholder="min hits" style="width:90px">
-    <input type="text" name="q" placeholder="search command…">
-  </form>
+<style>
+  /* ── stats strip ── */
+  .vd-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .vd-kpi {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+  }
+  .vd-kpi-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-muted); font-weight: 700; }
+  .vd-kpi-value { font-size: 20px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; color: var(--color-fg); }
+  .vd-kpi.good .vd-kpi-value { color: var(--color-good); }
+  .vd-kpi.bad  .vd-kpi-value { color: var(--color-bad); }
+  .vd-kpi-sub { font-size: 10px; color: var(--color-muted); margin-top: 2px; }
 
-  <div class="bulk-bar">
-    <button type="button" class="btn" @click="bulkDelete()"
-            :disabled="!selected.length">Delete selected</button>
-    <button type="button" class="btn" @click="bulkPromote()"
-            :disabled="!selected.length">Promote to allow-list</button>
-    <span class="muted" x-text="selected.length + ' selected'"></span>
+  /* ── filter + bulk bar ── */
+  .vd-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .vd-bar select, .vd-bar input { font-size: 12px; }
+
+  /* ── table ── */
+  .vd-table-wrap { overflow-x: auto; }
+  .vd-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .vd-table th {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--color-muted);
+    padding: 6px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    white-space: nowrap;
+    font-weight: 700;
+  }
+  .vd-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .vd-table tr:last-child td { border-bottom: none; }
+  .vd-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .vd-cmd {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--color-fg);
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .vd-tool {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
+  .vd-source { font-size: 10px; color: var(--color-muted); }
+  .vd-conf {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+  }
+  .vd-conf.high { color: var(--color-good); }
+  .vd-conf.mid  { color: var(--color-muted); }
+  .vd-conf.low  { color: var(--color-warn); }
+  .vd-hits {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+  }
+
+  /* decision badge */
+  .vd-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .vd-badge.allow { background: rgba(74,211,107,0.15); color: var(--color-good); }
+  .vd-badge.deny  { background: rgba(224,85,85,0.15);  color: var(--color-bad); }
+
+  /* row actions */
+  .vd-row-actions { display: flex; gap: 4px; white-space: nowrap; }
+</style>
+
+{% if stats %}
+<div class="vd-kpi-row">
+  <div class="vd-kpi">
+    <div class="vd-kpi-label">Total</div>
+    <div class="vd-kpi-value">{{ stats.total }}</div>
+    <div class="vd-kpi-sub">verdicts cached</div>
+  </div>
+  <div class="vd-kpi good">
+    <div class="vd-kpi-label">Allow</div>
+    <div class="vd-kpi-value">{{ stats.allow }}</div>
+    <div class="vd-kpi-sub">{{ (stats.allow / stats.total * 100)|round(0)|int if stats.total else 0 }}%</div>
+  </div>
+  <div class="vd-kpi bad">
+    <div class="vd-kpi-label">Deny</div>
+    <div class="vd-kpi-value">{{ stats.deny }}</div>
+    <div class="vd-kpi-sub">{{ (stats.deny / stats.total * 100)|round(0)|int if stats.total else 0 }}%</div>
+  </div>
+  <div class="vd-kpi">
+    <div class="vd-kpi-label">Total hits</div>
+    <div class="vd-kpi-value">{{ "{:,}".format(stats.total_hits) }}</div>
+    <div class="vd-kpi-sub">cache lookups</div>
+  </div>
+  <div class="vd-kpi">
+    <div class="vd-kpi-label">Avg conf</div>
+    <div class="vd-kpi-value" style="font-size:16px">{{ stats.avg_conf }}</div>
+    <div class="vd-kpi-sub">LLM certainty</div>
+  </div>
+  <div class="vd-kpi">
+    <div class="vd-kpi-label">Pinned</div>
+    <div class="vd-kpi-value">{{ stats.pinned }}</div>
+    <div class="vd-kpi-sub">manual overrides</div>
+  </div>
+</div>
+{% endif %}
+
+<div x-data="verdictsPage()">
+  <div class="vd-bar">
+    <form hx-get="/verdicts/partial" hx-target="#verdict-rows" hx-swap="innerHTML"
+          hx-trigger="change from:select, change from:input[type=number], keyup changed delay:300ms from:input[type=text]"
+          style="display:contents">
+      <select name="tool">
+        <option value="">(any tool)</option>
+        {% for t in tools %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+      </select>
+      <select name="source">
+        <option value="">(any source)</option>
+        {% for s in sources %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      <select name="decision">
+        <option value="">(any)</option>
+        <option value="allow">allow</option>
+        <option value="deny">deny</option>
+      </select>
+      <input type="number" name="min_hits" min="0" placeholder="min hits" style="width:88px">
+      <input type="text" name="q" placeholder="search command…" style="min-width:160px">
+    </form>
+    <button type="button" class="btn sm" @click="bulkDelete()"
+            :disabled="!selected.length">Delete (<span x-text="selected.length"></span>)</button>
+    <button type="button" class="btn sm" @click="bulkPromote()"
+            :disabled="!selected.length">Promote to allow</button>
   </div>
 
-  <table class="vtable">
-    <thead>
-      <tr>
-        <th style="width:30px"></th>
-        <th>tool</th><th>command</th><th>decision</th><th>source</th>
-        <th>conf</th><th>hits</th><th>pin</th><th>actions</th>
-      </tr>
-    </thead>
-    <tbody id="verdict-rows">
-      {% for r in rows %}{% include "_verdict_row.html" %}{% endfor %}
-      {% if not rows %}
-        <tr><td colspan="9" class="muted" style="text-align:center; padding:14px">
-          no verdicts cached &mdash; the auto-approve hook populates this after it runs.
+  <div class="vd-table-wrap">
+    <table class="vd-table">
+      <thead>
+        <tr>
+          <th style="width:28px"></th>
+          <th>Tool</th>
+          <th>Command</th>
+          <th>Decision</th>
+          <th>Source</th>
+          <th>Conf</th>
+          <th>Hits</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="verdict-rows">
+        {% for r in rows %}{% include "_verdict_row.html" %}{% endfor %}
+        {% if not rows %}
+        <tr><td colspan="8" style="text-align:center;padding:20px;color:var(--color-muted);font-size:12px">
+          No verdicts cached — the auto-approve hook populates this after it runs.
         </td></tr>
-      {% endif %}
-    </tbody>
-  </table>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
 </div>
+
 <script>
 function verdictsPage() {
   return {
     selected: [],
     toggle(h, on) {
       if (on) { if (!this.selected.includes(h)) this.selected.push(h); }
-      else { this.selected = this.selected.filter(x => x !== h); }
+      else { this.selected = this.selected.filter(function (x) { return x !== h; }); }
     },
     async bulkDelete() {
       if (!confirm('Delete ' + this.selected.length + ' verdicts?')) return;
-      const r = await fetch('/verdicts/bulk/delete', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({hashes: this.selected})
+      var r = await fetch('/verdicts/bulk/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hashes: this.selected })
       });
       if (r.ok) location.reload();
     },
     async bulkPromote() {
-      const r = await fetch('/verdicts/bulk/promote', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({hashes: this.selected})
+      var r = await fetch('/verdicts/bulk/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hashes: this.selected })
       });
-      const data = await r.json();
-      alert('Added ' + data.added + ' prefix(es): ' + (data.prefixes||[]).join(', '));
+      var data = await r.json();
+      alert('Added ' + data.added + ' prefix(es): ' + (data.prefixes || []).join(', '));
     }
   };
 }

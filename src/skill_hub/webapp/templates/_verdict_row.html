@@ -1,19 +1,32 @@
+{% set conf = r.confidence or 0 %}
 <tr id="v-{{ r.cmd_hash }}">
   <td><input type="checkbox" @change="toggle('{{ r.cmd_hash }}', $event.target.checked)"></td>
-  <td>{{ r.tool_name }}</td>
-  <td title="{{ r.command }}">{{ r.command[:80] }}{% if r.command|length > 80 %}…{% endif %}</td>
-  <td><span class="tag {{ r.decision }}">{{ r.decision }}</span></td>
-  <td class="muted">{{ r.source }}</td>
-  <td>{{ '%.3f'|format(r.confidence) }}</td>
-  <td>{{ r.hit_count }}</td>
-  <td>{% if r.pinned %}📌{% endif %}</td>
+  <td><span class="vd-tool">{{ r.tool_name }}</span></td>
   <td>
-    <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/flip"
-            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML">flip</button>
-    <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/pin"
-            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML">pin</button>
-    <button class="btn sm danger" hx-post="/verdicts/{{ r.cmd_hash }}/delete"
-            hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML"
-            hx-confirm="Delete this verdict?">×</button>
+    <span class="vd-cmd" title="{{ r.command }}">{{ r.command[:100] }}{% if r.command|length > 100 %}…{% endif %}</span>
+  </td>
+  <td>
+    <span class="vd-badge {{ r.decision }}">{{ r.decision }}</span>
+    {% if r.pinned %}<span style="margin-left:4px;font-size:10px">📌</span>{% endif %}
+  </td>
+  <td><span class="vd-source">{{ r.source }}</span></td>
+  <td>
+    <span class="vd-conf {% if conf >= 0.8 %}high{% elif conf >= 0.5 %}mid{% else %}low{% endif %}">
+      {{ '%.3f'|format(conf) }}
+    </span>
+  </td>
+  <td><span class="vd-hits">{{ r.hit_count }}</span></td>
+  <td>
+    <div class="vd-row-actions">
+      <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/flip"
+              hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML"
+              title="flip allow ↔ deny">flip</button>
+      <button class="btn sm" hx-post="/verdicts/{{ r.cmd_hash }}/pin"
+              hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML"
+              title="pin to preserve">pin</button>
+      <button class="btn sm danger" hx-post="/verdicts/{{ r.cmd_hash }}/delete"
+              hx-target="#v-{{ r.cmd_hash }}" hx-swap="outerHTML"
+              hx-confirm="Delete this verdict?">×</button>
+    </div>
   </td>
 </tr>
