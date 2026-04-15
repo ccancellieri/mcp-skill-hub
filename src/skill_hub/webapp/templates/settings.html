@@ -349,6 +349,9 @@
                     {% else %}
                       <div class="sfield-key">{{ e.key }}</div>
                     {% endif %}
+                    {% if e.hint %}
+                      <div class="sfield-hint">{{ e.hint }}</div>
+                    {% endif %}
                   </div>
                   <div class="sfield-control">
                     {% if e.type == 'bool' %}
@@ -375,6 +378,9 @@
                           <div class="sfield sub">
                             <div class="sfield-label">
                               <span class="sfield-key">{{ c.key.split('.')[-1] }}</span>
+                              {% if c.hint %}
+                                <div class="sfield-hint">{{ c.hint }}</div>
+                              {% endif %}
                             </div>
                             <div class="sfield-control">
                               {% if c.type == 'bool' %}

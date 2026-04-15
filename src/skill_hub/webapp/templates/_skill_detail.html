@@ -137,4 +137,29 @@
   {% else %}
   <div class="muted" style="font-size:11px">No feedback yet.</div>
   {% endif %}
+
+  <div x-data="{tasks: [], loading: true}" x-init="fetch('/skills/{{ s.id }}/tasks').then(r => r.json()).then(d => {tasks = d.tasks; loading = false}).catch(e => {loading = false})">
+    <div class="sd-section-label">Used in tasks</div>
+    <template x-if="loading">
+      <div class="muted" style="font-size:11px">loading…</div>
+    </template>
+    <template x-if="!loading && tasks.length === 0">
+      <div class="muted" style="font-size:11px">No tasks found yet.</div>
+    </template>
+    <template x-if="!loading && tasks.length > 0">
+      <table class="sd-fb-table">
+        <template x-for="t in tasks" :key="t.id">
+          <tr style="cursor:pointer" onclick="window.location='/tasks?id=' + this.dataset.taskId" :data-task-id="t.id">
+            <td style="color:var(--color-accent); font-weight:500">#<span x-text="t.id"></span></td>
+            <td style="flex:1; color:var(--color-fg)" x-text="(t.title || 'untitled').slice(0,60)"></td>
+            <td style="color:var(--color-muted); font-size:10px; white-space:nowrap" x-text="(t.created_at || '').slice(0,10)"></td>
+            <td style="color:var(--color-muted); font-size:10px; padding-left:8px">
+              <span x-show="t.status === 'closed'" style="color:var(--color-muted)">closed</span>
+              <span x-show="t.status === 'open'" style="color:var(--color-good)">open</span>
+            </td>
+          </tr>
+        </template>
+      </table>
+    </template>
+  </div>
 </div>

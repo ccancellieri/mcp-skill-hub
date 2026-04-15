@@ -10,6 +10,34 @@
     flex-wrap: wrap;
     gap: 8px;
   }
+  .router-header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .router-date-range {
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .window-picker {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+  }
+  .window-picker span {
+    color: var(--color-muted);
+  }
+  .window-picker a {
+    color: var(--color-muted);
+    text-decoration: none;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid transparent;
+  }
+  .window-picker a:hover { color: var(--color-fg); border-color: var(--color-border); }
+  .window-picker a.active { color: var(--color-accent); border-color: var(--color-accent); background: rgba(58,160,255,0.08); }
 
   /* ── KPI strip ── */
   .r-kpi-row {
@@ -45,6 +73,7 @@
   }
   .r-kpi.warn .r-kpi-value { color: var(--color-warn); }
   .r-kpi.good .r-kpi-value { color: var(--color-good); }
+  .r-kpi.accent .r-kpi-value { color: var(--color-accent); }
 
   /* ── two-column layout ── */
   .router-grid {
@@ -80,6 +109,7 @@
     gap: 8px;
   }
   .bar-row.wide { grid-template-columns: 120px 1fr 50px; }
+  .bar-row.full { grid-template-columns: 90px 1fr 70px; }
   .bar-key {
     font-size: 11px;
     font-family: ui-monospace, monospace;
@@ -116,6 +146,13 @@
   .model-haiku  { background: rgba(74,211,107,0.65); }
   .model-other  { background: rgba(125,136,150,0.4); }
 
+  /* confidence histogram colors */
+  .conf-very-low  { background: rgba(224, 85, 85, 0.6); }   /* < 0.5 */
+  .conf-low       { background: rgba(232,166,75,0.65); }     /* 0.5–0.7 (below T3 gate) */
+  .conf-mid       { background: rgba(58,160,255,0.5); }      /* 0.7–0.85 (below T2 gate) */
+  .conf-high      { background: rgba(74,211,107,0.55); }     /* 0.85–0.9 */
+  .conf-very-high { background: rgba(74,211,107,0.85); }     /* ≥ 0.9 (hard-switch zone) */
+
   /* ── latency table ── */
   .lat-table {
     width: 100%;
@@ -133,6 +170,7 @@
     font-variant-numeric: tabular-nums;
     font-family: ui-monospace, monospace;
   }
+  .lat-table .warn-text { color: var(--color-warn); }
 
   /* ── tier badge ── */
   .tier-badge {
@@ -191,20 +229,24 @@
   }
   .r-table tr:last-child td { border-bottom: none; }
   .r-table tr:hover td { background: rgba(255,255,255,0.015); }
+  .r-table tr.row-hard-switch td { border-left: 2px solid rgba(232,166,75,0.5); }
   .prompt-cell {
-    max-width: 280px;
+    max-width: 260px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--color-muted);
     font-size: 11px;
   }
-  .conf-low { color: var(--color-warn); }
-  .conf-ok  { color: var(--color-muted); }
+  .conf-value-low  { color: var(--color-bad); }
+  .conf-value-mid  { color: var(--color-warn); }
+  .conf-value-ok   { color: var(--color-muted); }
+  .cplx-value-high { color: var(--color-warn); }
+  .cplx-value-ok   { color: var(--color-muted); }
   .icon-check { color: var(--color-good); }
   .icon-dash  { color: rgba(125,136,150,0.3); }
 
-  /* ── low-confidence panel ── */
+  /* ── low-confidence / forced panel ── */
   .low-conf-list {
     display: flex;
     flex-direction: column;
@@ -215,6 +257,10 @@
     border: 1px solid rgba(232,166,75,0.15);
     border-radius: var(--radius-sm);
     padding: 8px 10px;
+  }
+  .low-conf-item.hard-switch {
+    background: rgba(224,85,85,0.05);
+    border-color: rgba(224,85,85,0.2);
   }
   .low-conf-prompt {
     font-size: 11.5px;
@@ -230,6 +276,18 @@
     gap: 10px;
     flex-wrap: wrap;
   }
+
+  /* ── T2 diagnostic note ── */
+  .tier-diagnostic {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: rgba(232,166,75,0.05);
+    border: 1px solid rgba(232,166,75,0.15);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .tier-diagnostic strong { color: var(--color-warn); }
 </style>
 
 {% if not log_exists %}
@@ -245,7 +303,18 @@
 
 <div class="router-header">
   <h1 class="page-h" style="margin:0">Router</h1>
-  <span class="muted">last {{ n_loaded }} prompts</span>
+  <div class="router-header-right">
+    {% if stats.first_ts and stats.last_ts and stats.first_ts != stats.last_ts %}
+    <span class="router-date-range">{{ stats.first_ts }} → {{ stats.last_ts }}</span>
+    {% endif %}
+    <div class="window-picker">
+      <span>window:</span>
+      {% for sz in [100, 500, 2000] %}
+        <a href="/router?n={{ sz }}" class="{% if n_req == sz %}active{% endif %}">{{ sz if sz < 2000 else 'all' }}</a>
+      {% endfor %}
+    </div>
+    <span class="muted">{{ n_loaded }} loaded</span>
+  </div>
 </div>
 
 {# ── KPI strip ── #}
@@ -258,27 +327,66 @@
   <div class="r-kpi">
     <div class="r-kpi-label">Avg latency</div>
     <div class="r-kpi-value">{{ stats.avg_latency_ms }}<span style="font-size:13px;font-weight:400"> ms</span></div>
-    <div class="r-kpi-sub">total pipeline</div>
+    <div class="r-kpi-sub">total pipeline per prompt</div>
   </div>
   <div class="r-kpi {% if stats.enriched > stats.total * 0.3 %}good{% endif %}">
     <div class="r-kpi-label">Enriched</div>
     <div class="r-kpi-value">{{ stats.enriched }}</div>
-    <div class="r-kpi-sub">thin prompts filled</div>
+    <div class="r-kpi-sub">
+      thin prompts auto-filled
+      {% if stats.avg_enrich_chars %}&nbsp;· avg {{ stats.avg_enrich_chars }} chars{% endif %}
+    </div>
   </div>
   <div class="r-kpi">
     <div class="r-kpi-label">Plan mode</div>
     <div class="r-kpi-value">{{ stats.plan_mode }}</div>
-    <div class="r-kpi-sub">ambiguous prompts</div>
+    <div class="r-kpi-sub">entered on ambiguous prompt</div>
   </div>
-  <div class="r-kpi {% if stats.low_conf_count > stats.total * 0.2 %}warn{% endif %}">
-    <div class="r-kpi-label">Low confidence</div>
-    <div class="r-kpi-value">{{ stats.low_conf_count }}</div>
-    <div class="r-kpi-sub">&lt;0.65 threshold</div>
+  <div class="r-kpi {% if stats.skills_preloaded_prompts > 0 %}accent{% endif %}">
+    <div class="r-kpi-label">Skills preloaded</div>
+    <div class="r-kpi-value">{{ stats.skills_preloaded_prompts }}</div>
+    <div class="r-kpi-sub">
+      prompts with injected skills
+      {% if stats.skills_preloaded_total %}&nbsp;· {{ stats.skills_preloaded_total }} total{% endif %}
+    </div>
   </div>
   <div class="r-kpi {% if stats.tokens_saved > 0 %}good{% endif %}">
     <div class="r-kpi-label">Tokens saved</div>
     <div class="r-kpi-value">{{ "{:,}".format(stats.tokens_saved) }}</div>
-    <div class="r-kpi-sub">via routing</div>
+    <div class="r-kpi-sub">estimated via routing</div>
+  </div>
+</div>
+
+{# ── Confidence histogram (full-width) ── #}
+<div class="r-card" style="margin-bottom:16px">
+  <h3 class="r-card-title">
+    Confidence distribution
+    <span style="font-weight:400;font-size:9px;color:var(--color-muted);margin-left:6px">
+      T2 gate ≥ 0.85 · T3 gate ≥ 0.7 · hard-switch ≥ 0.9
+    </span>
+  </h3>
+  {% set conf_colors = {"<0.5": "conf-very-low", "0.5-0.7": "conf-low", "0.7-0.85": "conf-mid", "0.85-0.9": "conf-high", "≥0.9": "conf-very-high"} %}
+  {% set conf_max = stats.conf_buckets.values()|list|max %}
+  <div class="bar-chart">
+    {% for bucket, count in stats.conf_buckets.items() %}
+      {% if count > 0 %}
+        {% set pct_bar = (count / conf_max * 100)|round(0)|int %}
+        {% set pct_tot = (count / stats.total * 100)|round(1) %}
+        <div class="bar-row full">
+          <span class="bar-key">{{ bucket }}</span>
+          <div class="bar-track">
+            <div class="bar-fill {{ conf_colors[bucket] }}" style="width:{{ pct_bar }}%"></div>
+          </div>
+          <span class="bar-val">{{ count }} <span style="opacity:.5">({{ pct_tot }}%)</span></span>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  <div style="margin-top:8px;font-size:10.5px;color:var(--color-muted)">
+    Avg complexity: <strong style="color:var(--color-fg)">{{ stats.avg_complexity }}</strong>
+    <span style="margin-left:12px">Avg confidence: <strong style="color:var(--color-fg)">
+      {{ ((stats.conf_buckets.get("<0.5", 0) * 0.45 + stats.conf_buckets.get("0.5-0.7", 0) * 0.6 + stats.conf_buckets.get("0.7-0.85", 0) * 0.775 + stats.conf_buckets.get("0.85-0.9", 0) * 0.875 + stats.conf_buckets.get("≥0.9", 0) * 0.95) / stats.total)|round(2) }}
+    </strong></span>
   </div>
 </div>
 
@@ -304,14 +412,16 @@
     </div>
   </div>
 
-  {# Tier distribution #}
+  {# Tier distribution + diagnostics #}
+  {% set tier_labels = {"1": "T1 heuristic", "2": "T2 Ollama", "3": "T3 Haiku"} %}
   <div class="r-card">
     <h3 class="r-card-title">Tier distribution</h3>
     <div class="bar-chart">
       {% for tier_key, count in stats.tier_counts.items() %}
         {% set pct = (count / total * 100)|round(1) %}
-        <div class="bar-row">
-          <span class="bar-key">T{{ tier_key }}</span>
+        {% set label = tier_labels.get(tier_key, "T" + tier_key) %}
+        <div class="bar-row wide">
+          <span class="bar-key">{{ label }}</span>
           <div class="bar-track">
             <div class="bar-fill tier-{{ tier_key }}" style="width:{{ pct }}%"></div>
           </div>
@@ -322,11 +432,38 @@
 
     <div style="margin-top:14px">
       <table class="lat-table">
+        {% if stats.avg_lat_t1 %}
         <tr><td>T1 heuristic avg</td><td>{{ stats.avg_lat_t1 }} ms</td></tr>
-        <tr><td>T2 Ollama avg</td><td>{{ stats.avg_lat_t2 }} ms</td></tr>
+        {% endif %}
+        {% if stats.avg_lat_t2 %}
+        <tr>
+          <td>T2 Ollama avg
+            <span style="margin-left:4px;font-size:10px;opacity:.6">({{ stats.t2_attempts }} runs)</span>
+          </td>
+          <td>{{ stats.avg_lat_t2 }} ms</td>
+        </tr>
+        {% endif %}
+        {% if stats.avg_lat_t3 %}
         <tr><td>T3 Haiku avg</td><td>{{ stats.avg_lat_t3 }} ms</td></tr>
+        {% endif %}
+        {% if not stats.avg_lat_t1 and not stats.avg_lat_t2 and not stats.avg_lat_t3 %}
+        <tr><td colspan="2" style="color:var(--color-muted);font-size:10px">per-tier latency not recorded</td></tr>
+        {% endif %}
       </table>
     </div>
+
+    {# T2 diagnostic: runs vs verdict wins #}
+    {% if stats.t2_attempts > 0 and stats.t2_successes == 0 %}
+    <div class="tier-diagnostic">
+      <strong>T2 ran {{ stats.t2_attempts }}×</strong> but produced 0 verdict wins —
+      Ollama may be unavailable or timing out
+      (avg {{ stats.avg_lat_t2 }} ms/attempt). T1 heuristic verdict used for all.
+    </div>
+    {% elif stats.t2_attempts > 0 %}
+    <div style="margin-top:8px;font-size:10.5px;color:var(--color-muted)">
+      T2 won {{ stats.t2_successes }}/{{ stats.t2_attempts }} attempts
+    </div>
+    {% endif %}
   </div>
 
   {# Top domains #}
@@ -351,36 +488,50 @@
 
   {# Scope + extras ── #}
   <div class="r-card">
-    <h3 class="r-card-title">Scope &amp; actions</h3>
+    <h3 class="r-card-title">Scope &amp; enforcement</h3>
     <table class="lat-table">
       {% for scope, cnt in stats.scope_counts.items() %}
+        {% if scope != '?' %}
         <tr><td>scope: {{ scope }}</td><td>{{ cnt }}</td></tr>
+        {% endif %}
       {% endfor %}
-      {% for enf, cnt in stats.enforcements.items() %}
-        <tr><td>enforcement: {{ enf }}</td><td>{{ cnt }}</td></tr>
-      {% endfor %}
-      <tr><td>compact suggested</td><td>{{ stats.compact_suggested }}</td></tr>
+      {% if stats.enforcements.get('hard_switch', 0) %}
+        <tr><td>hard switch (forced)</td><td class="warn-text">{{ stats.enforcements.get('hard_switch', 0) }}</td></tr>
+      {% endif %}
+      {% if stats.enforcements.get('suggest', 0) %}
+        <tr><td>suggest (advisory only)</td><td>{{ stats.enforcements.get('suggest', 0) }}</td></tr>
+      {% endif %}
+      <tr><td>plan mode triggered</td><td>{{ stats.plan_mode }}</td></tr>
+      <tr><td>/compact suggested</td><td>{{ stats.compact_suggested }}</td></tr>
+      <tr><td style="padding-top:8px">skills injected (prompts)</td><td style="padding-top:8px">{{ stats.skills_preloaded_prompts }}</td></tr>
+      <tr><td>total skills preloaded</td><td>{{ stats.skills_preloaded_total }}</td></tr>
     </table>
   </div>
 
 </div>
 
-{# ── Low-confidence samples ── #}
-{% if stats.low_conf_samples %}
+{# ── Forced switches + low confidence samples ── #}
+{% if stats.forced_samples %}
 <div class="r-card" style="margin-bottom:16px">
-  <h3 class="r-card-title">Low-confidence verdicts ({{ stats.low_conf_count }} total)</h3>
+  <h3 class="r-card-title">
+    Forced switches &amp; low confidence
+    <span style="font-weight:400;font-size:9px;color:var(--color-muted);margin-left:6px">
+      hard_switch enforcements + conf &lt; 0.5 — {{ stats.forced_count }} total
+    </span>
+  </h3>
   <div class="low-conf-list">
-    {% for s in stats.low_conf_samples %}
-    <div class="low-conf-item">
-      <div class="low-conf-prompt">{{ s.prompt }}</div>
+    {% for s in stats.forced_samples %}
+    <div class="low-conf-item {% if s.enforcement == 'hard_switch' %}hard-switch{% endif %}">
+      <div class="low-conf-prompt">{{ s.prompt or '(no prompt preview)' }}</div>
       <div class="low-conf-meta">
         <span>{{ s.ts }}</span>
         <span>
-          <span class="tier-badge tier-badge-{{ s.tier }}">T{{ s.tier }}</span>
+          <span class="tier-badge tier-badge-{{ s.tier }}">{{ s.tier_label }}</span>
           <span class="model-badge {{ s.model }}">{{ s.model }}</span>
+          {% if s.prev_model and s.prev_model != s.model %}<span style="color:var(--color-muted)">← {{ s.prev_model }}</span>{% endif %}
         </span>
         <span>conf={{ s.confidence }}</span>
-        <span>complexity={{ s.complexity }}</span>
+        {% if s.complexity %}<span>cplx={{ s.complexity }}</span>{% endif %}
         {% if s.reasoning %}<span>{{ s.reasoning }}</span>{% endif %}
         {% if s.enforcement and s.enforcement != 'none' %}
           <span class="enf-badge">{{ s.enforcement }}</span>
@@ -404,6 +555,7 @@
           <th>Tier</th>
           <th>Model</th>
           <th>Conf</th>
+          <th>Cplx</th>
           <th>Scope</th>
           <th>Enrich</th>
           <th>Plan</th>
@@ -413,7 +565,7 @@
       </thead>
       <tbody>
         {% for r in recent %}
-        <tr>
+        <tr class="{% if r.enforcement == 'hard_switch' %}row-hard-switch{% endif %}">
           <td class="muted" style="font-size:10px;white-space:nowrap">{{ r.ts }}</td>
           <td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--color-muted)">{{ r.session_id }}</td>
           <td>
@@ -421,10 +573,15 @@
           </td>
           <td>
             <span class="model-badge {{ r.model }}">{{ r.model }}</span>
+            {% if r.enforcement == 'hard_switch' %}<span class="enf-badge" style="margin-left:2px">→</span>{% endif %}
           </td>
-          <td class="{% if r.confidence < 0.65 %}conf-low{% else %}conf-ok{% endif %}"
+          <td class="{% if r.confidence < 0.5 %}conf-value-low{% elif r.confidence < 0.7 %}conf-value-mid{% else %}conf-value-ok{% endif %}"
               style="font-variant-numeric:tabular-nums;font-size:11px">
             {{ r.confidence }}
+          </td>
+          <td class="{% if r.complexity >= 0.7 %}cplx-value-high{% else %}cplx-value-ok{% endif %}"
+              style="font-variant-numeric:tabular-nums;font-size:11px">
+            {{ r.complexity }}
           </td>
           <td style="font-size:10px;color:var(--color-muted)">{{ r.scope }}</td>
           <td style="text-align:center">

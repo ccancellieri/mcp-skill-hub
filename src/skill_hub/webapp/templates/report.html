@@ -1,0 +1,566 @@
+{% extends "base.html" %}
+{% block title %}report{% endblock %}
+{% block content %}
+<style>
+/* ── layout ── */
+.rp-section { margin-bottom: 24px; }
+.rp-h2 {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--color-muted);
+  margin: 0 0 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ── KPI grid ── */
+.rp-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+.rp-kpi {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
+.rp-kpi-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-muted); font-weight: 600;
+}
+.rp-kpi-value {
+  font-size: 26px; font-weight: 700; color: var(--color-fg);
+  margin-top: 5px; font-variant-numeric: tabular-nums; line-height: 1;
+}
+.rp-kpi-sub { font-size: 10.5px; color: var(--color-muted); margin-top: 4px; }
+.rp-kpi.accent .rp-kpi-value { color: var(--color-accent); }
+.rp-kpi.good   .rp-kpi-value { color: var(--color-good); }
+.rp-kpi.warn   .rp-kpi-value { color: var(--color-warn); }
+
+/* ── two/three-col grid ── */
+.rp-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.rp-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+@media (max-width: 960px) {
+  .rp-grid-2, .rp-grid-3 { grid-template-columns: 1fr; }
+}
+
+/* ── card ── */
+.rp-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
+.rp-card-title {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--color-muted); font-weight: 700; margin: 0 0 12px;
+}
+
+/* ── bar chart ── */
+.rp-bar-list { display: flex; flex-direction: column; gap: 7px; }
+.rp-bar-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 60px;
+  align-items: center; gap: 8px;
+}
+.rp-bar-key {
+  font-size: 11px; font-family: ui-monospace, monospace;
+  color: var(--color-fg); text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rp-bar-track {
+  height: 8px; background: rgba(255,255,255,0.05);
+  border-radius: 3px; overflow: hidden;
+}
+.rp-bar-fill { height: 100%; border-radius: 3px; transition: width .3s; }
+.rp-bar-val { font-size: 10.5px; color: var(--color-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.fill-sonnet { background: rgba(58,160,255,0.65); }
+.fill-opus   { background: rgba(192,57,43,0.65); }
+.fill-haiku  { background: rgba(74,211,107,0.65); }
+.fill-accent { background: var(--color-accent); }
+.fill-good   { background: var(--color-good); }
+.fill-muted  { background: rgba(125,136,150,0.35); }
+
+/* ── simple table ── */
+.rp-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 11.5px;
+}
+.rp-table th {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-muted); padding: 5px 8px; text-align: left;
+  border-bottom: 1px solid var(--color-border); white-space: nowrap;
+  font-weight: 700;
+}
+.rp-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  vertical-align: middle;
+}
+.rp-table tr:last-child td { border-bottom: none; }
+.rp-table tr:hover td { background: rgba(255,255,255,0.015); }
+.rp-table td a { color: var(--color-accent); text-decoration: none; }
+.rp-table td a:hover { text-decoration: underline; }
+
+/* ── tag pill ── */
+.rp-tag {
+  display: inline-block; font-size: 9px; padding: 2px 6px;
+  border-radius: 3px; background: rgba(255,255,255,0.06);
+  color: var(--color-muted); margin: 1px 2px;
+}
+
+/* ── model badge ── */
+.mb { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-family: ui-monospace,monospace; }
+.mb-sonnet { background: rgba(58,160,255,0.14); color: #6bbeff; }
+.mb-opus   { background: rgba(192,57,43,0.14);  color: #e06060; }
+.mb-haiku  { background: rgba(74,211,107,0.14); color: #5fcf7b; }
+.mb-none   { background: rgba(125,136,150,0.14); color: var(--color-muted); }
+
+/* ── status dot ── */
+.dot-open   { color: var(--color-good); }
+.dot-closed { color: var(--color-muted); }
+
+/* ── summary row ── */
+.rp-summary-row {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 10px; color: var(--color-muted); margin-top: 2px;
+}
+</style>
+
+<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+  <h1 class="page-h" style="margin:0">Gains &amp; Statistics Report</h1>
+  <span style="font-size:10px;color:var(--color-muted)">
+    {{ router_total }} prompts · {{ task_total }} tasks · {{ session_count }} sessions
+  </span>
+</div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 1. GLOBAL KPIs                                              #}
+{# ═══════════════════════════════════════════════════════════ #}
+<div class="rp-section">
+  <div class="rp-h2">
+    <span class="tooltip-wrapper">
+      <span>Global gains</span>
+      <a class="tooltip-help" href="#" data-tooltip="System-wide metrics showing overall benefits of routing, enrichment, and task management across all sessions." tabindex="0">?</a>
+    </span>
+  </div>
+  <div class="rp-kpi-grid">
+
+    <div class="rp-kpi accent">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Tokens saved</span>
+          <a class="tooltip-help" href="#" data-tooltip="Estimated tokens avoided by using smaller models (haiku) instead of larger ones, calculated per routing decision." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ "{:,}".format(tokens_saved) }}</div>
+      <div class="rp-kpi-sub">≈ {{ tokens_per_prompt }} per prompt · est. via routing</div>
+    </div>
+
+    <div class="rp-kpi good">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Prompts routed</span>
+          <a class="tooltip-help" href="#" data-tooltip="Total number of user prompts that were processed by the routing system to determine the optimal LLM tier." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ router_total }}</div>
+      <div class="rp-kpi-sub">across {{ session_count }} sessions</div>
+    </div>
+
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Avg latency</span>
+          <a class="tooltip-help" href="#" data-tooltip="Average time from prompt submission to routing decision, measured across all prompts in the dataset." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ avg_latency_ms }}<span style="font-size:14px;font-weight:400"> ms</span></div>
+      <div class="rp-kpi-sub">per prompt, full pipeline</div>
+    </div>
+
+    <div class="rp-kpi {% if enrichment_rate > 30 %}good{% endif %}">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Enrichment rate</span>
+          <a class="tooltip-help" href="#" data-tooltip="Percentage of thin prompts (those missing context) that were auto-filled with prior session context to improve routing quality." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ enrichment_rate }}<span style="font-size:14px;font-weight:400">%</span></div>
+      <div class="rp-kpi-sub">{{ enriched_count }} thin prompts auto-filled</div>
+    </div>
+
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Plan mode</span>
+          <a class="tooltip-help" href="#" data-tooltip="Number of times plan mode was activated (EnterPlanMode) for ambiguous or complex prompts that require architectural thinking." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ plan_mode_count }}</div>
+      <div class="rp-kpi-sub">{{ plan_mode_rate }}% · entered on ambiguous prompt</div>
+    </div>
+
+    <div class="rp-kpi {% if hard_switch_count > 0 %}warn{% endif %}">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Forced switches</span>
+          <a class="tooltip-help" href="#" data-tooltip="Number of times the selected model was manually overridden by the user (typically when high-confidence routing made the wrong choice)." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ hard_switch_count }}</div>
+      <div class="rp-kpi-sub">model overridden (conf ≥ 0.9)</div>
+    </div>
+
+    <div class="rp-kpi good">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Tasks closed</span>
+          <a class="tooltip-help" href="#" data-tooltip="Tasks that were created and subsequently closed with close_task(). Closed tasks can be reopened; check the report page task table for full history." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ closed_count }}</div>
+      <div class="rp-kpi-sub">{{ closed_rate }}% closure rate · {{ open_count }} still open</div>
+    </div>
+
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Avg task duration</span>
+          <a class="tooltip-help" href="#" data-tooltip="Average time between task creation and closure. Longer durations may indicate complex, multi-session work." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ avg_duration_fmt }}</div>
+      <div class="rp-kpi-sub">created → closed</div>
+    </div>
+
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Total messages</span>
+          <a class="tooltip-help" href="#" data-tooltip="Complete message count across all sessions in this dataset, including both user prompts and assistant responses." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ total_messages }}</div>
+      <div class="rp-kpi-sub">avg {{ avg_msgs_per_session }} per session</div>
+    </div>
+
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Skills indexed</span>
+          <a class="tooltip-help" href="#" data-tooltip="Number of skills available for semantic search and routing. Includes core skills and all skills from enabled plugins." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ skills_total }}</div>
+      <div class="rp-kpi-sub">available for semantic search</div>
+    </div>
+
+    {% if verdict_stats %}
+    <div class="rp-kpi">
+      <div class="rp-kpi-label">
+        <span class="tooltip-wrapper">
+          <span>Verdict cache</span>
+          <a class="tooltip-help" href="#" data-tooltip="LLM verdict caching: number of verdicts = unique tool approval/denial decisions cached, total hits = times a cached verdict was reused instead of re-evaluating." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-kpi-value">{{ verdict_stats.n }}</div>
+      <div class="rp-kpi-sub">commands cached · {{ verdict_stats.hits or 0 }} total hits</div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 2. ROUTING DISTRIBUTIONS                                    #}
+{# ═══════════════════════════════════════════════════════════ #}
+<div class="rp-section">
+  <div class="rp-h2">
+    <span class="tooltip-wrapper">
+      <span>Routing distributions</span>
+      <a class="tooltip-help" href="#" data-tooltip="Breakdown of routing decisions by model tier, token savings strategies, and task categories." tabindex="0">?</a>
+    </span>
+  </div>
+  <div class="rp-grid-3">
+
+    {# Model split #}
+    <div class="rp-card">
+      <div class="rp-card-title">
+        <span class="tooltip-wrapper">
+          <span>Model distribution</span>
+          <a class="tooltip-help" href="#" data-tooltip="Percentage of prompts routed to each LLM model: Haiku (fast/routine), Sonnet (standard), Opus (complex/plan-mode)." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-bar-list">
+        {% for model, count in model_counts.items() %}
+          {% set pct = model_pcts.get(model, 0) %}
+          {% set css = model if model in ('sonnet','opus','haiku') else 'muted' %}
+          <div class="rp-bar-row">
+            <span class="rp-bar-key">{{ model }}</span>
+            <div class="rp-bar-track">
+              <div class="rp-bar-fill fill-{{ css }}" style="width:{{ pct }}%"></div>
+            </div>
+            <span class="rp-bar-val">{{ count }} <span style="opacity:.5">({{ pct }}%)</span></span>
+          </div>
+        {% endfor %}
+      </div>
+      <div style="margin-top:12px;font-size:10px;color:var(--color-muted)">
+        Haiku/sonnet = routine · Opus = complex/plan-mode
+      </div>
+    </div>
+
+    {# Savings by type #}
+    <div class="rp-card">
+      <div class="rp-card-title">
+        <span class="tooltip-wrapper">
+          <span>Token savings breakdown</span>
+          <a class="tooltip-help" href="#" data-tooltip="How tokens were saved: enrichment = reused context avoiding rework, plan_mode = avoided unnecessary design work, tier_selection = using smaller models where appropriate." tabindex="0">?</a>
+        </span>
+      </div>
+      {% set total_sv = tokens_saved %}
+      <div class="rp-bar-list">
+        {% for stype, stok in savings_by_type.items() %}
+          {% set pct = (stok / total_sv * 100)|round(1) if total_sv else 0 %}
+          <div class="rp-bar-row">
+            <span class="rp-bar-key">{{ stype }}</span>
+            <div class="rp-bar-track">
+              <div class="rp-bar-fill fill-good" style="width:{{ pct }}%"></div>
+            </div>
+            <span class="rp-bar-val">{{ "{:,}".format(stok) }}</span>
+          </div>
+        {% endfor %}
+        {% set other = total_sv - savings_by_type.values()|sum %}
+        {% if other > 0 %}
+          <div class="rp-bar-row">
+            <span class="rp-bar-key">other</span>
+            <div class="rp-bar-track">
+              <div class="rp-bar-fill fill-muted" style="width:{{ (other/total_sv*100)|round(1) }}%"></div>
+            </div>
+            <span class="rp-bar-val">{{ "{:,}".format(other) }}</span>
+          </div>
+        {% endif %}
+      </div>
+      <div style="margin-top:12px">
+        <div style="font-size:11px;color:var(--color-fg)">Total: <strong>{{ "{:,}".format(total_sv) }}</strong></div>
+        <div style="font-size:10px;color:var(--color-muted);margin-top:2px">
+          enrichment = thin-prompt auto-fill · plan_mode = avoids rework
+        </div>
+      </div>
+    </div>
+
+    {# Top tags #}
+    <div class="rp-card">
+      <div class="rp-card-title">
+        <span class="tooltip-wrapper">
+          <span>Top task tags</span>
+          <a class="tooltip-help" href="#" data-tooltip="Most frequently used task tags. Tags help categorize and track work across different domains or projects." tabindex="0">?</a>
+        </span>
+      </div>
+      <div class="rp-bar-list">
+        {% set max_tag = tag_counts.values()|list|max if tag_counts else 1 %}
+        {% for tag, cnt in tag_counts.items() %}
+          {% set pct = (cnt / max_tag * 100)|round(0) %}
+          <div class="rp-bar-row">
+            <span class="rp-bar-key">{{ tag }}</span>
+            <div class="rp-bar-track">
+              <div class="rp-bar-fill fill-accent" style="width:{{ pct }}%"></div>
+            </div>
+            <span class="rp-bar-val">{{ cnt }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 3. TOP ROUTER SESSIONS                                      #}
+{# ═══════════════════════════════════════════════════════════ #}
+{% if top_router_sessions %}
+<div class="rp-section">
+  <div class="rp-h2">
+    <span class="tooltip-wrapper">
+      <span>Top sessions by routing activity</span>
+      <a class="tooltip-help" href="#" data-tooltip="Sessions with the most routing decisions, showing which sessions had the most LLM-powered work and which models were dominant." tabindex="0">?</a>
+    </span>
+  </div>
+  <div class="rp-card">
+    <div style="overflow-x:auto">
+      <table class="rp-table">
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Prompts</th>
+            <th>Dominant model</th>
+            <th>Model split</th>
+            <th>Plan mode</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in top_router_sessions %}
+          <tr>
+            <td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--color-muted)">{{ s.session_id }}</td>
+            <td style="font-variant-numeric:tabular-nums">{{ s.prompts }}</td>
+            <td>
+              <span class="mb mb-{{ s.dominant_model }}">{{ s.dominant_model }}</span>
+            </td>
+            <td>
+              {% for m, c in s.models.items() %}
+                <span class="rp-tag">{{ m }} {{ c }}</span>
+              {% endfor %}
+            </td>
+            <td style="color:var(--color-muted)">
+              {% if s.plan_mode %}<span style="color:var(--color-good)">{{ s.plan_mode }}×</span>{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 4. PER-TASK TABLE                                           #}
+{# ═══════════════════════════════════════════════════════════ #}
+<div class="rp-section">
+  <div class="rp-h2" style="display:flex;align-items:center;justify-content:space-between">
+    <span class="tooltip-wrapper">
+      <span>Per-task statistics ({{ task_total }} tasks)</span>
+      <a class="tooltip-help" href="#" data-tooltip="Detailed metrics for each task: duration, logging activity, routing decisions, dominant model. Click task ID to view full details." tabindex="0">?</a>
+    </span>
+    <span style="font-weight:400;font-size:9px;color:var(--color-muted)">
+      duration = created→closed · logs = tagged hook lines · prompts = router hits for session
+    </span>
+  </div>
+
+  {# Filter controls #}
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+    <input id="task-filter" type="text" placeholder="filter by title or tag…"
+           oninput="filterTasks(this.value)"
+           style="flex:1;min-width:200px;max-width:340px;font-size:11px;padding:5px 9px;
+                  background:var(--color-surface);border:1px solid var(--color-border);
+                  border-radius:var(--radius-sm);color:var(--color-fg);outline:none">
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-muted);cursor:pointer">
+      <input type="checkbox" id="open-only" onchange="filterTasks(document.getElementById('task-filter').value)">
+      open only
+    </label>
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-muted);cursor:pointer">
+      <input type="checkbox" id="logs-only" onchange="filterTasks(document.getElementById('task-filter').value)">
+      has logs
+    </label>
+    <span id="task-count" style="font-size:10px;color:var(--color-muted)"></span>
+  </div>
+
+  <div class="rp-card" style="padding:0;overflow:hidden">
+    <div style="overflow-x:auto">
+      <table class="rp-table" id="task-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th style="min-width:220px">Title</th>
+            <th>Status</th>
+            <th>Tags</th>
+            <th>Created</th>
+            <th>Duration</th>
+            <th>Log lines</th>
+            <th>Prompts</th>
+            <th>Model</th>
+          </tr>
+        </thead>
+        <tbody id="task-tbody">
+          {% for t in tasks %}
+          <tr data-title="{{ t.title|lower }}"
+              data-tags="{{ (t.tags or '')|lower }}"
+              data-status="{{ t.status }}"
+              data-logs="{{ t.log_count }}">
+            <td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--color-muted)">
+              <a href="/tasks?id={{ t.id }}">#{{ t.id }}</a>
+            </td>
+            <td>
+              <a href="/tasks?id={{ t.id }}" style="font-size:11.5px;color:var(--color-fg)">
+                {{ t.title[:70] }}{% if t.title|length > 70 %}…{% endif %}
+              </a>
+            </td>
+            <td>
+              {% if t.status == 'open' %}
+                <span class="dot-open" style="font-size:10px">● open</span>
+              {% else %}
+                <span class="dot-closed" style="font-size:10px">○ closed</span>
+              {% endif %}
+            </td>
+            <td style="white-space:nowrap">
+              {% for tag in (t.tags or '').split(',') %}
+                {% set tag = tag.strip() %}
+                {% if tag %}<span class="rp-tag">{{ tag }}</span>{% endif %}
+              {% endfor %}
+            </td>
+            <td style="font-size:10px;color:var(--color-muted);white-space:nowrap">
+              {{ (t.created_at or '')[:10] }}
+            </td>
+            <td style="font-variant-numeric:tabular-nums;font-size:11px;white-space:nowrap">
+              {% if t.duration_h is not none and t.duration_h > 0 %}
+                {{ t.duration_fmt }}
+              {% elif t.status == 'open' %}
+                <span style="color:var(--color-muted)">open</span>
+              {% else %}
+                <span style="color:var(--color-muted)">—</span>
+              {% endif %}
+            </td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">
+              {% if t.log_count > 0 %}
+                <span style="color:var(--color-accent)">{{ t.log_count }}</span>
+              {% else %}
+                <span style="color:rgba(125,136,150,0.3)">—</span>
+              {% endif %}
+            </td>
+            <td style="text-align:right;font-variant-numeric:tabular-nums">
+              {% if t.task_prompts > 0 %}
+                {{ t.task_prompts }}
+              {% else %}
+                <span style="color:rgba(125,136,150,0.3)">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if t.dominant_model %}
+                <span class="mb mb-{{ t.dominant_model }}">{{ t.dominant_model }}</span>
+              {% else %}
+                <span style="color:rgba(125,136,150,0.3)">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function filterTasks(q) {
+  q = (q || '').toLowerCase().trim();
+  const openOnly = document.getElementById('open-only').checked;
+  const logsOnly = document.getElementById('logs-only').checked;
+  const rows = document.querySelectorAll('#task-tbody tr');
+  let visible = 0;
+  rows.forEach(row => {
+    const title = row.dataset.title || '';
+    const tags  = row.dataset.tags  || '';
+    const status = row.dataset.status || '';
+    const logs = parseInt(row.dataset.logs) || 0;
+    const matchQ = !q || title.includes(q) || tags.includes(q);
+    const matchOpen = !openOnly || status === 'open';
+    const matchLogs = !logsOnly || logs > 0;
+    const show = matchQ && matchOpen && matchLogs;
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const el = document.getElementById('task-count');
+  if (el) el.textContent = visible + ' of {{ task_total }} shown';
+}
+// init count
+filterTasks('');
+</script>
+{% endblock %}

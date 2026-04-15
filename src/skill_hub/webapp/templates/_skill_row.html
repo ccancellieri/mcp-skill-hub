@@ -32,6 +32,9 @@
   </td>
   <td><span class="sk-last">{{ r.last_used or '—' }}</span></td>
   <td>
+    <span class="sk-inj" title="tasks using this skill">{{ r.task_count or 0 }}</span>
+  </td>
+  <td>
     {% if r.plugin %}<span class="sk-plugin">{{ r.plugin }}</span>{% endif %}
     {% if r.target %}<span class="sk-target">{{ r.target }}</span>{% endif %}
   </td>
