@@ -293,12 +293,14 @@ def _parse_router_log(
         return _EMPTY.copy()
 
     # Parse task time window for fallback (stored as "YYYY-MM-DD HH:MM:SS")
+    # Time-window matching only works reliably for closed tasks (exact boundaries).
+    # For open tasks with no session_id match, return empty stats to avoid false
+    # correlations when multiple tasks are created near each other.
     ts_start: str | None = None
     ts_end: str | None = None
     try:
-        if created_at:
+        if created_at and closed_at:  # Only use time window for closed tasks
             ts_start = created_at[:19].replace(" ", "T")  # ISO-compatible prefix
-        if closed_at:
             ts_end = closed_at[:19].replace(" ", "T")
     except Exception:
         pass

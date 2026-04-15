@@ -149,15 +149,15 @@
 
 {# ── KPI strip ── #}
 <div class="db-kpi-row">
-  <div class="db-kpi {% if m.net > 0 %}good{% elif m.net < 0 %}bad{% endif %}" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
+  <div class="db-kpi {% if m.tokens_saved > 0 %}good{% endif %}" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
-        <span>Net tokens saved</span>
-        <a class="tooltip-help" href="#" data-tooltip="Tokens saved via routing optimization minus the tokens spent running the skill hub system itself." data-help-page="net-tokens" tabindex="0">?</a>
+        <span>Cloud tokens saved</span>
+        <a class="tooltip-help" href="#" data-tooltip="Anthropic (Sonnet/Opus) tokens avoided via routing/interception. Local LLM time (rerank, embeddings) is shown separately — it has no $ cost." data-help-page="net-tokens" tabindex="0">?</a>
       </span>
     </div>
-    <div class="db-kpi-value">{{ "{:+,}".format(m.net) }}</div>
-    <div class="db-kpi-sub">{{ "{:,}".format(m.tokens_saved) }} saved − ~{{ "{:,}".format(m.llm_cost_eq) }} LLM cost</div>
+    <div class="db-kpi-value">{{ "{:+,}".format(m.tokens_saved) }}</div>
+    <div class="db-kpi-sub">+ ~{{ m.llm_seconds }}s local LLM time (free)</div>
     <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px;color:var(--color-muted)" class="expanded-content">
       <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Where savings come from:</strong></div>
       <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.5">

@@ -35,7 +35,7 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
     tokens_saved = int(db.get("tokens_saved") or 0)
     llm_seconds = sum(logm["llm_ms"]) / 1000.0
     llm_cost_eq = int(llm_seconds * _dashboard.TOKENS_PER_LLM_SECOND)
-    net = tokens_saved - llm_cost_eq
+    net = tokens_saved - llm_cost_eq  # legacy: kept for /api/metrics consumers
     tasks_open = db["tasks"].get("open", 0) if isinstance(db.get("tasks"), dict) else 0
     tasks_closed = db["tasks"].get("closed", 0) if isinstance(db.get("tasks"), dict) else 0
     helpful = db.get("feedback_helpful", 0)
@@ -45,9 +45,26 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
     approve = logm["auto_approve"].get("allow", 0)
     deny = logm["auto_approve"].get("deny", 0)
     pass_through = logm["auto_approve"].get("pass", 0)
+
+    # Model distribution from router.jsonl (last 500 entries)
+    router_stats = _compute_stats(_read_entries(n=500))
+    model_counts = router_stats.get("model_counts", {})
+    total_prompts = router_stats.get("total", 0)
+    model_dist = [
+        {
+            "name": name,
+            "count": count,
+            "percentage": round(count / total_prompts * 100, 1) if total_prompts else 0.0,
+        }
+        for name, count in sorted(model_counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    top_model = model_dist[0]["name"] if model_dist else "—"
+    top_model_pct = model_dist[0]["percentage"] if model_dist else 0.0
+
     return {
         "tokens_saved": tokens_saved,
         "llm_cost_eq": llm_cost_eq,
+        "llm_seconds": int(llm_seconds),
         "net": net,
         "tasks_open": tasks_open,
         "tasks_closed": tasks_closed,
@@ -66,6 +83,9 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
         "verdict_total": vcache.get("total", 0),
         "verdict_hits": vcache.get("hits_total", 0),
         "log_missing": logm.get("log_missing", False),
+        "model_dist": model_dist,
+        "top_model": top_model,
+        "top_model_pct": round(top_model_pct, 1),
     }
 
 

@@ -16,8 +16,10 @@ document.addEventListener("DOMContentLoaded", () => {
  */
 function initTooltips() {
   document.querySelectorAll('.tooltip-help').forEach(el => {
-    const tooltip = el.dataset.tooltip;
-    if (!tooltip) return;
+    const tooltipText = el.dataset.tooltip;
+    if (!tooltipText) return;
+
+    const helpPage = el.dataset.helpPage;
 
     // Create popup element
     const popup = document.createElement('div');
@@ -25,48 +27,48 @@ function initTooltips() {
 
     const textP = document.createElement('p');
     textP.className = 'tooltip-text';
-    textP.textContent = tooltip;
+    textP.textContent = tooltipText;
     popup.appendChild(textP);
 
-    // Add optional help page link
-    const helpPage = el.dataset.helpPage;
     if (helpPage) {
       const linkEl = document.createElement('a');
       linkEl.href = '#';
       linkEl.className = 'tooltip-link';
-      linkEl.textContent = 'Learn more';
-      linkEl.onclick = (e) => {
-        e.preventDefault();
-        openHelpModal(helpPage);
-      };
+      linkEl.textContent = 'Full details →';
+      linkEl.onclick = (e) => { e.preventDefault(); openHelpModal(helpPage); };
       popup.appendChild(linkEl);
     }
 
-    // Find tooltip wrapper and ensure it has position: relative
-    const wrapper = el.closest('.tooltip-wrapper');
-    if (wrapper) {
-      wrapper.style.position = 'relative';
-      wrapper.appendChild(popup);
-    } else {
-      // Fallback: append to parent
-      el.parentNode.appendChild(popup);
-    }
+    // Attach popup to wrapper (the positioned parent)
+    const wrapper = el.closest('.tooltip-wrapper') || el.parentNode;
+    wrapper.style.position = 'relative';
+    wrapper.appendChild(popup);
 
-    // Show/hide on hover and focus
-    ['mouseenter', 'focus'].forEach(ev => {
-      el.addEventListener(ev, () => {
-        popup.classList.add('visible');
-      });
-    });
-    ['mouseleave', 'blur'].forEach(ev => {
-      el.addEventListener(ev, () => {
-        popup.classList.remove('visible');
-      });
-    });
+    // Hover on the WRAPPER keeps popup alive when moving from icon to popup
+    let hideTimer = null;
 
-    // Prevent default link behavior for the help icon itself
+    const show = () => {
+      clearTimeout(hideTimer);
+      popup.classList.add('visible');
+    };
+    const scheduleHide = () => {
+      hideTimer = setTimeout(() => popup.classList.remove('visible'), 120);
+    };
+
+    wrapper.addEventListener('mouseenter', show);
+    wrapper.addEventListener('mouseleave', scheduleHide);
+    popup.addEventListener('mouseenter', show);   // stay open when cursor moves to popup
+    popup.addEventListener('mouseleave', scheduleHide);
+
+    // Click on "?" opens help modal directly (most discoverable UX)
     el.addEventListener('click', (e) => {
       e.preventDefault();
+      if (helpPage) {
+        openHelpModal(helpPage);
+      } else {
+        // No help page: toggle tooltip visibility on click for touch devices
+        popup.classList.toggle('visible');
+      }
     });
   });
 }
