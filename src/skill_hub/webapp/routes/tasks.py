@@ -266,79 +266,187 @@ def search_tasks(request: Request, q: str = "", mode: str = "text") -> Any:
     )
 
 
+def _parse_router_log(session_id: str) -> dict:
+    """Parse router.jsonl for model routing stats for a given session."""
+    import json as _json
+    from pathlib import Path
+    from collections import Counter
+
+    router_log = Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"
+    if not router_log.exists():
+        return {"models": [], "plan_mode_count": 0, "tier_counts": {}, "total_prompts": 0, "top_skills": []}
+
+    model_counter: Counter = Counter()
+    tier_counter: Counter = Counter()
+    plan_mode_count = 0
+    skills_counter: Counter = Counter()
+
+    try:
+        with router_log.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                if entry.get("session_id") != session_id:
+                    continue
+                verdict = entry.get("verdict") or {}
+                model_counter[verdict.get("model", "unknown")] += 1
+                tier_counter[str(verdict.get("tier_used", 0))] += 1
+                if verdict.get("plan_mode"):
+                    plan_mode_count += 1
+                for sk in entry.get("preload_skills") or []:
+                    if sk:
+                        skills_counter[sk] += 1
+    except OSError:
+        pass
+
+    total = sum(model_counter.values())
+    models = [
+        {
+            "name": name,
+            "count": count,
+            "percentage": round(count / total * 100, 1) if total else 0.0,
+        }
+        for name, count in model_counter.most_common()
+    ]
+    return {
+        "models": models,
+        "plan_mode_count": plan_mode_count,
+        "tier_counts": dict(tier_counter),
+        "total_prompts": total,
+        "top_skills": [{"name": n, "count": c} for n, c in skills_counter.most_common(5)],
+    }
+
+
 @router.get("/tasks/{task_id}/stats/models")
 def task_model_stats(task_id: int, request: Request) -> JSONResponse:
-    """Return model usage and token statistics for a task's session."""
+    """Return model routing stats for a task's session (from router.jsonl)."""
     store = request.app.state.store
     task = store.get_task(task_id)
-
     if not task:
         return JSONResponse({"error": "task not found"}, status_code=404)
+    task_dict = dict(task)
+    session_id = task_dict.get("session_id")
+    if not session_id:
+        return JSONResponse({"models": [], "total_prompts": 0, "session_id": None})
+    stats = _parse_router_log(session_id)
+    stats["session_id"] = session_id
+    return JSONResponse(stats)
 
+
+@router.get("/tasks/{task_id}/stats/session")
+def task_session_stats(task_id: int, request: Request) -> JSONResponse:
+    """Return session-level stats: message count, duration, log line count."""
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "task not found"}, status_code=404)
     task_dict = dict(task)
     session_id = task_dict.get("session_id")
 
-    # Default stats if no session
-    if not session_id:
-        return JSONResponse({
-            "models": [],
-            "total_tokens": 0,
-            "session_id": None
-        })
+    message_count: int | None = None
+    if session_id:
+        try:
+            ctx = store._conn.execute(
+                "SELECT message_count FROM session_context WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if ctx:
+                message_count = int(ctx["message_count"])
+        except Exception:
+            pass
 
-    # Query command_verdicts.db for model routing decisions in this session
+    duration_hours: float | None = None
+    closed_at = task_dict.get("closed_at")
+    created_at = task_dict.get("created_at")
+    if closed_at and created_at:
+        try:
+            from datetime import datetime
+            fmt = "%Y-%m-%d %H:%M:%S"
+            dt_close = datetime.strptime(closed_at[:19], fmt)
+            dt_create = datetime.strptime(created_at[:19], fmt)
+            duration_hours = round((dt_close - dt_create).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+
+    log_count = 0
     try:
-        import sqlite3
-        from pathlib import Path
-        verdicts_db = Path.home() / ".claude" / "mcp-skill-hub" / "command_verdicts.db"
+        import re as _re
+        from ..services import log_tail as _lt
+        needle = f"task={task_id}"
+        _tag_re = _re.compile(r"\btask=(\d+)\b")
+        for path in (_lt.HOOK_LOG, _lt.ACTIVITY_LOG):
+            for ln in _lt.tail_file_sync(path, 5000):
+                if needle in ln:
+                    m = _tag_re.search(ln)
+                    if m and m.group(1) == str(task_id):
+                        log_count += 1
+    except Exception:
+        pass
 
-        if not verdicts_db.exists():
-            return JSONResponse({
-                "models": [],
-                "total_tokens": 0,
-                "session_id": session_id,
-                "note": "verdicts database not found"
-            })
+    return JSONResponse({
+        "session_id": session_id,
+        "message_count": message_count,
+        "duration_hours": duration_hours,
+        "log_count": log_count,
+        "updated_at": task_dict.get("updated_at"),
+        "closed_at": closed_at,
+        "auto_approve": task_dict.get("auto_approve"),
+    })
 
-        verdict_conn = sqlite3.connect(str(verdicts_db))
-        verdict_conn.row_factory = sqlite3.Row
 
-        # Aggregate model usage by tier within this session
-        rows = verdict_conn.execute("""
-            SELECT model, COUNT(*) as count, SUM(CAST(estimated_tokens AS INTEGER)) as tokens
-            FROM command_verdicts
-            WHERE session_id = ?
-            GROUP BY model
-            ORDER BY count DESC
-        """, (session_id,)).fetchall()
+@router.get("/tasks/refs")
+def task_refs(request: Request, q: str = "") -> JSONResponse:
+    """Reference picker data: tasks + skills matching q (for @-mention UI)."""
+    store = request.app.state.store
+    q = q.strip().lower()
 
-        total_count = sum(dict(r)["count"] for r in rows)
-        total_tokens = sum(dict(r)["tokens"] or 0 for r in rows)
+    # Tasks — open first, then recent closed
+    if q:
+        rows = store.search_tasks_text(q, status="all")
+        tasks = [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in rows[:15]]
+    else:
+        open_rows = store.list_tasks(status="open")
+        closed_rows = store.list_tasks(status="closed")
+        tasks = [{"id": r["id"], "title": r["title"], "status": "open"} for r in open_rows[:10]]
+        tasks += [{"id": r["id"], "title": r["title"], "status": "closed"} for r in closed_rows[:5]]
 
-        models = []
-        for row in rows:
-            d = dict(row)
-            count = d.get("count", 0)
-            percentage = (count / total_count * 100) if total_count > 0 else 0
-            models.append({
-                "name": d.get("model", "unknown"),
-                "count": count,
-                "percentage": round(percentage, 1),
-                "tokens": d.get("tokens", 0) or 0
-            })
+    # Skills — search by name/description substring
+    try:
+        if q:
+            skill_rows = store._conn.execute(
+                "SELECT id, name, description, plugin FROM skills "
+                "WHERE lower(name) LIKE ? OR lower(description) LIKE ? ORDER BY name LIMIT 12",
+                (f"%{q}%", f"%{q}%"),
+            ).fetchall()
+        else:
+            skill_rows = store._conn.execute(
+                "SELECT id, name, description, plugin FROM skills ORDER BY name LIMIT 12"
+            ).fetchall()
+        skills = [{"id": r["id"], "name": r["name"],
+                   "description": (r["description"] or "")[:80],
+                   "plugin": r["plugin"] or ""} for r in skill_rows]
+    except Exception:
+        skills = []
 
-        verdict_conn.close()
+    return JSONResponse({"tasks": tasks, "skills": skills})
 
-        return JSONResponse({
-            "models": models,
-            "total_tokens": total_tokens,
-            "session_id": session_id
-        })
 
-    except Exception as e:
-        return JSONResponse({
-            "models": [],
-            "total_tokens": 0,
-            "session_id": session_id,
-            "error": str(e)
-        })
+@router.post("/tasks/new")
+async def create_task_web(request: Request) -> JSONResponse:
+    """Create a task from the web UI (title required; summary/tags optional)."""
+    form = await request.form()
+    title = str(form.get("title", "")).strip()
+    summary = str(form.get("summary", "")).strip()
+    tags = str(form.get("tags", "")).strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+    store = request.app.state.store
+    # Embed best-effort; fall back to empty vector
+    vec: list[float] = _try_embed(f"{title} {summary}") or []
+    task_id = store.save_task(title=title, summary=summary, tags=tags, vector=vec)
+    return JSONResponse({"task_id": task_id, "title": title})

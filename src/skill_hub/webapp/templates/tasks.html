@@ -24,6 +24,7 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
       <h1 class="page-h" style="margin:0">Tasks</h1>
       <span class="tag open" style="font-size:10px">{{ open_tasks|length }} open</span>
       <span class="tag closed" style="font-size:10px; margin-left:4px">{{ closed_tasks|length }} closed</span>
+      <button class="btn sm" style="margin-left:auto" onclick="openNewTask()">+ new</button>
     </div>
 
     <div class="tasks-search-bar">
@@ -166,46 +167,89 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
             </div>
             <div class="stat-box">
               <span class="stat-label">Status</span>
-              <span class="stat-value" x-text="filter==='open' ? '🟢 Open' : '⭕ Closed'" style="color: var(--color-good)"></span>
+              <span class="stat-value" x-text="filter==='open' ? 'Open' : 'Closed'"
+                    :style="{color: filter==='open' ? 'var(--color-good)' : 'var(--color-muted)'}"></span>
             </div>
             <div class="stat-box">
               <span class="stat-label">Created</span>
-              <span class="stat-value" x-text="(selectedTask.created_at || '—').slice(0,10)" style="font-size:12px"></span>
+              <span class="stat-value" x-text="(selectedTask.created_at || '—').slice(0,10)" style="font-size:11px"></span>
             </div>
+            <template x-if="sessionStats.updated_at">
+              <div class="stat-box">
+                <span class="stat-label">Updated</span>
+                <span class="stat-value" x-text="(sessionStats.updated_at||'').slice(0,10)" style="font-size:11px"></span>
+              </div>
+            </template>
+            <template x-if="sessionStats.duration_hours !== null">
+              <div class="stat-box">
+                <span class="stat-label">Duration</span>
+                <span class="stat-value" x-text="fmtDuration(sessionStats.duration_hours)" title="Time from creation to close"></span>
+              </div>
+            </template>
+            <template x-if="sessionStats.message_count !== null">
+              <div class="stat-box">
+                <span class="stat-label">Messages</span>
+                <span class="stat-value" x-text="sessionStats.message_count"></span>
+              </div>
+            </template>
+            <template x-if="sessionStats.log_count > 0">
+              <div class="stat-box">
+                <span class="stat-label">Log lines</span>
+                <span class="stat-value" x-text="sessionStats.log_count"></span>
+              </div>
+            </template>
+            <template x-if="modelStats.total_prompts > 0">
+              <div class="stat-box">
+                <span class="stat-label">Prompts</span>
+                <span class="stat-value" x-text="modelStats.total_prompts"></span>
+              </div>
+            </template>
+            <template x-if="modelStats.plan_mode_count > 0">
+              <div class="stat-box">
+                <span class="stat-label">Plan mode</span>
+                <span class="stat-value" x-text="modelStats.plan_mode_count + '×'" title="Prompts that triggered plan mode"></span>
+              </div>
+            </template>
             <template x-if="selectedTask.session_id">
               <div class="stat-box">
                 <span class="stat-label">Session</span>
-                <span class="stat-value" x-text="(selectedTask.session_id||'').slice(0,8)" title="Session ID"></span>
-              </div>
-            </template>
-            <template x-if="modelStats.total_tokens > 0">
-              <div class="stat-box">
-                <span class="stat-label">Tokens</span>
-                <span class="stat-value" x-text="modelStats.total_tokens.toLocaleString()"></span>
+                <span class="stat-value" x-text="(selectedTask.session_id||'').slice(0,8)"
+                      :title="selectedTask.session_id" style="font-family:monospace;font-size:10px"></span>
               </div>
             </template>
           </div>
 
-          {# Model usage section #}
+          {# Model routing section #}
           <template x-if="modelStats.models && modelStats.models.length > 0">
-            <div style="padding: 12px 18px; border-bottom: 1px solid var(--color-border)">
-              <div class="task-detail-section-label" style="margin-bottom: 8px">Model Usage</div>
-              <div style="display: flex; flex-direction: column; gap: 10px">
+            <div style="padding: 10px 18px 12px; border-bottom: 1px solid var(--color-border)">
+              <div class="task-detail-section-label" style="margin-bottom: 8px">Router · model distribution</div>
+              <div style="display: flex; flex-direction: column; gap: 8px">
                 <template x-for="model in modelStats.models" :key="model.name">
-                  <div style="display: flex; flex-direction: column; gap: 4px">
+                  <div style="display: flex; flex-direction: column; gap: 3px">
                     <div style="display: flex; align-items: baseline; justify-content: space-between">
-                      <span style="font-size: 11px; color: var(--color-fg); font-weight: 500" x-text="model.name"></span>
-                      <span style="font-size: 10px; color: var(--color-muted)" x-text="model.percentage.toFixed(0) + '%'"></span>
+                      <span style="font-size: 11px; color: var(--color-fg); font-weight: 500; text-transform: capitalize"
+                            x-text="model.name"></span>
+                      <span style="font-size: 10px; color: var(--color-muted)"
+                            x-text="model.percentage.toFixed(0) + '% · ' + model.count + ' calls'"></span>
                     </div>
-                    <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden">
-                      <div style="height: 100%; background: var(--color-accent); border-radius: 2px"
-                           :style="{width: model.percentage + '%'}"></div>
+                    <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden">
+                      <div style="height: 100%; border-radius: 2px; transition: width 0.4s ease"
+                           :style="{width: model.percentage + '%', background: model.name==='opus' ? 'var(--color-accent)' : model.name==='haiku' ? 'var(--color-muted)' : 'var(--color-good)'}"></div>
                     </div>
-                    <span style="font-size: 9px; color: var(--color-muted)"
-                          x-text="model.count + ' calls · ' + model.tokens + ' tokens'"></span>
                   </div>
                 </template>
               </div>
+              <template x-if="modelStats.top_skills && modelStats.top_skills.length > 0">
+                <div style="margin-top:10px">
+                  <div style="font-size:9px; color:var(--color-muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:5px">Skills preloaded</div>
+                  <div style="display:flex; flex-wrap:wrap; gap:4px">
+                    <template x-for="sk in modelStats.top_skills" :key="sk.name">
+                      <span style="font-size:9px; padding:2px 6px; background:rgba(255,255,255,0.05); border-radius:3px; color:var(--color-muted)"
+                            x-text="sk.name + (sk.count>1 ? ' ×'+sk.count : '')"></span>
+                    </template>
+                  </div>
+                </div>
+              </template>
             </div>
           </template>
 
@@ -294,6 +338,44 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
   </form>
 </dialog>
 
+<dialog id="dlg-new">
+  <form onsubmit="submitNew(event)">
+    <h3>New task</h3>
+    <label>title <span class="muted" style="font-weight:400;font-size:10px">required</span>
+      <input type="text" name="title" id="new-title" required placeholder="what needs to be done…" autocomplete="off">
+    </label>
+    <label style="margin-top:8px">context / prompt
+      <div style="position:relative">
+        <textarea name="summary" id="new-summary" rows="5"
+                  placeholder="Describe the task… type @ to reference tasks or skills"
+                  oninput="onRefInput(event,'new-summary')"></textarea>
+        <button type="button" class="btn sm" style="position:absolute;top:6px;right:6px"
+                onclick="openRefPicker('new-summary')">@ ref</button>
+      </div>
+    </label>
+    <label style="margin-top:4px">tags
+      <input type="text" name="tags" id="new-tags" placeholder="comma-separated">
+    </label>
+    <menu>
+      <button type="button" onclick="document.getElementById('dlg-new').close()">cancel</button>
+      <button type="submit" class="btn">create</button>
+    </menu>
+  </form>
+</dialog>
+
+{# Reference picker — shared floating panel #}
+<div id="ref-picker" style="display:none; position:fixed; z-index:9999; background:var(--color-surface,#1e1e2e);
+     border:1px solid var(--color-border,#333); border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,.4);
+     width:340px; max-height:320px; overflow-y:auto; font-size:12px;">
+  <div style="padding:8px 10px; border-bottom:1px solid var(--color-border,#333)">
+    <input id="ref-q" type="text" placeholder="search tasks or skills…" autocomplete="off"
+           oninput="loadRefs(this.value)"
+           style="width:100%; background:transparent; border:none; outline:none;
+                  color:var(--color-fg,#cdd6f4); font-size:12px;">
+  </div>
+  <div id="ref-results" style="padding:4px 0"></div>
+</div>
+
 <script>
 function tasksApp() {
   return {
@@ -306,7 +388,8 @@ function tasksApp() {
     logLines: [],
     liveLog: false,
     autoScroll: true,
-    modelStats: { models: [], total_tokens: 0 },
+    modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [] },
+    sessionStats: { message_count: null, duration_hours: null, log_count: 0, updated_at: null },
     _ws: null,
 
     init() {
@@ -314,7 +397,6 @@ function tasksApp() {
       const focusId = params.get('id') ? parseInt(params.get('id')) : null;
       if (focusId && TASK_DATA[focusId]) {
         this.selectById(focusId);
-        // ensure the correct filter tab is shown
         const task = TASK_DATA[focusId];
         if (task && task.status === 'closed') this.filter = 'closed';
       } else if (FIRST_OPEN_ID) {
@@ -329,20 +411,35 @@ function tasksApp() {
       this.selectedId = id;
       this.selectedTask = task;
       this.logLines = [];
-      this.modelStats = { models: [], total_tokens: 0 };
+      this.modelStats = { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [] };
+      this.sessionStats = { message_count: null, duration_hours: null, log_count: 0, updated_at: null };
       this.autoScroll = true;
       this.refreshLogs();
       this.fetchModelStats();
+      this.fetchSessionStats();
     },
 
     async fetchModelStats() {
       if (!this.selectedId) return;
       try {
         const r = await fetch('/tasks/' + this.selectedId + '/stats/models');
-        if (r.ok) {
-          this.modelStats = await r.json();
-        }
-      } catch(_) { this.modelStats = { models: [], total_tokens: 0 }; }
+        if (r.ok) this.modelStats = await r.json();
+      } catch(_) {}
+    },
+
+    async fetchSessionStats() {
+      if (!this.selectedId) return;
+      try {
+        const r = await fetch('/tasks/' + this.selectedId + '/stats/session');
+        if (r.ok) this.sessionStats = await r.json();
+      } catch(_) {}
+    },
+
+    fmtDuration(h) {
+      if (h === null || h === undefined) return '—';
+      if (h < 1) return Math.round(h * 60) + 'm';
+      if (h < 24) return h.toFixed(1) + 'h';
+      return (h / 24).toFixed(1) + 'd';
     },
 
     async refreshLogs() {
@@ -489,6 +586,166 @@ async function generateSummary() {
     }
   } catch(_) { btn.textContent = 'failed'; }
   setTimeout(() => { btn.disabled = false; btn.textContent = 'generate'; }, 2000);
+}
+
+// ── New Task ──────────────────────────────────────────────────────────
+function openNewTask() {
+  document.getElementById('new-title').value = '';
+  document.getElementById('new-summary').value = '';
+  document.getElementById('new-tags').value = '';
+  document.getElementById('dlg-new').showModal();
+  setTimeout(() => document.getElementById('new-title').focus(), 50);
+}
+async function submitNew(ev) {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const r = await fetch('/tasks/new', {method:'POST', body:f});
+  const j = await r.json();
+  if (r.ok) { document.getElementById('dlg-new').close(); location.reload(); }
+  else { alert('Error: ' + (j.error || r.status)); }
+}
+
+// ── Reference picker (@-mention) ──────────────────────────────────────
+let _refTarget = null;
+let _refAtPos = -1;
+
+function openRefPicker(targetId, anchorEl) {
+  _refTarget = targetId;
+  _refAtPos = -1;
+  const picker = document.getElementById('ref-picker');
+  const q = document.getElementById('ref-q');
+  q.value = '';
+  loadRefs('');
+  const anchor = anchorEl || document.getElementById(targetId);
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    picker.style.top = (rect.bottom + window.scrollY + 4) + 'px';
+    picker.style.left = Math.min(rect.left + window.scrollX, window.innerWidth - 350) + 'px';
+  }
+  picker.style.display = 'block';
+  setTimeout(() => q.focus(), 30);
+}
+
+function closeRefPicker() {
+  document.getElementById('ref-picker').style.display = 'none';
+  _refTarget = null;
+  _refAtPos = -1;
+}
+
+function onRefInput(ev, targetId) {
+  const ta = ev.target;
+  const val = ta.value;
+  const pos = ta.selectionStart;
+  if (ev.data === '@') {
+    _refAtPos = pos - 1;
+    openRefPicker(targetId, ta);
+  } else if (_refAtPos >= 0 && pos > _refAtPos) {
+    const typed = val.slice(_refAtPos + 1, pos);
+    document.getElementById('ref-q').value = typed;
+    loadRefs(typed);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  ['edit-summary', 'close-summary'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', e => onRefInput(e, id));
+  });
+  document.addEventListener('click', e => {
+    const picker = document.getElementById('ref-picker');
+    if (picker.style.display !== 'none' && !picker.contains(e.target)
+        && !e.target.closest('[onclick*="openRefPicker"]')) {
+      closeRefPicker();
+    }
+  });
+});
+
+let _refDebounce = null;
+async function loadRefs(q) {
+  clearTimeout(_refDebounce);
+  _refDebounce = setTimeout(async () => {
+    try {
+      const r = await fetch('/tasks/refs?q=' + encodeURIComponent(q));
+      if (r.ok) renderRefs(await r.json());
+    } catch(_) {}
+  }, 120);
+}
+
+// Safe DOM builder — builds nodes without innerHTML to avoid XSS
+function _el(tag, styleStr, textContent) {
+  const e = document.createElement(tag);
+  if (styleStr) e.style.cssText = styleStr;
+  if (textContent !== undefined) e.textContent = String(textContent);
+  return e;
+}
+
+function _sectionHeader(label, withTopBorder) {
+  return _el('div',
+    `padding:${withTopBorder?'6':'4'}px 10px 2px; font-size:9px; text-transform:uppercase;
+     letter-spacing:.08em; color:var(--color-muted,#6c7086);
+     ${withTopBorder?'border-top:1px solid var(--color-border,#333)':''}`,
+    label);
+}
+
+function _refRow(insertText, badgeStyle, badgeText, title, meta) {
+  const row = document.createElement('div');
+  row.style.cssText = 'padding:5px 12px; cursor:pointer; display:flex; gap:8px; align-items:baseline';
+  row.className = 'ref-item';
+  const badge = _el('span', badgeStyle + '; font-size:10px', badgeText);
+  const name  = _el('span', 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap', title);
+  const desc  = _el('span', 'color:var(--color-muted,#6c7086); font-size:9px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap', meta);
+  row.appendChild(badge); row.appendChild(name); row.appendChild(desc);
+  row.addEventListener('click', () => insertRef(insertText));
+  row.addEventListener('mouseenter', () => { row.style.background = 'rgba(255,255,255,.06)'; });
+  row.addEventListener('mouseleave', () => { row.style.background = ''; });
+  return row;
+}
+
+function renderRefs(data) {
+  const container = document.getElementById('ref-results');
+  while (container.firstChild) container.removeChild(container.firstChild);
+  const hasTasks = data.tasks && data.tasks.length;
+  const hasSkills = data.skills && data.skills.length;
+  if (hasTasks) {
+    container.appendChild(_sectionHeader('Tasks', false));
+    for (const t of data.tasks) {
+      const clr = t.status === 'open'
+        ? 'color:var(--color-good,#a6e3a1)'
+        : 'color:var(--color-muted,#6c7086)';
+      container.appendChild(_refRow(
+        '#' + t.id + ' ' + t.title, clr, '#' + t.id, t.title, t.status));
+    }
+  }
+  if (hasSkills) {
+    container.appendChild(_sectionHeader('Skills', hasTasks));
+    for (const s of data.skills) {
+      const label = s.plugin ? s.plugin + ':' + s.name : s.name;
+      container.appendChild(_refRow(
+        'skill:' + label, 'color:var(--color-accent,#89b4fa)', '\u26a1', label, s.description || ''));
+    }
+  }
+  if (!hasTasks && !hasSkills) {
+    container.appendChild(_el('div',
+      'padding:10px 12px; color:var(--color-muted,#6c7086); font-size:11px', 'no results'));
+  }
+}
+
+function insertRef(text) {
+  if (!_refTarget) { closeRefPicker(); return; }
+  const ta = document.getElementById(_refTarget);
+  if (!ta) { closeRefPicker(); return; }
+  const val = ta.value;
+  const cur = ta.selectionStart;
+  if (_refAtPos >= 0) {
+    ta.value = val.slice(0, _refAtPos) + text + ' ' + val.slice(cur);
+    const p = _refAtPos + text.length + 1;
+    ta.selectionStart = ta.selectionEnd = p;
+  } else {
+    ta.value = val.slice(0, cur) + text + ' ' + val.slice(cur);
+    ta.selectionStart = ta.selectionEnd = cur + text.length + 1;
+  }
+  ta.focus();
+  closeRefPicker();
 }
 </script>
 {% endblock %}
