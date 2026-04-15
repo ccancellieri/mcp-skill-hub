@@ -6,6 +6,7 @@ of the MCP server. Reads host/port from ~/.claude/mcp-skill-hub/config.json
 """
 from __future__ import annotations
 
+import atexit
 import argparse
 import json
 import pathlib
@@ -34,6 +35,21 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(cfg.get("dashboard_server_port", 8765)))
     parser.add_argument("--open", action="store_true", help="open the dashboard in a browser")
     args = parser.parse_args()
+
+    # Build the service registry and start the reconciler so services align
+    # with config at startup (honours auto_start / enabled flags).
+    # The MCP server runs its own reconciler in a separate process; this one
+    # drives the webapp's in-process service instances independently.
+    from ..services.registry import ServiceRegistry, set_registry, start_reconciler
+    from ..services.monitor import PressureTracker
+
+    registry = ServiceRegistry.build_from_config(cfg)
+    pressure = PressureTracker(load_config_callable=_load_cfg)
+    set_registry(registry)
+    reconciler = start_reconciler(
+        registry, pressure, CONFIG, _load_cfg, interval_sec=5.0,
+    )
+    atexit.register(reconciler.stop)
 
     app = create_app(SkillStore(DB))
     url = f"http://{args.host}:{args.port}/"

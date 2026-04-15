@@ -159,13 +159,21 @@ def _build_report() -> dict:
     latencies: list[int] = []
     savings_by_type: Counter = Counter()
 
+    usd_direct = 0.0   # sum of per-entry usd_saved (prompt-size-proportional, new entries)
+    usd_entries = 0    # count of entries that have usd_saved
+
     for e in router_entries:
         v, tier, lat_ms = _normalize_entry(e)
         model = v.get("model", "?")
         model_counter[model] += 1
-        tok = (e.get("savings") or {}).get("tokens_estimated", 0) or 0
+        savings_obj = e.get("savings") or {}
+        tok = savings_obj.get("tokens_estimated", 0) or 0
         tokens_saved += tok
         tokens_by_model[model] += tok
+        entry_usd = savings_obj.get("usd_saved")
+        if entry_usd:
+            usd_direct += float(entry_usd)
+            usd_entries += 1
         if (e.get("enrichment") or {}).get("applied"):
             enriched_count += 1
             savings_by_type["enrichment"] += tok
@@ -180,7 +188,16 @@ def _build_report() -> dict:
     router_total = len(router_entries)
     avg_lat = round(sum(latencies) / len(latencies)) if latencies else 0
     tokens_per_prompt = round(tokens_saved / router_total) if router_total else 0
-    tokens_saved_usd = _estimate_usd(dict(tokens_by_model))
+    # Prefer direct per-entry USD (prompt-proportional pricing) when available;
+    # fall back to blended-rate estimate for old entries that predate usd_saved.
+    if usd_entries > 0:
+        old_entries = router_total - usd_entries
+        usd_from_old = _estimate_usd(
+            {m: int(t * old_entries / router_total) for m, t in tokens_by_model.items()}
+        ) if old_entries > 0 else 0.0
+        tokens_saved_usd = round(usd_direct + usd_from_old, 2)
+    else:
+        tokens_saved_usd = _estimate_usd(dict(tokens_by_model))
 
     router_by_session = _router_by_session(router_entries)
     daily = _daily_trends(router_entries)

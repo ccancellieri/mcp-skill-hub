@@ -5,69 +5,112 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 /**
- * Initialize tooltip system.
+ * Tooltip system — single body-attached popup, position:fixed.
+ * Works inside overflow:hidden containers (e.g. settings panels).
  *
- * Usage:
- *   <a class="tooltip-help" href="#"
- *      data-tooltip="Description text"
- *      data-tooltip-link="optional-link-url"
- *      data-tooltip-link-text="Learn more"
- *      tabindex="0">?</a>
+ * Usage: <a class="tooltip-help" href="#"
+ *            data-tooltip="Short description"
+ *            data-help-page="settings-router"   ← optional, opens modal on click
+ *            tabindex="0">?</a>
  */
 function initTooltips() {
-  document.querySelectorAll('.tooltip-help').forEach(el => {
-    const tooltipText = el.dataset.tooltip;
-    if (!tooltipText) return;
+  // Shared singleton popup
+  const popup = document.createElement('div');
+  popup.className = 'tooltip-popup';
+  document.body.appendChild(popup);
 
-    const helpPage = el.dataset.helpPage;
+  let hideTimer = null;
+  let currentTrigger = null;
 
-    // Create popup element
-    const popup = document.createElement('div');
-    popup.className = 'tooltip-popup';
-
+  function buildContent(el) {
+    popup.innerHTML = '';
     const textP = document.createElement('p');
     textP.className = 'tooltip-text';
-    textP.textContent = tooltipText;
+    textP.textContent = el.dataset.tooltip;
     popup.appendChild(textP);
 
-    if (helpPage) {
-      const linkEl = document.createElement('a');
-      linkEl.href = '#';
-      linkEl.className = 'tooltip-link';
-      linkEl.textContent = 'Full details →';
-      linkEl.onclick = (e) => { e.preventDefault(); openHelpModal(helpPage); };
-      popup.appendChild(linkEl);
+    const hp = el.dataset.helpPage;
+    if (hp) {
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className = 'tooltip-link';
+      a.textContent = 'Full details →';
+      a.onclick = ev => { ev.preventDefault(); hidePopup(); openHelpModal(hp); };
+      popup.appendChild(a);
     }
+  }
 
-    // Attach popup to wrapper (the positioned parent)
-    const wrapper = el.closest('.tooltip-wrapper') || el.parentNode;
-    wrapper.style.position = 'relative';
-    wrapper.appendChild(popup);
+  function positionPopup(el) {
+    const r = el.getBoundingClientRect();
+    // Measure popup size (it must be briefly visible for this)
+    popup.style.top = '-9999px';
+    popup.style.left = '-9999px';
+    popup.classList.add('visible');
 
-    // Hover on the WRAPPER keeps popup alive when moving from icon to popup
-    let hideTimer = null;
+    const pw = popup.offsetWidth;
+    const ph = popup.offsetHeight;
+    const gap = 8;
+    const vw = window.innerWidth;
 
-    const show = () => {
-      clearTimeout(hideTimer);
-      popup.classList.add('visible');
-    };
-    const scheduleHide = () => {
-      hideTimer = setTimeout(() => popup.classList.remove('visible'), 120);
-    };
+    // Prefer above; fall back to below if not enough room
+    let top = r.top - ph - gap;
+    if (top < 6) top = r.bottom + gap;
 
-    wrapper.addEventListener('mouseenter', show);
-    wrapper.addEventListener('mouseleave', scheduleHide);
-    popup.addEventListener('mouseenter', show);   // stay open when cursor moves to popup
-    popup.addEventListener('mouseleave', scheduleHide);
+    // Center horizontally on trigger, clamp to viewport
+    let left = r.left + r.width / 2 - pw / 2;
+    left = Math.max(6, Math.min(left, vw - pw - 6));
 
-    // Click on "?" opens help modal directly (most discoverable UX)
-    el.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (helpPage) {
-        openHelpModal(helpPage);
+    // Arrow X offset relative to popup
+    const arrowX = Math.round(r.left + r.width / 2 - left);
+    popup.style.setProperty('--arrow-x', arrowX + 'px');
+    popup.style.top  = top  + 'px';
+    popup.style.left = left + 'px';
+  }
+
+  function showPopup(el) {
+    clearTimeout(hideTimer);
+    currentTrigger = el;
+    buildContent(el);
+    positionPopup(el);
+  }
+
+  function hidePopup() {
+    clearTimeout(hideTimer);
+    popup.classList.remove('visible');
+    currentTrigger = null;
+  }
+
+  function scheduleHide() {
+    hideTimer = setTimeout(hidePopup, 120);
+  }
+
+  // Popup itself keeps tooltip alive when cursor moves from icon to popup
+  popup.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+  popup.addEventListener('mouseleave', scheduleHide);
+
+  // Hide on scroll / resize
+  window.addEventListener('scroll', hidePopup, { passive: true });
+  window.addEventListener('resize', hidePopup, { passive: true });
+
+  document.querySelectorAll('.tooltip-help').forEach(el => {
+    if (!el.dataset.tooltip) return;
+
+    el.addEventListener('mouseenter', () => showPopup(el));
+    el.addEventListener('mouseleave', scheduleHide);
+    el.addEventListener('focus',      () => showPopup(el));
+    el.addEventListener('blur',       scheduleHide);
+
+    el.addEventListener('click', ev => {
+      ev.preventDefault();
+      const hp = el.dataset.helpPage;
+      if (hp) {
+        hidePopup();
+        openHelpModal(hp);
       } else {
-        // No help page: toggle tooltip visibility on click for touch devices
-        popup.classList.toggle('visible');
+        // No modal: toggle tooltip on click (touch devices)
+        popup.classList.contains('visible') && currentTrigger === el
+          ? hidePopup()
+          : showPopup(el);
       }
     });
   });
@@ -355,7 +398,168 @@ function getHelpContent(pageId) {
     }
   };
 
-  return content[pageId] || extra[pageId] || {
+  const settings = {
+    'settings-auto_approve': {
+      title: 'Auto-approve',
+      html: `
+        <p>Controls which tool calls (Bash, Edit, Write…) the hook approves automatically without asking you.</p>
+        <p><strong>Key fields:</strong></p>
+        <ul>
+          <li><code>auto_approve_enabled</code> — master on/off switch</li>
+          <li><code>auto_approve_verdict_ttl</code> — how long a cached verdict is valid</li>
+          <li><code>auto_approve_max_llm_samples</code> — cap LLM calls before falling back to ask</li>
+        </ul>
+        <p>Verdicts are cached in the local SQLite DB. The first time you approve a pattern, it trains the cache. Subsequent identical patterns are approved in &lt;1 ms.</p>
+      `
+    },
+    'settings-auto_proceed': {
+      title: 'Auto-proceed',
+      html: `
+        <p>Multi-signal auto-proceed fires after the Stop hook to continue stalled sessions without manual intervention.</p>
+        <p><strong>Signals checked (in order):</strong></p>
+        <ol>
+          <li>Pending clarifying questions — if one is answered, resume</li>
+          <li>Timer expiry — if set, fires after N seconds of silence</li>
+          <li>Intent queue drain — if intents are all resolved</li>
+        </ol>
+        <p>Set <code>auto_proceed_enabled = false</code> to fully manual mode.</p>
+      `
+    },
+    'settings-hook': {
+      title: 'Hook behavior',
+      html: `
+        <p>Core hook toggles and safety guards.</p>
+        <ul>
+          <li><code>hook_enabled</code> — if false, all prompts pass through unprocessed</li>
+          <li><code>hook_timeout_seconds</code> — how long the hook waits for LLM verdict before giving up</li>
+          <li><code>hook_semantic_threshold</code> — min similarity to even attempt LLM classify (saves latency for unrelated content)</li>
+          <li><code>always_forward_to_claude</code> — safety override: never block, always forward</li>
+        </ul>
+        <p><strong>Tip:</strong> If the hook feels slow, increase <code>hook_semantic_threshold</code> to 0.35–0.45. Prompts below this skip LLM entirely.</p>
+      `
+    },
+    'settings-hook_context': {
+      title: 'Context injection',
+      html: `
+        <p>RAG context injection enriches every prompt with relevant skills and task context before it reaches Claude.</p>
+        <ul>
+          <li><code>hook_context_injection</code> — master toggle</li>
+          <li><code>hook_context_max_chars</code> — total budget (~10K chars ≈ 2.5K tokens)</li>
+          <li><code>hook_context_top_k_skills</code> — max skills injected per message</li>
+          <li><code>hook_precompact_threshold</code> — long contexts get LLM-compacted first</li>
+        </ul>
+        <p>Context injection is the <strong>primary source of token savings</strong> — it gives Claude the right context upfront, avoiding follow-up questions.</p>
+      `
+    },
+    'settings-hook_llm': {
+      title: 'LLM triage',
+      html: `
+        <p>Optional local LLM pre-triage classifies prompts <em>before</em> they reach Claude. Disabled by default because small local models are unreliable for this task.</p>
+        <p>When enabled, the local model runs a lightweight intent classification. If it's confident enough (above <code>hook_llm_triage_min_confidence</code>), the result gates routing.</p>
+        <p><strong>Recommended for:</strong> Users running Ollama with Llama 3.1 8B+ or equivalent. Not recommended with models below 3B parameters.</p>
+      `
+    },
+    'settings-router': {
+      title: 'Router core',
+      html: `
+        <p>The three-tier router selects which LLM handles each prompt:</p>
+        <ol>
+          <li><strong>Tier 1:</strong> Heuristics (regex, keyword) — instant</li>
+          <li><strong>Tier 2:</strong> Local Ollama model — ~50–200 ms</li>
+          <li><strong>Tier 3:</strong> Haiku 4.5 API — ~300–600 ms, highest accuracy</li>
+        </ol>
+        <p>Each tier escalates to the next if confidence is below the threshold. Most prompts resolve at Tier 1 or 2.</p>
+        <p><code>router_enrich_thin_prompts</code> — prepends task context to short prompts (&lt;60 chars) so they route correctly.</p>
+      `
+    },
+    'settings-router_bandit': {
+      title: 'Router bandit',
+      html: `
+        <p>ε-greedy bandit continuously optimizes the tier selection over cheap / mid / smart model groups.</p>
+        <ul>
+          <li><strong>ε (epsilon):</strong> Exploration rate. 0.1 = 10% random exploration, 90% exploit current best</li>
+          <li><strong>Reward signal:</strong> Explicit feedback (<code>record_feedback</code>) + implicit session signals</li>
+          <li><strong>Warmup:</strong> Exploration-heavy until each arm has 10+ samples</li>
+        </ul>
+        <p>Disable if you want deterministic routing based solely on confidence thresholds.</p>
+      `
+    },
+    'settings-improve_prompt': {
+      title: 'Prompt rewriters',
+      html: `
+        <p>Prompt rewriters run before the router to enrich prompts with context. The chain is configurable.</p>
+        <p><strong>Built-in rewriters:</strong></p>
+        <ul>
+          <li><code>add_skill_context</code> — appends the top-k matched skill descriptions</li>
+          <li><code>add_recent_tasks</code> — appends summaries of the N most recent tasks</li>
+          <li><code>add_session_memory</code> — appends the stored session memory summary</li>
+        </ul>
+        <p>Enriched prompts route more accurately and get better responses without additional back-and-forth.</p>
+      `
+    },
+    'settings-llm': {
+      title: 'LLM providers',
+      html: `
+        <p>Maps tier names to actual model endpoints using litellm syntax.</p>
+        <p><strong>Tier mapping:</strong></p>
+        <ul>
+          <li><code>tier_cheap</code> → e.g. <code>ollama/phi3:mini</code> — quick single-turn tasks</li>
+          <li><code>tier_mid</code>   → e.g. <code>ollama/llama3.1:8b</code> — medium complexity</li>
+          <li><code>tier_smart</code> → e.g. <code>ollama/llama3.1:70b</code> or <code>anthropic/claude-haiku-4-5</code></li>
+          <li><code>tier_embed</code> → embedding model for vector search</li>
+        </ul>
+        <p>Use <code>ollama/&lt;model&gt;</code> for local, <code>anthropic/&lt;model&gt;</code> for cloud, <code>openai/&lt;model&gt;</code> for OpenAI.</p>
+      `
+    },
+    'settings-vec': {
+      title: 'Vector & embeddings',
+      html: `
+        <p>Controls the vector search engine used for skill/task/teaching retrieval.</p>
+        <ul>
+          <li><code>vec_engine = "sqlite-vec"</code> — ANN search with binary quantization, ~7× faster than brute-force</li>
+          <li><code>binary_quant_enabled</code> — enables 32-bit → 1-bit quantization (32× compression, ~97% recall@5)</li>
+          <li><code>rerank_top_k</code> — how many binary candidates to rerank with float32 (default 60)</li>
+        </ul>
+        <p>Binary quantization is the key performance optimization. Disable only if you see recall degradation.</p>
+      `
+    },
+    'settings-session_memory': {
+      title: 'Session memory',
+      html: `
+        <p>Per-session transcript compaction: every N messages, the full transcript is summarized into a 6-section memory object and stored in SQLite.</p>
+        <p>On session resume, the stored memory is injected as a system message so Claude has immediate context without replaying the full conversation.</p>
+        <p><strong>Tune for your hardware:</strong></p>
+        <ul>
+          <li><code>session_memory_tier</code> — use <code>tier_cheap</code> for local Ollama, <code>tier_smart</code> for Claude API</li>
+          <li><code>session_memory_min_messages</code> — don't summarize very short sessions</li>
+          <li><code>session_memory_inject_max_chars</code> — cap injected memory size</li>
+        </ul>
+      `
+    },
+    'settings-skill_evolution': {
+      title: 'Skill evolution',
+      html: `
+        <p>Shadow-learning: Skill Hub observes how Claude solves tasks, then proposes improvements to your local skills.</p>
+        <ul>
+          <li><code>skill_evolution_enabled</code> — master toggle (disabled by default)</li>
+          <li><code>skill_evolution_auto</code> — auto-apply to all skills (only shadow-flagged skills if false)</li>
+          <li><code>skill_evolution_cross_pollinate</code> — reference official Claude skill definitions during evolution</li>
+        </ul>
+        <p>Skills with <code>shadow: true</code> in their frontmatter are candidates for auto-evolution. Start with a single trusted skill to test the feature.</p>
+      `
+    },
+    'settings-services': {
+      title: 'Services & monitor',
+      html: `
+        <p>Background service configuration and resource gating.</p>
+        <p><strong>Services managed:</strong> Ollama health check, SearXNG, file watcher (index on change), Haiku router.</p>
+        <p><strong>Resource monitor:</strong> When RAM/CPU exceeds thresholds for <code>resource_gating_sustain</code> seconds, expensive operations (LLM calls, vector rebuild) are deferred.</p>
+        <p>Useful on laptops or constrained environments to prevent skill-hub from competing with Claude itself.</p>
+      `
+    },
+  };
+
+  return content[pageId] || extra[pageId] || settings[pageId] || {
     title: 'Help',
     html: '<p>No detailed help available for this topic yet.</p>'
   };

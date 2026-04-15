@@ -102,90 +102,82 @@ td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
 .page-h { font-size: 18px; margin: 0 0 14px; font-weight: 600; }
 
 /* ── Tooltips ── */
+/* .tooltip-wrapper keeps the ? icon in flow; no position:relative needed */
 .tooltip-wrapper {
   display: inline-flex;
   align-items: center;
-  position: relative;
   gap: 4px;
 }
 .tooltip-help {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
-  background: rgba(125, 136, 150, 0.2);
+  background: rgba(125, 136, 150, 0.18);
   color: var(--color-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   cursor: help;
   text-decoration: none;
-  border: 1px solid rgba(125, 136, 150, 0.3);
-  transition: all 0.2s ease;
+  border: 1px solid rgba(125, 136, 150, 0.28);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
   flex-shrink: 0;
+  line-height: 1;
 }
-.tooltip-help:hover {
-  background: rgba(58, 160, 255, 0.15);
-  color: var(--color-accent);
-  border-color: rgba(58, 160, 255, 0.4);
-}
+.tooltip-help:hover,
 .tooltip-help:focus {
   outline: none;
   background: rgba(58, 160, 255, 0.15);
   color: var(--color-accent);
   border-color: rgba(58, 160, 255, 0.4);
 }
+/* Shared singleton popup — attached to body, position:fixed */
 .tooltip-popup {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%) translateY(-6px);
-  z-index: 1000;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  position: fixed;
+  z-index: 10002;
+  background: #1a222e;
+  border: 1px solid #2d3a4a;
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  min-width: 200px;
-  max-width: 280px;
+  padding: 10px 13px;
+  min-width: 210px;
+  max-width: 300px;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.5;
   color: var(--color-fg);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.55);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease, visibility 0.2s ease;
-  visibility: hidden;
+  transition: opacity 0.15s ease;
   white-space: normal;
 }
 .tooltip-popup.visible {
   opacity: 1;
-  visibility: visible;
   pointer-events: auto;
 }
+/* arrow: injected as a data-arrow attribute on the popup div */
 .tooltip-popup::after {
   content: '';
   position: absolute;
   top: 100%;
-  left: 50%;
+  left: var(--arrow-x, 50%);
   transform: translateX(-50%);
-  width: 0;
-  height: 0;
+  width: 0; height: 0;
   border-left: 5px solid transparent;
   border-right: 5px solid transparent;
-  border-top: 5px solid var(--color-border);
+  border-top: 5px solid #2d3a4a;
 }
 .tooltip-popup::before {
   content: '';
   position: absolute;
-  top: calc(100% + 1px);
-  left: 50%;
+  top: calc(100% - 1px);
+  left: var(--arrow-x, 50%);
   transform: translateX(-50%);
-  width: 0;
-  height: 0;
+  width: 0; height: 0;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 4px solid var(--color-surface);
+  border-top: 4px solid #1a222e;
 }
 .tooltip-text {
   margin: 0;
@@ -416,6 +408,7 @@ td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
 .btn.danger:hover { background: var(--bad); }
 .btn.on { background: var(--good); color: #fff; border-color: var(--good); }
 .btn.off { background: var(--bad); color: #fff; border-color: var(--bad); }
+.btn.htmx-request, .btn.htmx-request:hover { opacity: .5; pointer-events: none; cursor: wait; }
 
 /* forms */
 input[type=text], input[type=number], textarea, select {

@@ -303,7 +303,16 @@
             <div class="s-panel-title-area"
                  x-show="active === '{{ prefix }}'"
                  {% if prefix != ns.first %}style="display:none"{% endif %}>
-              <div class="s-panel-title">{{ label }}</div>
+              <div class="s-panel-title" style="display:flex;align-items:center;gap:7px">
+                {{ label }}
+                {% if bucket_help and bucket_help[prefix] %}
+                  <a class="tooltip-help"
+                     href="#"
+                     data-tooltip="{{ bucket_help[prefix] }}"
+                     data-help-page="settings-{{ prefix }}"
+                     tabindex="0">?</a>
+                {% endif %}
+              </div>
               {% if bucket_help and bucket_help[prefix] %}
                 <div class="s-panel-help">{{ bucket_help[prefix] }}</div>
               {% endif %}
@@ -343,11 +352,21 @@
                      :class="{ 's-match': fieldQ && '{{ e.key }}'.includes(fieldQ) }"
                      x-show="!fieldQ || '{{ e.key }}'.includes(fieldQ)">
                   <div class="sfield-label">
+                    <div style="display:flex;align-items:center;gap:5px">
+                      {% if short != e.key %}
+                        <span class="sfield-key">{{ short }}</span>
+                      {% else %}
+                        <span class="sfield-key">{{ e.key }}</span>
+                      {% endif %}
+                      {% if e.hint %}
+                        <a class="tooltip-help"
+                           href="#"
+                           data-tooltip="{{ e.hint }}"
+                           tabindex="0">?</a>
+                      {% endif %}
+                    </div>
                     {% if short != e.key %}
-                      <div class="sfield-key">{{ short }}</div>
                       <div class="sfield-full-key">{{ e.key }}</div>
-                    {% else %}
-                      <div class="sfield-key">{{ e.key }}</div>
                     {% endif %}
                     {% if e.hint %}
                       <div class="sfield-hint">{{ e.hint }}</div>
@@ -377,7 +396,15 @@
                         {% for c in e.children %}
                           <div class="sfield sub">
                             <div class="sfield-label">
-                              <span class="sfield-key">{{ c.key.split('.')[-1] }}</span>
+                              <div style="display:flex;align-items:center;gap:5px">
+                                <span class="sfield-key">{{ c.key.split('.')[-1] }}</span>
+                                {% if c.hint %}
+                                  <a class="tooltip-help"
+                                     href="#"
+                                     data-tooltip="{{ c.hint }}"
+                                     tabindex="0">?</a>
+                                {% endif %}
+                              </div>
                               {% if c.hint %}
                                 <div class="sfield-hint">{{ c.hint }}</div>
                               {% endif %}
