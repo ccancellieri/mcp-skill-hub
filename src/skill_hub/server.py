@@ -665,14 +665,18 @@ def update_task(task_id: int, summary: str = "", context: str = "",
     data loss.
     """
     log_tool("update_task", task_id=task_id)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found."
 
+    # Re-embed if summary changed. Optional: if embed service is disabled or
+    # the model is unavailable, update text fields without touching the vector
+    # (store leaves the existing vector column untouched when vector is None).
     vector = None
     if summary:
         task = _store.get_task(task_id)
         if task:
-            vector = embed(f"{task['title']}: {summary}")
+            try:
+                vector = embed(f"{task['title']}: {summary}")
+            except RuntimeError:
+                vector = None
 
     if _store.update_task(task_id, summary=summary, context=context,
                           tags=tags, vector=vector):
