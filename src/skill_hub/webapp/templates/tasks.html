@@ -45,7 +45,12 @@
       {% for t in open_tasks %}
       <div class="task-item" :class="{selected: selectedId==={{ t.id }}}"
            @click="select({{ t.id }}, {{ t|tojson }})">
-        <div class="task-item-title">{{ t.title }}</div>
+        <div style="display:flex; align-items:flex-start; gap:6px">
+          <div class="task-item-title" style="flex:1">{{ t.title }}</div>
+          <button class="btn sm" style="flex-shrink:0; opacity:0.7"
+                  @click.stop="select({{ t.id }}, {{ t|tojson }}); $nextTick(() => openClose())"
+                  title="Close task">✕ close</button>
+        </div>
         <div class="task-item-meta">
           {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
           <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
