@@ -31,7 +31,7 @@
   /* ── scatter controls ── */
   .scatter-layout {
     display: grid;
-    grid-template-columns: 1fr 220px;
+    grid-template-columns: 1fr 230px;
     gap: 14px;
     align-items: start;
   }
@@ -158,10 +158,214 @@
     color: var(--color-fg);
   }
 
-  /* ── index catalog table ── */
-  .idx-table-wrap {
-    overflow-x: auto;
+  /* ── mode bar ── */
+  .mode-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
   }
+  .mode-btn {
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 3px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-muted);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .mode-btn:hover { color: var(--color-fg); border-color: var(--color-fg); }
+  .mode-btn.active {
+    background: rgba(58,160,255,0.15);
+    color: var(--color-accent);
+    border-color: rgba(58,160,255,0.4);
+  }
+  .sel-count-badge {
+    font-size: 11px;
+    color: var(--color-accent);
+    margin-left: 4px;
+  }
+
+  /* ── scatter wrap / SVG ── */
+  #scatter-wrap {
+    position: relative;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    user-select: none;
+  }
+  #scatter-svg {
+    display: block;
+    width: 100%;
+    cursor: default;
+  }
+  #scatter-svg.mode-select { cursor: crosshair; }
+
+  /* ── tooltip ── */
+  .vec-tip {
+    position: absolute;
+    z-index: 20;
+    background: rgba(10,14,19,0.96);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    min-width: 160px;
+    max-width: 240px;
+    pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+  .tip-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-fg);
+    margin-bottom: 4px;
+    word-break: break-word;
+  }
+  .tip-group {
+    font-size: 10px;
+    color: var(--color-accent);
+    margin-bottom: 5px;
+    font-family: ui-monospace, monospace;
+  }
+  .tip-row {
+    display: flex;
+    gap: 6px;
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+  .tip-key {
+    color: var(--color-muted);
+    flex-shrink: 0;
+    min-width: 60px;
+  }
+  .tip-val {
+    color: var(--color-fg);
+    word-break: break-all;
+  }
+  .tip-open-btn {
+    margin-top: 7px;
+    width: 100%;
+    font-size: 11px;
+    padding: 4px 8px;
+    pointer-events: all;
+    cursor: pointer;
+  }
+
+  /* ── lasso box ── */
+  .vec-lasso {
+    position: absolute;
+    border: 1.5px dashed var(--color-accent);
+    background: rgba(58,160,255,0.07);
+    pointer-events: none;
+    border-radius: 2px;
+  }
+
+  /* ── selection panel ── */
+  .sel-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 10px;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .sel-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--color-fg);
+  }
+  .sel-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sel-item-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sel-more {
+    font-size: 10px;
+    color: var(--color-muted);
+    padding-left: 14px;
+  }
+  .sel-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 8px;
+  }
+  .preset-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .preset-btn {
+    font-size: 10.5px;
+    padding: 3px 9px;
+    border-radius: 3px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-muted);
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .preset-btn:hover {
+    color: var(--color-fg);
+    border-color: var(--color-fg);
+  }
+  #analyze-instruction {
+    width: 100%;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    padding: 5px 7px;
+    resize: vertical;
+    margin-bottom: 8px;
+  }
+  .model-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .model-row select {
+    flex: 1;
+    font-size: 11px;
+    padding: 4px 6px;
+  }
+  #analyze-result {
+    margin-top: 10px;
+  }
+  .analyze-text {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--color-fg);
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .analyze-error {
+    font-size: 11px;
+    color: var(--color-bad);
+    padding: 6px 0;
+  }
+  .analyze-spinner {
+    font-size: 11px;
+    color: var(--color-muted);
+    padding: 4px 0;
+  }
+
+  /* ── index catalog table ── */
+  .idx-table-wrap { overflow-x: auto; }
   .idx-table {
     width: 100%;
     border-collapse: collapse;
@@ -265,6 +469,10 @@
   .level-ref-val { font-family: ui-monospace, monospace; color: var(--color-fg); }
 </style>
 
+{# ── data islands (avoids HTML-attribute quoting issues) ── #}
+<script type="application/json" id="pts-data">{{ points_json }}</script>
+<script type="application/json" id="cmap-data">{{ color_map_json }}</script>
+
 <div class="vec-header">
   <h1 class="page-h" style="margin:0">Vectors</h1>
   <span class="muted">random projection · cached seed</span>
@@ -305,12 +513,13 @@
   {# ════════════════════════════════════════════════════════ SCATTER TAB #}
   <div x-show="tab === 'scatter'" {% if tab != 'scatter' %}style="display:none"{% endif %}>
     <div class="scatter-layout">
-      {# Left: scatter + stats #}
+
+      {# ── Left: scatter area ── #}
       <div>
         <div class="scatter-stat-row">
           <div class="scatter-stat">
             <span class="scatter-stat-label">Points</span>
-            <span class="scatter-stat-value">{{ count }}</span>
+            <span class="scatter-stat-value" id="stat-count">{{ count }}</span>
           </div>
           <div class="scatter-stat">
             <span class="scatter-stat-label">Source</span>
@@ -329,11 +538,26 @@
           </div>
           {% endif %}
         </div>
-        <div style="border-radius:6px; overflow:hidden">{{ svg | safe }}</div>
+
+        {# mode bar #}
+        <div class="mode-bar">
+          <button id="btn-explore" class="mode-btn active">Explore</button>
+          <button id="btn-select" class="mode-btn">Select</button>
+          <span class="sel-count-badge" id="sel-count-badge"></span>
+          <button id="btn-clear-sel" class="mode-btn" style="display:none;margin-left:auto">Clear</button>
+        </div>
+
+        {# SVG container #}
+        <div id="scatter-wrap">
+          <svg id="scatter-svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet"></svg>
+          <div id="vec-tip" class="vec-tip" style="display:none"></div>
+          <div id="vec-lasso" class="vec-lasso" style="display:none"></div>
+        </div>
       </div>
 
-      {# Right: controls + legend #}
+      {# ── Right: controls + legend + selection ── #}
       <div class="scatter-controls">
+
         <div class="ctrl-card">
           <h3>Controls</h3>
           <div class="ctrl-row">
@@ -392,9 +616,41 @@
           </div>
         </div>
         {% endif %}
+
+        {# Selection + analysis panel — shown when items are selected #}
+        <div id="sel-panel" class="ctrl-card" style="display:none">
+          <h3>Selection <span id="sel-panel-count" style="font-weight:400;color:var(--color-accent)"></span></h3>
+          <div class="sel-actions">
+            <button id="btn-clear-sel2" class="preset-btn">Clear all</button>
+          </div>
+          <div class="sel-items-list" id="sel-items"></div>
+
+          <div class="preset-btns">
+            <button class="preset-btn" data-preset="Consolidate">Consolidate</button>
+            <button class="preset-btn" data-preset="Promote">Promote</button>
+            <button class="preset-btn" data-preset="Prune">Prune</button>
+            <button class="preset-btn" data-preset="Synthesize">Synthesize</button>
+            <button class="preset-btn" data-preset="Cluster">Cluster</button>
+          </div>
+
+          <textarea id="analyze-instruction" rows="3"
+                    placeholder="Instruction for the LLM…"></textarea>
+
+          <div class="model-row">
+            <select id="model-pick">
+              <option value="local">Local LLM</option>
+              <option value="mid">Mid (Haiku)</option>
+              <option value="claude">Claude</option>
+            </select>
+            <button id="analyze-btn" class="btn btn-sm">Analyze</button>
+          </div>
+
+          <div id="analyze-result"></div>
+        </div>
+
       </div>
     </div>
-  </div>
+  </div>{# end scatter tab #}
 
   {# ════════════════════════════════════════════════════════ INDEXES TAB #}
   <div x-show="tab === 'indexes'" {% if tab != 'indexes' %}style="display:none"{% endif %}>
@@ -528,4 +784,384 @@
   </div>{# end indexes tab #}
 
 </div>{# end x-data #}
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── parse data islands ── */
+  var ptsEl = document.getElementById('pts-data');
+  var cmapEl = document.getElementById('cmap-data');
+  if (!ptsEl || !cmapEl) return;
+
+  var pts;
+  var cmap;
+  try {
+    pts = JSON.parse(ptsEl.textContent);
+    cmap = JSON.parse(cmapEl.textContent);
+  } catch (e) { return; }
+
+  if (!pts || !pts.length) return;
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var svg = document.getElementById('scatter-svg');
+  var tip = document.getElementById('vec-tip');
+  var lassoEl = document.getElementById('vec-lasso');
+  var selPanel = document.getElementById('sel-panel');
+  var selItemsList = document.getElementById('sel-items');
+  var selCountBadge = document.getElementById('sel-count-badge');
+  var selPanelCount = document.getElementById('sel-panel-count');
+  var btnExplore = document.getElementById('btn-explore');
+  var btnSelect = document.getElementById('btn-select');
+  var btnClearSel = document.getElementById('btn-clear-sel');
+  var btnClearSel2 = document.getElementById('btn-clear-sel2');
+  var analyzeBtn = document.getElementById('analyze-btn');
+  var analyzeResult = document.getElementById('analyze-result');
+  var analyzeInstr = document.getElementById('analyze-instruction');
+  var modelPick = document.getElementById('model-pick');
+
+  var mode = 'explore';
+  var selected = new Set();
+
+  /* ── normalise to viewBox 800x600 ── */
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (var i = 0; i < pts.length; i++) {
+    var p = pts[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  var rangeX = maxX - minX || 1;
+  var rangeY = maxY - minY || 1;
+  var PAD = 28, VW = 800, VH = 600;
+
+  function toVB(p) {
+    return {
+      vx: PAD + (p.x - minX) / rangeX * (VW - 2 * PAD),
+      vy: VH - PAD - (p.y - minY) / rangeY * (VH - 2 * PAD)
+    };
+  }
+
+  /* ── render circles ── */
+  for (var j = 0; j < pts.length; j++) {
+    var pt = pts[j];
+    var vb = toVB(pt);
+    var c = document.createElementNS(SVG_NS, 'circle');
+    c.setAttribute('cx', vb.vx.toFixed(2));
+    c.setAttribute('cy', vb.vy.toFixed(2));
+    c.setAttribute('r', '4');
+    c.setAttribute('fill', cmap[pt.group] || '#888');
+    c.setAttribute('opacity', '0.78');
+    c.setAttribute('stroke', 'none');
+    c.dataset.id = String(pt.id);
+    c.dataset.label = pt.label || '';
+    c.dataset.group = pt.group || '';
+    c.dataset.url = pt.url || '';
+    c.dataset.meta = JSON.stringify(pt.meta || {});
+    svg.appendChild(c);
+  }
+
+  /* ── tooltip (DOM only, no innerHTML) ── */
+  function clearEl(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function mkEl(tag, cls, text) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function showTip(circ, clientX, clientY) {
+    clearEl(tip);
+
+    tip.appendChild(mkEl('div', 'tip-label', circ.dataset.label || circ.dataset.id));
+
+    var grp = circ.dataset.group;
+    if (grp) tip.appendChild(mkEl('div', 'tip-group', grp));
+
+    var meta = {};
+    try { meta = JSON.parse(circ.dataset.meta); } catch (e) {}
+
+    var skipKeys = { type: 1 };
+    for (var k in meta) {
+      if (!meta.hasOwnProperty(k)) continue;
+      if (skipKeys[k]) continue;
+      var v = meta[k];
+      if (!v && v !== 0) continue;
+      var row = mkEl('div', 'tip-row');
+      row.appendChild(mkEl('span', 'tip-key', k + ':'));
+      row.appendChild(mkEl('span', 'tip-val', String(v).slice(0, 120)));
+      tip.appendChild(row);
+    }
+
+    var url = circ.dataset.url;
+    if (url && mode === 'explore') {
+      var btn = mkEl('button', 'btn btn-sm tip-open-btn', 'Open \u2192');
+      btn.style.pointerEvents = 'all';
+      (function (u) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          window.location.href = u;
+        });
+      }(url));
+      tip.appendChild(btn);
+    }
+
+    positionTip(clientX, clientY);
+    tip.style.display = '';
+  }
+
+  function positionTip(clientX, clientY) {
+    var wrap = document.getElementById('scatter-wrap');
+    var rect = wrap.getBoundingClientRect();
+    var x = clientX - rect.left + 14;
+    var y = clientY - rect.top - 10;
+    if (x + 220 > rect.width) x = clientX - rect.left - 224;
+    if (y < 0) y = 0;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  }
+
+  function hideTip() { tip.style.display = 'none'; }
+
+  /* ── circle events ── */
+  var circles = svg.querySelectorAll('circle');
+  for (var ci = 0; ci < circles.length; ci++) {
+    (function (circ) {
+      circ.addEventListener('mouseenter', function (e) {
+        if (mode === 'explore') showTip(circ, e.clientX, e.clientY);
+      });
+      circ.addEventListener('mousemove', function (e) {
+        if (mode === 'explore') positionTip(e.clientX, e.clientY);
+      });
+      circ.addEventListener('mouseleave', function () {
+        if (mode === 'explore') hideTip();
+      });
+      circ.addEventListener('click', function (e) {
+        if (mode === 'explore') {
+          var url = circ.dataset.url;
+          if (url) window.location.href = url;
+        } else {
+          e.stopPropagation();
+          toggleSelect(circ);
+        }
+      });
+    }(circles[ci]));
+  }
+
+  /* ── selection ── */
+  function toggleSelect(circ) {
+    var id = circ.dataset.id;
+    if (selected.has(id)) {
+      selected.delete(id);
+      circ.setAttribute('stroke', 'none');
+      circ.setAttribute('stroke-width', '0');
+    } else {
+      selected.add(id);
+      circ.setAttribute('stroke', '#ffffff');
+      circ.setAttribute('stroke-width', '1.5');
+    }
+    updateSelPanel();
+  }
+
+  function clearSelection() {
+    selected.clear();
+    var cs = svg.querySelectorAll('circle');
+    for (var i = 0; i < cs.length; i++) {
+      cs[i].setAttribute('stroke', 'none');
+    }
+    updateSelPanel();
+  }
+
+  function updateSelPanel() {
+    var count = selected.size;
+    selCountBadge.textContent = count ? count + ' selected' : '';
+    btnClearSel.style.display = count ? '' : 'none';
+
+    if (!count) {
+      selPanel.style.display = 'none';
+      return;
+    }
+    selPanel.style.display = '';
+    selPanelCount.textContent = count;
+
+    clearEl(selItemsList);
+    var matchedCircles = [];
+    var allCircles = svg.querySelectorAll('circle');
+    for (var i = 0; i < allCircles.length; i++) {
+      if (selected.has(allCircles[i].dataset.id)) matchedCircles.push(allCircles[i]);
+    }
+
+    var show = matchedCircles.slice(0, 20);
+    for (var si = 0; si < show.length; si++) {
+      var circ = show[si];
+      var item = mkEl('div', 'sel-item');
+      var dot = mkEl('span', 'sel-dot');
+      dot.style.background = cmap[circ.dataset.group] || '#888';
+      item.appendChild(dot);
+      item.appendChild(mkEl('span', 'sel-item-label', circ.dataset.label || circ.dataset.id));
+      selItemsList.appendChild(item);
+    }
+    if (matchedCircles.length > 20) {
+      selItemsList.appendChild(mkEl('div', 'sel-more', '+ ' + (matchedCircles.length - 20) + ' more'));
+    }
+  }
+
+  /* ── lasso selection ── */
+  var lassoActive = false;
+  var lassoStart = { x: 0, y: 0 };
+
+  svg.addEventListener('mousedown', function (e) {
+    if (mode !== 'select') return;
+    if (e.target.tagName === 'circle' || e.target.tagName === 'CIRCLE') return;
+    lassoActive = true;
+    var rect = svg.getBoundingClientRect();
+    lassoStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    lassoEl.style.left = lassoStart.x + 'px';
+    lassoEl.style.top = lassoStart.y + 'px';
+    lassoEl.style.width = '0px';
+    lassoEl.style.height = '0px';
+    lassoEl.style.display = '';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!lassoActive) return;
+    var rect = svg.getBoundingClientRect();
+    var cx = e.clientX - rect.left;
+    var cy = e.clientY - rect.top;
+    var x = Math.min(cx, lassoStart.x);
+    var y = Math.min(cy, lassoStart.y);
+    lassoEl.style.left = x + 'px';
+    lassoEl.style.top = y + 'px';
+    lassoEl.style.width = Math.abs(cx - lassoStart.x) + 'px';
+    lassoEl.style.height = Math.abs(cy - lassoStart.y) + 'px';
+  });
+
+  document.addEventListener('mouseup', function (e) {
+    if (!lassoActive) return;
+    lassoActive = false;
+    lassoEl.style.display = 'none';
+
+    var rect = svg.getBoundingClientRect();
+    var cx = e.clientX - rect.left;
+    var cy = e.clientY - rect.top;
+    var px1 = Math.min(cx, lassoStart.x);
+    var py1 = Math.min(cy, lassoStart.y);
+    var px2 = Math.max(cx, lassoStart.x);
+    var py2 = Math.max(cy, lassoStart.y);
+
+    if (px2 - px1 < 5 && py2 - py1 < 5) return; // too small — treat as click
+
+    /* map pixel coords to viewBox 800×600 */
+    var svgW = rect.width || 1;
+    var svgH = rect.height || 1;
+    var vx1 = px1 / svgW * VW;
+    var vy1 = py1 / svgH * VH;
+    var vx2 = px2 / svgW * VW;
+    var vy2 = py2 / svgH * VH;
+
+    var cs = svg.querySelectorAll('circle');
+    for (var i = 0; i < cs.length; i++) {
+      var circ = cs[i];
+      var vcx = parseFloat(circ.getAttribute('cx'));
+      var vcy = parseFloat(circ.getAttribute('cy'));
+      if (vcx >= vx1 && vcx <= vx2 && vcy >= vy1 && vcy <= vy2) {
+        selected.add(circ.dataset.id);
+        circ.setAttribute('stroke', '#ffffff');
+        circ.setAttribute('stroke-width', '1.5');
+      }
+    }
+    updateSelPanel();
+  });
+
+  /* ── mode toggle ── */
+  btnExplore.addEventListener('click', function () {
+    mode = 'explore';
+    btnExplore.classList.add('active');
+    btnSelect.classList.remove('active');
+    svg.classList.remove('mode-select');
+    hideTip();
+  });
+  btnSelect.addEventListener('click', function () {
+    mode = 'select';
+    btnSelect.classList.add('active');
+    btnExplore.classList.remove('active');
+    svg.classList.add('mode-select');
+    hideTip();
+  });
+
+  btnClearSel.addEventListener('click', clearSelection);
+  if (btnClearSel2) btnClearSel2.addEventListener('click', clearSelection);
+
+  /* ── preset buttons ── */
+  var presets = {
+    'Consolidate': 'Find redundant or near-duplicate items. Suggest which to keep or merge, and what the merged version should say.',
+    'Promote': 'Identify ephemeral or low-level items (L0/L1) that contain durable knowledge deserving promotion to L2/L3.',
+    'Prune': 'Find stale, low-value, or contradictory items. List which should be archived or deleted, and why.',
+    'Synthesize': 'Synthesize these items into a single cohesive summary, rule, or note. Output the proposed merged text.',
+    'Cluster': 'Group these items into 3–6 meaningful clusters. Label each cluster and list its members.'
+  };
+
+  var presetBtns = document.querySelectorAll('.preset-btn[data-preset]');
+  for (var pi = 0; pi < presetBtns.length; pi++) {
+    (function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.dataset.preset;
+        if (presets[key]) analyzeInstr.value = presets[key];
+      });
+    }(presetBtns[pi]));
+  }
+
+  /* ── analyze ── */
+  analyzeBtn.addEventListener('click', function () {
+    if (!selected.size) return;
+
+    analyzeBtn.disabled = true;
+    analyzeBtn.textContent = 'Analyzing\u2026';
+    clearEl(analyzeResult);
+    analyzeResult.appendChild(mkEl('div', 'analyze-spinner', 'Waiting for LLM\u2026'));
+
+    var params = new URLSearchParams(window.location.search);
+    var source = params.get('source') || 'skills';
+    var namespace = params.get('namespace') || '';
+
+    var payload = JSON.stringify({
+      ids: Array.from(selected),
+      source: source,
+      namespace: namespace,
+      model: modelPick.value,
+      instruction: analyzeInstr.value.trim()
+    });
+
+    fetch('/vector/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload
+    })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        clearEl(analyzeResult);
+        if (data.error) {
+          analyzeResult.appendChild(mkEl('div', 'analyze-error', 'Error: ' + data.error));
+        } else {
+          var pre = mkEl('pre', 'analyze-text', data.result || '');
+          analyzeResult.appendChild(pre);
+        }
+      })
+      .catch(function (ex) {
+        clearEl(analyzeResult);
+        analyzeResult.appendChild(mkEl('div', 'analyze-error', 'Network error: ' + String(ex)));
+      })
+      .finally(function () {
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = 'Analyze';
+      });
+  });
+
+}());
+</script>
 {% endblock %}

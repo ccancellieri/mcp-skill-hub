@@ -222,9 +222,12 @@ def _project(rows: list[dict]) -> list[dict]:
     dim = max(len(r["vector"]) for r in rows)
     mat = vector_viz.get_projection(dim_in=dim)
     projected = vector_viz.project_all(rows, matrix=mat)
-    # strip raw vectors from output (large, not needed in browser)
+    # merge back url + meta fields by id (project_all only returns id/x/y/label/group)
+    extra: dict[str, dict] = {str(r["id"]): r for r in rows}
     for p in projected:
-        p.pop("vector", None)
+        orig = extra.get(str(p.get("id")), {})
+        p["url"] = orig.get("url", "")
+        p["meta"] = orig.get("meta", {})
     return projected
 
 
