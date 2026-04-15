@@ -1,126 +1,320 @@
 {% extends "base.html" %}
 {% block title %}dashboard{% endblock %}
 {% block content %}
-<section class="kpi-grid">
-  <div class="kpi"><div class="kpi-label">Tokens saved</div>
-    <div class="kpi-value">{{ "{:,}".format(m.tokens_saved) }}</div>
-    <div class="kpi-sub">sum of interception estimates</div></div>
-  <div class="kpi"><div class="kpi-label">Net savings</div>
-    <div class="kpi-value">{{ "{:+,}".format(m.net) }}</div>
-    <div class="kpi-sub">minus ~{{ "{:,}".format(m.llm_cost_eq) }} tok local-LLM</div></div>
-  <div class="kpi"><div class="kpi-label">Tasks closed / open</div>
-    <div class="kpi-value">{{ m.tasks_closed }} / {{ m.tasks_open }}</div>
-    <div class="kpi-sub">lifetime</div></div>
-  <div class="kpi"><div class="kpi-label">Skills indexed</div>
-    <div class="kpi-value">{{ "{:,}".format(m.skills) }}</div>
-    <div class="kpi-sub">across plugins</div></div>
-  <div class="kpi"><div class="kpi-label">Teachings</div>
-    <div class="kpi-value">{{ "{:,}".format(m.teachings) }}</div>
-    <div class="kpi-sub">explicit rules</div></div>
-  <div class="kpi"><div class="kpi-label">Feedback helpful</div>
-    <div class="kpi-value">{% if m.helpful + m.unhelpful %}{{ m.helpful_pct }}%{% else %}&mdash;{% endif %}</div>
-    <div class="kpi-sub">{{ m.helpful }} up / {{ m.unhelpful }} down</div></div>
-</section>
+<style>
+  /* ── KPI strip ── */
+  .db-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .db-kpi {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+  }
+  .db-kpi-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--color-muted);
+    font-weight: 600;
+  }
+  .db-kpi-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--color-fg);
+    margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.5px;
+  }
+  .db-kpi-sub {
+    font-size: 10.5px;
+    color: var(--color-muted);
+    margin-top: 3px;
+  }
+  .db-kpi.good .db-kpi-value { color: var(--color-good); }
+  .db-kpi.bad  .db-kpi-value { color: var(--color-bad); }
+  .db-kpi.warn .db-kpi-value { color: var(--color-warn); }
+  .db-kpi.accent .db-kpi-value { color: var(--color-accent); }
 
-<section class="row">
-  <div class="card">
-    <h2>Auto-approve hook</h2>
-    <table>
-      <tr><th>decision</th><th>count</th></tr>
+  /* ── grid cards ── */
+  .db-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .db-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+  }
+  .db-card-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--color-muted);
+    font-weight: 700;
+    margin: 0 0 10px;
+  }
+  .db-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .db-table td {
+    padding: 5px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .db-table tr:last-child td { border-bottom: none; }
+  .db-table td:first-child { color: var(--color-muted); font-size: 11.5px; }
+  .db-table td:last-child {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--color-fg);
+  }
+  .db-table td a { color: var(--color-accent); text-decoration: none; }
+  .db-table td a:hover { text-decoration: underline; }
+
+  /* open tasks list */
+  .task-rows { display: flex; flex-direction: column; gap: 5px; }
+  .task-row-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .task-row-item:last-child { border-bottom: none; }
+  .task-id {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    color: var(--color-accent);
+    flex-shrink: 0;
+    text-decoration: none;
+  }
+  .task-id:hover { text-decoration: underline; }
+  .task-title {
+    color: var(--color-fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* router mini bars */
+  .mini-bar-row {
+    display: grid;
+    grid-template-columns: 70px 1fr 36px;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 5px;
+  }
+  .mini-bar-key { font-size: 11px; font-family: ui-monospace, monospace; color: var(--color-fg); text-align: right; }
+  .mini-bar-track { height: 8px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+  .mini-bar-fill { height: 100%; border-radius: 2px; }
+  .mini-bar-val { font-size: 10px; color: var(--color-muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-sonnet { background: rgba(58,160,255,0.65); }
+  .bar-opus   { background: rgba(192,57,43,0.65); }
+  .bar-haiku  { background: rgba(74,211,107,0.65); }
+  .bar-other  { background: rgba(125,136,150,0.4); }
+  .bar-t1 { background: rgba(58,160,255,0.6); }
+  .bar-t2 { background: rgba(74,211,107,0.6); }
+  .bar-t3 { background: rgba(232,166,75,0.6); }
+
+  /* intercept table */
+  code.cmd-type {
+    font-size: 10.5px;
+    background: rgba(125,136,150,0.12);
+    border-radius: 3px;
+    padding: 1px 5px;
+    color: var(--color-muted);
+  }
+
+  .db-footer-warn {
+    font-size: 11.5px;
+    color: var(--color-warn);
+    margin-top: 8px;
+  }
+  .db-footer-warn a { color: var(--color-warn); }
+</style>
+
+<div class="page-h" style="margin-bottom:14px">Dashboard</div>
+
+{# ── KPI strip ── #}
+<div class="db-kpi-row">
+  <div class="db-kpi {% if m.net > 0 %}good{% elif m.net < 0 %}bad{% endif %}">
+    <div class="db-kpi-label">Net tokens saved</div>
+    <div class="db-kpi-value">{{ "{:+,}".format(m.net) }}</div>
+    <div class="db-kpi-sub">{{ "{:,}".format(m.tokens_saved) }} saved − ~{{ "{:,}".format(m.llm_cost_eq) }} LLM cost</div>
+  </div>
+  <div class="db-kpi">
+    <div class="db-kpi-label">Tasks open</div>
+    <div class="db-kpi-value">{{ m.tasks_open }}</div>
+    <div class="db-kpi-sub">{{ m.tasks_closed }} closed lifetime</div>
+  </div>
+  <div class="db-kpi accent">
+    <div class="db-kpi-label">Skills indexed</div>
+    <div class="db-kpi-value">{{ "{:,}".format(m.skills) }}</div>
+    <div class="db-kpi-sub">across plugins</div>
+  </div>
+  <div class="db-kpi">
+    <div class="db-kpi-label">Teachings</div>
+    <div class="db-kpi-value">{{ "{:,}".format(m.teachings) }}</div>
+    <div class="db-kpi-sub">explicit rules</div>
+  </div>
+  <div class="db-kpi {% if m.helpful_pct >= 70 %}good{% elif m.helpful_pct < 40 and m.helpful + m.unhelpful > 0 %}warn{% endif %}">
+    <div class="db-kpi-label">Feedback helpful</div>
+    <div class="db-kpi-value">{% if m.helpful + m.unhelpful %}{{ m.helpful_pct }}%{% else %}&mdash;{% endif %}</div>
+    <div class="db-kpi-sub">{{ m.helpful }} up / {{ m.unhelpful }} down</div>
+  </div>
+  {% if m.rss_mb is not none %}
+  <div class="db-kpi">
+    <div class="db-kpi-label">Memory (RSS)</div>
+    <div class="db-kpi-value" style="font-size:17px">{{ m.rss_mb }} <span style="font-size:12px;font-weight:400">MiB</span></div>
+    <div class="db-kpi-sub">dashboard process</div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Main grid ── #}
+<div class="db-grid">
+
+  {# Open tasks #}
+  <div class="db-card">
+    <h3 class="db-card-title">Recent open tasks</h3>
+    {% if recent_tasks %}
+      <div class="task-rows">
+        {% for t in recent_tasks %}
+          <div class="task-row-item">
+            <a class="task-id" href="/tasks?id={{ t.id }}">#{{ t.id }}</a>
+            <span class="task-title" title="{{ t.title }}">{{ t.title or "(untitled)" }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="muted" style="font-size:12px;padding:4px 0">
+        No open tasks — use <code>save_task</code> to track a thread.
+      </div>
+    {% endif %}
+  </div>
+
+  {# Auto-approve hook #}
+  <div class="db-card">
+    <h3 class="db-card-title">Auto-approve hook</h3>
+    <table class="db-table">
       <tr><td>allow</td><td>{{ "{:,}".format(m.approve) }}</td></tr>
       <tr><td>deny</td><td>{{ "{:,}".format(m.deny) }}</td></tr>
       <tr><td>pass-through</td><td>{{ "{:,}".format(m.pass_through) }}</td></tr>
-    </table>
-  </div>
-  <div class="card">
-    <h2>Auto-proceed &amp; resume</h2>
-    <table>
       <tr><td>auto-proceed fires</td><td>{{ "{:,}".format(m.auto_proceed_fires) }}</td></tr>
       <tr><td>resume markers consumed</td><td>{{ "{:,}".format(m.resume_consumed) }}</td></tr>
-      <tr><td>intercept errors</td><td>{{ "{:,}".format(m.intercept_errors) }}</td></tr>
     </table>
   </div>
-  <div class="card">
-    <h2>Verdict cache</h2>
-    <table>
+
+  {# Verdict cache #}
+  <div class="db-card">
+    <h3 class="db-card-title">Verdict cache</h3>
+    <table class="db-table">
       <tr><td>total verdicts</td><td>{{ "{:,}".format(m.verdict_total) }}</td></tr>
-      <tr><td>total hits</td><td>{{ "{:,}".format(m.verdict_hits) }}</td></tr>
+      <tr><td>cache hits</td><td>{{ "{:,}".format(m.verdict_hits) }}</td></tr>
       <tr><td>LLM samples</td><td>{{ "{:,}".format(m.llm_samples) }}</td></tr>
     </table>
   </div>
-</section>
 
-<section class="row">
-  <div class="card">
-    <h2>Live queues</h2>
-    <table>
-      <tr><td>intents pending</td>
-          <td><a href="/intents">{{ "{:,}".format(m.intents_pending) }}</a></td></tr>
-      <tr><td>questions open</td>
-          <td><a href="/questions">{{ "{:,}".format(m.questions_open) }}</a></td></tr>
-      <tr><td>dashboard RSS</td>
-          <td>{% if m.rss_mb is not none %}{{ m.rss_mb }} MiB{% else %}&mdash;{% endif %}</td></tr>
+  {# Live queues #}
+  <div class="db-card">
+    <h3 class="db-card-title">Live queues</h3>
+    <table class="db-table">
+      <tr>
+        <td>intents pending</td>
+        <td><a href="/intents">{{ "{:,}".format(m.intents_pending) }}</a></td>
+      </tr>
+      <tr>
+        <td>questions open</td>
+        <td><a href="/questions">{{ "{:,}".format(m.questions_open) }}</a></td>
+      </tr>
+      <tr>
+        <td>intercept errors</td>
+        <td {% if m.intercept_errors %}style="color:var(--color-warn)"{% endif %}>
+          {{ "{:,}".format(m.intercept_errors) }}
+        </td>
+      </tr>
     </table>
   </div>
-  <div class="card">
-    <h2>Recent open tasks</h2>
-    {% if recent_tasks %}
-      <table>
-        <tr><th>id</th><th style="text-align:left">title</th></tr>
-        {% for t in recent_tasks %}
-          <tr>
-            <td><a href="/tasks#task-{{ t.id }}">#{{ t.id }}</a></td>
-            <td style="text-align:left">{{ t.title or "(untitled)" }}</td>
-          </tr>
-        {% endfor %}
-      </table>
-    {% else %}
-      <p class="muted">no open tasks &mdash; use <code>save_task</code> to track a thread.</p>
-    {% endif %}
-  </div>
-  <div class="card">
-    <h2>Top intercept types</h2>
-    {% if intercept_types %}
-      <table>
-        <tr><th style="text-align:left">type</th><th>hits</th><th>tokens</th></tr>
-        {% for r in intercept_types %}
-          <tr>
-            <td style="text-align:left"><code>{{ r.type }}</code></td>
-            <td>{{ "{:,}".format(r.n) }}</td>
-            <td>{{ "{:,}".format(r.tokens) }}</td>
-          </tr>
-        {% endfor %}
-      </table>
-    {% else %}
-      <p class="muted">no interceptions recorded yet.</p>
-    {% endif %}
-  </div>
-</section>
 
-{# Plugin extension-point: A2 — dashboard sections contributed by plugins.
-   Each plugin's web/dashboard_sections.py:get_sections() can return either
-   pre-rendered html or a (template, context) pair. #}
+  {# Top intercept types #}
+  {% if intercept_types %}
+  <div class="db-card">
+    <h3 class="db-card-title">Top intercept types</h3>
+    <table class="db-table">
+      {% for r in intercept_types %}
+        <tr>
+          <td><code class="cmd-type">{{ r.type }}</code></td>
+          <td>{{ "{:,}".format(r.n) }} &nbsp;<span style="color:var(--color-muted);font-size:10px">/ {{ "{:,}".format(r.tokens) }} tok</span></td>
+        </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {# Router mini stats #}
+  {% if router_stats and router_stats.total %}
+  <div class="db-card">
+    <h3 class="db-card-title">
+      Router <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px">view all →</a>
+    </h3>
+    <table class="db-table" style="margin-bottom:10px">
+      <tr><td>prompts (window)</td><td>{{ router_stats.total }}</td></tr>
+      <tr><td>enriched</td><td>{{ router_stats.enriched }}</td></tr>
+      <tr><td>plan mode</td><td>{{ router_stats.plan_mode }}</td></tr>
+      <tr><td>low confidence</td><td>{{ router_stats.low_conf_count }}</td></tr>
+      <tr><td>avg latency</td><td>{{ router_stats.avg_latency_ms }} ms</td></tr>
+    </table>
+    {% set total = router_stats.total %}
+    {% for model, count in router_stats.model_counts.items() %}
+      {% set pct = (count / total * 100)|round(0) %}
+      {% set css = model if model in ('sonnet','opus','haiku') else 'other' %}
+      <div class="mini-bar-row">
+        <span class="mini-bar-key">{{ model }}</span>
+        <div class="mini-bar-track">
+          <div class="mini-bar-fill bar-{{ css }}" style="width:{{ pct }}%"></div>
+        </div>
+        <span class="mini-bar-val">{{ count }}</span>
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>
+
+{# Plugin sections #}
 {% if plugin_sections %}
-<section class="row">
+<div class="db-grid">
   {% for section in plugin_sections %}
-    <div class="card" id="section-{{ section.id }}">
-      {% if section.title %}<h2>{{ section.title }}</h2>{% endif %}
+    <div class="db-card" id="section-{{ section.id }}">
+      {% if section.title %}<h3 class="db-card-title">{{ section.title }}</h3>{% endif %}
       {% if section.html %}
         {{ section.html|safe }}
       {% elif section.template %}
-        {# Plugin-provided templates must be resolvable by the active Jinja
-           loader — typically the plugin sub-app's templates dir. #}
         {% include section.template ignore missing %}
       {% endif %}
     </div>
   {% endfor %}
-</section>
+</div>
 {% endif %}
 
 {% if m.log_missing %}
-<p class="warn">hook-debug.log not found — hook metrics unavailable until a session runs.</p>
+  <div class="db-footer-warn">hook-debug.log not found — hook metrics unavailable until a session runs.</div>
 {% endif %}
 {% if m.intercept_errors %}
-<p class="warn">{{ m.intercept_errors }} intercept error(s) in the recent log tail — check <a href="/logs">logs</a>.</p>
+  <div class="db-footer-warn">
+    {{ m.intercept_errors }} intercept error(s) in the recent log tail — check <a href="/logs">logs</a>.
+  </div>
 {% endif %}
 {% endblock %}

@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from ... import dashboard as _dashboard
 from ... import dashboard_api  # noqa: F401 (plan reference; future use)
 from ..services import intents_queue, questions_queue
+from .router_page import _read_entries, _compute_stats
 
 
 def _rss_mb() -> float | None:
@@ -171,6 +172,12 @@ def index(request: Request) -> Any:
         metrics["questions_open"] = 0
     recent_tasks = _recent_open_tasks(store)
     intercept_types = _intercept_by_type(store)
+    # Router mini-stats for dashboard
+    try:
+        router_entries = _read_entries(200)
+        router_stats = _compute_stats(router_entries)
+    except Exception:  # noqa: BLE001
+        router_stats = {}
     # Plugin extension-point: A2 — see docs/plugin-extension-points.md
     plugin_sections = collect_plugin_sections()
     templates = request.app.state.templates
@@ -181,6 +188,7 @@ def index(request: Request) -> Any:
             "m": metrics,
             "recent_tasks": recent_tasks,
             "intercept_types": intercept_types,
+            "router_stats": router_stats,
             "plugin_sections": plugin_sections,
             "active_tab": "dashboard",
         },
