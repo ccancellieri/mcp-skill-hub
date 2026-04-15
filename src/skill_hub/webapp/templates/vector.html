@@ -253,6 +253,9 @@
     cursor: pointer;
   }
 
+  /* ── highlight ring ── */
+  .highlighted-point { filter: drop-shadow(0 0 6px rgba(255,255,255,0.7)); }
+
   /* ── lasso box ── */
   .vec-lasso {
     position: absolute;
@@ -1096,9 +1099,6 @@
 
   btnClearSel.addEventListener('click', clearSelection);
   if (btnClearSel2) btnClearSel2.addEventListener('click', clearSelection);
-
-  /* ── highlight ring ── */
-  .highlighted-point { filter: drop-shadow(0 0 6px rgba(255,255,255,0.7)); }
 
   /* ── preset buttons ── */
   var presets = {

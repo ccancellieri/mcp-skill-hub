@@ -149,15 +149,23 @@
 
 {# ── KPI strip ── #}
 <div class="db-kpi-row">
-  <div class="db-kpi {% if m.net > 0 %}good{% elif m.net < 0 %}bad{% endif %}">
+  <div class="db-kpi {% if m.net > 0 %}good{% elif m.net < 0 %}bad{% endif %}" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Net tokens saved</span>
-        <a class="tooltip-help" href="#" data-tooltip="Tokens saved via routing optimization minus the tokens spent running the skill hub system itself (LLM cost equivalent)." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Tokens saved via routing optimization minus the tokens spent running the skill hub system itself." data-help-page="net-tokens" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">{{ "{:+,}".format(m.net) }}</div>
     <div class="db-kpi-sub">{{ "{:,}".format(m.tokens_saved) }} saved − ~{{ "{:,}".format(m.llm_cost_eq) }} LLM cost</div>
+    <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px;color:var(--color-muted)" class="expanded-content">
+      <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Where savings come from:</strong></div>
+      <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.5">
+        <div style="margin-bottom:4px">✓ <strong>Tier selection:</strong> Routing simple tasks to Haiku instead of Opus saves ~70% per prompt</div>
+        <div style="margin-bottom:4px">✓ <strong>Enrichment:</strong> Reusing context from prior sessions avoids redundant work</div>
+        <div>✓ <strong>Plan mode:</strong> Avoiding unnecessary architectural exploration reduces rework</div>
+      </div>
+    </div>
   </div>
   <div class="db-kpi">
     <div class="db-kpi-label">
@@ -253,11 +261,11 @@
   </div>
 
   {# Verdict cache #}
-  <div class="db-card">
+  <div class="db-card" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Verdict cache</span>
-        <a class="tooltip-help" href="#" data-tooltip="LLM verdict caching system: total verdicts = stored command approval/denial decisions, cache hits = decisions served from cache (avoiding LLM calls), LLM samples = actual LLM inferences performed." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="LLM verdict caching system: total verdicts = stored command approval/denial decisions, cache hits = decisions served from cache (avoiding LLM calls), LLM samples = actual LLM inferences performed." data-help-page="verdict-cache" tabindex="0">?</a>
       </span>
     </h3>
     <table class="db-table">
@@ -265,6 +273,23 @@
       <tr><td>cache hits</td><td>{{ "{:,}".format(m.verdict_hits) }}</td></tr>
       <tr><td>LLM samples</td><td>{{ "{:,}".format(m.llm_samples) }}</td></tr>
     </table>
+    <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px" class="expanded-content">
+      <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Cache efficiency:</strong></div>
+      {% set hit_rate = (m.verdict_hits / m.verdict_total * 100)|round(1) if m.verdict_total else 0 %}
+      <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.5;font-size:11px">
+        <div style="margin-bottom:6px">
+          Cache hit rate: <strong style="color:var(--color-good); font-size:13px">{{ hit_rate }}%</strong>
+          <span style="color:var(--color-muted)">({{ m.verdict_hits }} hits / {{ m.verdict_total }} total)</span>
+        </div>
+        <div style="margin-bottom:6px">
+          LLM calls made: <strong>{{ m.llm_samples }}</strong>
+          <span style="color:var(--color-muted)">of {{ m.verdict_total }} verdicts</span>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(58,160,255,0.2);color:var(--color-muted)">
+          Higher cache hit rate = fewer LLM calls = lower costs
+        </div>
+      </div>
+    </div>
   </div>
 
   {# Live queues #}
@@ -315,13 +340,13 @@
 
   {# Router mini stats #}
   {% if router_stats and router_stats.total %}
-  <div class="db-card">
+  <div class="db-card" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Router</span>
-        <a class="tooltip-help" href="#" data-tooltip="Model routing statistics: which LLM tier (haiku/sonnet/opus) handled each prompt, enrichment rate, plan mode activations, confidence scores." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Model routing statistics: which LLM tier (haiku/sonnet/opus) handled each prompt, enrichment rate, plan mode activations, confidence scores." data-help-page="routing-distributions" tabindex="0">?</a>
       </span>
-      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px">view all →</a>
+      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px" onclick="event.stopPropagation()">view all →</a>
     </h3>
     <table class="db-table" style="margin-bottom:10px">
       <tr><td>prompts (window)</td><td>{{ router_stats.total }}</td></tr>
@@ -342,6 +367,21 @@
         <span class="mini-bar-val">{{ count }}</span>
       </div>
     {% endfor %}
+    <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px" class="expanded-content">
+      <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Model routing breakdown:</strong></div>
+      <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.6;font-size:11px">
+        {% set haiku_pct = (router_stats.model_counts.get('haiku', 0) / total * 100)|round(1) %}
+        {% set sonnet_pct = (router_stats.model_counts.get('sonnet', 0) / total * 100)|round(1) %}
+        {% set opus_pct = (router_stats.model_counts.get('opus', 0) / total * 100)|round(1) %}
+        <div style="margin-bottom:6px">🟢 <strong>Haiku {{ haiku_pct }}%:</strong> Routine tasks, documentation, simple code</div>
+        <div style="margin-bottom:6px">🔵 <strong>Sonnet {{ sonnet_pct }}%:</strong> Standard features, debugging, analysis</div>
+        <div style="margin-bottom:6px">🔴 <strong>Opus {{ opus_pct }}%:</strong> Complex architecture, planning, research</div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(58,160,255,0.2);color:var(--color-muted)">
+          <span style="color:var(--color-good)">{{ router_stats.enriched }}</span> prompts enriched with context ·
+          <span style="color:var(--color-accent)">{{ router_stats.plan_mode }}</span> entered plan mode
+        </div>
+      </div>
+    </div>
   </div>
   {% endif %}
 

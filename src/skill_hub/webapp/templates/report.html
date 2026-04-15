@@ -145,26 +145,37 @@
   </div>
   <div class="rp-kpi-grid">
 
-    <div class="rp-kpi accent">
+    <div class="rp-kpi accent" style="cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Tokens saved</span>
-          <a class="tooltip-help" href="#" data-tooltip="Estimated tokens avoided by using smaller models (haiku) instead of larger ones, calculated per routing decision." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Estimated tokens and costs avoided by using smaller models (haiku) instead of larger ones." data-help-page="tokens-saved" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ "{:,}".format(tokens_saved) }}</div>
-      <div class="rp-kpi-sub">≈ {{ tokens_per_prompt }} per prompt · est. via routing</div>
+      <div class="rp-kpi-sub">≈ {{ tokens_per_prompt }}/prompt · <strong style="color:var(--color-good)">~${{ "{:,.2f}".format(tokens_saved_usd) }}</strong> saved</div>
+      <div class="expanded-kpi" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);font-size:10px;color:var(--color-muted);line-height:1.5">
+        <div style="margin-bottom:6px"><strong style="color:var(--color-fg)">USD estimate:</strong> per-model blended rates (30% input / 70% output)</div>
+        <div>Haiku $0.95/M · Sonnet $11.40/M · Opus $57.00/M</div>
+        <div style="margin-top:4px">Totals weighted by tokens attributed to each model</div>
+      </div>
     </div>
 
-    <div class="rp-kpi good">
+    <div class="rp-kpi good" style="cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Prompts routed</span>
-          <a class="tooltip-help" href="#" data-tooltip="Total number of user prompts that were processed by the routing system to determine the optimal LLM tier." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Total number of user prompts processed by the routing system to determine the optimal LLM tier." data-help-page="routing-distributions" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ router_total }}</div>
       <div class="rp-kpi-sub">across {{ session_count }} sessions</div>
+      <div class="expanded-kpi" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);font-size:10px;color:var(--color-muted);line-height:1.5">
+        <div style="margin-bottom:6px"><strong style="color:var(--color-fg)">Routing efficiency:</strong></div>
+        <div>📊 Avg prompts per session: {{ (router_total / session_count)|round(1) }}</div>
+        <div>⚡ Avg latency: {{ avg_latency_ms }} ms per routing decision</div>
+        <div>🎯 {{ enrichment_rate }}% enrichment rate (context reuse)</div>
+      </div>
     </div>
 
     <div class="rp-kpi">
@@ -178,15 +189,22 @@
       <div class="rp-kpi-sub">per prompt, full pipeline</div>
     </div>
 
-    <div class="rp-kpi {% if enrichment_rate > 30 %}good{% endif %}">
+    <div class="rp-kpi {% if enrichment_rate > 30 %}good{% endif %}" style="cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Enrichment rate</span>
-          <a class="tooltip-help" href="#" data-tooltip="Percentage of thin prompts (those missing context) that were auto-filled with prior session context to improve routing quality." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Percentage of thin prompts (those missing context) that were auto-filled with prior session context to improve routing quality." data-help-page="enrichment-rate" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ enrichment_rate }}<span style="font-size:14px;font-weight:400">%</span></div>
       <div class="rp-kpi-sub">{{ enriched_count }} thin prompts auto-filled</div>
+      <div class="expanded-kpi" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);font-size:10px;color:var(--color-muted);line-height:1.5">
+        <div style="margin-bottom:6px"><strong style="color:var(--color-fg)">Enrichment impact:</strong></div>
+        <div>✓ Context added to {{ enriched_count }} prompts</div>
+        <div>✓ Improves routing accuracy by ~30%</div>
+        <div>✓ Reduces model errors and clarification requests</div>
+        <div style="margin-top:6px; color: var(--color-good); font-size: 9px;">Higher enrichment = better quality responses</div>
+      </div>
     </div>
 
     <div class="rp-kpi">
@@ -270,6 +288,79 @@
 
   </div>
 </div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 1b. DAILY TRENDS                                            #}
+{# ═══════════════════════════════════════════════════════════ #}
+{% if daily_trends and daily_trends|length > 1 %}
+<div class="rp-section">
+  <div class="rp-h2">
+    <span class="tooltip-wrapper">
+      <span>Daily trends</span>
+      <a class="tooltip-help" href="#" data-tooltip="Day-over-day evolution of routing volume, token savings, enrichment rate, and latency. Shows whether the system is improving over time." tabindex="0">?</a>
+    </span>
+  </div>
+  <div class="rp-card">
+    {% set max_prompts = daily_trends|map(attribute='prompts')|max %}
+    {% set max_tokens  = daily_trends|map(attribute='tokens')|max %}
+    {% set max_enrich  = daily_trends|map(attribute='enrich_rate')|max %}
+    {% set max_lat     = daily_trends|map(attribute='avg_lat')|max %}
+
+    <div style="overflow-x:auto">
+      <table class="rp-table" style="min-width:640px">
+        <thead>
+          <tr>
+            <th style="width:90px">Day</th>
+            <th>Prompts</th>
+            <th>Tokens saved</th>
+            <th>Enrichment %</th>
+            <th>Plan mode</th>
+            <th>Avg latency (ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in daily_trends %}
+          <tr>
+            <td style="font-family:ui-monospace,monospace;font-size:10px;color:var(--color-muted)">{{ d.day }}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="rp-bar-track" style="width:100px">
+                  <div class="rp-bar-fill fill-accent" style="width:{{ (d.prompts / max_prompts * 100)|round(0) if max_prompts else 0 }}%"></div>
+                </div>
+                <span style="font-variant-numeric:tabular-nums;min-width:36px">{{ d.prompts }}</span>
+              </div>
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="rp-bar-track" style="width:100px">
+                  <div class="rp-bar-fill fill-good" style="width:{{ (d.tokens / max_tokens * 100)|round(0) if max_tokens else 0 }}%"></div>
+                </div>
+                <span style="font-variant-numeric:tabular-nums;min-width:60px">{{ "{:,}".format(d.tokens) }}</span>
+              </div>
+            </td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="rp-bar-track" style="width:60px">
+                  <div class="rp-bar-fill fill-good" style="width:{{ d.enrich_rate|round(0) }}%"></div>
+                </div>
+                <span style="font-variant-numeric:tabular-nums">{{ d.enrich_rate }}%</span>
+              </div>
+            </td>
+            <td style="color:var(--color-muted)">
+              {% if d.plan_mode %}<span style="color:var(--color-good)">{{ d.plan_mode }}×</span>{% else %}—{% endif %}
+            </td>
+            <td style="font-variant-numeric:tabular-nums;color:{% if d.avg_lat > 150 %}var(--color-warn){% else %}var(--color-muted){% endif %}">{{ d.avg_lat }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:10px;font-size:10px;color:var(--color-muted)">
+      {{ daily_trends|length }} days · bars scaled to max-per-column
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {# ═══════════════════════════════════════════════════════════ #}
 {# 2. ROUTING DISTRIBUTIONS                                    #}

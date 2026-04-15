@@ -93,6 +93,58 @@ def _router_by_session(entries: list[dict]) -> dict[str, list[dict]]:
     return dict(result)
 
 
+# Blended Anthropic pricing ($/1M tokens), weighted 30% input / 70% output.
+# Haiku: $0.25 in + $1.25 out = $0.95/M blended
+# Sonnet: $3 in + $15 out = $11.4/M blended
+# Opus: $15 in + $75 out = $57/M blended
+_USD_PER_M = {"haiku": 0.95, "sonnet": 11.4, "opus": 57.0}
+
+
+def _estimate_usd(tokens_by_model: dict[str, int]) -> float:
+    total = 0.0
+    for model, tok in tokens_by_model.items():
+        rate = _USD_PER_M.get(model, _USD_PER_M["sonnet"])
+        total += (tok / 1_000_000) * rate
+    return round(total, 2)
+
+
+def _daily_trends(entries: list[dict]) -> list[dict]:
+    """Aggregate router entries by YYYY-MM-DD — prompts, tokens saved, enriched."""
+    buckets: dict[str, dict] = defaultdict(
+        lambda: {"prompts": 0, "tokens": 0, "enriched": 0, "plan_mode": 0, "lat_sum": 0, "lat_n": 0}
+    )
+    for e in entries:
+        day = (e.get("ts") or "")[:10]
+        if not day:
+            continue
+        b = buckets[day]
+        b["prompts"] += 1
+        b["tokens"] += (e.get("savings") or {}).get("tokens_estimated", 0) or 0
+        if (e.get("enrichment") or {}).get("applied"):
+            b["enriched"] += 1
+        v, _, lat = _normalize_entry(e)
+        if v.get("plan_mode"):
+            b["plan_mode"] += 1
+        if lat > 0:
+            b["lat_sum"] += lat
+            b["lat_n"] += 1
+    out = []
+    for day in sorted(buckets.keys()):
+        b = buckets[day]
+        enrich_rate = round(100 * b["enriched"] / b["prompts"], 1) if b["prompts"] else 0
+        avg_lat = round(b["lat_sum"] / b["lat_n"]) if b["lat_n"] else 0
+        out.append({
+            "day": day,
+            "prompts": b["prompts"],
+            "tokens": b["tokens"],
+            "enriched": b["enriched"],
+            "enrich_rate": enrich_rate,
+            "plan_mode": b["plan_mode"],
+            "avg_lat": avg_lat,
+        })
+    return out
+
+
 # ── data aggregation ──────────────────────────────────────────────────────────
 
 def _build_report() -> dict:
@@ -100,6 +152,7 @@ def _build_report() -> dict:
     router_entries = _read_router()
     model_counter: Counter = Counter()
     tokens_saved = 0
+    tokens_by_model: Counter = Counter()
     enriched_count = 0
     plan_mode_count = 0
     hard_switch_count = 0
@@ -108,9 +161,11 @@ def _build_report() -> dict:
 
     for e in router_entries:
         v, tier, lat_ms = _normalize_entry(e)
-        model_counter[v.get("model", "?")] += 1
+        model = v.get("model", "?")
+        model_counter[model] += 1
         tok = (e.get("savings") or {}).get("tokens_estimated", 0) or 0
         tokens_saved += tok
+        tokens_by_model[model] += tok
         if (e.get("enrichment") or {}).get("applied"):
             enriched_count += 1
             savings_by_type["enrichment"] += tok
@@ -125,8 +180,10 @@ def _build_report() -> dict:
     router_total = len(router_entries)
     avg_lat = round(sum(latencies) / len(latencies)) if latencies else 0
     tokens_per_prompt = round(tokens_saved / router_total) if router_total else 0
+    tokens_saved_usd = _estimate_usd(dict(tokens_by_model))
 
     router_by_session = _router_by_session(router_entries)
+    daily = _daily_trends(router_entries)
 
     # ── Tasks ─────────────────────────────────────────────────────────────────
     if not _DB.exists():
@@ -245,7 +302,9 @@ def _build_report() -> dict:
         # global
         "router_total":       router_total,
         "tokens_saved":       tokens_saved,
+        "tokens_saved_usd":   tokens_saved_usd,
         "tokens_per_prompt":  tokens_per_prompt,
+        "daily_trends":       daily,
         "avg_latency_ms":     avg_lat,
         "enriched_count":     enriched_count,
         "enrichment_rate":    enrichment_rate,
