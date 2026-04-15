@@ -45,6 +45,13 @@ function skillsPage() {
       this.$watch('q', () => this.apply());
       this.$watch('target', () => this.apply());
       this.$watch('sortBy', () => this.apply());
+      // auto-open detail drawer when ?focus=<skill_id> is in the URL
+      const params = new URLSearchParams(window.location.search);
+      const focusId = params.get('focus');
+      if (focusId) {
+        htmx.ajax('GET', '/skills/' + encodeURIComponent(focusId) + '/detail',
+                  {target: '#skill-detail-drawer', swap: 'innerHTML'});
+      }
     },
     apply() {
       const tbody = document.getElementById('skill-rows');

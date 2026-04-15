@@ -310,7 +310,16 @@ function tasksApp() {
     _ws: null,
 
     init() {
-      if (FIRST_OPEN_ID) this.selectById(FIRST_OPEN_ID);
+      const params = new URLSearchParams(window.location.search);
+      const focusId = params.get('id') ? parseInt(params.get('id')) : null;
+      if (focusId && TASK_DATA[focusId]) {
+        this.selectById(focusId);
+        // ensure the correct filter tab is shown
+        const task = TASK_DATA[focusId];
+        if (task && task.status === 'closed') this.filter = 'closed';
+      } else if (FIRST_OPEN_ID) {
+        this.selectById(FIRST_OPEN_ID);
+      }
     },
 
     selectById(id) {

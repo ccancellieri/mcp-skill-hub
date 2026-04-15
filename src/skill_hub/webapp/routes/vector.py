@@ -46,7 +46,7 @@ def _load_skill_points(store: Any, limit: int) -> list[dict]:
             "label": r["label"] or r["id"],
             "group": r["group_"] or "",
             "vector": v,
-            "url": f"/skills",
+            "url": f"/skills?focus={r['id']}",
             "meta": {
                 "type": "skill",
                 "target": r["group_"] or "",
@@ -79,7 +79,7 @@ def _load_task_points(store: Any, limit: int) -> list[dict]:
             "label": (r["label"] or "")[:60],
             "group": r["group_"] or "",
             "vector": v,
-            "url": f"/tasks",
+            "url": f"/tasks?id={r['id']}",
             "meta": {
                 "type": "task",
                 "status": r["group_"] or "",
