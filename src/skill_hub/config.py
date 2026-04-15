@@ -286,6 +286,25 @@ _DEFAULTS = {
     # alongside skills and tasks. Set to False to disable.
     "user_memory_enabled": True,
 
+    # Session memory compaction — background 6-section summary of each Claude
+    # Code session (ported from anthropic/claude-cookbooks
+    # misc/session_memory_compaction.ipynb). Persists to
+    # ~/.claude/mcp-skill-hub/session-memory/<session_id>.md and is injected
+    # as systemMessage on resume (survives /compact).
+    "session_memory_enabled": True,
+    # Minimum message count to trigger the first build (cheap guard — avoids
+    # summarising 2-message test sessions).
+    "session_memory_min_messages": 6,
+    # Cap the transcript slice handed to the LLM (bytes). ~200 KB covers a
+    # long session without blowing the Haiku 4.5 context window.
+    "session_memory_max_transcript_bytes": 200_000,
+    # Tier for the summariser — tier_mid = Haiku 4.5 (cheap + structured).
+    "session_memory_tier": "tier_mid",
+    # Inject the stored memory on the first prompt of a resumed session.
+    "session_memory_inject_on_resume": True,
+    # Cap how many characters of memory are injected as systemMessage.
+    "session_memory_inject_max_chars": 8000,
+
     # Vector engine — "sqlite-vec" uses the native ANN extension with binary
     # quantization + float32 rerank; any other value falls back to the legacy
     # in-Python cosine path.

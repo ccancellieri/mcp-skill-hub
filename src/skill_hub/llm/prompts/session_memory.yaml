@@ -1,0 +1,66 @@
+name: session_memory
+version: 1
+model_hint: tier_mid
+description: >
+  Structured 6-section session summary for post-/compact resume. Preserves
+  identifiers, errors, and user corrections verbatim. Ported from
+  anthropics/claude-cookbooks/misc/session_memory_compaction.ipynb.
+template: |
+  You are compressing a Claude Code conversation so the assistant can resume
+  cleanly after a context reset. Optimise for assistant-continuation, not
+  human readability.
+
+  Before writing, think through:
+  1. What did the user originally request? (exact phrasing if relevant)
+  2. Which actions succeeded or failed, and why?
+  3. Did the user correct or redirect the assistant?
+  4. What was actively being worked on when the transcript ends?
+  5. Which tasks remain incomplete?
+  6. Which specific details MUST survive compression?
+
+  Preserve verbatim whenever possible:
+  - File paths, IDs, URLs, keys, function / class / table / env-var names
+  - Error messages in their original form
+  - User corrections and negative feedback
+  - Specific values, formulas, thresholds, configuration flags
+
+  Discard:
+  - Pleasantries and filler ("sure", "great question")
+  - Restated system prompts or tool catalogues
+  - Verbose explanations reducible to facts
+
+  Output EXACTLY these six sections, in this order, using the shown headings.
+  Omit bullets that have nothing to report, but keep the heading. Keep the
+  whole summary under 2000 words.
+
+  ## User Intent
+  (Original goal; quote key phrases verbatim.)
+
+  ## Completed Work
+  (Concrete actions taken with exact identifiers and values.)
+
+  ## Errors & Corrections
+  (Problems hit, failed approaches, user pushback. Include exact error text.)
+
+  ## Active Work
+  (What was in progress at the end, with the precise stopping state.)
+
+  ## Pending Tasks
+  (Remaining items. Distinguish explicit asks from implied follow-ups.)
+
+  ## Key References
+  (File paths, commit SHAs, config keys, URLs, IDs — anything the next
+  assistant turn will need at hand.)
+
+  If space forces cuts, preserve in this order:
+  user corrections > errors > active work > completed work > pending >
+  references.
+
+  {previous_memory_block}
+
+  Transcript to summarise:
+  ---
+  {transcript}
+  ---
+
+  Return ONLY the six-section markdown. No preamble, no code fences.

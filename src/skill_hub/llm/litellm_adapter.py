@@ -53,14 +53,53 @@ class LitellmProvider:
 
     def _normalize_messages(
         self, messages: list[Message] | list[dict[str, str]]
-    ) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         for m in messages:
             if isinstance(m, Message):
                 out.append({"role": m.role, "content": m.content})
             else:
+                # Preserve content-block lists (used for cache_control markers);
+                # strings pass through untouched.
                 out.append({"role": m["role"], "content": m["content"]})
         return out
+
+    @staticmethod
+    def _supports_cache_control(model: str) -> bool:
+        return model.startswith("anthropic/") or model.startswith("claude")
+
+    def _apply_cache_control(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+    ) -> list[dict[str, Any]]:
+        """Mark the last user message as an ephemeral cache breakpoint.
+
+        No-op for non-Anthropic models. Used by callers that reuse a long
+        prefix across calls (e.g., session_memory incremental refresh).
+        """
+        if not self._supports_cache_control(model) or not messages:
+            return messages
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [
+                    {
+                        "type": "text",
+                        "text": content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            elif isinstance(content, list) and content:
+                # Mark the last text block only.
+                for block in reversed(content):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        block["cache_control"] = {"type": "ephemeral"}
+                        break
+            break
+        return messages
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,12 +114,14 @@ class LitellmProvider:
         temperature: float = 0.2,
         timeout: float = 60.0,
         stop: list[str] | None = None,
+        cache: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> str:
         return self.chat(
             [Message(role="user", content=prompt)],
             tier=tier, model=model, max_tokens=max_tokens,
             temperature=temperature, timeout=timeout,
+            cache=cache,
             extra={**(extra or {}), **({"stop": stop} if stop else {})},
         )
 
@@ -93,12 +134,16 @@ class LitellmProvider:
         max_tokens: int = 512,
         temperature: float = 0.2,
         timeout: float = 60.0,
+        cache: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> str:
         resolved_model = self._resolve_model(tier, model)
+        normalized = self._normalize_messages(messages)
+        if cache:
+            normalized = self._apply_cache_control(normalized, resolved_model)
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._normalize_messages(messages),
+            "messages": normalized,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "timeout": timeout,

@@ -21,6 +21,36 @@ DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log
 RESUME_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "needs_resume.json"
 
 
+def _read_session_memory(session_id: str) -> str:
+    """Return the stored 6-section session memory for this id, or empty.
+
+    Best-effort: never raises; silently returns "" if skill-hub isn't
+    importable or the file is missing. Truncated to ``session_memory_inject_max_chars``.
+    """
+    if not session_id:
+        return ""
+    try:
+        from skill_hub import config as _cfg
+        from skill_hub.router import session_memory as _sm
+    except Exception:
+        return ""
+    if not _cfg.get("session_memory_inject_on_resume"):
+        return ""
+    text = _sm.read_memory(session_id)
+    if not text.strip():
+        return ""
+    cap = int(_cfg.get("session_memory_inject_max_chars") or 8000)
+    if len(text) > cap:
+        text = text[:cap] + "\n\n<!-- session memory truncated -->"
+    return (
+        "RESUMED SESSION MEMORY (from previous turns — survives /compact):\n"
+        "---\n"
+        f"{text}\n"
+        "---\n"
+        "Use this as authoritative context for where you left off."
+    )
+
+
 def consume_resume_marker() -> str:
     """If a previous session ended on api_error, return a resume reminder and
     delete the marker. Empty string otherwise."""
@@ -192,6 +222,10 @@ def main():
     if resume_msg:
         log(f"RESUME marker consumed  msg=\"{resume_msg[:80]}\"")
 
+    memory_msg = _read_session_memory(session_id)
+    if memory_msg:
+        log(f"SESMEM injected  chars={len(memory_msg)}")
+
     auto_switch_msg = _auto_switch_profile()
     if auto_switch_msg:
         log(f"PROFILE auto-switch  msg=\"{auto_switch_msg[:100]}\"")
@@ -210,6 +244,8 @@ def main():
         f"Hook activity log: {log_cmd}\n"
         "Mention the log command to the user so they can follow local LLM activity."
     )
+    if memory_msg:
+        system_msg = memory_msg + "\n\n" + system_msg
     if resume_msg:
         system_msg = resume_msg + "\n\n" + system_msg
     if auto_switch_msg:
