@@ -230,6 +230,7 @@ def route(
         tier3_ms=tier3_ms,
         session_id=session_id,
         prompt_preview=prompt[:80],
+        prompt_len=len(prompt),
     )
 
     # ── Audit log ────────────────────────────────────────────────────────────

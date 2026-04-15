@@ -22,16 +22,17 @@
     <div x-show="tab==='services'" class="tab-panel">
       <div class="service-grid">
         {% for svc in services %}
-        <div id="card-{{ svc.name }}"
-             class="service-card placeholder"
+        <div id="card-wrap-{{ svc.name }}"
              hx-get="/control/{{ svc.name }}/card"
              hx-trigger="load, every 5s"
-             hx-swap="outerHTML">
-          <div class="service-head">
-            <div class="status-dot dot-stopped"></div>
-            <strong>{{ svc.label }}</strong>
+             hx-swap="innerHTML">
+          <div class="service-card placeholder">
+            <div class="service-head">
+              <div class="status-dot dot-stopped"></div>
+              <strong>{{ svc.label }}</strong>
+            </div>
+            <p class="muted">Loading…</p>
           </div>
-          <p class="muted">Loading…</p>
         </div>
         {% endfor %}
       </div>

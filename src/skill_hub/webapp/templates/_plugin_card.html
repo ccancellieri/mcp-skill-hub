@@ -1,4 +1,4 @@
-<div id="plugin-{{ p.full_key }}" class="plugin-card">
+<div id="plugin-{{ p.full_key | replace('@', '--') }}" class="plugin-card">
   <div class="service-head">
     <span class="status-dot {% if p.enabled %}dot-running{% else %}dot-stopped{% endif %}"></span>
     <strong>{{ p.name }}</strong>
@@ -13,7 +13,7 @@
   <div class="service-actions">
     <button class="btn {% if p.enabled %}off{% else %}on{% endif %}"
             hx-post="/control/plugins/{{ p.full_key }}/toggle"
-            hx-target="#plugin-{{ p.full_key }}"
+            hx-target="#plugin-{{ p.full_key | replace('@', '--') }}"
             hx-swap="outerHTML">
       {% if p.enabled %}Disable{% else %}Enable{% endif %}
     </button>

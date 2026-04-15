@@ -152,18 +152,31 @@
   <div class="db-kpi {% if m.tokens_saved > 0 %}good{% endif %}" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
-        <span>Cloud tokens saved</span>
-        <a class="tooltip-help" href="#" data-tooltip="Anthropic (Sonnet/Opus) tokens avoided via routing/interception. Local LLM time (rerank, embeddings) is shown separately — it has no $ cost." data-help-page="net-tokens" tabindex="0">?</a>
+        <span>Cloud savings</span>
+        <a class="tooltip-help" href="#" data-tooltip="Dollar savings from routing to cheaper models, using published Anthropic pricing. Proportional to actual prompt size and complexity. Local LLM time (rerank, embeddings) has no $ cost and is shown separately." data-help-page="net-tokens" tabindex="0">?</a>
       </span>
     </div>
-    <div class="db-kpi-value">{{ "{:+,}".format(m.tokens_saved) }}</div>
-    <div class="db-kpi-sub">+ ~{{ m.llm_seconds }}s local LLM time (free)</div>
+    <div class="db-kpi-value">
+      {% if m.usd_saved and m.usd_saved > 0 %}
+        ${{ "%.2f"|format(m.usd_saved) }}
+      {% else %}
+        {{ "{:+,}".format(m.tokens_saved) }}<span style="font-size:12px;font-weight:400"> tok</span>
+      {% endif %}
+    </div>
+    <div class="db-kpi-sub">
+      {% if m.usd_saved and m.usd_saved > 0 %}
+        ~{{ "{:,}".format(m.tokens_saved) }} tokens &middot; +{{ m.llm_seconds }}s local (free)
+      {% else %}
+        +~{{ m.llm_seconds }}s local LLM time (free)
+      {% endif %}
+    </div>
     <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px;color:var(--color-muted)" class="expanded-content">
       <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Where savings come from:</strong></div>
       <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.5">
-        <div style="margin-bottom:4px">✓ <strong>Tier selection:</strong> Routing simple tasks to Haiku instead of Opus saves ~70% per prompt</div>
-        <div style="margin-bottom:4px">✓ <strong>Enrichment:</strong> Reusing context from prior sessions avoids redundant work</div>
-        <div>✓ <strong>Plan mode:</strong> Avoiding unnecessary architectural exploration reduces rework</div>
+        <div style="margin-bottom:4px">✓ <strong>Tier selection:</strong> Routing to Haiku (vs Opus) saves ~95% per token; Sonnet saves ~80%</div>
+        <div style="margin-bottom:4px">✓ <strong>Pricing:</strong> Opus $15/$75 · Sonnet $3/$15 · Haiku $0.80/$4 per M in/out tokens</div>
+        <div style="margin-bottom:4px">✓ <strong>Proportional:</strong> Savings scale with actual prompt length and complexity score</div>
+        <div>✓ <strong>Enrichment / Plan mode:</strong> Counted in tokens only (no direct $ model — avoids rework)</div>
       </div>
     </div>
   </div>
@@ -171,7 +184,7 @@
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Tasks open</span>
-        <a class="tooltip-help" href="#" data-tooltip="Number of tasks created and not yet closed. Use tasks to track ongoing work across sessions." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Number of tasks created and not yet closed. Use tasks to track ongoing work across sessions." data-help-page="tasks-open" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">{{ m.tasks_open }}</div>
@@ -181,7 +194,7 @@
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Skills indexed</span>
-        <a class="tooltip-help" href="#" data-tooltip="Total number of skills indexed for semantic search. Skills are discovered from enabled plugins and core repositories." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Total number of skills indexed for semantic search. Skills are discovered from enabled plugins and core repositories." data-help-page="skills-indexed" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">{{ "{:,}".format(m.skills) }}</div>
@@ -191,7 +204,7 @@
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Teachings</span>
-        <a class="tooltip-help" href="#" data-tooltip="Explicit rules you've created with teach() to guide routing and plugin suggestions. Teachings persist across sessions." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Explicit rules you've created with teach() to guide routing and plugin suggestions. Teachings persist across sessions." data-help-page="teachings" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">{{ "{:,}".format(m.teachings) }}</div>
@@ -201,7 +214,7 @@
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Feedback helpful</span>
-        <a class="tooltip-help" href="#" data-tooltip="Percentage of skills you've rated as helpful via record_feedback(). High helpfulness indicates well-tuned skill routing." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Percentage of skills you've rated as helpful via record_feedback(). High helpfulness indicates well-tuned skill routing." data-help-page="feedback-helpful" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">{% if m.helpful + m.unhelpful %}{{ m.helpful_pct }}%{% else %}&mdash;{% endif %}</div>
@@ -224,7 +237,7 @@
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Recent open tasks</span>
-        <a class="tooltip-help" href="#" data-tooltip="Tasks created with save_task() that haven't been closed yet. Click task IDs to view details, use close_task() to mark as done." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Tasks created with save_task() that haven't been closed yet. Click task IDs to view details, use close_task() to mark as done." data-help-page="tasks-open" tabindex="0">?</a>
       </span>
     </h3>
     {% if recent_tasks %}
@@ -248,7 +261,7 @@
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Auto-approve hook</span>
-        <a class="tooltip-help" href="#" data-tooltip="Automatic tool approval system: allow = approved actions, deny = rejected actions, pass-through = forwarded to user, auto-proceed fires = automatic continue() calls, resume consumed = recovery markers used." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Automatic tool approval system: allow = approved actions, deny = rejected actions, pass-through = forwarded to user." data-help-page="auto-approve-hook" tabindex="0">?</a>
       </span>
     </h3>
     <table class="db-table">
@@ -297,7 +310,7 @@
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Live queues</span>
-        <a class="tooltip-help" href="#" data-tooltip="Real-time hook state: intents pending = questions awaiting a verdict, questions open = user prompts awaiting a response, intercept errors = failures in tool interception logic." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Real-time hook state: intents pending = questions awaiting a verdict, questions open = user prompts awaiting a response, intercept errors = failures in tool interception logic." data-help-page="live-queues" tabindex="0">?</a>
       </span>
     </h3>
     <table class="db-table">
@@ -324,7 +337,7 @@
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Top intercept types</span>
-        <a class="tooltip-help" href="#" data-tooltip="Most frequently intercepted CLI commands by type. Shows which tool categories are most commonly used in your workflow." tabindex="0">?</a>
+        <a class="tooltip-help" href="#" data-tooltip="Most frequently intercepted CLI commands by type. Shows which tool categories are most commonly used in your workflow." data-help-page="top-intercept-types" tabindex="0">?</a>
       </span>
     </h3>
     <table class="db-table">

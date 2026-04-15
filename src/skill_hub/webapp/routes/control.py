@@ -47,6 +47,10 @@ def _render_card(request: Request, svc_name: str) -> HTMLResponse:
             top_suggestion = s
             break
 
+    is_installing = (
+        svc_name in _install_threads and _install_threads[svc_name].is_alive()
+    )
+
     return request.app.state.templates.TemplateResponse(
         request,
         "_service_card.html",
@@ -58,6 +62,7 @@ def _render_card(request: Request, svc_name: str) -> HTMLResponse:
             "svc_cfg": svc_cfg,
             "has_installer": has_installer,
             "top_suggestion": top_suggestion,
+            "is_installing": is_installing,
         },
     )
 

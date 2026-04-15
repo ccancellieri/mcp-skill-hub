@@ -29,51 +29,71 @@ SIZE_CAP_MB: float = 5.0
 MAX_ENTRIES: int = 2000   # hard cap after date-pruning
 
 # ---------------------------------------------------------------------------
-# Token-saving heuristics (rough per-turn estimates)
+# Token-saving heuristics and pricing
 # ---------------------------------------------------------------------------
-# These are not billing metrics — they estimate wasted thinking tokens avoided.
 _MODEL_PRIORITY = {"haiku": 0, "sonnet": 1, "opus": 2}
-_DOWNGRADE_SAVINGS = {
-    ("opus", "sonnet"): 600,
-    ("opus", "haiku"):  900,
-    ("sonnet", "haiku"): 350,
+
+# Claude 4.x published pricing: (input $/M tokens, output $/M tokens)
+_PRICING: dict[str, tuple[float, float]] = {
+    "opus":   (15.0, 75.0),
+    "sonnet": ( 3.0, 15.0),
+    "haiku":  ( 0.80,  4.0),
 }
+# Assumed baseline when prev_model is unknown (Claude Code default)
+_DEFAULT_BASELINE = "sonnet"
+
+# Flat minimums for non-downgrade savings (skill preload, enrichment, plan mode)
 _SKILL_PRELOAD_SAVING = 300   # per skill: avoids one search_skills call + overhead
 _ENRICH_SAVING       = 600   # thin-prompt enrichment avoids one clarification round-trip
 _PLAN_MODE_SAVING    = 2000  # plan mode on ambiguous prompt avoids rework (speculative)
 
+# Output token estimate from complexity score: complexity × _OUTPUT_SCALE + _OUTPUT_BASE
+_OUTPUT_SCALE = 2400  # tokens at complexity=1.0
+_OUTPUT_BASE  =  100  # minimum output tokens assumed
 
-def _estimate_tokens_saved(v: "Verdict") -> tuple[int, list[str]]:
-    """Return (total_saved, breakdown_lines)."""
-    saved = 0
+
+def _estimate_tokens_saved(v: "Verdict") -> tuple[int, float, list[str]]:
+    """Return (tokens_saved, usd_saved, breakdown_lines).
+
+    Dollar savings use actual API pricing and prompt_len for input tokens.
+    Output tokens are estimated from the complexity score.
+    """
+    saved_tokens = 0
+    usd_saved = 0.0
     lines: list[str] = []
 
-    # Model downgrade/upgrade savings
-    prev = v.prev_model or "sonnet"
+    # Model downgrade savings — proportional to actual prompt size
+    baseline = v.prev_model if v.prev_model else _DEFAULT_BASELINE
     curr = v.model
-    if _MODEL_PRIORITY.get(curr, 1) < _MODEL_PRIORITY.get(prev, 1):
-        n = _DOWNGRADE_SAVINGS.get((prev, curr), 300)
-        saved += n
-        lines.append(f"model {prev}→{curr}: ~{n} tok")
+    if _MODEL_PRIORITY.get(curr, 1) < _MODEL_PRIORITY.get(baseline, 1):
+        input_tokens  = max(v.prompt_len // 4, 50)
+        output_tokens = int(v.complexity * _OUTPUT_SCALE) + _OUTPUT_BASE
+        b_in, b_out = _PRICING.get(baseline, _PRICING[_DEFAULT_BASELINE])
+        c_in, c_out = _PRICING.get(curr,     _PRICING[_DEFAULT_BASELINE])
+        tok = input_tokens + output_tokens
+        saved_tokens += tok
+        usd = (input_tokens * (b_in - c_in) + output_tokens * (b_out - c_out)) / 1_000_000
+        usd_saved += usd
+        lines.append(f"model {baseline}→{curr}: ~{tok} tok / ${usd:.4f}")
 
     # Skill preloading
     n_skills = len(v.preload_skills)
     if n_skills:
         n = n_skills * _SKILL_PRELOAD_SAVING
-        saved += n
+        saved_tokens += n
         lines.append(f"{n_skills} skill(s) preloaded: ~{n} tok")
 
     # Thin-prompt enrichment
     if v.enrichment_applied:
-        saved += _ENRICH_SAVING
+        saved_tokens += _ENRICH_SAVING
         lines.append(f"thin-prompt enriched ({v.enrichment_source}): ~{_ENRICH_SAVING} tok")
 
     # Plan mode on ambiguous/complex prompt (avoids rework)
     if v.plan_mode and v.tier_used >= 2:
-        saved += _PLAN_MODE_SAVING
+        saved_tokens += _PLAN_MODE_SAVING
         lines.append(f"plan mode on ambiguous prompt: ~{_PLAN_MODE_SAVING} tok (rework avoided)")
 
-    return saved, lines
+    return saved_tokens, usd_saved, lines
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +139,7 @@ class Verdict:
     # Identity
     session_id: str = ""
     prompt_preview: str = ""         # first 80 chars
+    prompt_len: int = 0              # full prompt length in chars (for savings estimation)
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +213,7 @@ def append_audit_log(v: Verdict, log_path: str | Path) -> None:
     except OSError:
         return
 
-    tokens_saved, savings_breakdown = _estimate_tokens_saved(v)
+    tokens_saved, usd_saved, savings_breakdown = _estimate_tokens_saved(v)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     # ── JSONL entry ─────────────────────────────────────────────────────────
@@ -230,6 +251,7 @@ def append_audit_log(v: Verdict, log_path: str | Path) -> None:
         "subtasks": v.subtasks,
         "savings": {
             "tokens_estimated": tokens_saved,
+            "usd_saved": round(usd_saved, 6),
             "breakdown": savings_breakdown,
         },
         "latency": {
@@ -245,11 +267,11 @@ def append_audit_log(v: Verdict, log_path: str | Path) -> None:
 
     # ── Human-readable companion .log ───────────────────────────────────────
     human_path = path.with_suffix(".log")
-    _safe_append(human_path, _human_line(v, tokens_saved, ts))
+    _safe_append(human_path, _human_line(v, tokens_saved, usd_saved, ts))
     _rotate_humanlog(human_path)
 
 
-def _human_line(v: Verdict, tokens_saved: int, ts: str) -> str:
+def _human_line(v: Verdict, tokens_saved: int, usd_saved: float, ts: str) -> str:
     """One compact human-readable line per verdict."""
     ts_short = ts[5:19].replace("T", " ")   # "04-13 12:00:05"
     model_tag = f"{v.model}{'+plan' if v.plan_mode else ''}"
@@ -267,7 +289,11 @@ def _human_line(v: Verdict, tokens_saved: int, ts: str) -> str:
     enrich_tag = f"  enrich:{v.enrichment_source}" if v.enrichment_applied else ""
     compact_tag = "  COMPACT!" if v.compact_hint.get("suggest_compact") else ""
     subtask_tag = f"  tasks:{len(v.subtasks)}" if v.subtasks else ""
-    saved_tag = f"  saved:~{tokens_saved}tok" if tokens_saved > 0 else ""
+    saved_tag = (
+        f"  saved:~{tokens_saved}tok/${usd_saved:.4f}" if usd_saved > 0
+        else f"  saved:~{tokens_saved}tok" if tokens_saved > 0
+        else ""
+    )
     lat_tag = f"  {v.latency_ms}ms"
 
     prompt_tag = f'  "{v.prompt_preview[:60]}"' if v.prompt_preview else ""

@@ -227,7 +227,135 @@ function getHelpContent(pageId) {
     }
   };
 
-  return content[pageId] || {
+  const extra = {
+    'avg-latency': {
+      title: 'Routing Latency',
+      html: `
+        <p><strong>What is measured:</strong> Time from when a prompt is submitted to when the router returns a decision (model selection + context enrichment).</p>
+        <p><strong>Why it matters:</strong> Skill Hub runs in the critical path of every LLM call. Low latency means negligible overhead for the user.</p>
+        <ul>
+          <li><strong>&lt;50 ms:</strong> Excellent — SQLite vector search only</li>
+          <li><strong>50–200 ms:</strong> Normal — includes enrichment or LLM verdict</li>
+          <li><strong>&gt;500 ms:</strong> Investigate — may indicate local LLM bottleneck</li>
+        </ul>
+        <p>Vector search (sqlite-vec) is typically 3–8 ms. LLM verdict adds ~100–300 ms on first call; cached = instant.</p>
+      `
+    },
+    'plan-mode': {
+      title: 'Plan Mode',
+      html: `
+        <p><strong>What is plan mode:</strong> When Skill Hub detects an ambiguous or architecturally complex prompt, it fires <code>EnterPlanMode</code> so the model brainstorms a solution space before writing any code.</p>
+        <p><strong>Why it saves tokens:</strong> Jumping straight to implementation on a complex task often produces code that needs to be rewritten. Plan mode spends ~500 tokens upfront to avoid wasting 5,000+ on the wrong approach.</p>
+        <p><strong>Activation signal:</strong> Router confidence &lt; 0.65 on a Sonnet/Opus prompt, or keywords like "design", "architecture", "refactor entire".</p>
+      `
+    },
+    'forced-switches': {
+      title: 'Forced Model Switches',
+      html: `
+        <p><strong>What this means:</strong> Times the router's model choice was overridden — either by the user manually or by a confidence threshold rule (conf ≥ 0.9 in the opposite direction).</p>
+        <p><strong>High count is a warning sign:</strong> Many forced switches means the router is miscalibrated for your workflow. You can correct it via:</p>
+        <ul>
+          <li>Teaching rules: <code>teach("when I ask X, use Opus")</code></li>
+          <li>Adjusting tier thresholds in Settings → Router</li>
+          <li>Providing feedback with <code>record_feedback()</code></li>
+        </ul>
+      `
+    },
+    'tasks-closed': {
+      title: 'Tasks Closed',
+      html: `
+        <p><strong>Tasks</strong> are threads of work created with <code>save_task()</code> and closed with <code>close_task()</code>. They persist context across sessions.</p>
+        <p><strong>Closure rate</strong> shows how productive your work tracking is. A healthy ratio is 60–80% closed tasks. Very low closure can mean tasks are abandoned; very high can mean they're closed too early.</p>
+        <p>Closed tasks remain searchable. You can reopen them at any time with <code>reopen_task(id)</code>.</p>
+      `
+    },
+    'avg-task-duration': {
+      title: 'Average Task Duration',
+      html: `
+        <p><strong>Duration</strong> is measured from task creation to close (wall-clock time, not active working time).</p>
+        <p>Short durations (&lt;1h) indicate quick, well-scoped tasks. Long durations may indicate complex multi-session work or abandoned tasks.</p>
+        <p>The router correlates task duration with token usage to identify which types of work are most expensive.</p>
+      `
+    },
+    'skills-indexed': {
+      title: 'Skills Indexed',
+      html: `
+        <p><strong>Skills</strong> are markdown files that instruct the model how to handle specific types of work. They're discovered from enabled plugins and indexed into a vector database for semantic search.</p>
+        <p><strong>How routing uses them:</strong> When you submit a prompt, the router runs a semantic search across all indexed skills and selects the most relevant one to inject as context — guiding the model without consuming your context window.</p>
+        <p>More skills = better coverage. Use <code>index_skills()</code> after adding a new plugin.</p>
+      `
+    },
+    'teachings': {
+      title: 'Teachings',
+      html: `
+        <p><strong>Teachings</strong> are explicit rules you've created with <code>teach()</code>. They are the highest-priority routing signal — they override vector search and model defaults.</p>
+        <p><strong>Examples:</strong></p>
+        <ul>
+          <li><code>teach("when I give a URL, suggest chrome-devtools")</code></li>
+          <li><code>teach("for Python code always use Sonnet, not Haiku")</code></li>
+          <li><code>teach("security reviews always use Opus")</code></li>
+        </ul>
+        <p>Teachings persist across all sessions and are stored in the local database. View and manage them on the <a href="/teachings" style="color:var(--color-accent)">Teachings page</a>.</p>
+      `
+    },
+    'auto-approve-hook': {
+      title: 'Auto-Approve Hook',
+      html: `
+        <p><strong>What is the auto-approve hook:</strong> A Claude Code hook that intercepts tool calls (Bash, Edit, Read, Write…) and decides whether to approve or deny them without asking you.</p>
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Tool call arrives at the hook</li>
+          <li>Router checks the verdict cache (fast path)</li>
+          <li>If not cached, runs LLM inference to classify: allow / deny / pass-through</li>
+          <li>Verdict is cached for future identical calls</li>
+        </ol>
+        <p><strong>Pass-through</strong> means the decision is forwarded to you to approve interactively. <strong>Auto-proceed</strong> fires when Skill Hub detects the model is waiting for your input and can safely continue.</p>
+      `
+    },
+    'live-queues': {
+      title: 'Live Hook Queues',
+      html: `
+        <p><strong>Real-time state of the hook pipeline:</strong></p>
+        <ul>
+          <li><strong>Intents pending:</strong> Tool calls waiting for a verdict (should normally be 0 or 1)</li>
+          <li><strong>Questions open:</strong> User prompts awaiting a routing decision or response</li>
+          <li><strong>Intercept errors:</strong> Failures in the hook interception logic — these cause tool calls to be passed through unprocessed</li>
+        </ul>
+        <p>Non-zero intercept errors indicate a bug in the hook or a model mismatch. Check <a href="/logs" style="color:var(--color-accent)">Logs</a> for details.</p>
+      `
+    },
+    'top-intercept-types': {
+      title: 'Top Intercept Types',
+      html: `
+        <p><strong>What is intercepted:</strong> Every Claude Code tool call passes through the hook. This card shows which tool types appear most frequently in your workflow.</p>
+        <p>High <code>Bash</code> volume = lots of shell execution (scripting, builds). High <code>Edit</code> = code editing sessions. High <code>Read</code> = exploration/analysis work.</p>
+        <p>Token counts show how many tokens were consumed by the <em>content</em> of those calls (file content, command output) — useful for identifying expensive tools.</p>
+      `
+    },
+    'feedback-helpful': {
+      title: 'Feedback: Helpful Rate',
+      html: `
+        <p><strong>What is measured:</strong> When you call <code>record_feedback(skill_id, helpful=True/False)</code> after a skill is invoked, that vote is stored here.</p>
+        <p><strong>How it drives learning:</strong></p>
+        <ul>
+          <li>Helpful votes increase the skill's bandit score → it gets surfaced more often</li>
+          <li>Unhelpful votes decrease the score → skill appears less often for similar prompts</li>
+          <li>After ~10 votes per skill, the router shifts from exploration to exploitation</li>
+        </ul>
+        <p>A rate below 40% with &gt;20 total votes suggests the skill-matching quality is low — consider reindexing with <code>index_skills()</code>.</p>
+      `
+    },
+    'tasks-open': {
+      title: 'Tasks Open',
+      html: `
+        <p><strong>Open tasks</strong> are threads of work you've saved with <code>save_task()</code> that haven't been closed yet.</p>
+        <p>Each task stores a title, description, tags, and a log of relevant events. Tasks survive session restarts and appear in the sidebar of the Tasks page for quick context recovery.</p>
+        <p>Use <code>update_task(id, ...)</code> to add notes as work progresses, and <code>close_task(id)</code> when done.</p>
+      `
+    }
+  };
+
+  return content[pageId] || extra[pageId] || {
     title: 'Help',
     html: '<p>No detailed help available for this topic yet.</p>'
   };

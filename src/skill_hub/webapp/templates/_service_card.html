@@ -7,10 +7,7 @@
 }.get(status, "dot-stopped") %}
 
 <div id="card-{{ svc.name }}"
-     class="service-card {% if top_suggestion %}under-pressure{% endif %}"
-     hx-get="/control/{{ svc.name }}/card"
-     hx-trigger="every 5s"
-     hx-swap="outerHTML">
+     class="service-card {% if top_suggestion %}under-pressure{% endif %}">
 
   <div class="service-head">
     <span class="status-dot {{ status_class }}" title="{{ status }}"></span>
@@ -32,29 +29,29 @@
     {% if status == "running" %}
     <button class="btn off"
             hx-post="/control/{{ svc.name }}/stop"
-            hx-target="#card-{{ svc.name }}"
-            hx-swap="outerHTML">Stop</button>
+            hx-target="#card-wrap-{{ svc.name }}"
+            hx-swap="innerHTML">Stop</button>
     {% elif status in ("stopped", "transitioning") %}
     <button class="btn on"
             hx-post="/control/{{ svc.name }}/start"
-            hx-target="#card-{{ svc.name }}"
-            hx-swap="outerHTML"
+            hx-target="#card-wrap-{{ svc.name }}"
+            hx-swap="innerHTML"
             {% if not available %}disabled{% endif %}>Start</button>
     {% endif %}
 
     {% if not available and has_installer %}
     <button class="btn"
             hx-post="/control/{{ svc.name }}/install"
-            hx-target="#card-{{ svc.name }}"
-            hx-swap="outerHTML">Install</button>
+            hx-target="#card-wrap-{{ svc.name }}"
+            hx-swap="innerHTML">Install</button>
     {% endif %}
   </div>
 
   {# Mutable fields: model name, container name, auto_* checkboxes. #}
   <form class="service-config"
         hx-post="/control/{{ svc.name }}/config"
-        hx-target="#card-{{ svc.name }}"
-        hx-swap="outerHTML"
+        hx-target="#card-wrap-{{ svc.name }}"
+        hx-swap="innerHTML"
         hx-trigger="change">
     {% if "model" in svc_cfg %}
     <label>
@@ -80,8 +77,11 @@
 
   {% if not available and has_installer %}
   <pre class="install-log"
+       {% if is_installing %}
        hx-get="/control/{{ svc.name }}/install-log"
        hx-trigger="every 2s"
-       hx-swap="innerHTML">(install log will appear here)</pre>
+       hx-swap="innerHTML"
+       {% endif %}
+       >(install log will appear here)</pre>
   {% endif %}
 </div>

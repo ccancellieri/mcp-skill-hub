@@ -60,6 +60,7 @@ def _compute_stats(entries: list[dict]) -> dict:
     forced_samples: list[dict] = []
     enforcements: Counter = Counter()
     tokens_saved = 0
+    usd_saved    = 0.0
 
     # Per-tier latency from actual tier breakdown fields (not bucketed by winner)
     tier1_ms_list: list[int] = []
@@ -132,7 +133,9 @@ def _compute_stats(entries: list[dict]) -> dict:
         if tier == 2:
             t2_successes += 1
 
-        tokens_saved += (e.get("savings") or {}).get("tokens_estimated", 0) or 0
+        savings_obj = e.get("savings") or {}
+        tokens_saved += savings_obj.get("tokens_estimated", 0) or 0
+        usd_saved    += savings_obj.get("usd_saved", 0.0) or 0.0
 
         # Confidence buckets (aligned with router gate thresholds)
         conf = v.get("confidence", 1.0)
@@ -205,6 +208,7 @@ def _compute_stats(entries: list[dict]) -> dict:
         "t2_successes": t2_successes,
         "t3_attempts": t3_attempts,
         "tokens_saved": tokens_saved,
+        "usd_saved": round(usd_saved, 4),
         "forced_count": len(forced_samples),
         "forced_samples": forced_samples[:20],
         # Confidence distribution buckets

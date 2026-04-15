@@ -46,8 +46,9 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
     deny = logm["auto_approve"].get("deny", 0)
     pass_through = logm["auto_approve"].get("pass", 0)
 
-    # Model distribution from router.jsonl (last 500 entries)
+    # Router stats from router.jsonl (last 500 entries)
     router_stats = _compute_stats(_read_entries(n=500))
+    usd_saved = round(router_stats.get("usd_saved", 0.0), 4)
     model_counts = router_stats.get("model_counts", {})
     total_prompts = router_stats.get("total", 0)
     model_dist = [
@@ -63,6 +64,7 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
 
     return {
         "tokens_saved": tokens_saved,
+        "usd_saved": usd_saved,
         "llm_cost_eq": llm_cost_eq,
         "llm_seconds": int(llm_seconds),
         "net": net,

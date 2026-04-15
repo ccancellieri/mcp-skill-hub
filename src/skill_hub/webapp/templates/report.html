@@ -182,7 +182,7 @@
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Avg latency</span>
-          <a class="tooltip-help" href="#" data-tooltip="Average time from prompt submission to routing decision, measured across all prompts in the dataset." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Average time from prompt submission to routing decision, measured across all prompts in the dataset." data-help-page="avg-latency" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ avg_latency_ms }}<span style="font-size:14px;font-weight:400"> ms</span></div>
@@ -211,7 +211,7 @@
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Plan mode</span>
-          <a class="tooltip-help" href="#" data-tooltip="Number of times plan mode was activated (EnterPlanMode) for ambiguous or complex prompts that require architectural thinking." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Number of times plan mode was activated (EnterPlanMode) for ambiguous or complex prompts that require architectural thinking." data-help-page="plan-mode" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ plan_mode_count }}</div>
@@ -222,7 +222,7 @@
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Forced switches</span>
-          <a class="tooltip-help" href="#" data-tooltip="Number of times the selected model was manually overridden by the user (typically when high-confidence routing made the wrong choice)." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Number of times the selected model was manually overridden by the user (typically when high-confidence routing made the wrong choice)." data-help-page="forced-switches" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ hard_switch_count }}</div>
@@ -233,7 +233,7 @@
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Tasks closed</span>
-          <a class="tooltip-help" href="#" data-tooltip="Tasks that were created and subsequently closed with close_task(). Closed tasks can be reopened; check the report page task table for full history." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Tasks that were created and subsequently closed with close_task(). Closed tasks can be reopened; check the report page task table for full history." data-help-page="tasks-closed" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ closed_count }}</div>
@@ -244,7 +244,7 @@
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
           <span>Avg task duration</span>
-          <a class="tooltip-help" href="#" data-tooltip="Average time between task creation and closure. Longer durations may indicate complex, multi-session work." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Average time between task creation and closure. Longer durations may indicate complex, multi-session work." data-help-page="avg-task-duration" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ avg_duration_fmt }}</div>
