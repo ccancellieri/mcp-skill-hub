@@ -1,29 +1,140 @@
-<div class="skill-detail-drawer">
-  <h3>{{ s.name }} <code class="muted">{{ s.id }}</code></h3>
-  <div class="muted">plugin: {{ s.plugin or '—' }} · target: {{ s.target or '—' }}
-    {% if norm is not none %} · ‖vec‖={{ '%.3f'|format(norm) }}{% endif %}
+<style>
+.sd-wrap { display: flex; flex-direction: column; gap: 10px; }
+.sd-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sd-title { font-size: 14px; font-weight: 700; color: var(--color-fg); }
+.sd-id {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--color-muted);
+  background: rgba(125,136,150,0.12);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+}
+.sd-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.sd-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+}
+.sd-meta-chip {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(125,136,150,0.12);
+  color: var(--color-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+}
+.sd-meta-chip.accent { background: rgba(58,160,255,0.12); color: var(--color-accent); }
+.sd-description {
+  font-size: 12px;
+  color: var(--color-fg);
+  line-height: 1.6;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.sd-content-wrap summary {
+  font-size: 11px;
+  color: var(--color-muted);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+.sd-content-wrap summary:hover { color: var(--color-fg); }
+.sd-content-pre {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  max-height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sd-section-label {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--color-muted);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.sd-fb-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.sd-fb-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: middle;
+}
+.sd-fb-table tr:last-child td { border-bottom: none; }
+.sd-fb-table td:first-child { color: var(--color-muted); white-space: nowrap; }
+.sd-fb-query { color: var(--color-muted); font-size: 10.5px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-vote-up   { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(74,211,107,0.15); color: var(--color-good); }
+.sd-vote-down { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(224,85,85,0.15); color: var(--color-bad); }
+</style>
+
+<div class="sd-wrap">
+  <div class="sd-header">
+    <div>
+      <span class="sd-title">{{ s.name }}</span>
+      <code class="sd-id">{{ s.id }}</code>
+    </div>
+    <div class="sd-actions">
+      <a class="btn sm"
+         href="/vector?source=skills&tab=scatter&highlight={{ s.id }}"
+         title="View this skill in the vector scatter">vector →</a>
+    </div>
   </div>
-  <p>{{ s.description or '' }}</p>
-  {% if s.content %}
-    <details>
-      <summary>content ({{ s.content|length }} chars)</summary>
-      <pre class="log-view">{{ s.content[:4000] }}{% if s.content|length > 4000 %}
-…truncated…{% endif %}</pre>
-    </details>
+
+  <div class="sd-meta">
+    {% if s.plugin %}<span class="sd-meta-chip">{{ s.plugin }}</span>{% endif %}
+    {% if s.target %}<span class="sd-meta-chip accent">{{ s.target }}</span>{% endif %}
+    {% if norm is not none %}<span class="sd-meta-chip">‖v‖ {{ '%.3f'|format(norm) }}</span>{% endif %}
+  </div>
+
+  {% if s.description %}
+  <div class="sd-description">{{ s.description }}</div>
   {% endif %}
-  <h4>recent feedback</h4>
+
+  {% if s.content %}
+  <details class="sd-content-wrap">
+    <summary>Content ({{ s.content|length }} chars)</summary>
+    <pre class="sd-content-pre">{{ s.content[:4000] }}{% if s.content|length > 4000 %}
+… truncated …{% endif %}</pre>
+  </details>
+  {% endif %}
+
   {% if feedback %}
-    <table class="ttable">
-      <thead><tr><th>when</th><th>helpful</th><th>query</th></tr></thead>
-      <tbody>
-        {% for fb in feedback %}
-          <tr>
-            <td class="muted">{{ fb.created_at }}</td>
-            <td>{% if fb.helpful %}<span class="tag allow">+</span>{% else %}<span class="tag deny">−</span>{% endif %}</td>
-            <td>{{ (fb.query or '')[:120] }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
+  <div>
+    <div class="sd-section-label">Recent feedback</div>
+    <table class="sd-fb-table">
+      {% for fb in feedback %}
+      <tr>
+        <td style="color:var(--color-muted);font-size:10px">{{ (fb.created_at or '')[:10] }}</td>
+        <td>
+          {% if fb.helpful %}
+            <span class="sd-vote-up">+ helpful</span>
+          {% else %}
+            <span class="sd-vote-down">− not helpful</span>
+          {% endif %}
+        </td>
+        <td class="sd-fb-query" title="{{ fb.query }}">{{ (fb.query or '')[:120] }}</td>
+      </tr>
+      {% endfor %}
     </table>
-  {% else %}<div class="muted">no feedback yet</div>{% endif %}
+  </div>
+  {% else %}
+  <div class="muted" style="font-size:11px">No feedback yet.</div>
+  {% endif %}
 </div>

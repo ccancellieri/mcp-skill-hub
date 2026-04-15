@@ -1097,6 +1097,9 @@
   btnClearSel.addEventListener('click', clearSelection);
   if (btnClearSel2) btnClearSel2.addEventListener('click', clearSelection);
 
+  /* ── highlight ring ── */
+  .highlighted-point { filter: drop-shadow(0 0 6px rgba(255,255,255,0.7)); }
+
   /* ── preset buttons ── */
   var presets = {
     'Consolidate': 'Find redundant or near-duplicate items. Suggest which to keep or merge, and what the merged version should say.',
@@ -1115,6 +1118,26 @@
       });
     }(presetBtns[pi]));
   }
+
+  /* ── highlight from URL ?highlight=<id> ── */
+  (function () {
+    var highlightId = new URLSearchParams(window.location.search).get('highlight');
+    if (!highlightId) return;
+    var cs = svg.querySelectorAll('circle');
+    for (var i = 0; i < cs.length; i++) {
+      if (cs[i].dataset.id === highlightId) {
+        var h = cs[i];
+        h.setAttribute('r', '7');
+        h.setAttribute('stroke', '#ffffff');
+        h.setAttribute('stroke-width', '2');
+        h.setAttribute('opacity', '1');
+        h.classList.add('highlighted-point');
+        // bring to front by re-appending
+        svg.appendChild(h);
+        break;
+      }
+    }
+  }());
 
   /* ── analyze ── */
   analyzeBtn.addEventListener('click', function () {

@@ -1,58 +1,189 @@
 {% extends "base.html" %}
 {% block title %}teachings{% endblock %}
 {% block content %}
-<h1 class="page-h">Teachings <span class="muted">({{ rows|length }})</span></h1>
+<style>
+  .teach-layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 860px) { .teach-layout { grid-template-columns: 1fr; } }
 
-<section class="card">
-  <h2>Add teaching{% if not embed_ok %} <span class="warn">— embeddings offline, rule will be stored without vector</span>{% endif %}</h2>
-  <form hx-post="/teachings/add" hx-target="#teach-rows" hx-swap="innerHTML"
-        class="settings-form" style="margin-top:8px">
-    <label>rule
-      <textarea name="rule" rows="2" required
-                placeholder="when the user asks X, suggest Y"></textarea>
-    </label>
-    <div class="filter-bar">
-      <label>action
+  /* ── Add form panel ── */
+  .teach-form-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    position: sticky;
+    top: 12px;
+  }
+  .teach-form-card h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--color-muted);
+    font-weight: 700;
+    margin: 0 0 12px;
+  }
+  .tfield { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .tfield:last-child { margin-bottom: 0; }
+  .tfield-label { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--color-muted); font-weight: 600; }
+  .tfield textarea { font-size: 12px; padding: 6px 8px; resize: vertical; }
+  .tfield select, .tfield input { font-size: 12px; padding: 5px 8px; }
+  .tfield-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .teach-submit { width: 100%; margin-top: 4px; font-size: 12px; padding: 7px; }
+  .embed-warn {
+    font-size: 10.5px;
+    color: var(--color-warn);
+    margin-bottom: 10px;
+    padding: 5px 8px;
+    background: rgba(232,166,75,0.08);
+    border: 1px solid rgba(232,166,75,0.2);
+    border-radius: var(--radius-sm);
+  }
+
+  /* ── Right: search + list ── */
+  .teach-right { display: flex; flex-direction: column; gap: 10px; }
+  .teach-search { font-size: 12px; padding: 6px 10px; width: 100%; }
+  .teach-count { font-size: 11px; color: var(--color-muted); }
+
+  /* ── Teaching rows ── */
+  .teach-list { display: flex; flex-direction: column; gap: 4px; }
+  .teach-item {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-left: 3px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 9px 12px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: start;
+    transition: background 0.1s;
+  }
+  .teach-item:hover { background: rgba(255,255,255,0.02); }
+  .teach-item.action-suggest { border-left-color: var(--color-accent); }
+  .teach-item.action-skip    { border-left-color: var(--color-muted); }
+  .teach-item.action-warn    { border-left-color: var(--color-warn); }
+  .teach-rule {
+    font-size: 12.5px;
+    color: var(--color-fg);
+    line-height: 1.5;
+    word-break: break-word;
+    margin-bottom: 5px;
+  }
+  .teach-meta {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .teach-id { font-size: 10px; color: var(--color-muted); font-family: ui-monospace, monospace; }
+  .teach-action-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .teach-action-badge.suggest { background: rgba(58,160,255,0.15); color: var(--color-accent); }
+  .teach-action-badge.skip    { background: rgba(125,136,150,0.18); color: var(--color-muted); }
+  .teach-action-badge.warn    { background: rgba(232,166,75,0.15); color: var(--color-warn); }
+  .teach-target {
+    font-size: 10px;
+    color: var(--color-muted);
+    font-family: ui-monospace, monospace;
+    padding: 1px 6px;
+    background: rgba(125,136,150,0.1);
+    border-radius: 3px;
+  }
+  .teach-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .teach-weight-input {
+    width: 60px;
+    font-size: 11px;
+    padding: 3px 5px;
+    text-align: center;
+  }
+  .teach-empty {
+    text-align: center;
+    padding: 24px;
+    color: var(--color-muted);
+    font-size: 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+</style>
+
+<div class="page-h" style="margin-bottom:14px">
+  Teachings
+  <span class="muted" style="font-size:12px;font-weight:400">
+    — <span id="teach-total">{{ rows|length }}</span> rules
+  </span>
+</div>
+
+<div class="teach-layout">
+
+  {# ── Left: add form ── #}
+  <div class="teach-form-card">
+    <h3>Add teaching</h3>
+    {% if not embed_ok %}
+    <div class="embed-warn">Embeddings offline — rule stored without vector.</div>
+    {% endif %}
+    <form hx-post="/teachings/add" hx-target="#teach-rows" hx-swap="innerHTML"
+          hx-on::after-request="this.reset()">
+      <div class="tfield">
+        <span class="tfield-label">Rule</span>
+        <textarea name="rule" rows="3" required
+                  placeholder="when the user asks X, suggest Y"></textarea>
+      </div>
+      <div class="tfield">
+        <span class="tfield-label">Action</span>
         <select name="action">
           {% for a in actions %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
         </select>
-      </label>
-      <label>target type
-        <select name="target_type">
-          {% for tt in target_types %}<option value="{{ tt }}">{{ tt }}</option>{% endfor %}
-        </select>
-      </label>
-      <label>target id (optional)
-        <input type="number" name="target_id" style="width:100px">
-      </label>
-      <label>weight
-        <input type="number" name="weight" step="0.1" value="1.0" style="width:80px">
-      </label>
-      <button type="submit" class="btn">add</button>
+      </div>
+      <div class="tfield-row">
+        <div class="tfield">
+          <span class="tfield-label">Target type</span>
+          <select name="target_type">
+            {% for tt in target_types %}<option value="{{ tt }}">{{ tt }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="tfield">
+          <span class="tfield-label">Target ID</span>
+          <input type="number" name="target_id" placeholder="optional">
+        </div>
+      </div>
+      <div class="tfield">
+        <span class="tfield-label">Weight</span>
+        <input type="number" name="weight" step="0.1" value="1.0">
+      </div>
+      <button type="submit" class="btn teach-submit">Add rule</button>
+    </form>
+  </div>
+
+  {# ── Right: search + list ── #}
+  <div class="teach-right">
+    <input class="teach-search" type="text"
+           placeholder="search rules (semantic with LIKE fallback)…"
+           hx-get="/teachings/search" hx-trigger="keyup changed delay:300ms"
+           hx-target="#teach-rows" hx-swap="innerHTML"
+           name="q">
+
+    <div class="teach-list" id="teach-rows">
+      {% for t in rows %}
+        {% include "_teaching_row.html" %}
+      {% endfor %}
+      {% if not rows %}
+        <div class="teach-empty">No teachings yet — add one to persist a rule.</div>
+      {% endif %}
     </div>
-  </form>
-  <div id="teach-status"></div>
-</section>
+  </div>
 
-<section class="search-bar" style="margin-top:14px">
-  <input type="text" placeholder="search rules (semantic with LIKE fallback)…"
-         hx-get="/teachings/search" hx-trigger="keyup changed delay:300ms"
-         hx-target="#teach-rows" hx-swap="innerHTML"
-         name="q">
-</section>
-
-<table class="vtable">
-  <thead><tr>
-    <th style="width:55px">id</th>
-    <th>rule</th><th>action</th><th>target</th><th>weight</th><th></th>
-  </tr></thead>
-  <tbody id="teach-rows">
-    {% for t in rows %}{% include "_teaching_row.html" %}{% endfor %}
-    {% if not rows %}
-      <tr><td colspan="6" class="muted" style="text-align:center; padding:14px">
-        no teachings yet &mdash; add one above to persist a rule.
-      </td></tr>
-    {% endif %}
-  </tbody>
-</table>
+</div>
 {% endblock %}

@@ -1,13 +1,174 @@
 {% extends "base.html" %}
 {% block title %}skills{% endblock %}
 {% block content %}
-<h1 class="page-h">Skills <span class="muted">({{ rows|length }})</span></h1>
+<style>
+  .sk-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .sk-filter-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .sk-filter-row input[type=text] { min-width: 200px; font-size: 12px; }
+  .sk-filter-row select { font-size: 12px; }
+
+  /* table */
+  .sk-table-wrap { overflow-x: auto; }
+  .sk-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .sk-table th {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--color-muted);
+    padding: 6px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    white-space: nowrap;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+  }
+  .sk-table th:hover { color: var(--color-fg); }
+  .sk-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .sk-table tr:last-child td { border-bottom: none; }
+  .sk-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .sk-id {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    color: var(--color-muted);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sk-name { font-size: 12px; color: var(--color-fg); font-weight: 500; }
+  .sk-plugin {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    color: var(--color-muted);
+  }
+  .sk-target {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    background: rgba(58,160,255,0.1);
+    color: var(--color-accent);
+    font-family: ui-monospace, monospace;
+  }
+  .sk-inj {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    color: var(--color-fg);
+  }
+  .sk-score {
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+  }
+  .sk-score.high { color: var(--color-good); }
+  .sk-score.low  { color: var(--color-bad); }
+  .sk-score.mid  { color: var(--color-muted); }
+  .sk-last { font-size: 10.5px; color: var(--color-muted); white-space: nowrap; }
+
+  /* helpful bar */
+  .hb-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 80px;
+  }
+  .hb-bar {
+    flex: 1;
+    height: 5px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .hb-fill { height: 100%; background: var(--color-good); border-radius: 3px; }
+  .hb-pct { font-size: 10px; color: var(--color-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  /* row actions */
+  .sk-actions { display: flex; gap: 4px; }
+
+  /* detail drawer */
+  .sk-detail-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    margin-top: 14px;
+  }
+  .sk-detail-empty { color: var(--color-muted); font-size: 12px; padding: 4px 0; }
+
+  /* stats bar */
+  .sk-stats-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .sk-stat { display: flex; flex-direction: column; gap: 2px; }
+  .sk-stat-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--color-muted); font-weight: 600; }
+  .sk-stat-value { font-size: 18px; font-weight: 700; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+</style>
+
+{# collect plugin list for filter #}
+{% set plugins = [] %}
+{% for r in rows %}
+  {% if r.plugin and r.plugin not in plugins %}
+    {% set _ = plugins.append(r.plugin) %}
+  {% endif %}
+{% endfor %}
+
 <div x-data="skillsPage()">
-  <div class="filter-bar">
+
+  <div class="sk-header">
+    <h1 class="page-h" style="margin:0">
+      Skills <span class="muted">({{ rows|length }})</span>
+    </h1>
+    <div class="sk-stats-row">
+      <div class="sk-stat">
+        <span class="sk-stat-label">Total</span>
+        <span class="sk-stat-value" style="font-size:15px">{{ rows|length }}</span>
+      </div>
+      <div class="sk-stat">
+        <span class="sk-stat-label">Injected</span>
+        <span class="sk-stat-value" style="font-size:15px">{{ rows|selectattr('injections')|list|length }}</span>
+      </div>
+      <div class="sk-stat">
+        <span class="sk-stat-label">Plugins</span>
+        <span class="sk-stat-value" style="font-size:15px">{{ plugins|length }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="sk-filter-row">
     <input type="text" x-model="q" placeholder="search name / id…">
     <select x-model="target">
       <option value="">(any target)</option>
       {% for t in targets %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <select x-model="plugin">
+      <option value="">(any plugin)</option>
+      {% for p in plugins|sort %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
     </select>
     <select x-model="sortBy">
       <option value="injections">sort: injections</option>
@@ -17,69 +178,82 @@
     </select>
   </div>
 
-  <table class="vtable">
-    <thead>
-      <tr>
-        <th style="width:40px"></th>
-        <th>id</th><th>name</th><th>plugin/target</th>
-        <th>inj</th><th>helpful</th><th>score</th><th>last used</th><th></th>
-      </tr>
-    </thead>
-    <tbody id="skill-rows">
-      {% for r in rows %}{% include "_skill_row.html" %}{% endfor %}
-    </tbody>
-  </table>
+  <div class="sk-table-wrap">
+    <table class="sk-table">
+      <thead>
+        <tr>
+          <th style="width:34px"></th>
+          <th @click="sortBy='name'">Name</th>
+          <th @click="sortBy='injections'">Injections</th>
+          <th>Helpful</th>
+          <th @click="sortBy='feedback'">Score</th>
+          <th @click="sortBy='last'">Last used</th>
+          <th>Plugin / Target</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="skill-rows">
+        {% for r in rows %}{% include "_skill_row.html" %}{% endfor %}
+      </tbody>
+    </table>
+  </div>
 
-  <section class="card" style="margin-top:18px">
-    <h2>Details</h2>
+  <div class="sk-detail-card">
     <div id="skill-detail-drawer">
-      <div class="muted">click “view” on a row to inspect details here</div>
+      <div class="sk-detail-empty">Click "view" on a row to inspect details here.</div>
     </div>
-  </section>
+  </div>
 </div>
+
 <script>
 function skillsPage() {
   return {
-    q: '', target: '', sortBy: 'injections',
+    q: '', target: '', plugin: '', sortBy: 'injections',
     init() {
-      this.$watch('q', () => this.apply());
+      this.$watch('q',      () => this.apply());
       this.$watch('target', () => this.apply());
+      this.$watch('plugin', () => this.apply());
       this.$watch('sortBy', () => this.apply());
       // auto-open detail drawer when ?focus=<skill_id> is in the URL
-      const params = new URLSearchParams(window.location.search);
-      const focusId = params.get('focus');
+      var params = new URLSearchParams(window.location.search);
+      var focusId = params.get('focus');
       if (focusId) {
         htmx.ajax('GET', '/skills/' + encodeURIComponent(focusId) + '/detail',
                   {target: '#skill-detail-drawer', swap: 'innerHTML'});
       }
     },
     apply() {
-      const tbody = document.getElementById('skill-rows');
+      var tbody = document.getElementById('skill-rows');
       if (!tbody) return;
-      const rows = Array.from(tbody.querySelectorAll('tr'));
-      const q = this.q.toLowerCase();
-      const tgt = this.target;
-      rows.forEach(tr => {
-        const txt = tr.innerText.toLowerCase();
-        let show = !q || txt.includes(q);
-        if (show && tgt) show = tr.innerText.includes(tgt);
+      var rows = Array.from(tbody.querySelectorAll('tr'));
+      var q = this.q.toLowerCase();
+      var tgt = this.target;
+      var plg = this.plugin;
+      rows.forEach(function (tr) {
+        var txt = tr.innerText.toLowerCase();
+        var show = !q || txt.includes(q);
+        if (show && tgt) show = (tr.dataset.target || '') === tgt;
+        if (show && plg) show = (tr.dataset.plugin || '') === plg;
         tr.style.display = show ? '' : 'none';
       });
       // sort
-      const key = this.sortBy;
-      const pinned = rows.filter(r => r.querySelector('.btn.on'));
-      const rest = rows.filter(r => !r.querySelector('.btn.on'));
-      const get = (tr, k) => {
-        const tds = tr.querySelectorAll('td');
-        if (k === 'injections') return -parseFloat(tds[4].innerText) || 0;
-        if (k === 'feedback') return -parseFloat(tds[6].innerText) || 0;
-        if (k === 'name') return tds[2].innerText;
-        if (k === 'last') return -(Date.parse(tds[7].innerText) || 0);
+      var key = this.sortBy;
+      var pinned = rows.filter(function (r) { return r.querySelector('.btn.on'); });
+      var rest   = rows.filter(function (r) { return !r.querySelector('.btn.on'); });
+      function get(tr, k) {
+        var tds = tr.querySelectorAll('td');
+        if (k === 'injections') return -(parseFloat(tds[2].innerText) || 0);
+        if (k === 'feedback')   return -(parseFloat(tds[4].innerText) || 0);
+        if (k === 'name')       return tds[1].innerText;
+        if (k === 'last')       return -(Date.parse(tds[5].innerText) || 0);
         return 0;
-      };
-      rest.sort((a,b) => get(a,key) > get(b,key) ? 1 : -1);
-      const tb = tbody;
-      [...pinned, ...rest].forEach(r => tb.appendChild(r));
+      }
+      rest.sort(function (a, b) {
+        var va = get(a, key), vb = get(b, key);
+        return va < vb ? -1 : va > vb ? 1 : 0;
+      });
+      var tb = tbody;
+      pinned.concat(rest).forEach(function (r) { tb.appendChild(r); });
     }
   };
 }

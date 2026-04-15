@@ -1,20 +1,24 @@
-<tr id="teach-{{ t.id }}">
-  <td>#{{ t.id }}</td>
-  <td title="{{ t.rule }}">{{ t.rule[:100] }}{% if t.rule|length > 100 %}…{% endif %}</td>
-  <td><span class="tag">{{ t.action }}</span></td>
-  <td class="muted">{{ t.target_type }}{% if t.target_id %}:{{ t.target_id }}{% endif %}</td>
-  <td>
+<div class="teach-item action-{{ t.action }}" id="teach-{{ t.id }}">
+  <div>
+    <div class="teach-rule">{{ t.rule }}</div>
+    <div class="teach-meta">
+      <span class="teach-id">#{{ t.id }}</span>
+      <span class="teach-action-badge {{ t.action }}">{{ t.action }}</span>
+      {% if t.target_type %}<span class="teach-target">{{ t.target_type }}{% if t.target_id %}:{{ t.target_id }}{% endif %}</span>{% endif %}
+    </div>
+  </div>
+  <div class="teach-actions">
     <form hx-patch="/teachings/{{ t.id }}/weight"
           hx-target="#teach-{{ t.id }}" hx-swap="outerHTML"
-          style="display:inline">
-      <input type="number" name="weight" value="{{ '%.2f'|format(t.weight or 1.0) }}"
-             step="0.1" style="width:70px" onchange="this.form.requestSubmit()">
+          style="display:contents">
+      <input class="teach-weight-input" type="number" name="weight"
+             value="{{ '%.2f'|format(t.weight or 1.0) }}"
+             step="0.1" title="weight"
+             onchange="this.form.requestSubmit()">
     </form>
-  </td>
-  <td>
     <button class="btn sm danger"
             hx-post="/teachings/{{ t.id }}/delete"
             hx-target="#teach-{{ t.id }}" hx-swap="outerHTML"
             hx-confirm="Delete teaching #{{ t.id }}?">×</button>
-  </td>
-</tr>
+  </div>
+</div>
