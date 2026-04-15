@@ -372,6 +372,33 @@ async def control_llm_tier(request: Request) -> Any:
     return control_llm_card(request)
 
 
+@router.get("/control/log-tail", response_class=HTMLResponse)
+def control_log_tail(request: Request, lines: int = 60) -> Any:
+    """HTMX fragment: last N lines of activity.log as coloured spans."""
+    from ..services import log_tail as _lt
+    raw = _lt.tail_file_sync(_lt.ACTIVITY_LOG, min(lines, 200))
+    html_lines: list[str] = []
+    for line in raw:
+        import html as _html
+        esc = _html.escape(line.rstrip())
+        # Colour-code by prefix keywords (matches CSS .level-* classes)
+        if "ERROR" in esc or " error " in esc.lower():
+            cls = "level-error"
+        elif "WARN" in esc or "warn" in esc:
+            cls = "level-warn"
+        elif esc.lstrip().startswith(">>") or esc.lstrip().startswith("<<"):
+            cls = "level-hook"
+        elif "TOOL" in esc or "SKILL" in esc:
+            cls = "level-router"
+        elif "STOP" in esc or "SESSION" in esc:
+            cls = "level-stop"
+        else:
+            cls = "level-info"
+        html_lines.append(f'<span class="{cls}">{esc}</span>')
+    body = "\n".join(html_lines) or '<span class="level-stop">(no log entries yet)</span>'
+    return HTMLResponse(body)
+
+
 @router.get("/control/monitor", response_class=HTMLResponse)
 def control_monitor(request: Request) -> Any:
     reg = get_registry()

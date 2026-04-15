@@ -1,65 +1,182 @@
 {% extends "base.html" %}
 {% block title %}tasks{% endblock %}
 {% block content %}
-<h1 class="page-h">Tasks</h1>
+<div class="tasks-layout" x-data="tasksApp()" x-init="init()">
 
-<section class="search-bar" x-data="{q:'', mode:'text'}">
-  <input type="text" x-model="q" placeholder="search title / summary / tags…"
-         hx-get="/tasks/search" hx-trigger="keyup changed delay:300ms"
-         hx-target="#task-search-results" hx-swap="innerHTML"
-         hx-include="[name=mode]" name="q">
-  <label><input type="radio" name="mode" value="text" x-model="mode" checked> text</label>
-  <label>
-    <input type="radio" name="mode" value="semantic" x-model="mode"
-           {% if not embed_ok %}disabled{% endif %}>
-    semantic{% if not embed_ok %} <span class="muted" title="Ollama offline">(offline)</span>{% endif %}
-  </label>
-</section>
-<div id="task-search-results"></div>
+  {# ── Left: task list ──────────────────────────────────────────────── #}
+  <div class="tasks-sidebar">
 
-<div class="task-panels" x-data="tasksPage()">
-  <section class="card">
-    <h2>Open <span class="muted">({{ open_tasks|length }})</span></h2>
-    <table class="ttable">
-      <thead><tr>
-        <th></th><th>title</th><th>tags</th><th>created</th><th>session</th>
-        <th>auto</th><th>actions</th>
-      </tr></thead>
-      <tbody id="open-rows">
-        {% for t in open_tasks %}{% set panel='open' %}{% include "_task_row.html" %}{% endfor %}
-        {% if not open_tasks %}
-          <tr><td colspan="7" class="muted" style="text-align:center; padding:14px">
-            no open tasks &mdash; <code>save_task</code> creates one.
-          </td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </section>
-
-  <section class="card">
-    <h2>Closed <span class="muted">({{ closed_tasks|length }})</span></h2>
-    <div class="bulk-bar">
-      <button type="button" class="btn" @click="doMerge()"
-              :disabled="selected.length<2">Merge selected</button>
-      <span class="muted" x-text="selected.length + ' selected'"></span>
+    <div class="tasks-sidebar-header">
+      <h1 class="page-h" style="margin:0">Tasks</h1>
+      <span class="tag open" style="font-size:10px">{{ open_tasks|length }} open</span>
+      <span class="tag closed" style="font-size:10px; margin-left:4px">{{ closed_tasks|length }} closed</span>
     </div>
-    <table class="ttable">
-      <thead><tr>
-        <th></th><th>title</th><th>tags</th><th>created</th><th>session</th>
-        <th>auto</th><th>actions</th>
-      </tr></thead>
-      <tbody id="closed-rows">
-        {% for t in closed_tasks %}{% set panel='closed' %}{% include "_task_row.html" %}{% endfor %}
-        {% if not closed_tasks %}
-          <tr><td colspan="7" class="muted" style="text-align:center; padding:14px">
-            no closed tasks yet.
-          </td></tr>
-        {% endif %}
-      </tbody>
-    </table>
-  </section>
-</div>
 
+    <div class="tasks-search-bar">
+      <input type="text" x-model="q" placeholder="search…"
+             hx-get="/tasks/search" hx-trigger="keyup changed delay:300ms"
+             hx-target="#task-search-results" hx-swap="innerHTML"
+             hx-include="[name=mode]" name="q"
+             style="width:100%">
+      <div style="display:flex; gap:6px; margin-top:6px; font-size:11px; color:var(--muted)">
+        <label style="margin:0; color:var(--muted)"><input type="radio" name="mode" value="text" x-model="mode" checked> text</label>
+        <label style="margin:0; color:var(--muted)">
+          <input type="radio" name="mode" value="semantic" x-model="mode"
+                 {% if not embed_ok %}disabled{% endif %}>
+          semantic{% if not embed_ok %} <span title="Ollama offline">(offline)</span>{% endif %}
+        </label>
+      </div>
+    </div>
+
+    <div id="task-search-results" class="tasks-search-results"></div>
+
+    {# Filter tabs #}
+    <div class="tasks-filter-tabs">
+      <button class="tab-btn" :class="{active: filter==='open'}" @click="filter='open'">
+        Open <span class="muted">({{ open_tasks|length }})</span>
+      </button>
+      <button class="tab-btn" :class="{active: filter==='closed'}" @click="filter='closed'">
+        Closed <span class="muted">({{ closed_tasks|length }})</span>
+      </button>
+    </div>
+
+    {# Open tasks list #}
+    <div x-show="filter==='open'" class="task-list">
+      {% for t in open_tasks %}
+      <div class="task-item" :class="{selected: selectedId==={{ t.id }}}"
+           @click="select({{ t.id }}, {{ t|tojson }})">
+        <div class="task-item-title">{{ t.title }}</div>
+        <div class="task-item-meta">
+          {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
+          <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
+        </div>
+      </div>
+      {% else %}
+      <div class="muted" style="padding:14px; text-align:center; font-size:12px">
+        no open tasks — <code>save_task</code> creates one.
+      </div>
+      {% endfor %}
+    </div>
+
+    {# Closed tasks list #}
+    <div x-show="filter==='closed'" class="task-list">
+      <div class="bulk-bar" style="padding:6px 10px">
+        <button type="button" class="btn sm" @click="doMerge()"
+                :disabled="selected.length<2">Merge selected</button>
+        <span class="muted" x-text="selected.length + ' selected'"></span>
+      </div>
+      {% for t in closed_tasks %}
+      <div class="task-item" :class="{selected: selectedId==={{ t.id }}}"
+           @click="select({{ t.id }}, {{ t|tojson }})">
+        <div style="display:flex; align-items:center; gap:6px">
+          <input type="checkbox" @click.stop
+                 @change="toggleSelect({{ t.id }}, $event.target.checked)">
+          <div class="task-item-title">{{ t.title }}</div>
+        </div>
+        <div class="task-item-meta">
+          {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
+          <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
+        </div>
+      </div>
+      {% else %}
+      <div class="muted" style="padding:14px; text-align:center; font-size:12px">
+        no closed tasks yet.
+      </div>
+      {% endfor %}
+    </div>
+
+  </div>{# /tasks-sidebar #}
+
+  {# ── Right: task detail + logs ────────────────────────────────────── #}
+  <div class="tasks-detail">
+
+    {# Empty state #}
+    <template x-if="!selectedId">
+      <div class="tasks-detail-empty">
+        <div style="font-size:32px; margin-bottom:10px">📋</div>
+        <div style="color:var(--muted); font-size:13px">Select a task to view details and logs</div>
+      </div>
+    </template>
+
+    <template x-if="selectedId">
+      <div style="height:100%; display:flex; flex-direction:column; gap:0">
+
+        {# Header: title + actions #}
+        <div class="task-detail-header">
+          <input type="text" class="task-detail-title" :value="selectedTask.title"
+                 @keydown.enter.prevent="renameTask($event.target.value)"
+                 @blur="renameTask($event.target.value)"
+                 :title="'id: ' + selectedId">
+          <div class="task-detail-actions">
+            <template x-if="filter==='open'">
+              <span>
+                <button class="btn sm" @click="openEdit()">edit</button>
+                <button class="btn sm" @click="openClose()">close</button>
+                <button class="btn sm" @click="openTeach()">teach</button>
+              </span>
+            </template>
+            <template x-if="filter==='closed'">
+              <span>
+                <button class="btn sm"
+                        @click="fetch('/tasks/'+selectedId+'/reopen',{method:'POST'}).then(()=>location.reload())">
+                  reopen
+                </button>
+              </span>
+            </template>
+            <button class="btn sm danger"
+                    @click="if(confirm('Delete task #'+selectedId+'?')) fetch('/tasks/'+selectedId+'/delete',{method:'POST'}).then(()=>location.reload())">
+              ×
+            </button>
+          </div>
+        </div>
+
+        {# Body: summary/context + logs #}
+        <div class="task-detail-body">
+
+          {# Summary / context #}
+          <template x-if="selectedTask.summary || selectedTask.context">
+            <div class="task-detail-section">
+              <div class="task-detail-section-label">Summary</div>
+              <pre class="task-detail-pre" x-text="selectedTask.summary || selectedTask.context"></pre>
+            </div>
+          </template>
+
+          {# Meta row #}
+          <div class="task-detail-meta">
+            <span class="muted">created: <span x-text="selectedTask.created_at"></span></span>
+            <span class="muted" x-show="selectedTask.session_id">
+              session: <span x-text="(selectedTask.session_id||'').slice(0,8)"></span>
+            </span>
+            <span class="muted" x-show="selectedTask.tags">
+              tags: <span x-text="selectedTask.tags"></span>
+            </span>
+          </div>
+
+          {# Logs section — always visible #}
+          <div class="task-detail-section" style="flex:1; display:flex; flex-direction:column; min-height:0">
+            <div class="task-detail-section-label" style="display:flex; align-items:center; gap:8px">
+              Logs
+              <button class="btn sm" @click="refreshLogs()">refresh</button>
+              <button class="btn sm" :class="liveLog ? 'on' : ''" @click="toggleLive()"
+                      x-text="liveLog ? 'live: on' : 'live: off'"></button>
+              <button class="btn sm" @click="copyLogs()">copy</button>
+              <a class="btn sm" href="/logs/download?source=hook-debug&lines=5000"
+                 target="_blank" rel="noopener">download</a>
+            </div>
+            <pre class="task-log-view"
+                 x-ref="logView"
+                 x-text="logLines.length ? logLines.join('\n') : '(no tagged log entries yet)'">
+            </pre>
+          </div>
+
+        </div>{# /task-detail-body #}
+      </div>
+    </template>
+
+  </div>{# /tasks-detail #}
+</div>{# /tasks-layout #}
+
+{# ── Dialogs ──────────────────────────────────────────────────────── #}
 <dialog id="dlg-edit">
   <form method="dialog" onsubmit="submitEdit(event)">
     <h3>Edit task <span id="edit-id"></span></h3>
@@ -89,13 +206,103 @@
 </dialog>
 
 <script>
-function tasksPage() {
+function tasksApp() {
   return {
-    selected: [],
-    toggle(id, on) {
+    filter: 'open',
+    q: '',
+    mode: 'text',
+    selectedId: null,
+    selectedTask: {},
+    selected: [],       // closed tasks checked for merge
+    logLines: [],
+    liveLog: false,
+    _ws: null,
+
+    init() {
+      // Auto-select first open task if any
+      const firstId = {{ (open_tasks[0].id if open_tasks else 'null') }};
+      const firstTask = {{ (open_tasks[0]|tojson if open_tasks else 'null') }};
+      if (firstId) this.select(firstId, firstTask);
+    },
+
+    select(id, task) {
+      if (this.selectedId === id) return;
+      this._stopLive();
+      this.selectedId = id;
+      this.selectedTask = task;
+      this.logLines = [];
+      this.refreshLogs();
+    },
+
+    async refreshLogs() {
+      if (!this.selectedId) return;
+      try {
+        const r = await fetch('/tasks/' + this.selectedId + '/logs/raw');
+        this.logLines = r.ok ? (await r.text()).split('\n').filter(Boolean) : ['(failed to load logs)'];
+      } catch(_) { this.logLines = ['(failed to load logs)']; }
+      this.$nextTick(() => {
+        const el = this.$refs.logView;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+
+    toggleLive() {
+      if (this.liveLog) { this._stopLive(); return; }
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      this._ws = new WebSocket(`${proto}://${location.host}/tasks/${this.selectedId}/logs/ws`);
+      this._ws.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          this.logLines.push(`[${d.ts}] ${d.text}`);
+          if (this.logLines.length > 500) this.logLines.shift();
+          this.$nextTick(() => { const el = this.$refs.logView; if(el) el.scrollTop=el.scrollHeight; });
+        } catch(_) {}
+      };
+      this._ws.onclose = () => { this.liveLog = false; this._ws = null; };
+      this.liveLog = true;
+    },
+
+    _stopLive() {
+      if (this._ws) { try { this._ws.close(); } catch(_) {} this._ws = null; }
+      this.liveLog = false;
+    },
+
+    copyLogs() {
+      if (navigator.clipboard) navigator.clipboard.writeText(this.logLines.join('\n'));
+    },
+
+    renameTask(title) {
+      if (!title || title === this.selectedTask.title) return;
+      const f = new FormData(); f.set('title', title);
+      fetch('/tasks/' + this.selectedId + '/title', {method:'PATCH', body:f})
+        .then(() => { this.selectedTask = {...this.selectedTask, title}; });
+    },
+
+    openEdit() {
+      document.getElementById('edit-id').textContent = '#' + this.selectedId;
+      document.getElementById('edit-task-id').value = this.selectedId;
+      document.getElementById('edit-summary').value = this.selectedTask.summary || '';
+      document.getElementById('edit-tags').value = this.selectedTask.tags || '';
+      document.getElementById('dlg-edit').showModal();
+    },
+
+    openClose() {
+      document.getElementById('close-id').textContent = '#' + this.selectedId;
+      document.getElementById('close-task-id').value = this.selectedId;
+      document.getElementById('dlg-close').showModal();
+    },
+
+    openTeach() {
+      document.getElementById('teach-id').textContent = '#' + this.selectedId;
+      document.getElementById('teach-task-id').value = this.selectedId;
+      document.getElementById('dlg-teach').showModal();
+    },
+
+    toggleSelect(id, on) {
       if (on) { if (!this.selected.includes(id)) this.selected.push(id); }
       else { this.selected = this.selected.filter(x => x !== id); }
     },
+
     async doMerge() {
       if (this.selected.length < 2) return;
       const r = await fetch('/tasks/merge', {
@@ -103,16 +310,10 @@ function tasksPage() {
         body: JSON.stringify({ids: this.selected})
       });
       if (r.ok) location.reload();
-    }
+    },
   };
 }
-function openEdit(id, curSummary, curTags) {
-  document.getElementById('edit-id').textContent = '#' + id;
-  document.getElementById('edit-task-id').value = id;
-  document.getElementById('edit-summary').value = curSummary || '';
-  document.getElementById('edit-tags').value = curTags || '';
-  document.getElementById('dlg-edit').showModal();
-}
+
 async function submitEdit(ev) {
   ev.preventDefault();
   const id = document.getElementById('edit-task-id').value;
@@ -120,22 +321,12 @@ async function submitEdit(ev) {
   const r = await fetch('/tasks/'+id+'/update', {method:'POST', body:f});
   if (r.ok) { document.getElementById('dlg-edit').close(); location.reload(); }
 }
-function openClose(id) {
-  document.getElementById('close-id').textContent = '#' + id;
-  document.getElementById('close-task-id').value = id;
-  document.getElementById('dlg-close').showModal();
-}
 async function submitClose(ev) {
   ev.preventDefault();
   const id = document.getElementById('close-task-id').value;
   const f = new FormData(ev.target);
   const r = await fetch('/tasks/'+id+'/close', {method:'POST', body:f});
   if (r.ok) { document.getElementById('dlg-close').close(); location.reload(); }
-}
-function openTeach(id) {
-  document.getElementById('teach-id').textContent = '#' + id;
-  document.getElementById('teach-task-id').value = id;
-  document.getElementById('dlg-teach').showModal();
 }
 async function submitTeach(ev) {
   ev.preventDefault();
@@ -145,30 +336,6 @@ async function submitTeach(ev) {
   const j = await r.json();
   if (r.ok) { document.getElementById('dlg-teach').close(); alert('Teaching saved #' + j.teaching_id); }
   else { alert('Error: ' + (j.error||r.status)); }
-}
-function renameInline(ev, id) {
-  if (ev.key !== 'Enter') return;
-  ev.preventDefault();
-  const title = ev.target.value;
-  const f = new FormData(); f.set('title', title);
-  fetch('/tasks/'+id+'/title', {method:'PATCH', body:f})
-    .then(r => r.text()).then(html => {
-      const tr = ev.target.closest('tr');
-      const wrap = document.createElement('tbody');
-      wrap.innerHTML = html;
-      tr.replaceWith(wrap.firstElementChild);
-    });
-}
-function cycleAutoApprove(id, current) {
-  const next = current === null || current === undefined ? 'true'
-             : current === true ? 'false' : 'null';
-  fetch('/tasks/'+id+'/auto_approve?enabled='+next, {method:'POST'})
-    .then(r => r.text()).then(html => {
-      const cur = document.getElementById('task-'+id);
-      const wrap = document.createElement('tbody');
-      wrap.innerHTML = html;
-      cur.replaceWith(wrap.firstElementChild);
-    });
 }
 </script>
 {% endblock %}
