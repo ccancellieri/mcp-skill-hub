@@ -709,6 +709,160 @@ def list_tasks(status: str = "open") -> str:
 
 
 @mcp.tool()
+def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True) -> str:
+    """Validate a plan YAML file against the plan-executor schema.
+
+    Checks: top-level required fields, step schema, kind enum, non-empty file lists,
+    depends_on references, cycle detection, and (if check_files) existence of
+    protocols_ref / pattern_ref paths on disk.
+
+    Args:
+        plan_path: Path to the plan YAML file (e.g. ~/.claude/plans/foo.yaml).
+        repo_path: Root for resolving protocols_ref / pattern_ref. Defaults to cwd.
+        check_files: Verify referenced context files exist on disk.
+
+    Returns:
+        On success: "OK: <plan_id> — N steps (S smart, M mid)".
+        On failure: multi-line "INVALID:" report with one error per line.
+    """
+    from .plan_executor import validate_plan_file, PlanValidationError, TIER_MAP
+
+    log_tool("validate_plan", plan_path=plan_path)
+    try:
+        plan = validate_plan_file(
+            Path(plan_path).expanduser(),
+            repo_path=(Path(repo_path).expanduser() if repo_path else None),
+            check_files=check_files,
+        )
+    except PlanValidationError as e:
+        lines = ["INVALID:"] + [f"  - {err}" for err in e.errors]
+        return "\n".join(lines)
+
+    steps = plan.get("steps", [])
+    smart = sum(1 for s in steps if TIER_MAP.get(s.get("kind")) == "tier_smart")
+    mid = sum(1 for s in steps if TIER_MAP.get(s.get("kind")) == "tier_mid")
+    return (
+        f"OK: {plan['plan_id']} — {len(steps)} steps "
+        f"({smart} smart, {mid} mid)"
+    )
+
+
+@mcp.tool()
+def author_plan(goal: str, repo_path: str = "", preferred_runner: str = "") -> str:
+    """Author a plan YAML for the given goal, transparently using the best
+    available Opus runner (in_session → claude -p → SDK → API fallback).
+
+    Resolution: HUB_PLAN_RUNNER env var > preferred_runner arg > auto-chain.
+    The in-session runner returns a directive for the calling agent instead
+    of a file path — the agent then authors the YAML itself using its own
+    Read/Glob/Grep tools and calls validate_plan.
+
+    Args:
+        goal: One-line plan goal (used for the YAML filename slug).
+        repo_path: Target repo root. Defaults to cwd.
+        preferred_runner: Force a specific runner: in_session|cli|sdk|api.
+
+    Returns:
+        Markdown report with the runner used, plan path (or directive), and
+        validation attempt count. Writes to ~/.claude/plans/<slug>.yaml.
+    """
+    from .plan_executor import author_plan as _author
+    from .plan_executor import RunnerFailed
+
+    log_tool("author_plan", goal=goal[:80], repo_path=repo_path,
+             runner=preferred_runner or "auto")
+    try:
+        result = _author(
+            goal,
+            repo_path=(Path(repo_path).expanduser() if repo_path else None),
+            preferred_runner=(preferred_runner or None) or None,  # type: ignore[arg-type]
+        )
+    except RunnerFailed as e:
+        return f"ERROR: {e}"
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    return result.as_markdown()
+
+
+@mcp.tool()
+def run_plan(plan_path: str, dry_run: bool = True, repo_path: str = "") -> str:
+    """Walk every step of a plan YAML in topological order, stopping on the
+    first failed/escalated step.
+
+    Steps already marked ``done`` in the sidecar state are skipped (idempotent
+    resume). Default is dry_run=True — pass dry_run=False to actually apply
+    changes and run acceptance commands.
+
+    Args:
+        plan_path: Path to the plan YAML.
+        dry_run: Preview only. Default True.
+        repo_path: Root for file resolution. Defaults to cwd.
+
+    Returns:
+        Multi-line run summary with per-step outcomes and a stop reason if halted.
+    """
+    from .plan_executor import run_plan as _walk
+
+    log_tool("run_plan", plan_path=plan_path, dry_run=dry_run)
+    try:
+        result = _walk(
+            Path(plan_path).expanduser(),
+            dry_run=dry_run,
+            repo_path=(Path(repo_path).expanduser() if repo_path else None),
+        )
+    except (FileNotFoundError, ValueError) as e:
+        return f"ERROR: {e}"
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    return result.as_markdown()
+
+
+@mcp.tool()
+def execute_plan_step(
+    plan_path: str,
+    step_id: str,
+    dry_run: bool = True,
+    repo_path: str = "",
+) -> str:
+    """Execute one step from a plan YAML via the right model tier.
+
+    - Resolves the step, checks depends_on via a sidecar .state.json file.
+    - Maps step.kind → tier (architecture/integration → tier_smart; others → tier_mid).
+    - Honors step.model_hint if set.
+    - Builds a file-scoped context bundle (target files + protocols_ref + pattern_ref).
+    - Calls the resolved model via litellm with a strict JSON-output contract.
+    - If dry_run=False, writes returned file contents to disk and runs the
+      acceptance command. On failure, retries once on tier_smart before marking
+      the step failed.
+    - Records a bandit reward (kind=task_class, plan_id=domain).
+
+    Args:
+        plan_path: Path to the plan YAML (typically ~/.claude/plans/<slug>.yaml).
+        step_id: Which step to run.
+        dry_run: Default True — preview only, no file writes, no acceptance run.
+        repo_path: Root for resolving files. Defaults to cwd.
+
+    Returns:
+        Markdown status report (see StepResult.as_markdown).
+    """
+    from .plan_executor import execute_plan_step as _run
+
+    log_tool("execute_plan_step", plan_path=plan_path, step_id=step_id, dry_run=dry_run)
+    try:
+        result = _run(
+            Path(plan_path).expanduser(),
+            step_id,
+            dry_run=dry_run,
+            repo_path=(Path(repo_path).expanduser() if repo_path else None),
+        )
+    except (KeyError, FileNotFoundError) as e:
+        return f"ERROR: {e}"
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR: {type(e).__name__}: {e}"
+    return result.as_markdown()
+
+
+@mcp.tool()
 def search_context(
     query: str,
     top_k: int = 5,

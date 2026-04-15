@@ -264,3 +264,81 @@ def search_tasks(request: Request, q: str = "", mode: str = "text") -> Any:
         "_task_search.html",
         {"results": results, "q": q, "mode": mode, "error": error},
     )
+
+
+@router.get("/tasks/{task_id}/stats/models")
+def task_model_stats(task_id: int, request: Request) -> JSONResponse:
+    """Return model usage and token statistics for a task's session."""
+    store = request.app.state.store
+    task = store.get_task(task_id)
+
+    if not task:
+        return JSONResponse({"error": "task not found"}, status_code=404)
+
+    task_dict = dict(task)
+    session_id = task_dict.get("session_id")
+
+    # Default stats if no session
+    if not session_id:
+        return JSONResponse({
+            "models": [],
+            "total_tokens": 0,
+            "session_id": None
+        })
+
+    # Query command_verdicts.db for model routing decisions in this session
+    try:
+        import sqlite3
+        from pathlib import Path
+        verdicts_db = Path.home() / ".claude" / "mcp-skill-hub" / "command_verdicts.db"
+
+        if not verdicts_db.exists():
+            return JSONResponse({
+                "models": [],
+                "total_tokens": 0,
+                "session_id": session_id,
+                "note": "verdicts database not found"
+            })
+
+        verdict_conn = sqlite3.connect(str(verdicts_db))
+        verdict_conn.row_factory = sqlite3.Row
+
+        # Aggregate model usage by tier within this session
+        rows = verdict_conn.execute("""
+            SELECT model, COUNT(*) as count, SUM(CAST(estimated_tokens AS INTEGER)) as tokens
+            FROM command_verdicts
+            WHERE session_id = ?
+            GROUP BY model
+            ORDER BY count DESC
+        """, (session_id,)).fetchall()
+
+        total_count = sum(dict(r)["count"] for r in rows)
+        total_tokens = sum(dict(r)["tokens"] or 0 for r in rows)
+
+        models = []
+        for row in rows:
+            d = dict(row)
+            count = d.get("count", 0)
+            percentage = (count / total_count * 100) if total_count > 0 else 0
+            models.append({
+                "name": d.get("model", "unknown"),
+                "count": count,
+                "percentage": round(percentage, 1),
+                "tokens": d.get("tokens", 0) or 0
+            })
+
+        verdict_conn.close()
+
+        return JSONResponse({
+            "models": models,
+            "total_tokens": total_tokens,
+            "session_id": session_id
+        })
+
+    except Exception as e:
+        return JSONResponse({
+            "models": [],
+            "total_tokens": 0,
+            "session_id": session_id,
+            "error": str(e)
+        })

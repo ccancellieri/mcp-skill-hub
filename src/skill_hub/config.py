@@ -83,6 +83,13 @@ _DEFAULTS = {
     "eviction_enabled": True,           # enable relevance decay tracking
     "eviction_min_stale_count": 3,      # suggest profile switch after N stale detections
 
+    # Plan-executor API fallback — when authoring plans, the runner chain
+    # normally tries in_session → claude -p → SDK first (all via Max/OAuth
+    # subscription, no token cost). Set this to True ONLY if you explicitly
+    # want the litellm/API-token fallback as a last resort. Requires
+    # ANTHROPIC_API_KEY to also be set.
+    "plan_api_runner_enabled": False,   # keep disabled on Max plan
+
     # Exhaustion fallback — local LLM takes over when Claude is unavailable
     "exhaustion_fallback": True,        # enable exhaustion auto-save
 

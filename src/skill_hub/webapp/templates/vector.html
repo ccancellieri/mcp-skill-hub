@@ -1,36 +1,531 @@
 {% extends "base.html" %}
-{% block title %}vector{% endblock %}
+{% block title %}vectors{% endblock %}
 {% block content %}
-<h1 class="page-h">Vector scatter <span class="muted">({{ count }} pts · {{ source }})</span></h1>
-<div x-data="{ source: '{{ source }}', limit: {{ limit }} }">
-  <div class="filter-bar">
-    <label>source
-      <select x-model="source"
-              @change="window.location = '/vector?source=' + source + '&limit=' + limit">
-        {% for s in sources %}
-          <option value="{{ s }}" {% if s == source %}selected{% endif %}>{{ s }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>limit
-      <input type="number" x-model.number="limit" min="50" max="5000" step="50"
-             style="width:90px"
-             @change.debounce.500ms="window.location = '/vector?source=' + source + '&limit=' + limit">
-    </label>
-    <span class="muted">random projection · cached seed</span>
+<style>
+  /* ── page layout ── */
+  .vec-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .vec-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 14px;
+  }
+  .vec-tab {
+    padding: 7px 18px;
+    font-size: 13px;
+    color: var(--color-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .vec-tab:hover { color: var(--color-fg); }
+  .vec-tab.active { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+
+  /* ── scatter controls ── */
+  .scatter-layout {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    gap: 14px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .scatter-layout { grid-template-columns: 1fr; }
+  }
+  .scatter-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .ctrl-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+  }
+  .ctrl-card h3 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--color-muted);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  .ctrl-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+  .ctrl-row:last-child { margin-bottom: 0; }
+  .ctrl-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--color-muted);
+  }
+  .ctrl-row select,
+  .ctrl-row input[type=number] {
+    font-size: 12px;
+    padding: 5px 8px;
+    width: 100%;
+  }
+  .level-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .level-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 10px;
+    background: rgba(125,136,150,0.15);
+    color: var(--color-muted);
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.1s;
+  }
+  .level-chip:has(input:checked) {
+    background: rgba(58,160,255,0.15);
+    color: var(--color-accent);
+    border-color: rgba(58,160,255,0.3);
+  }
+  .level-chip input { display: none; }
+  .apply-btn {
+    width: 100%;
+    margin-top: 4px;
+    padding: 6px;
+    font-size: 12px;
+  }
+
+  /* ── legend ── */
+  .legend-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: var(--color-fg);
+    overflow: hidden;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .legend-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ── scatter stats ── */
+  .scatter-stat-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .scatter-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .scatter-stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--color-muted);
+  }
+  .scatter-stat-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--color-fg);
+  }
+
+  /* ── index catalog table ── */
+  .idx-table-wrap {
+    overflow-x: auto;
+  }
+  .idx-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .idx-table th {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--color-muted);
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .idx-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+    text-align: left;
+  }
+  .idx-table tr:last-child td { border-bottom: none; }
+  .idx-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .idx-table td:nth-child(n+3) { font-variant-numeric: tabular-nums; }
+  .ns-name {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-fg);
+  }
+  .ns-link {
+    font-size: 10px;
+    color: var(--color-accent);
+    text-decoration: none;
+    margin-left: 6px;
+    opacity: 0.6;
+  }
+  .ns-link:hover { opacity: 1; }
+  .level-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    font-family: ui-monospace, monospace;
+  }
+  .level-L0 { background: rgba(125,136,150,0.2); color: var(--color-muted); }
+  .level-L1 { background: rgba(58,160,255,0.15); color: #6bbeff; }
+  .level-L2 { background: rgba(74,211,107,0.15); color: #5fcf7b; }
+  .level-L3 { background: rgba(232,166,75,0.2);  color: var(--color-warn); }
+  .level-L4 { background: rgba(192,57,43,0.2);   color: #e06060; }
+  .level-breakdown {
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: var(--color-muted);
+    white-space: nowrap;
+  }
+  .zero { color: rgba(125,136,150,0.4); }
+
+  /* ── memory levels reference ── */
+  .levels-ref {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .level-ref-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+  }
+  .level-ref-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .level-ref-name {
+    font-family: ui-monospace, monospace;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .level-ref-scope {
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .level-ref-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .level-ref-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+  }
+  .level-ref-key { color: var(--color-muted); }
+  .level-ref-val { font-family: ui-monospace, monospace; color: var(--color-fg); }
+</style>
+
+<div class="vec-header">
+  <h1 class="page-h" style="margin:0">Vectors</h1>
+  <span class="muted">random projection · cached seed</span>
+</div>
+
+<div x-data="{
+  tab: '{{ tab }}',
+  source: '{{ source }}',
+  limit: {{ limit }},
+  namespace: '{{ sel_namespace }}',
+  levels: {{ selected_levels | tojson }},
+  allLevels: {{ all_levels | tojson }},
+  toggleLevel(l) {
+    if (this.levels.includes(l)) {
+      this.levels = this.levels.filter(x => x !== l);
+    } else {
+      this.levels.push(l);
+    }
+  },
+  navigate() {
+    let url = '/vector?source=' + this.source + '&limit=' + this.limit + '&tab=' + this.tab;
+    if (this.source === 'namespaces') {
+      url += '&namespace=' + encodeURIComponent(this.namespace);
+      if (this.levels.length) url += '&levels=' + this.levels.join(',');
+    }
+    window.location = url;
+  }
+}">
+
+  {# ── tab bar ── #}
+  <div class="vec-tabs">
+    <div class="vec-tab" :class="{ active: tab === 'scatter' }"
+         @click="tab='scatter'; navigate()">Scatter</div>
+    <div class="vec-tab" :class="{ active: tab === 'indexes' }"
+         @click="tab='indexes'; navigate()">Indexes <span class="muted">({{ catalog|length }})</span></div>
   </div>
-  <div class="card" style="padding:8px; margin-top:12px">
-    {{ svg | safe }}
-  </div>
-  {% if groups %}
-    <div class="card" style="margin-top:12px">
-      <h2>Legend</h2>
-      <div style="display:flex; flex-wrap:wrap; gap:8px">
-        {% for g in groups %}
-          <span class="muted" style="font-size:12px">{{ g }}</span>
-        {% endfor %}
+
+  {# ════════════════════════════════════════════════════════ SCATTER TAB #}
+  <div x-show="tab === 'scatter'">
+    <div class="scatter-layout">
+      {# Left: scatter + stats #}
+      <div>
+        <div class="scatter-stat-row">
+          <div class="scatter-stat">
+            <span class="scatter-stat-label">Points</span>
+            <span class="scatter-stat-value">{{ count }}</span>
+          </div>
+          <div class="scatter-stat">
+            <span class="scatter-stat-label">Source</span>
+            <span class="scatter-stat-value" style="font-size:13px;font-family:ui-monospace,monospace">
+              {{ source }}{% if source == 'namespaces' %} / {{ sel_namespace }}{% endif %}
+            </span>
+          </div>
+          <div class="scatter-stat">
+            <span class="scatter-stat-label">Groups</span>
+            <span class="scatter-stat-value">{{ groups|length }}</span>
+          </div>
+          {% if selected_levels %}
+          <div class="scatter-stat">
+            <span class="scatter-stat-label">Levels</span>
+            <span class="scatter-stat-value" style="font-size:13px">{{ selected_levels | join(', ') }}</span>
+          </div>
+          {% endif %}
+        </div>
+        <div style="border-radius:6px; overflow:hidden">{{ svg | safe }}</div>
+      </div>
+
+      {# Right: controls + legend #}
+      <div class="scatter-controls">
+        <div class="ctrl-card">
+          <h3>Controls</h3>
+          <div class="ctrl-row">
+            <span class="ctrl-label">Source</span>
+            <select x-model="source" @change="if (source !== 'namespaces') navigate()">
+              {% for s in sources %}
+                <option value="{{ s }}"{% if s == source %} selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="ctrl-row" x-show="source === 'namespaces'">
+            <span class="ctrl-label">Namespace</span>
+            <select x-model="namespace">
+              {% for ns in all_namespaces %}
+                <option value="{{ ns }}"{% if ns == sel_namespace %} selected{% endif %}>{{ ns }}</option>
+              {% endfor %}
+              {% if not all_namespaces %}
+                <option value="">— none indexed —</option>
+              {% endif %}
+            </select>
+          </div>
+
+          <div class="ctrl-row" x-show="source === 'namespaces'">
+            <span class="ctrl-label">Memory levels</span>
+            <div class="level-checks">
+              {% for lv in all_levels %}
+                <label class="level-chip">
+                  <input type="checkbox"
+                         :checked="levels.includes('{{ lv }}')"
+                         @change="toggleLevel('{{ lv }}')">
+                  {{ lv }}
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="ctrl-row">
+            <span class="ctrl-label">Limit</span>
+            <input type="number" x-model.number="limit" min="50" max="5000" step="50">
+          </div>
+
+          <button class="btn apply-btn" @click.prevent="navigate()">Apply</button>
+        </div>
+
+        {% if legend %}
+        <div class="ctrl-card">
+          <h3>Legend</h3>
+          <div class="legend-grid">
+            {% for item in legend %}
+              <div class="legend-item">
+                <span class="legend-dot" style="background:{{ item.color }}"></span>
+                <span class="legend-text" title="{{ item.group }}">{{ item.group }}</span>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
       </div>
     </div>
-  {% endif %}
-</div>
+  </div>
+
+  {# ════════════════════════════════════════════════════════ INDEXES TAB #}
+  <div x-show="tab === 'indexes'">
+
+    {% if catalog %}
+    <div class="card" style="margin-bottom:16px; padding:14px 16px">
+      <div class="idx-table-wrap">
+        <table class="idx-table">
+          <thead>
+            <tr>
+              <th>Namespace</th>
+              <th>Default level</th>
+              <th>Docs</th>
+              <th>Level breakdown</th>
+              <th>Half-life</th>
+              <th>Chunk</th>
+              <th>Max docs</th>
+              <th>Avg age (d)</th>
+              <th>Total accesses</th>
+              <th>Last indexed</th>
+              <th>Config updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for idx in catalog %}
+            <tr>
+              <td>
+                <span class="ns-name">{{ idx.name }}</span>
+                <a class="ns-link"
+                   href="/vector?source=namespaces&namespace={{ idx.name }}&tab=scatter"
+                   title="View in scatter">↗</a>
+              </td>
+              <td>
+                <span class="level-badge level-{{ idx.default_level }}">{{ idx.default_level }}</span>
+              </td>
+              <td>
+                {% if idx.doc_count %}
+                  <strong>{{ idx.doc_count }}</strong>
+                {% else %}
+                  <span class="zero">0</span>
+                {% endif %}
+              </td>
+              <td><span class="level-breakdown">{{ idx.level_breakdown }}</span></td>
+              <td class="muted">{{ idx.half_life_days }}d</td>
+              <td class="muted">
+                {% if idx.chunk_size %}{{ idx.chunk_size }}{% if idx.chunk_overlap %}/{{ idx.chunk_overlap }}{% endif %}{% else %}—{% endif %}
+              </td>
+              <td class="muted">{% if idx.max_docs %}{{ idx.max_docs }}{% else %}—{% endif %}</td>
+              <td class="muted">{{ idx.avg_age_days }}</td>
+              <td class="muted">{{ idx.total_access }}</td>
+              <td class="muted">{{ idx.last_indexed or '—' }}</td>
+              <td class="muted">{{ idx.updated_at or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% else %}
+    <div class="card" style="padding:24px; text-align:center; color:var(--color-muted)">
+      No vector indexes configured yet. Run <code>index_skills()</code> or <code>index_plugins()</code> to seed them.
+    </div>
+    {% endif %}
+
+    {# ── Memory levels reference ── #}
+    <div class="card" style="padding:14px 16px">
+      <h2 style="margin:0 0 12px">Memory level reference</h2>
+      <div class="levels-ref">
+        <div class="level-ref-card">
+          <div class="level-ref-head">
+            <span class="level-badge level-L0">L0</span>
+            <span class="level-ref-scope">Ephemeral</span>
+          </div>
+          <div class="level-ref-rows">
+            <div class="level-ref-row"><span class="level-ref-key">Half-life</span><span class="level-ref-val">6 h</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Weight</span><span class="level-ref-val">0.3</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Examples</span><span class="level-ref-val">scratch, single-turn</span></div>
+          </div>
+        </div>
+        <div class="level-ref-card">
+          <div class="level-ref-head">
+            <span class="level-badge level-L1">L1</span>
+            <span class="level-ref-scope">Session</span>
+          </div>
+          <div class="level-ref-rows">
+            <div class="level-ref-row"><span class="level-ref-key">Half-life</span><span class="level-ref-val">7 d</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Weight</span><span class="level-ref-val">0.8</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Examples</span><span class="level-ref-val">active tasks, open decisions</span></div>
+          </div>
+        </div>
+        <div class="level-ref-card">
+          <div class="level-ref-head">
+            <span class="level-badge level-L2">L2</span>
+            <span class="level-ref-scope">Working memory</span>
+          </div>
+          <div class="level-ref-rows">
+            <div class="level-ref-row"><span class="level-ref-key">Half-life</span><span class="level-ref-val">30 d</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Weight</span><span class="level-ref-val">1.0</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Examples</span><span class="level-ref-val">drafts, in-progress refs</span></div>
+          </div>
+        </div>
+        <div class="level-ref-card">
+          <div class="level-ref-head">
+            <span class="level-badge level-L3">L3</span>
+            <span class="level-ref-scope">Stable knowledge</span>
+          </div>
+          <div class="level-ref-rows">
+            <div class="level-ref-row"><span class="level-ref-key">Half-life</span><span class="level-ref-val">180 d</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Weight</span><span class="level-ref-val">1.1</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Examples</span><span class="level-ref-val">decisions, patterns, rules</span></div>
+          </div>
+        </div>
+        <div class="level-ref-card">
+          <div class="level-ref-head">
+            <span class="level-badge level-L4">L4</span>
+            <span class="level-ref-scope">Identity</span>
+          </div>
+          <div class="level-ref-rows">
+            <div class="level-ref-row"><span class="level-ref-key">Half-life</span><span class="level-ref-val">10 yr</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Weight</span><span class="level-ref-val">1.3</span></div>
+            <div class="level-ref-row"><span class="level-ref-key">Examples</span><span class="level-ref-val">role, career, preferences</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:12px; font-size:11px">
+        Retrieval score = cosine_similarity × level_weight × exp(−age_days / half_life).
+        L1→L2: age &gt; 7d &amp; access ≥ 2. &nbsp; L2→L3: age &gt; 30d &amp; access ≥ 5. &nbsp; L4: write-only via <code>remember_identity()</code>.
+      </div>
+    </div>
+
+  </div>{# end indexes tab #}
+
+</div>{# end x-data #}
 {% endblock %}

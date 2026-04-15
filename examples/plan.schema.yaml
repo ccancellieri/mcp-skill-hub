@@ -1,0 +1,69 @@
+# Plan YAML schema for mcp-skill-hub plan-aware executor.
+# Consumed by validate_plan() and execute_plan_step().
+#
+# Authored by a planning model (typically Opus 4.6 with 1M context).
+# Executed step-by-step by Sonnet/Haiku via litellm based on step.kind.
+
+# --- Top-level fields ---
+#
+# plan_id      (str, required)   Unique slug, used as bandit domain key for per-plan learning.
+# goal         (str, required)   One-line summary of the plan's outcome.
+# repo_path    (str, optional)   Absolute path to the target repo. Defaults to cwd at execution time.
+# invariants   (list[str], opt)  Hard constraints every step must respect (e.g. "do not touch drivers/").
+# steps        (list[Step], req) Ordered list of atomic steps. See Step schema below.
+#
+# --- Step schema ---
+#
+# id             (str, required)    Unique within the plan. Referenced by depends_on.
+# kind           (enum, required)   One of: architecture | integration | boilerplate | tests | docs
+#                                    Maps to model tier:
+#                                      architecture, integration -> tier_smart (Sonnet)
+#                                      boilerplate, tests, docs  -> tier_mid   (Haiku)
+# files          (list[str], req)   Files this step will create or modify. Relative to repo_path.
+#                                    Used to build the scoped context bundle for the executor model.
+# protocols_ref  (list[str], opt)   Extra files loaded read-only for context (protocol/interface defs).
+#                                    Typically used for kind=architecture|integration.
+# pattern_ref    (list[str], opt)   Extra files loaded read-only as pattern examples to mimic.
+# acceptance     (str, required)    How to verify the step. Either a shell command (e.g. "pytest -x path")
+#                                    or a natural-language heuristic the executor runs (e.g. "pyright clean").
+# depends_on     (list[str], opt)   Step ids that must be status=done before this step runs.
+# model_hint     (enum, optional)   Override auto-routing: tier_cheap | tier_mid | tier_smart.
+#                                    Bandit still records the reward; hints are honored but not learned from.
+#
+# --- Example ---
+#
+# plan_id: add-tiles-router
+# goal: "Add Tiles CRUD router"
+# steps:
+#   - id: T1
+#     kind: architecture
+#     files: [src/app/tiles/protocols.py]
+#     protocols_ref: [src/app/modules/protocols.py]
+#     acceptance: "pyright src/app/tiles/protocols.py"
+#   - id: T2
+#     kind: integration
+#     files: [src/app/tiles/router.py]
+#     pattern_ref: [src/app/features/router.py]
+#     acceptance: "pytest -x tests/tiles"
+#     depends_on: [T1]
+#   - id: T3
+#     kind: tests
+#     files: [tests/tiles/test_router.py]
+#     pattern_ref: [tests/features/test_router.py]
+#     acceptance: "pytest -x tests/tiles/test_router.py"
+#     depends_on: [T2]
+
+schema_version: 1
+kinds:
+  - architecture
+  - integration
+  - boilerplate
+  - tests
+  - docs
+
+tier_map:
+  architecture: tier_smart
+  integration: tier_smart
+  boilerplate: tier_mid
+  tests: tier_mid
+  docs: tier_mid
