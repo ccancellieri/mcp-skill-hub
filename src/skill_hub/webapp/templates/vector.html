@@ -275,8 +275,8 @@
   source: '{{ source }}',
   limit: {{ limit }},
   namespace: '{{ sel_namespace }}',
-  levels: {{ selected_levels | tojson }},
-  allLevels: {{ all_levels | tojson }},
+  levels: [{% for l in selected_levels %}'{{ l }}'{% if not loop.last %},{% endif %}{% endfor %}],
+  allLevels: [{% for l in all_levels %}'{{ l }}'{% if not loop.last %},{% endif %}{% endfor %}],
   toggleLevel(l) {
     if (this.levels.includes(l)) {
       this.levels = this.levels.filter(x => x !== l);
@@ -303,7 +303,7 @@
   </div>
 
   {# ════════════════════════════════════════════════════════ SCATTER TAB #}
-  <div x-show="tab === 'scatter'">
+  <div x-show="tab === 'scatter'" {% if tab != 'scatter' %}style="display:none"{% endif %}>
     <div class="scatter-layout">
       {# Left: scatter + stats #}
       <div>
@@ -397,7 +397,7 @@
   </div>
 
   {# ════════════════════════════════════════════════════════ INDEXES TAB #}
-  <div x-show="tab === 'indexes'">
+  <div x-show="tab === 'indexes'" {% if tab != 'indexes' %}style="display:none"{% endif %}>
 
     {% if catalog %}
     <div class="card" style="margin-bottom:16px; padding:14px 16px">

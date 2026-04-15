@@ -4,7 +4,7 @@
 <style>
   .settings-layout {
     display: grid;
-    grid-template-columns: 200px 1fr;
+    grid-template-columns: 210px 1fr;
     gap: 0;
     height: calc(100vh - 120px);
     min-height: 500px;
@@ -14,35 +14,36 @@
     .settings-nav { display: none; }
   }
 
-  /* Left nav */
+  /* ── Left nav ─────────────────────────────────────────────────────── */
   .settings-nav {
     border-right: 1px solid var(--color-border);
     background: #0a0e13;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    padding: 12px 0;
+    padding: 10px 0 16px;
     flex-shrink: 0;
   }
-  .settings-nav-header {
-    padding: 0 14px 10px;
-    font-size: 10px;
+  .settings-nav-group {
+    padding: 10px 14px 3px;
+    font-size: 9px;
     text-transform: uppercase;
-    letter-spacing: .07em;
+    letter-spacing: .1em;
     color: var(--color-muted);
-    font-weight: 600;
+    font-weight: 700;
+    opacity: 0.55;
     flex-shrink: 0;
   }
   .settings-nav-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 14px;
-    font-size: 13px;
+    padding: 7px 14px;
+    font-size: 12.5px;
     color: var(--color-muted);
     cursor: pointer;
     border-left: 2px solid transparent;
-    transition: all 0.15s;
+    transition: all 0.12s;
     gap: 8px;
   }
   .settings-nav-item:hover { color: var(--color-fg); background: rgba(255,255,255,0.03); }
@@ -64,7 +65,7 @@
     color: var(--color-accent);
   }
 
-  /* Right panel */
+  /* ── Right panel ─────────────────────────────────────────────────── */
   .settings-panel {
     display: flex;
     flex-direction: column;
@@ -75,19 +76,19 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    padding: 16px 20px 12px;
+    padding: 14px 20px 11px;
     border-bottom: 1px solid var(--color-border);
     background: var(--color-surface);
     flex-shrink: 0;
     gap: 12px;
   }
   .settings-panel-title {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 700;
     letter-spacing: -0.3px;
   }
   .settings-panel-help {
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--color-muted);
     margin-top: 2px;
   }
@@ -100,24 +101,20 @@
   .settings-panel-body {
     flex: 1;
     overflow-y: auto;
-    padding: 16px 20px;
+    padding: 14px 20px;
   }
 
-  /* Section display */
-  .settings-section-content { display: none; }
-  .settings-section-content.active { display: block; }
+  /* Section display — visibility driven by Alpine x-show.
+     Inline display:none prevents FOUC on non-first sections. */
 
-  /* Improved field grid */
-  .fields-grid {
-    display: grid;
-    gap: 2px;
-  }
+  /* ── Field grid ──────────────────────────────────────────────────── */
+  .fields-grid { display: grid; gap: 2px; }
   .sfield {
     display: grid;
     grid-template-columns: 220px 1fr;
     gap: 12px;
     align-items: start;
-    padding: 8px 10px;
+    padding: 7px 10px;
     border-radius: var(--radius-sm);
     transition: background 0.1s;
   }
@@ -158,10 +155,7 @@
     padding: 6px 8px;
     resize: vertical;
   }
-  .sfield-hint {
-    font-size: 10px;
-    color: var(--color-muted);
-  }
+  .sfield-hint { font-size: 10px; color: var(--color-muted); }
 
   /* Checkbox row */
   .bool-row {
@@ -186,16 +180,26 @@
     padding: 5px 8px;
   }
 
-  /* Save status */
-  .save-status-inline { font-size: 12px; }
-  .save-status-inline .status.ok { color: var(--color-good); }
-  .save-status-inline .status.err { color: var(--color-bad); }
+  /* ── Autosave indicator ──────────────────────────────────────────── */
+  .save-indicator {
+    font-size: 11.5px;
+    color: var(--color-muted);
+    opacity: 0;
+    transition: opacity 0.15s ease-in;
+    white-space: nowrap;
+  }
+  .htmx-request .save-indicator { opacity: 1 !important; }
+
+  /* Save status (autofades via Alpine) */
+  .save-status-wrap {
+    font-size: 12px;
+    transition: opacity 0.4s ease;
+  }
+  .save-status-wrap .status.ok { color: var(--color-good); }
+  .save-status-wrap .status.err { color: var(--color-bad); }
 
   /* Mobile section picker */
-  .mobile-section-pick {
-    display: none;
-    padding: 10px 0 8px;
-  }
+  .mobile-section-pick { display: none; padding: 10px 0 8px; }
   @media (max-width: 800px) {
     .mobile-section-pick { display: block; }
     .settings-layout { display: block; }
@@ -214,18 +218,40 @@
   <span class="muted">— <code>~/.claude/mcp-skill-hub/config.json</code></span>
 </div>
 
-<form hx-post="/settings/save" hx-target="#save-status" hx-swap="innerHTML"
-      x-data="{ active: '{{ ns.first_non_empty }}' }"
+<form hx-post="/settings/save"
+      hx-target="#save-status"
+      hx-swap="innerHTML"
+      hx-trigger="change delay:1200ms, submit"
+      hx-indicator=".save-indicator"
+      x-data="{
+        active: '{{ ns.first_non_empty }}',
+        fadeTimer: null,
+        onSaved() {
+          const el = document.getElementById('save-status');
+          if (!el) return;
+          el.parentElement.style.opacity = '1';
+          clearTimeout(this.fadeTimer);
+          this.fadeTimer = setTimeout(() => {
+            el.parentElement.style.opacity = '0';
+          }, 3000);
+        }
+      }"
+      @htmx:after-swap.window="onSaved()"
       class="settings-form">
 
   <div class="settings-layout">
 
     {# ── Left nav ── #}
     <nav class="settings-nav">
-      <div class="settings-nav-header">Sections</div>
+      {% set ns2 = namespace(last_group='') %}
       {% for prefix, label in buckets %}
         {% set entries = groups[prefix] %}
         {% if entries %}
+          {# Emit group header when group changes #}
+          {% if prefix in nav_groups and nav_groups[prefix] != ns2.last_group %}
+            {% set ns2.last_group = nav_groups[prefix] %}
+            <div class="settings-nav-group">{{ nav_groups[prefix] }}</div>
+          {% endif %}
           <div class="settings-nav-item"
                :class="{ active: active === '{{ prefix }}' }"
                @click="active = '{{ prefix }}'">
@@ -241,7 +267,8 @@
       <div class="settings-panel-header">
         {% for prefix, label in buckets %}
           {% if groups[prefix] %}
-            <div x-show="active === '{{ prefix }}'" style="flex:1; min-width:0">
+            <div x-show="active === '{{ prefix }}'"
+                 style="flex:1; min-width:0{% if prefix != ns.first_non_empty %}; display:none{% endif %}">
               <div class="settings-panel-title">{{ label }}</div>
               {% if bucket_help and bucket_help[prefix] %}
                 <div class="settings-panel-help">{{ bucket_help[prefix] }}</div>
@@ -250,8 +277,11 @@
           {% endif %}
         {% endfor %}
         <div class="settings-panel-actions">
-          <div id="save-status" class="save-status-inline"></div>
-          <button type="submit" class="btn">Save changes</button>
+          <span class="save-indicator">Saving…</span>
+          <div class="save-status-wrap" style="opacity:0">
+            <div id="save-status"></div>
+          </div>
+          <button type="submit" class="btn btn-sm">Save</button>
         </div>
       </div>
 
@@ -259,7 +289,9 @@
         {% for prefix, label in buckets %}
           {% set entries = groups[prefix] %}
           {% if entries %}
-          <div class="settings-section-content" x-show="active === '{{ prefix }}'">
+          <div class="settings-section-content"
+               x-show="active === '{{ prefix }}'"
+               {% if prefix != ns.first_non_empty %}style="display:none"{% endif %}>
             <div class="fields-grid">
               {% for e in entries %}
                 <div class="sfield {% if e.type == 'dict' and not e.json_mode %}dict-parent{% endif %}">

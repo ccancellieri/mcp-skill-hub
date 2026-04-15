@@ -11,18 +11,41 @@ from ... import config as _config
 
 router = APIRouter()
 
+# Ordered list of (prefix, label).  The last entry is always the catch-all.
 _BUCKETS = [
+    # ── Automation ────────────────────────────────────────────────────────────
     ("auto_approve", "Auto-approve"),
     ("auto_proceed", "Auto-proceed"),
     ("adaptive_windows", "Adaptive windows"),
     ("prefix_bundles", "Prefix bundles"),
     ("task_type_bundles", "Task-type bundles"),
-    ("vector", "Vector"),
+    # ── Hook & router ─────────────────────────────────────────────────────────
+    ("hook", "Hook behavior"),
     ("router", "Router"),
+    # ── Execution ─────────────────────────────────────────────────────────────
+    ("local", "Local execution"),
+    # ── Models & search ───────────────────────────────────────────────────────
+    ("llm", "LLM providers"),
+    ("vec", "Vector & embeddings"),
+    ("searxng", "SearXNG search"),
+    ("search", "Search & memory"),
+    # ── Session & memory ──────────────────────────────────────────────────────
+    ("session_memory", "Session memory"),
+    ("context_bridge", "Context bridge"),
+    ("skill_evolution", "Skill evolution"),
+    ("digest", "Digest & eviction"),
+    ("response_cache", "Response cache"),
+    ("pattern", "Patterns & decomp"),
+    # ── Config ────────────────────────────────────────────────────────────────
+    ("services", "Services & monitor"),
+    ("profiles", "Profiles"),
+    # ── Legacy / plugin-provided (may be empty) ───────────────────────────────
+    ("vector", "Vector"),
     ("dashboard", "Dashboard"),
     ("embedding", "Embedding"),
     ("chrome", "Chrome intents"),
     ("questions", "Questions"),
+    # ── Catch-all ─────────────────────────────────────────────────────────────
     ("other", "Other"),
 ]
 
@@ -32,8 +55,22 @@ _BUCKET_HELP = {
     "adaptive_windows": "Tiered time windows that relax/tighten auto-approve based on recent outcomes.",
     "prefix_bundles": "Command-prefix bundles granted as a group once any member is verdict-allowed.",
     "task_type_bundles": "Per-task-type bundles: e.g. editing tasks unlock read-only bash by default.",
+    "hook": "Hook behavior — timeouts, semantic thresholds, context injection, LLM triage.",
+    "router": "Local-LLM router thresholds (haiku/ollama), bandit, prompt rewriters, fallback rules.",
+    "local": "Local execution levels 1–4: whitelisted commands, templates, skill runner, full agent.",
+    "llm": "LLM provider tiers (cheap/mid/smart/embed), Ollama base URL, reasoning model.",
+    "vec": "Vector engine (sqlite-vec), binary quantization, rerank pool size.",
+    "searxng": "SearXNG web search — URL, timeouts, and result count.",
+    "search": "Skill/task/memory search — top-k, similarity threshold, feedback boost.",
+    "session_memory": "Per-session transcript compaction, injection on resume, size limits.",
+    "context_bridge": "Capture AI tool calls into local DB for context enrichment and pattern learning.",
+    "skill_evolution": "Shadow-learn from Claude and evolve local skills over time.",
+    "digest": "Conversation digest, stale-topic detection, compact budget, and auto-eviction.",
+    "response_cache": "Semantic response cache — reuse answers for near-identical questions.",
+    "pattern": "Prompt-pattern tracking, auto-skill generation, task decomposition.",
+    "services": "Background services (Ollama, SearXNG, watcher, Haiku) and resource monitor.",
+    "profiles": "Named plugin sets — activate a profile to switch context quickly.",
     "vector": "Embedding store thresholds, index sizes, and vector-search knobs.",
-    "router": "Local-LLM router thresholds (haiku/ollama) and fallback rules.",
     "dashboard": "FastAPI webapp host, port, and feature toggles.",
     "embedding": "Ollama embedding model, dimension, batch size.",
     "chrome": "chrome-devtools MCP intent queue (URL targets, default action).",
@@ -41,8 +78,78 @@ _BUCKET_HELP = {
     "other": "Uncategorized keys.",
 }
 
+# Keys whose names don't share the prefix of their logical bucket.
+_BUCKET_OVERRIDES: dict[str, str] = {
+    # llm
+    "embed_model": "llm",
+    "reason_model": "llm",
+    "ollama_base": "llm",
+    # hook
+    "token_profiling": "hook",
+    # vec
+    "binary_quant_enabled": "vec",
+    "rerank_top_k": "vec",
+    # search
+    "feedback_boost_max": "search",
+    "teaching_min_similarity": "search",
+    # router (improve_prompt_* are router sub-features)
+    "improve_prompt_default_chain": "router",
+    "improve_prompt_skill_top_k": "router",
+    "improve_prompt_tasks_limit": "router",
+    # local
+    "remote_llm": "local",
+    # skill_evolution
+    "skill_sync_on_index": "skill_evolution",
+    # services
+    "monitor": "services",
+    # digest
+    "compact_max_input_chars": "digest",
+    "eviction_enabled": "digest",
+    "eviction_min_stale_count": "digest",
+    # pattern
+    "task_decomposition_enabled": "pattern",
+    "task_decomposition_min_len": "pattern",
+    # hook
+    "always_forward_to_claude": "hook",
+    # session_memory
+    "auto_memory_on_close_task": "session_memory",
+    "user_memory_enabled": "session_memory",
+    # skill_evolution
+    "implicit_feedback_enabled": "skill_evolution",
+    "learn_from_claude_sessions": "skill_evolution",
+    # router
+    "model_recommendation_enabled": "router",
+    # local
+    "offline_auto_fallback": "local",
+    "offline_check_interval": "local",
+    "plan_api_runner_enabled": "local",
+    "exhaustion_fallback": "local",
+    # profiles
+    "profile_auto_switch_enabled": "profiles",
+    "profile_auto_switch_window": "profiles",
+    "extra_skill_dirs": "profiles",
+    "extra_plugin_dirs": "profiles",
+    # services
+    "resource_gating_enabled": "services",
+    "resource_cache_ttl_seconds": "services",
+}
+
+# Nav group headers: maps the first bucket of each visual group to a label.
+_NAV_GROUPS: dict[str, str] = {
+    "auto_approve": "Automation",
+    "hook": "Hook & Router",
+    "local": "Execution",
+    "llm": "Models & Search",
+    "session_memory": "Session & Memory",
+    "services": "Config",
+    "vector": "Legacy / Plugins",
+    "other": "Misc",
+}
+
 
 def _bucket_for(key: str) -> str:
+    if key in _BUCKET_OVERRIDES:
+        return _BUCKET_OVERRIDES[key]
     for prefix, _ in _BUCKETS[:-1]:
         if key.startswith(prefix):
             return prefix
@@ -152,6 +259,7 @@ def settings_page(request: Request) -> Any:
             "groups": groups,
             "buckets": _BUCKETS,
             "bucket_help": _BUCKET_HELP,
+            "nav_groups": _NAV_GROUPS,
             "active_tab": "settings",
         },
     )
