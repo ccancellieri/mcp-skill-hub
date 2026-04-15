@@ -19,10 +19,17 @@ _BUCKETS = [
     ("adaptive_windows", "Adaptive windows"),
     ("prefix_bundles", "Prefix bundles"),
     ("task_type_bundles", "Task-type bundles"),
-    # ── Hook & router ─────────────────────────────────────────────────────────
-    ("hook", "Hook behavior"),
-    ("router", "Router"),
+    # ── Hook ─────────────────────────────────────────────────── more-specific first
+    ("hook_context", "Context injection"),   # hook_context_* RAG enrichment
+    ("hook_llm", "LLM triage"),         # hook_llm_* pre-triage
+    ("hook", "Hook behavior"),          # remaining hook_* core
+    # ── Router ────────────────────────────────────────────────────────────────
+    ("router_haiku", "Haiku router"),   # router_haiku_* — must precede "router"
+    ("router_bandit", "Router bandit"), # router_bandit_* — must precede "router"
+    ("improve_prompt", "Prompt rewriters"),  # improve_prompt_*
+    ("router", "Router core"),          # remaining router_*
     # ── Execution ─────────────────────────────────────────────────────────────
+    ("local_persona", "Local persona"), # local_persona_* — must precede "local"
     ("local", "Local execution"),
     # ── Models & search ───────────────────────────────────────────────────────
     ("llm", "LLM providers"),
@@ -55,9 +62,15 @@ _BUCKET_HELP = {
     "adaptive_windows": "Tiered time windows that relax/tighten auto-approve based on recent outcomes.",
     "prefix_bundles": "Command-prefix bundles granted as a group once any member is verdict-allowed.",
     "task_type_bundles": "Per-task-type bundles: e.g. editing tasks unlock read-only bash by default.",
-    "hook": "Hook behavior — timeouts, semantic thresholds, context injection, LLM triage.",
-    "router": "Local-LLM router thresholds (haiku/ollama), bandit, prompt rewriters, fallback rules.",
-    "local": "Local execution levels 1–4: whitelisted commands, templates, skill runner, full agent.",
+    "hook": "Core hook toggles — enabled/disabled, timeout, message-length guard, semantic threshold.",
+    "hook_context": "RAG context injection into systemMessage — skills, tasks, precompact budget.",
+    "hook_llm": "Local LLM pre-triage of every prompt before Claude — confidence gating and timeout.",
+    "router_haiku": "Haiku 4.5 batched escalation tasks — classify, compact-hint, subtask decomp.",
+    "router_bandit": "ε-greedy bandit over cheap/mid/smart tiers — exploration vs exploitation.",
+    "improve_prompt": "Prompt-rewriter chain — skill-context enrichment and recent-task injection.",
+    "router": "Router core — enable/disable, tier-2 Ollama gate, compact advisor, thin-prompt fill.",
+    "local_persona": "Local LLM identity — static bio seed, TTL, and max assembled persona length.",
+    "local": "Local execution levels 1–4: commands, templates, skill runner, agent, remote endpoint.",
     "llm": "LLM provider tiers (cheap/mid/smart/embed), Ollama base URL, reasoning model.",
     "vec": "Vector engine (sqlite-vec), binary quantization, rerank pool size.",
     "searxng": "SearXNG web search — URL, timeouts, and result count.",
@@ -84,24 +97,41 @@ _BUCKET_OVERRIDES: dict[str, str] = {
     "embed_model": "llm",
     "reason_model": "llm",
     "ollama_base": "llm",
-    # hook
+    # hook core
     "token_profiling": "hook",
+    "always_forward_to_claude": "hook",
+    # hook_context: keys that don't start with "hook_context"
+    "hook_precompact_threshold": "hook_context",
+    "hook_task_command_examples": "hook_context",
+    # improve_prompt: router_improve_prompt_enabled doesn't start with "improve_prompt"
+    "router_improve_prompt_enabled": "improve_prompt",
+    # router core: doesn't start with "router"
+    "model_recommendation_enabled": "router",
+    # local_persona: local_system_prompt doesn't start with "local_persona"
+    "local_system_prompt": "local_persona",
+    # local
+    "remote_llm": "local",
+    "offline_auto_fallback": "local",
+    "offline_check_interval": "local",
+    "plan_api_runner_enabled": "local",
+    "exhaustion_fallback": "local",
+    # llm
+    "embed_model": "llm",
+    "reason_model": "llm",
+    "ollama_base": "llm",
     # vec
     "binary_quant_enabled": "vec",
     "rerank_top_k": "vec",
     # search
     "feedback_boost_max": "search",
     "teaching_min_similarity": "search",
-    # router (improve_prompt_* are router sub-features)
-    "improve_prompt_default_chain": "router",
-    "improve_prompt_skill_top_k": "router",
-    "improve_prompt_tasks_limit": "router",
-    # local
-    "remote_llm": "local",
+    # session_memory
+    "auto_memory_on_close_task": "session_memory",
+    "user_memory_enabled": "session_memory",
     # skill_evolution
     "skill_sync_on_index": "skill_evolution",
-    # services
-    "monitor": "services",
+    "implicit_feedback_enabled": "skill_evolution",
+    "learn_from_claude_sessions": "skill_evolution",
     # digest
     "compact_max_input_chars": "digest",
     "eviction_enabled": "digest",
@@ -109,36 +139,23 @@ _BUCKET_OVERRIDES: dict[str, str] = {
     # pattern
     "task_decomposition_enabled": "pattern",
     "task_decomposition_min_len": "pattern",
-    # hook
-    "always_forward_to_claude": "hook",
-    # session_memory
-    "auto_memory_on_close_task": "session_memory",
-    "user_memory_enabled": "session_memory",
-    # skill_evolution
-    "implicit_feedback_enabled": "skill_evolution",
-    "learn_from_claude_sessions": "skill_evolution",
-    # router
-    "model_recommendation_enabled": "router",
-    # local
-    "offline_auto_fallback": "local",
-    "offline_check_interval": "local",
-    "plan_api_runner_enabled": "local",
-    "exhaustion_fallback": "local",
+    # services
+    "monitor": "services",
+    "resource_gating_enabled": "services",
+    "resource_cache_ttl_seconds": "services",
     # profiles
     "profile_auto_switch_enabled": "profiles",
     "profile_auto_switch_window": "profiles",
     "extra_skill_dirs": "profiles",
     "extra_plugin_dirs": "profiles",
-    # services
-    "resource_gating_enabled": "services",
-    "resource_cache_ttl_seconds": "services",
 }
 
 # Nav group headers: maps the first bucket of each visual group to a label.
 _NAV_GROUPS: dict[str, str] = {
     "auto_approve": "Automation",
-    "hook": "Hook & Router",
-    "local": "Execution",
+    "hook_context": "Hook",
+    "router_haiku": "Router",
+    "local_persona": "Execution",
     "llm": "Models & Search",
     "session_memory": "Session & Memory",
     "services": "Config",
