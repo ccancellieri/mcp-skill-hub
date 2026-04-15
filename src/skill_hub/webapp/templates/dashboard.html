@@ -150,27 +150,52 @@
 {# ── KPI strip ── #}
 <div class="db-kpi-row">
   <div class="db-kpi {% if m.net > 0 %}good{% elif m.net < 0 %}bad{% endif %}">
-    <div class="db-kpi-label">Net tokens saved</div>
+    <div class="db-kpi-label">
+      <span class="tooltip-wrapper">
+        <span>Net tokens saved</span>
+        <a class="tooltip-help" href="#" data-tooltip="Tokens saved via routing optimization minus the tokens spent running the skill hub system itself (LLM cost equivalent)." tabindex="0">?</a>
+      </span>
+    </div>
     <div class="db-kpi-value">{{ "{:+,}".format(m.net) }}</div>
     <div class="db-kpi-sub">{{ "{:,}".format(m.tokens_saved) }} saved − ~{{ "{:,}".format(m.llm_cost_eq) }} LLM cost</div>
   </div>
   <div class="db-kpi">
-    <div class="db-kpi-label">Tasks open</div>
+    <div class="db-kpi-label">
+      <span class="tooltip-wrapper">
+        <span>Tasks open</span>
+        <a class="tooltip-help" href="#" data-tooltip="Number of tasks created and not yet closed. Use tasks to track ongoing work across sessions." tabindex="0">?</a>
+      </span>
+    </div>
     <div class="db-kpi-value">{{ m.tasks_open }}</div>
     <div class="db-kpi-sub">{{ m.tasks_closed }} closed lifetime</div>
   </div>
   <div class="db-kpi accent">
-    <div class="db-kpi-label">Skills indexed</div>
+    <div class="db-kpi-label">
+      <span class="tooltip-wrapper">
+        <span>Skills indexed</span>
+        <a class="tooltip-help" href="#" data-tooltip="Total number of skills indexed for semantic search. Skills are discovered from enabled plugins and core repositories." tabindex="0">?</a>
+      </span>
+    </div>
     <div class="db-kpi-value">{{ "{:,}".format(m.skills) }}</div>
     <div class="db-kpi-sub">across plugins</div>
   </div>
   <div class="db-kpi">
-    <div class="db-kpi-label">Teachings</div>
+    <div class="db-kpi-label">
+      <span class="tooltip-wrapper">
+        <span>Teachings</span>
+        <a class="tooltip-help" href="#" data-tooltip="Explicit rules you've created with teach() to guide routing and plugin suggestions. Teachings persist across sessions." tabindex="0">?</a>
+      </span>
+    </div>
     <div class="db-kpi-value">{{ "{:,}".format(m.teachings) }}</div>
     <div class="db-kpi-sub">explicit rules</div>
   </div>
   <div class="db-kpi {% if m.helpful_pct >= 70 %}good{% elif m.helpful_pct < 40 and m.helpful + m.unhelpful > 0 %}warn{% endif %}">
-    <div class="db-kpi-label">Feedback helpful</div>
+    <div class="db-kpi-label">
+      <span class="tooltip-wrapper">
+        <span>Feedback helpful</span>
+        <a class="tooltip-help" href="#" data-tooltip="Percentage of skills you've rated as helpful via record_feedback(). High helpfulness indicates well-tuned skill routing." tabindex="0">?</a>
+      </span>
+    </div>
     <div class="db-kpi-value">{% if m.helpful + m.unhelpful %}{{ m.helpful_pct }}%{% else %}&mdash;{% endif %}</div>
     <div class="db-kpi-sub">{{ m.helpful }} up / {{ m.unhelpful }} down</div>
   </div>
@@ -188,7 +213,12 @@
 
   {# Open tasks #}
   <div class="db-card">
-    <h3 class="db-card-title">Recent open tasks</h3>
+    <h3 class="db-card-title">
+      <span class="tooltip-wrapper">
+        <span>Recent open tasks</span>
+        <a class="tooltip-help" href="#" data-tooltip="Tasks created with save_task() that haven't been closed yet. Click task IDs to view details, use close_task() to mark as done." tabindex="0">?</a>
+      </span>
+    </h3>
     {% if recent_tasks %}
       <div class="task-rows">
         {% for t in recent_tasks %}
@@ -207,7 +237,12 @@
 
   {# Auto-approve hook #}
   <div class="db-card">
-    <h3 class="db-card-title">Auto-approve hook</h3>
+    <h3 class="db-card-title">
+      <span class="tooltip-wrapper">
+        <span>Auto-approve hook</span>
+        <a class="tooltip-help" href="#" data-tooltip="Automatic tool approval system: allow = approved actions, deny = rejected actions, pass-through = forwarded to user, auto-proceed fires = automatic continue() calls, resume consumed = recovery markers used." tabindex="0">?</a>
+      </span>
+    </h3>
     <table class="db-table">
       <tr><td>allow</td><td>{{ "{:,}".format(m.approve) }}</td></tr>
       <tr><td>deny</td><td>{{ "{:,}".format(m.deny) }}</td></tr>
@@ -219,7 +254,12 @@
 
   {# Verdict cache #}
   <div class="db-card">
-    <h3 class="db-card-title">Verdict cache</h3>
+    <h3 class="db-card-title">
+      <span class="tooltip-wrapper">
+        <span>Verdict cache</span>
+        <a class="tooltip-help" href="#" data-tooltip="LLM verdict caching system: total verdicts = stored command approval/denial decisions, cache hits = decisions served from cache (avoiding LLM calls), LLM samples = actual LLM inferences performed." tabindex="0">?</a>
+      </span>
+    </h3>
     <table class="db-table">
       <tr><td>total verdicts</td><td>{{ "{:,}".format(m.verdict_total) }}</td></tr>
       <tr><td>cache hits</td><td>{{ "{:,}".format(m.verdict_hits) }}</td></tr>
@@ -229,7 +269,12 @@
 
   {# Live queues #}
   <div class="db-card">
-    <h3 class="db-card-title">Live queues</h3>
+    <h3 class="db-card-title">
+      <span class="tooltip-wrapper">
+        <span>Live queues</span>
+        <a class="tooltip-help" href="#" data-tooltip="Real-time hook state: intents pending = questions awaiting a verdict, questions open = user prompts awaiting a response, intercept errors = failures in tool interception logic." tabindex="0">?</a>
+      </span>
+    </h3>
     <table class="db-table">
       <tr>
         <td>intents pending</td>
@@ -251,7 +296,12 @@
   {# Top intercept types #}
   {% if intercept_types %}
   <div class="db-card">
-    <h3 class="db-card-title">Top intercept types</h3>
+    <h3 class="db-card-title">
+      <span class="tooltip-wrapper">
+        <span>Top intercept types</span>
+        <a class="tooltip-help" href="#" data-tooltip="Most frequently intercepted CLI commands by type. Shows which tool categories are most commonly used in your workflow." tabindex="0">?</a>
+      </span>
+    </h3>
     <table class="db-table">
       {% for r in intercept_types %}
         <tr>
@@ -267,7 +317,11 @@
   {% if router_stats and router_stats.total %}
   <div class="db-card">
     <h3 class="db-card-title">
-      Router <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px">view all →</a>
+      <span class="tooltip-wrapper">
+        <span>Router</span>
+        <a class="tooltip-help" href="#" data-tooltip="Model routing statistics: which LLM tier (haiku/sonnet/opus) handled each prompt, enrichment rate, plan mode activations, confidence scores." tabindex="0">?</a>
+      </span>
+      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px">view all →</a>
     </h3>
     <table class="db-table" style="margin-bottom:10px">
       <tr><td>prompts (window)</td><td>{{ router_stats.total }}</td></tr>
