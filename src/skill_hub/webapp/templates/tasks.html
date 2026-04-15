@@ -76,8 +76,9 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
         </div>
       </div>
       {% else %}
-      <div class="muted" style="padding:14px; text-align:center; font-size:12px">
-        no open tasks — <code>save_task</code> creates one.
+      <div style="padding:20px 14px; text-align:center">
+        <div style="font-size:11px; color:var(--color-muted)">no open tasks</div>
+        <button class="btn sm" onclick="openNewTask()" style="margin-top:8px; font-size:11px">+ new task</button>
       </div>
       {% endfor %}
     </div>
@@ -402,6 +403,15 @@ function tasksApp() {
       } else if (FIRST_OPEN_ID) {
         this.selectById(FIRST_OPEN_ID);
       }
+      // Keyboard shortcuts: n = new task, Escape = close ref picker
+      document.addEventListener('keydown', e => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+            || e.target.isContentEditable) return;
+        if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault(); openNewTask();
+        }
+        if (e.key === 'Escape') closeRefPicker();
+      });
     },
 
     selectById(id) {
