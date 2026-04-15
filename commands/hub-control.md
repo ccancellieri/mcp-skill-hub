@@ -21,7 +21,7 @@ Wait up to 5 seconds for the server to become healthy (poll `/healthz`).
 Then open the browser at the control panel:
 
 ```bash
-open http://127.0.0.1:8765/control
+open -a "Google Chrome" http://127.0.0.1:8765/control
 ```
 
 Tell the user:
