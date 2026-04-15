@@ -113,8 +113,14 @@ def collect_plugin_sections() -> list[dict]:
     ``get_sections() -> list[dict]`` function. Each section is a dict with
     ``id``, ``title``, ``order`` plus either:
       - ``html``: pre-rendered HTML string (marked safe in template), or
-      - ``template`` + ``context``: jinja template path (relative to plugin)
-        and a context dict.
+      - ``template`` + ``context``: jinja template path (relative to plugin's
+        ``web/templates/`` dir) and a context dict.
+
+    When ``template`` is set, this function renders it using a Jinja2
+    environment that includes both the plugin's own templates directory and
+    the shared macros directory (so ``{% from "_macros/kpi.html" import … %}``
+    works).  The rendered HTML is stored in ``html`` and ``template``/
+    ``context`` are removed before returning.
 
     Returns sections sorted by ``order`` (default 100). Failures per-plugin
     are logged and skipped; never crash the dashboard.
@@ -124,7 +130,12 @@ def collect_plugin_sections() -> list[dict]:
     import sys
     from pathlib import Path
 
+    from jinja2 import ChoiceLoader, Environment, FileSystemLoader
+
     log = logging.getLogger(__name__)
+    # Shared macros dir — lives alongside this file's templates parent
+    shared_templates = Path(__file__).parent.parent / "templates"
+
     sections: list[dict] = []
     try:
         from ...plugin_registry import iter_enabled_plugins
@@ -136,6 +147,7 @@ def collect_plugin_sections() -> list[dict]:
         if not ds_py.exists():
             continue
         mod_name = f"_skillhub_plugin_{p['path'].name}_dashboard_sections"
+        plugin_templates = Path(p["path"]) / "web" / "templates"
         try:
             spec = importlib.util.spec_from_file_location(mod_name, ds_py)
             if spec is None or spec.loader is None:
@@ -150,6 +162,27 @@ def collect_plugin_sections() -> list[dict]:
                 s = dict(sec)
                 s.setdefault("order", 100)
                 s.setdefault("plugin", p["name"])
+                # Render template-based sections using plugin's own Jinja2 env
+                # so shared macros (_macros/kpi.html etc.) resolve correctly.
+                if "template" in s and "html" not in s:
+                    tpl_name = s.pop("template")
+                    ctx = s.pop("context", {})
+                    try:
+                        loaders = [FileSystemLoader(str(plugin_templates))]
+                        if shared_templates.exists():
+                            loaders.append(FileSystemLoader(str(shared_templates)))
+                        env = Environment(
+                            loader=ChoiceLoader(loaders),
+                            autoescape=True,
+                        )
+                        tpl = env.get_template(tpl_name)
+                        s["html"] = tpl.render(**ctx)
+                    except Exception as render_exc:  # noqa: BLE001
+                        log.warning(
+                            "plugin %s template %s render failed: %s",
+                            p["name"], tpl_name, render_exc,
+                        )
+                        s["html"] = ""
                 sections.append(s)
         except Exception as exc:  # noqa: BLE001
             log.warning("plugin %s dashboard_sections failed: %s", p["name"], exc)
