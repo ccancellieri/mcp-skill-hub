@@ -336,6 +336,27 @@ def seed_auto_proceed_defaults():
         print("  auto_proceed settings already present.")
 
 
+def step_install_commands(step: int, total: int):
+    """Copy commands/*.md to ~/.claude/commands/ (idempotent)."""
+    print(f"[{step}/{total}] Installing slash commands...")
+    src_dir = SCRIPT_DIR / "commands"
+    if not src_dir.exists():
+        print("  No commands/ directory found — skipped.")
+        return
+    dst_dir = HOME / ".claude" / "commands"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    installed = 0
+    for src in sorted(src_dir.glob("*.md")):
+        dst = dst_dir / src.name
+        shutil.copy(src, dst)
+        print(f"  + {src.name}")
+        installed += 1
+    if installed:
+        print(f"  Installed {installed} command(s) to {dst_dir}")
+    else:
+        print("  No .md files found in commands/")
+
+
 def step_seed_allowlist(step: int, total: int):
     """Copy examples/skill-hub-allow.yml to ~/.claude/ if not present."""
     print(f"[{step}/{total}] Seeding global allow-list...")
@@ -728,7 +749,7 @@ def main():
         do_vps = "vps" in mode or bool(vps_url)
 
     # Calculate total steps
-    total = 4  # core steps always (package, ollama, mcp, hooks — seed adds one more inside main)
+    total = 5  # core steps always (package, ollama, mcp, seed, hooks, commands)
     if do_searxng:
         total += 1
     if do_vps:
@@ -744,6 +765,7 @@ def main():
     step_seed_allowlist(step, total); step += 1
     seed_auto_proceed_defaults()
     step_install_hooks(step, total); step += 1
+    step_install_commands(step, total); step += 1
 
     # Optional steps
     if do_searxng:

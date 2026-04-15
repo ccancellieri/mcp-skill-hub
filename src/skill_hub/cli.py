@@ -3332,6 +3332,24 @@ type: {mem_type}
         except Exception:
             pass
 
+    # 9b. Session memory compaction — background 6-section summary build.
+    # Non-blocking daemon thread; errors swallowed. Survives /compact because
+    # memory is persisted to ~/.claude/mcp-skill-hub/session-memory/<id>.md
+    # and re-injected by session_start_enforcer on resume.
+    if (session_id and transcript_path
+            and msg_count >= int(_cfg_mod.get("session_memory_min_messages") or 6)
+            and _cfg_mod.get("session_memory_enabled") is not False):
+        try:
+            from .router import session_memory as _sm
+
+            def _provider(_path: str = transcript_path) -> str:
+                return _sm.read_transcript_tail(_path)
+
+            outcome = _sm.schedule_build(session_id, _provider, incremental=True)
+            log_event("SESMEM", f"{outcome.reason}")
+        except Exception as exc:
+            log_event("SESMEM", f"error: {exc}")
+
     # 10. Log session stats with complexity breakdown
     try:
         store = SkillStore()

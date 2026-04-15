@@ -2235,6 +2235,76 @@ def analyze_router_log(
     return "\n".join(lines_out)
 
 
+# ---------------------------------------------------------------------------
+# Session memory (ported from cookbook session_memory_compaction.ipynb)
+
+@mcp.tool()
+def get_session_memory(session_id: str = "") -> str:
+    """Return the stored 6-section session memory for a session.
+
+    Empty ``session_id`` returns an index of all sessions that currently have
+    a memory file.  Use this when Claude feels lost ("where were we?") to
+    recover context that survives /compact.
+
+    Parallel-safe: pure read.
+    """
+    from .router import session_memory as _sm
+
+    if not session_id:
+        d = _sm.memory_dir()
+        if not d.is_dir():
+            return "No session memory stored yet."
+        files = sorted(d.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not files:
+            return "No session memory stored yet."
+        lines = ["# Stored session memories"]
+        for f in files[:20]:
+            lines.append(f"- {f.stem}  ({f.stat().st_size} bytes)")
+        return "\n".join(lines)
+
+    text = _sm.read_memory(session_id)
+    if not text:
+        return f"No session memory for {session_id}."
+    return text
+
+
+@mcp.tool()
+def rebuild_session_memory(
+    session_id: str,
+    transcript_path: str = "",
+) -> str:
+    """Synchronously rebuild session memory from a transcript file.
+
+    Normally the Stop hook schedules a background build; this tool is for
+    manual recovery when the background build failed or never ran. Returns
+    the first 500 characters of the new memory.
+
+    Parallel-safe: writes to ``session-memory/<session_id>.md`` (single
+    writer per session via per-session lock).
+    """
+    from .router import session_memory as _sm
+
+    if not session_id:
+        return "session_id is required."
+    if not transcript_path:
+        return (
+            "transcript_path is required. "
+            "Pass the JSONL path from ~/.claude/projects/.../conversations/."
+        )
+    transcript = _sm.read_transcript_tail(transcript_path)
+    if not transcript.strip():
+        return f"Transcript at {transcript_path} is empty or unreadable."
+    try:
+        memory = _sm.build_session_memory(transcript)
+    except Exception as exc:  # noqa: BLE001
+        return f"Build failed: {exc}"
+    if not memory:
+        return "Build produced an empty summary."
+    path = _sm.write_memory(session_id, memory)
+    preview = memory[:500]
+    return f"Saved {len(memory)} chars to {path}.\n\nPreview:\n{preview}"
+
+
 def main() -> None:
     import sys
     log_banner()
