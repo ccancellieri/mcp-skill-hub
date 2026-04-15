@@ -396,6 +396,27 @@ def task_model_stats(task_id: int, request: Request) -> JSONResponse:
     return JSONResponse(stats)
 
 
+@router.get("/tasks/{task_id}/stats/skills")
+def task_skills_stats(task_id: int, request: Request) -> JSONResponse:
+    """Return top skills used during this task's window (from router.jsonl)."""
+    store = request.app.state.store
+    task = store.get_task(task_id)
+    if not task:
+        return JSONResponse({"error": "task not found"}, status_code=404)
+    task_dict = dict(task)
+    session_id = task_dict.get("session_id") or ""
+    stats = _parse_router_log(
+        session_id=session_id,
+        created_at=task_dict.get("created_at"),
+        closed_at=task_dict.get("closed_at"),
+    )
+    return JSONResponse({
+        "top_skills": stats.get("top_skills", []),
+        "total_prompts": stats.get("total_prompts", 0),
+        "matched_by": stats.get("matched_by", "none"),
+    })
+
+
 @router.get("/tasks/{task_id}/stats/session")
 def task_session_stats(task_id: int, request: Request) -> JSONResponse:
     """Return session-level stats: message count, duration, log line count."""

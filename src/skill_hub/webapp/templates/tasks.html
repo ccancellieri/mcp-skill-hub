@@ -73,6 +73,12 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
         <div class="task-item-meta">
           {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
           <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
+          <div class="task-item-skills" style="font-size:10px; margin-top:4px"
+               x-data="{skills:[]}" x-init="fetch('/tasks/{{ t.id }}/stats/skills').then(r => r.json()).then(d => skills = d.top_skills || []).catch(() => skills=[])">
+            <template x-if="skills.length">
+              <span style="color:var(--color-accent); display:inline-block; margin-right:4px" x-text="skills.length + ' skill' + (skills.length !== 1 ? 's' : '')"></span>
+            </template>
+          </div>
         </div>
       </div>
       {% else %}
@@ -101,6 +107,12 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
         <div class="task-item-meta">
           {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
           <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
+          <div class="task-item-skills" style="font-size:10px; margin-top:4px"
+               x-data="{skills:[]}" x-init="fetch('/tasks/{{ t.id }}/stats/skills').then(r => r.json()).then(d => skills = d.top_skills || []).catch(() => skills=[])">
+            <template x-if="skills.length">
+              <span style="color:var(--color-accent); display:inline-block; margin-right:4px" x-text="skills.length + ' skill' + (skills.length !== 1 ? 's' : '')"></span>
+            </template>
+          </div>
         </div>
       </div>
       {% else %}
@@ -157,7 +169,7 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
           </div>
         </div>
 
-        {# Body: stats + meta + logs (3-row grid) #}
+        {# Body: stats + meta + logs (flex column) #}
         <div class="task-detail-body">
 
           {# Stats section #}
@@ -175,28 +187,10 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
               <span class="stat-label">Created</span>
               <span class="stat-value" x-text="(selectedTask.created_at || '—').slice(0,10)" style="font-size:11px"></span>
             </div>
-            <template x-if="sessionStats.updated_at">
-              <div class="stat-box">
-                <span class="stat-label">Updated</span>
-                <span class="stat-value" x-text="(sessionStats.updated_at||'').slice(0,10)" style="font-size:11px"></span>
-              </div>
-            </template>
             <template x-if="sessionStats.duration_hours !== null">
               <div class="stat-box">
                 <span class="stat-label">Duration</span>
                 <span class="stat-value" x-text="fmtDuration(sessionStats.duration_hours)" title="Time from creation to close"></span>
-              </div>
-            </template>
-            <template x-if="sessionStats.message_count !== null">
-              <div class="stat-box">
-                <span class="stat-label">Messages</span>
-                <span class="stat-value" x-text="sessionStats.message_count"></span>
-              </div>
-            </template>
-            <template x-if="sessionStats.log_count > 0">
-              <div class="stat-box">
-                <span class="stat-label">Log lines</span>
-                <span class="stat-value" x-text="sessionStats.log_count"></span>
               </div>
             </template>
             <template x-if="modelStats.total_prompts > 0">
@@ -205,17 +199,30 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
                 <span class="stat-value" x-text="modelStats.total_prompts"></span>
               </div>
             </template>
+            <template x-if="modelStats.tokens_saved > 0">
+              <div class="stat-box">
+                <span class="stat-label">Tokens saved</span>
+                <span class="stat-value" x-text="fmtTokens(modelStats.tokens_saved)"
+                      title="Estimated tokens saved by context compression"></span>
+              </div>
+            </template>
+            <template x-if="modelStats.compact_count > 0">
+              <div class="stat-box">
+                <span class="stat-label">Compacts</span>
+                <span class="stat-value" x-text="modelStats.compact_count + '×'"
+                      title="Number of context compaction suggestions"></span>
+              </div>
+            </template>
             <template x-if="modelStats.plan_mode_count > 0">
               <div class="stat-box">
                 <span class="stat-label">Plan mode</span>
                 <span class="stat-value" x-text="modelStats.plan_mode_count + '×'" title="Prompts that triggered plan mode"></span>
               </div>
             </template>
-            <template x-if="selectedTask.session_id">
+            <template x-if="sessionStats.log_count > 0">
               <div class="stat-box">
-                <span class="stat-label">Session</span>
-                <span class="stat-value" x-text="(selectedTask.session_id||'').slice(0,8)"
-                      :title="selectedTask.session_id" style="font-family:monospace;font-size:10px"></span>
+                <span class="stat-label">Log lines</span>
+                <span class="stat-value" x-text="sessionStats.log_count"></span>
               </div>
             </template>
           </div>
@@ -223,7 +230,12 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
           {# Model routing section #}
           <template x-if="modelStats.models && modelStats.models.length > 0">
             <div style="padding: 10px 18px 12px; border-bottom: 1px solid var(--color-border)">
-              <div class="task-detail-section-label" style="margin-bottom: 8px">Router · model distribution</div>
+              <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom: 8px">
+                <span class="task-detail-section-label">Router · model distribution</span>
+                <span style="font-size:10px; color:var(--color-muted)"
+                      x-text="'~$' + estCost(modelStats.models).toFixed(3)"
+                      title="Rough cost estimate: haiku $0.003, sonnet $0.010, opus $0.050 per prompt"></span>
+              </div>
               <div style="display: flex; flex-direction: column; gap: 8px">
                 <template x-for="model in modelStats.models" :key="model.name">
                   <div style="display: flex; flex-direction: column; gap: 3px">
@@ -235,7 +247,7 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
                     </div>
                     <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden">
                       <div style="height: 100%; border-radius: 2px; transition: width 0.4s ease"
-                           :style="{width: model.percentage + '%', background: model.name==='opus' ? 'var(--color-accent)' : model.name==='haiku' ? 'var(--color-muted)' : 'var(--color-good)'}"></div>
+                           :style="{width: model.percentage + '%', background: model.name==='opus' ? 'var(--color-accent)' : model.name==='haiku' ? '#6b7280' : 'var(--color-good)'}"></div>
                     </div>
                   </div>
                 </template>
@@ -450,6 +462,20 @@ function tasksApp() {
       if (h < 1) return Math.round(h * 60) + 'm';
       if (h < 24) return h.toFixed(1) + 'h';
       return (h / 24).toFixed(1) + 'd';
+    },
+
+    fmtTokens(n) {
+      if (!n) return '0';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+      return String(n);
+    },
+
+    estCost(models) {
+      const rates = {opus: 0.050, sonnet: 0.010, haiku: 0.003};
+      return (models || []).reduce((sum, m) => {
+        const key = Object.keys(rates).find(k => m.name.includes(k)) || 'sonnet';
+        return sum + m.count * rates[key];
+      }, 0);
     },
 
     async refreshLogs() {
