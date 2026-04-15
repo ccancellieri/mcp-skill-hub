@@ -1,0 +1,36 @@
+# Example plan used for the end-to-end smoke test.
+# This targets a hypothetical repo; paths are illustrative only.
+# Run: skill-hub-cli via the validate_plan MCP tool, or:
+#   python -c "from skill_hub.plan_executor import validate_plan_file; \
+#              validate_plan_file('examples/plans/hello_plan.yaml', check_files=False)"
+plan_id: hello-plan
+goal: "Add a greet() helper and its unit test"
+
+invariants:
+  - "Must not touch anything outside src/hello/ and tests/hello/"
+  - "No AI attribution strings in code or commits"
+
+steps:
+  - id: T1
+    kind: architecture
+    files: [src/hello/protocols.py]
+    acceptance: "pyright src/hello/protocols.py"
+
+  - id: T2
+    kind: integration
+    files: [src/hello/greet.py]
+    pattern_ref: [src/hello/protocols.py]
+    acceptance: "pytest -x tests/hello/test_greet.py"
+    depends_on: [T1]
+
+  - id: T3
+    kind: tests
+    files: [tests/hello/test_greet.py]
+    acceptance: "pytest -x tests/hello/test_greet.py"
+    depends_on: [T2]
+
+  - id: T4
+    kind: docs
+    files: [docs/hello.md]
+    acceptance: "test -f docs/hello.md"
+    depends_on: [T2]
