@@ -27,17 +27,21 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
     </div>
 
     <div class="tasks-search-bar">
-      <input type="text" x-model="q" placeholder="search…"
-             hx-get="/tasks/search" hx-trigger="keyup changed delay:300ms"
+      <input type="text" x-model="q" placeholder="search tasks…"
+             hx-get="/tasks/search" hx-trigger="keyup changed delay:300ms" hx-debounce="300ms"
              hx-target="#task-search-results" hx-swap="innerHTML"
              hx-include="[name=mode]" name="q"
-             style="width:100%">
-      <div style="display:flex; gap:6px; margin-top:6px; font-size:11px; color:var(--muted)">
-        <label style="margin:0; color:var(--muted)"><input type="radio" name="mode" value="text" x-model="mode" checked> text</label>
-        <label style="margin:0; color:var(--muted)">
+             @change="if(!q) clearSearch()">
+      <div style="display:flex; gap:8px; margin-top:8px; font-size:10px">
+        <label style="margin:0; display:flex; align-items:center; gap:4px; cursor:pointer">
+          <input type="radio" name="mode" value="text" x-model="mode" checked>
+          <span style="color:var(--muted)">text</span>
+        </label>
+        <label style="margin:0; display:flex; align-items:center; gap:4px; cursor:pointer" :style="{opacity: embed_ok ? 1 : 0.4}">
           <input type="radio" name="mode" value="semantic" x-model="mode"
                  {% if not embed_ok %}disabled{% endif %}>
-          semantic{% if not embed_ok %} <span title="Ollama offline">(offline)</span>{% endif %}
+          <span style="color:var(--muted)">semantic</span>
+          {% if not embed_ok %}<span style="font-size:9px; color:var(--color-bad)" title="Ollama offline">●</span>{% endif %}
         </label>
       </div>
     </div>
@@ -125,63 +129,93 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
                  :value="selectedTask.title || ''"
                  @keydown.enter.prevent="renameTask($event.target.value)"
                  @blur="renameTask($event.target.value)"
-                 :title="'id: ' + selectedId">
+                 :title="'id: ' + selectedId + ' | click to edit'">
           <div class="task-detail-actions">
             <template x-if="filter==='open'">
               <span style="display:contents">
-                <button class="btn sm" @click="openEdit()">edit</button>
-                <button class="btn sm danger" @click="openClose()">close</button>
-                <button class="btn sm" @click="openTeach()">teach</button>
+                <button class="btn sm" @click="openEdit()" title="Edit summary and tags">edit</button>
+                <button class="btn sm danger" @click="openClose()" title="Mark as completed">close</button>
+                <button class="btn sm" @click="openTeach()" title="Create learning rule">teach</button>
               </span>
             </template>
             <template x-if="filter==='closed'">
               <span style="display:contents">
                 <button class="btn sm"
-                        @click="fetch('/tasks/'+selectedId+'/reopen',{method:'POST'}).then(()=>location.reload())">
+                        @click="fetch('/tasks/'+selectedId+'/reopen',{method:'POST'}).then(()=>location.reload())"
+                        title="Reopen for editing">
                   reopen
                 </button>
               </span>
             </template>
-            <button class="btn sm"
-                    @click="if(confirm('Delete task #'+selectedId+'?')) fetch('/tasks/'+selectedId+'/delete',{method:'POST'}).then(()=>location.reload())">
+            <button class="btn sm danger"
+                    @click="if(confirm('Delete task #'+selectedId+'?')) fetch('/tasks/'+selectedId+'/delete',{method:'POST'}).then(()=>location.reload())"
+                    title="Permanently delete task">
               delete
             </button>
           </div>
         </div>
 
-        {# Body: summary/context + logs #}
+        {# Body: stats + meta + logs (3-row grid) #}
         <div class="task-detail-body">
 
-          <template x-if="selectedTask.summary || selectedTask.context">
-            <div class="task-detail-section">
-              <div class="task-detail-section-label">Summary</div>
-              <pre class="task-detail-pre" x-text="selectedTask.summary || selectedTask.context"></pre>
+          {# Stats section #}
+          <div class="task-detail-stats">
+            <div class="stat-box">
+              <span class="stat-label">ID</span>
+              <span class="stat-value" x-text="'#' + selectedId"></span>
             </div>
-          </template>
-
-          <div class="task-detail-meta">
-            <span class="muted">created: <span x-text="selectedTask.created_at || ''"></span></span>
+            <div class="stat-box">
+              <span class="stat-label">Status</span>
+              <span class="stat-value" x-text="filter==='open' ? '🟢 Open' : '⭕ Closed'" style="color: var(--color-good)"></span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Created</span>
+              <span class="stat-value" x-text="(selectedTask.created_at || '—').slice(0,10)" style="font-size:12px"></span>
+            </div>
             <template x-if="selectedTask.session_id">
-              <span class="muted">session: <span x-text="(selectedTask.session_id||'').slice(0,8)"></span></span>
-            </template>
-            <template x-if="selectedTask.tags">
-              <span class="muted">tags: <span x-text="selectedTask.tags"></span></span>
+              <div class="stat-box">
+                <span class="stat-label">Session</span>
+                <span class="stat-value" x-text="(selectedTask.session_id||'').slice(0,8)" title="Session ID"></span>
+              </div>
             </template>
           </div>
 
-          {# Logs section #}
-          <div class="task-detail-section" style="flex:1; display:flex; flex-direction:column; min-height:0">
-            <div class="task-detail-section-label" style="display:flex; align-items:center; gap:8px">
-              Logs
-              <button class="btn sm" @click="refreshLogs()">refresh</button>
-              <button class="btn sm" :class="liveLog ? 'on' : ''" @click="toggleLive()"
-                      x-text="liveLog ? 'live: on' : 'live: off'"></button>
-              <button class="btn sm" @click="copyLogs()">copy</button>
-              <a class="btn sm" href="/logs/download?source=hook-debug&lines=5000"
-                 target="_blank" rel="noopener">download</a>
+          {# Summary/Context section #}
+          <template x-if="selectedTask.summary || selectedTask.context">
+            <div class="task-detail-section" style="padding: 14px 18px 0; border-bottom: 1px solid var(--color-border)">
+              <div class="task-detail-section-label">Summary</div>
+              <pre class="task-detail-pre" x-text="selectedTask.summary || selectedTask.context"></pre>
+              <template x-if="selectedTask.tags">
+                <div class="task-detail-meta" style="border:0; padding:6px 0 0 0">
+                  <strong style="color:var(--color-muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em">Tags</strong>
+                  <span style="flex:1"></span>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap">
+                  <template x-for="tag in (selectedTask.tags||'').split(',')" :key="tag">
+                    <span class="task-tag" x-text="tag.trim()"></span>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          {# Logs section — full-height #}
+          <div class="task-log-section">
+            <div class="task-log-header">
+              <span>Logs</span>
+              <div class="task-log-toggle">
+                <span class="live-indicator" :class="{active: liveLog}"></span>
+                <button class="btn sm" @click="refreshLogs()" title="Reload logs">refresh</button>
+                <button class="btn sm" :class="liveLog ? 'on' : ''" @click="toggleLive()"
+                        x-text="liveLog ? 'live: on' : 'live: off'" title="Enable/disable live updates"></button>
+                <button class="btn sm" @click="copyLogs()" title="Copy all logs to clipboard">copy</button>
+                <a class="btn sm" href="/logs/download?source=hook-debug&lines=5000"
+                   target="_blank" rel="noopener" title="Download full logs">download</a>
+              </div>
             </div>
             <pre class="task-log-view" x-ref="logView"
-                 x-text="logLines.length ? logLines.join('\n') : '(no tagged log entries yet)'"></pre>
+                 x-text="logLines.length ? logLines.join('\n') : '(no tagged log entries yet)'"
+                 @scroll="onLogScroll()"></pre>
           </div>
 
         </div>{# /task-detail-body #}
@@ -242,6 +276,7 @@ function tasksApp() {
     selected: [],
     logLines: [],
     liveLog: false,
+    autoScroll: true,
     _ws: null,
 
     init() {
@@ -255,6 +290,7 @@ function tasksApp() {
       this.selectedId = id;
       this.selectedTask = task;
       this.logLines = [];
+      this.autoScroll = true;
       this.refreshLogs();
     },
 
@@ -267,6 +303,13 @@ function tasksApp() {
       this.$nextTick(() => { const el = this.$refs.logView; if (el) el.scrollTop = el.scrollHeight; });
     },
 
+    onLogScroll() {
+      const el = this.$refs.logView;
+      if (!el) return;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+      this.autoScroll = atBottom;
+    },
+
     toggleLive() {
       if (this.liveLog) { this._stopLive(); return; }
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -276,7 +319,10 @@ function tasksApp() {
           const d = JSON.parse(e.data);
           this.logLines.push(`[${d.ts}] ${d.text}`);
           if (this.logLines.length > 500) this.logLines.shift();
-          this.$nextTick(() => { const el = this.$refs.logView; if (el) el.scrollTop = el.scrollHeight; });
+          this.$nextTick(() => {
+            const el = this.$refs.logView;
+            if (el && this.autoScroll) el.scrollTop = el.scrollHeight;
+          });
         } catch(_) {}
       };
       this._ws.onclose = () => { this.liveLog = false; this._ws = null; };
@@ -289,7 +335,14 @@ function tasksApp() {
     },
 
     copyLogs() {
-      if (navigator.clipboard) navigator.clipboard.writeText(this.logLines.join('\n'));
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(this.logLines.join('\n'));
+        // Visual feedback
+        const btn = event.target;
+        const origText = btn.textContent;
+        btn.textContent = 'copied ✓';
+        setTimeout(() => { btn.textContent = origText; }, 1200);
+      }
     },
 
     renameTask(title) {
@@ -334,6 +387,12 @@ function tasksApp() {
         body: JSON.stringify({ids: this.selected})
       });
       if (r.ok) location.reload();
+    },
+
+    clearSearch() {
+      this.q = '';
+      const el = document.getElementById('task-search-results');
+      if (el) el.textContent = '';
     },
   };
 }
