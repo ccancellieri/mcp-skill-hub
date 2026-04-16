@@ -14,6 +14,7 @@ tasks        — saved/closed conversation digests for cross-session context
 import json
 import logging
 import math
+import re
 import sqlite3
 import struct
 from dataclasses import dataclass
@@ -128,7 +129,9 @@ class SkillStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
+        result = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        if result and result[0].lower() != "wal":
+            _log.warning("WAL mode unavailable (filesystem may not support it); using %s", result[0])
         # Load sqlite-vec extension if available; falls back to legacy path.
         self._vec_engine: str = "legacy"
         if sqlite_vec is not None:
@@ -1695,7 +1698,6 @@ class SkillStore:
         Boolean operators (AND, OR, NOT) are also stripped so SQLite FTS5 does
         not interpret them as query syntax.
         """
-        import re
         # Remove characters that are FTS5 operators or cause parse errors
         cleaned = re.sub(r'["\*\(\)\-\^]', ' ', query)
         # Strip FTS5 boolean operators so they are not interpreted as syntax
