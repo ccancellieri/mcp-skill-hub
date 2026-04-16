@@ -133,3 +133,24 @@ def tail_file_sync(path: Path, max_lines: int) -> list[str]:
         for line in f:
             buf.append(line)
     return list(buf)
+
+
+def grep_file_sync(
+    path: Path,
+    predicate: Callable[[str], bool],
+    max_results: int = 500,
+) -> list[str]:
+    """Return up to ``max_results`` lines from ``path`` that satisfy ``predicate``.
+
+    Unlike ``tail_file_sync`` this scans the FULL file, so it can find log
+    entries for tasks that are older than the rolling tail window.
+    """
+    if not path.exists():
+        return []
+    out: list[str] = []
+    with path.open("r", errors="replace") as f:
+        for line in f:
+            if predicate(line):
+                out.append(line)
+    # Return last max_results matching lines (most-recent-first in reverse is conventional)
+    return out[-max_results:]

@@ -37,9 +37,8 @@ def _filtered_tail(task_id: int, max_lines: int = 200) -> list[str]:
     pred = _predicate_for(task_id)
     out: list[str] = []
     for path in (log_tail.HOOK_LOG, log_tail.ACTIVITY_LOG):
-        for ln in log_tail.tail_file_sync(path, 5000):
-            if pred(ln):
-                out.append(ln.rstrip("\n"))
+        for ln in log_tail.grep_file_sync(path, pred, max_results=max_lines * 3):
+            out.append(ln.rstrip("\n"))
     return out[-max_lines:]
 
 
