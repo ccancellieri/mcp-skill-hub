@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import asyncio
+
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 _ACTIVE_TASK_MARKER = (
@@ -84,6 +86,39 @@ def api_tasks_activity(request: Request, status: str | None = None) -> JSONRespo
     store = request.app.state.store
     rows = store.list_tasks_with_activity(status=status, limit=100)
     return JSONResponse(rows)
+
+
+@router.get("/api/tasks/activity/stream")
+async def api_tasks_activity_stream(request: Request) -> StreamingResponse:
+    """SSE stream that pushes task activity state updates every 5 seconds."""
+    store = request.app.state.store
+
+    async def event_generator():
+        from skill_hub.store import compute_activity_state
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                tasks = store.list_tasks(status="open")
+                data = [
+                    {
+                        "id": t["id"],
+                        "state": compute_activity_state(
+                            t.get("last_activity_at"), t.get("status", "open")
+                        ),
+                    }
+                    for t in tasks
+                ]
+            except Exception:
+                data = []
+            yield f"data: {json.dumps(data)}\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/tasks", response_class=HTMLResponse)

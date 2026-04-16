@@ -124,6 +124,38 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
 
+def compute_activity_state(last_activity_at: str | None, status: str) -> str:
+    """Compute activity state: active|idle|open|closed.
+
+    Module-level helper so it can be imported and unit-tested independently
+    of SkillStore.  Thresholds are read from config at call time.
+    """
+    if status == "closed":
+        return "closed"
+    if not last_activity_at:
+        return "open"
+    import datetime
+    try:
+        last = datetime.datetime.fromisoformat(
+            last_activity_at.replace("Z", "+00:00")
+        )
+        # SQLite datetime('now') stores UTC without tzinfo — normalise.
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        age_seconds = (now - last).total_seconds()
+    except Exception:
+        return "open"
+    from . import config as _cfg
+    active_threshold = int(_cfg.get("task_activity_active_seconds") or 60)
+    idle_threshold = int(_cfg.get("task_activity_idle_seconds") or 3600)
+    if age_seconds <= active_threshold:
+        return "active"
+    if age_seconds <= idle_threshold:
+        return "idle"
+    return "open"
+
+
 class SkillStore:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -583,6 +615,46 @@ class SkillStore:
                 token_cost_usd   REAL,
                 created_at       TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Phase B.10: Experimentation framework — named pipeline presets.
+            CREATE TABLE IF NOT EXISTS pipeline_presets (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                description TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                is_builtin  INTEGER DEFAULT 0,
+                created_at  TEXT DEFAULT (datetime('now')),
+                updated_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Phase B.10: A/B experiment definitions.
+            CREATE TABLE IF NOT EXISTS experiments (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT NOT NULL,
+                preset_a_id    INTEGER,
+                preset_b_id    INTEGER,
+                target_runs    INTEGER DEFAULT 10,
+                completed_runs INTEGER DEFAULT 0,
+                status         TEXT DEFAULT 'active',
+                notes          TEXT,
+                started_at     TEXT DEFAULT (datetime('now')),
+                ended_at       TEXT,
+                FOREIGN KEY (preset_a_id) REFERENCES pipeline_presets(id),
+                FOREIGN KEY (preset_b_id) REFERENCES pipeline_presets(id)
+            );
+
+            -- Phase B.10: Individual runs belonging to an experiment.
+            CREATE TABLE IF NOT EXISTS experiment_runs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id       INTEGER NOT NULL,
+                session_id          TEXT,
+                preset_tag          TEXT CHECK(preset_tag IN ('A','B')),
+                tier_durations_json TEXT,
+                token_cost_usd      REAL,
+                user_rating         INTEGER,
+                ran_at              TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id)
+            );
         """)
         self._conn.commit()
 
@@ -781,6 +853,9 @@ class SkillStore:
         # Seed built-in cron jobs (idempotent — ON CONFLICT DO UPDATE).
         self._seed_builtin_cron_jobs()
 
+        # Phase B.10 — seed built-in pipeline presets (idempotent).
+        self._seed_builtin_presets()
+
         # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
         self._rebuild_fts_index(self._conn)
 
@@ -797,6 +872,197 @@ class SkillStore:
             conn.commit()
         except sqlite3.OperationalError as exc:
             _log.warning("FTS5 rebuild failed (FTS5 may be unavailable): %s", exc)
+
+    def _seed_builtin_presets(self) -> None:
+        """Seed built-in pipeline presets (skip if already exist)."""
+        presets = [
+            {
+                "name": "fast-local",
+                "description": "All Ollama, fastest on a warm local machine",
+                "config_json": {
+                    "classify_backend": "ollama_qwen",
+                    "embedding_backend_priority": ["ollama", "voyage", "sentence_transformers"],
+                    "synthesis_backend": "ollama",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 300,
+                    "pipeline_tier2_timeout_ms": 200,
+                    "pipeline_tier3_timeout_ms": 600,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "cheap-cloud",
+                "description": "Haiku + Voyage, no Ollama needed (~$0.005/conv)",
+                "config_json": {
+                    "classify_backend": "haiku_json_then_yake",
+                    "embedding_backend_priority": ["voyage", "sentence_transformers"],
+                    "synthesis_backend": "haiku",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 500,
+                    "pipeline_tier2_timeout_ms": 400,
+                    "pipeline_tier3_timeout_ms": 1200,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "quality-cloud",
+                "description": "Sonnet everywhere (~$0.02/conv)",
+                "config_json": {
+                    "classify_backend": "haiku_json",
+                    "embedding_backend_priority": ["voyage"],
+                    "synthesis_backend": "sonnet",
+                    "rewrite_backend": "sonnet",
+                    "pipeline_tier1_timeout_ms": 1000,
+                    "pipeline_tier2_timeout_ms": 800,
+                    "pipeline_tier3_timeout_ms": 3000,
+                    "pipeline_tier4_timeout_ms": 3000,
+                    "pipeline_tier4_min_complexity": "low",
+                },
+            },
+            {
+                "name": "offline-only",
+                "description": "YAKE + FTS5 + SentenceTransformers, zero API cost",
+                "config_json": {
+                    "classify_backend": "yake_keywords",
+                    "embedding_backend_priority": ["sentence_transformers"],
+                    "synthesis_backend": "concat",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 100,
+                    "pipeline_tier2_timeout_ms": 200,
+                    "pipeline_tier3_timeout_ms": 0,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "balanced",
+                "description": "Haiku L1+L3, Voyage L2, Sonnet L4 only when complex — recommended default",
+                "config_json": {
+                    "classify_backend": "haiku_json_then_yake",
+                    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+                    "synthesis_backend": "haiku",
+                    "rewrite_backend": "sonnet",
+                    "pipeline_tier1_timeout_ms": 500,
+                    "pipeline_tier2_timeout_ms": 400,
+                    "pipeline_tier3_timeout_ms": 1200,
+                    "pipeline_tier4_timeout_ms": 1500,
+                    "pipeline_tier4_min_complexity": "medium",
+                },
+            },
+        ]
+        for p in presets:
+            try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO pipeline_presets (name, description, config_json, is_builtin) "
+                    "VALUES (?, ?, ?, 1)",
+                    (p["name"], p["description"], json.dumps(p["config_json"])),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Experiments: preset CRUD + A/B runner
+
+    def list_presets(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, name, description, config_json, is_builtin, created_at "
+            "FROM pipeline_presets ORDER BY is_builtin DESC, name"
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["config"] = json.loads(d.pop("config_json") or "{}")
+            except Exception:  # noqa: BLE001
+                d["config"] = {}
+            result.append(d)
+        return result
+
+    def get_preset(self, preset_id: int) -> dict | None:
+        r = self._conn.execute(
+            "SELECT * FROM pipeline_presets WHERE id = ?", (preset_id,)
+        ).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            d["config"] = json.loads(d.pop("config_json") or "{}")
+        except Exception:  # noqa: BLE001
+            d["config"] = {}
+        return d
+
+    def save_preset(self, name: str, description: str, config: dict) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO pipeline_presets (name, description, config_json) VALUES (?, ?, ?)",
+            (name, description, json.dumps(config)),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def delete_preset(self, preset_id: int) -> bool:
+        """Delete a non-builtin preset. Returns True if deleted."""
+        cur = self._conn.execute(
+            "DELETE FROM pipeline_presets WHERE id = ? AND is_builtin = 0", (preset_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_experiments(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT e.*, pa.name AS preset_a_name, pb.name AS preset_b_name "
+            "FROM experiments e "
+            "LEFT JOIN pipeline_presets pa ON e.preset_a_id = pa.id "
+            "LEFT JOIN pipeline_presets pb ON e.preset_b_id = pb.id "
+            "ORDER BY e.started_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_experiment(
+        self,
+        name: str,
+        preset_a_id: int,
+        preset_b_id: int,
+        target_runs: int = 10,
+        notes: str = "",
+    ) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO experiments (name, preset_a_id, preset_b_id, target_runs, notes) "
+            "VALUES (?,?,?,?,?)",
+            (name, preset_a_id, preset_b_id, target_runs, notes),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def get_experiment_stats(self, experiment_id: int) -> dict:
+        """Return A/B comparison stats for an experiment."""
+        rows = self._conn.execute(
+            "SELECT preset_tag, tier_durations_json, token_cost_usd, user_rating "
+            "FROM experiment_runs WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchall()
+        stats: dict = {
+            "A": {"runs": 0, "avg_cost": None, "ratings": []},
+            "B": {"runs": 0, "avg_cost": None, "ratings": []},
+        }
+        for r in rows:
+            tag = r["preset_tag"] or "A"
+            if tag not in stats:
+                continue
+            stats[tag]["runs"] += 1
+            cost = r["token_cost_usd"]
+            if cost is not None:
+                stats[tag].setdefault("_costs", []).append(cost)
+            rating = r["user_rating"]
+            if rating is not None:
+                stats[tag]["ratings"].append(rating)
+        for tag in ("A", "B"):
+            costs = stats[tag].pop("_costs", [])
+            if costs:
+                stats[tag]["avg_cost"] = round(sum(costs) / len(costs), 6)
+            ratings = stats[tag]["ratings"]
+            if ratings:
+                stats[tag]["avg_rating"] = round(sum(ratings) / len(ratings), 2)
+        return stats
 
     # ------------------------------------------------------------------
     # Write
