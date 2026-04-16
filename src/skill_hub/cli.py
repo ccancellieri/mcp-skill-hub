@@ -19,7 +19,7 @@ from .activity_log import (
     _human_size, llm_timer,
 )
 from .embeddings import (
-    embed, compact, ollama_available, optimize_context, triage_message,
+    embed, compact, ollama_available, embed_available, optimize_context, triage_message,
     dynamic_context_eval, eval_skill_lifecycle, optimize_prompt, smart_memory_write,
     verify_cache_hit, decompose_task, extract_error_pattern, generate_auto_skill,
     EMBED_MODEL, RERANK_MODEL, OLLAMA_BASE,
@@ -448,7 +448,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
     log_step(f"executing: {action}")
 
     if action == "save_task":
-        if not ollama_available(EMBED_MODEL):
+        if not embed_available():
             return None
         title = intent.get("title") or "Untitled task"
         summary = intent.get("summary") or original_message
@@ -507,7 +507,7 @@ def _execute_intent(intent: dict, original_message: str) -> str | None:
 
     elif action == "search_context":
         query = intent.get("summary") or original_message
-        if not ollama_available(EMBED_MODEL):
+        if not embed_available():
             store.close()
             return None
         vector = embed(query)
@@ -1764,7 +1764,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     # Stage 4.1: SearXNG web RAG fallback — only when skill search returned nothing
     if not parts:
         from . import config as _cfg_inner
-        if _cfg_inner.is_service_enabled("searxng") and ollama_available(EMBED_MODEL):
+        if _cfg_inner.is_service_enabled("searxng") and embed_available():
             try:
                 from .searxng import searxng_context
                 web_ctx = searxng_context(message[:300])
@@ -2667,7 +2667,7 @@ def _exhaustion_auto_save(context: str) -> str:
 
         # Save as task
         store = SkillStore()
-        vector = embed(f"{title}: {summary}") if ollama_available(EMBED_MODEL) else []
+        vector = embed(f"{title}: {summary}") if embed_available() else []
         full_context = json.dumps({
             "decisions": digest.get("decisions", []),
             "next_steps": next_steps,
@@ -2708,7 +2708,7 @@ def _exhaustion_auto_save(context: str) -> str:
         # Even if LLM fails, do a raw save
         try:
             store = SkillStore()
-            vector = embed(context[:200]) if ollama_available(EMBED_MODEL) else []
+            vector = embed(context[:200]) if embed_available() else []
             tid = store.save_task(
                 title="Session interrupted (raw save)",
                 summary=context[:1000],
@@ -3198,7 +3198,7 @@ type: {mem_type}
             )
 
     # 3. Cache the last Q→A pair and extract error patterns
-    if session_id and last_message and context_pieces and ollama_available(EMBED_MODEL):
+    if session_id and last_message and context_pieces and embed_available():
         try:
             _recent = ctx.get("recent_messages", []) if session_id else []
             last_query = _recent[-1] if _recent else ""
@@ -3731,7 +3731,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     # ── Stage 0.5: Response cache — check for semantically identical past answers ──
     if (_cfg.get("response_cache_enabled") and not _local_mode
             and len(message.strip()) >= 30
-            and ollama_available(EMBED_MODEL)):
+            and embed_available()):
         try:
             _rc_vec = embed(message[:500])
             _rc_min_sim = float(_cfg.get("response_cache_min_sim") or 0.88)
@@ -4228,7 +4228,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             pass
 
     # Pattern tracking: record recurring messages, check if auto-skill needed
-    if _cfg.get("pattern_tracking_enabled") and ollama_available(EMBED_MODEL):
+    if _cfg.get("pattern_tracking_enabled") and embed_available():
         try:
             _pt_vec = embed(message[:400]) if not locals().get("_rc_vec") else _rc_vec  # type: ignore[name-defined]
             _pt_store = SkillStore()
@@ -6403,7 +6403,7 @@ def main() -> None:
         summary = args[1] if len(args) > 1 else ""
         tags = args[2] if len(args) > 2 else ""
         store = SkillStore()
-        vector = embed(f"{title}: {summary}") if ollama_available() else []
+        vector = embed(f"{title}: {summary}") if embed_available() else []
         tid = store.save_task(title=title, summary=summary, vector=vector, tags=tags)
         store.close()
         print(f"Task #{tid} saved: \"{title}\"")

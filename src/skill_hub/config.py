@@ -28,7 +28,7 @@ _DEFAULTS = {
     # Embedding backend cascade
     "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
     "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-    "embedding_fallback_on_error": True,
+    # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
     "voyage_api_key": None,  # set via env VOYAGE_API_KEY or here
     "voyage_embed_model": "voyage/voyage-3-lite",
     "sentence_transformers_model": "all-MiniLM-L6-v2",

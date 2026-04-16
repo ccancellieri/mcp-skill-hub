@@ -71,11 +71,11 @@ def _rw_add_skill_context(prompt: str, store: Any, cfg: dict[str, Any]) -> Rewri
     """Inject top-N relevant skill names into a prefix block."""
     top_k = int(cfg.get("improve_prompt_skill_top_k", 3))
     try:
-        from ..embeddings import embed, ollama_available, EMBED_MODEL
+        from ..embeddings import embed, embed_available, EMBED_MODEL
     except ImportError:
         return RewriterResult(note="skill_context: embeddings unavailable")
-    if not ollama_available(EMBED_MODEL):
-        return RewriterResult(note="skill_context: ollama offline")
+    if not embed_available():
+        return RewriterResult(note="skill_context: embed unavailable")
     try:
         vec = embed(prompt)
     except Exception as exc:

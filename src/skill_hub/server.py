@@ -47,7 +47,7 @@ from fastmcp import FastMCP
 from . import config as _cfg
 from .embeddings import (
     embed, rerank, compact, rewrite_query, optimize_context,
-    EMBED_MODEL, RERANK_MODEL, ollama_available,
+    EMBED_MODEL, RERANK_MODEL, ollama_available, embed_available,
     _generate,
 )
 from .indexer import index_all
@@ -242,10 +242,10 @@ def search_skills(
     from .activity_log import LOG_FILE
 
     log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
-    if not ollama_available(EMBED_MODEL):
+    if not embed_available():
         return (
-            f"Ollama model '{EMBED_MODEL}' not found. "
-            f"Run: ollama pull {EMBED_MODEL}"
+            f"No embedding backend available. "
+            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
         )
 
     query_vector = embed(query)
@@ -321,8 +321,8 @@ def search_skills(
 def suggest_plugins(query: str = "") -> str:
     """Suggest disabled plugins matching the current task."""
     log_tool("suggest_plugins", query=query)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     used_query = query or _last_search_state.get("query", "")
     if not used_query:
@@ -392,8 +392,8 @@ def record_feedback(
 def teach(rule: str, suggest: str) -> str:
     """Add a persistent rule mapping task patterns to plugins or skills."""
     log_tool("teach", rule=rule, suggest=suggest)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     rule_vector = embed(rule)
 
@@ -923,8 +923,8 @@ def search_context(
     namespaces) into the output.
     """
     log_tool("search_context", query=query, top_k=top_k, categories=categories)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found."
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     query_vector = embed(query)
 
@@ -1049,10 +1049,10 @@ def search_context(
 def index_skills() -> str:
     """Rebuild the skill index from all plugin directories."""
     log_tool("index_skills")
-    if not ollama_available(EMBED_MODEL):
+    if not embed_available():
         return (
-            f"Ollama model '{EMBED_MODEL}' not found. "
-            f"Run: ollama pull {EMBED_MODEL}"
+            f"No embedding backend available. "
+            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
         )
 
     count, errors = index_all(_store)
@@ -1066,8 +1066,8 @@ def index_skills() -> str:
 def index_plugins() -> str:
     """Index plugin descriptions for suggest_plugins()."""
     log_tool("index_plugins")
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     if not SETTINGS_PATH.exists():
         return "Settings file not found."
@@ -1357,8 +1357,8 @@ def update_marketplace(name: str = "anthropic-agent-skills",
             lines.append(f"  ... and {commit_count - 10} more")
 
     if reindex:
-        if not ollama_available(EMBED_MODEL):
-            lines.append(f"reindex skipped: Ollama model '{EMBED_MODEL}' unavailable.")
+        if not embed_available():
+            lines.append("reindex skipped: no embedding backend available.")
         else:
             idx_count, idx_errors = index_all(_store)
             lines.append(f"reindexed {idx_count} skills"

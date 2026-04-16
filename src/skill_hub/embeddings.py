@@ -2,6 +2,7 @@
 
 import json
 import re
+import threading
 from typing import Any
 
 import httpx
@@ -9,6 +10,8 @@ import httpx
 from . import config as _cfg
 from .activity_log import get_logger, log_llm, llm_timer
 from .llm import LLMError, get_provider
+
+_ST_CACHE_LOCK = threading.Lock()
 
 # These module-level names are kept for backwards compatibility with imports,
 # but always read the live config value.
@@ -117,9 +120,6 @@ def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[fl
             errors.append(f"{backend}: {exc}")
             continue
 
-    fallback_on_error = bool(_cfg.get("embedding_fallback_on_error") if _cfg.get("embedding_fallback_on_error") is not None else True)
-    if not fallback_on_error or not errors:
-        raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
     raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
 
 
@@ -131,7 +131,13 @@ def _embed_voyage(text: str, *, timeout: float = 15.0) -> list[float]:
         raise RuntimeError("VOYAGE_API_KEY not set")
     voyage_model = str(_cfg.get("voyage_embed_model") or "voyage/voyage-3-lite")
     result = get_provider().embed(text, model=voyage_model, timeout=timeout)
-    return result if isinstance(result, list) and result and isinstance(result[0], float) else result[0]
+    if isinstance(result, list) and result and isinstance(result[0], float):
+        return result  # already a flat float vector
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        inner = result[0]
+        if inner:
+            return inner
+    raise RuntimeError(f"unexpected embed response shape: {type(result)!r}")
 
 
 def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:
@@ -141,8 +147,14 @@ def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float
     api_base = client.get_api_base(model)
     if not api_base:
         raise RuntimeError("no healthy Ollama endpoint available")
-    result = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout)
-    return result if isinstance(result, list) and result and isinstance(result[0], float) else result[0]
+    result = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout, api_base=api_base)
+    if isinstance(result, list) and result and isinstance(result[0], float):
+        return result  # already a flat float vector
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        inner = result[0]
+        if inner:
+            return inner
+    raise RuntimeError(f"unexpected embed response shape: {type(result)!r}")
 
 
 def _embed_sentence_transformers(text: str) -> list[float]:
@@ -161,11 +173,14 @@ _ST_MODEL_CACHE: dict[str, Any] = {}
 
 
 def _get_st_model(name: str):
-    """Lazy-load and cache a SentenceTransformer model."""
-    if name not in _ST_MODEL_CACHE:
-        from sentence_transformers import SentenceTransformer
-        _ST_MODEL_CACHE[name] = SentenceTransformer(name)
-    return _ST_MODEL_CACHE[name]
+    """Lazy-load and cache a SentenceTransformer model (thread-safe, double-checked)."""
+    if name in _ST_MODEL_CACHE:          # fast path, no lock
+        return _ST_MODEL_CACHE[name]
+    with _ST_CACHE_LOCK:
+        if name not in _ST_MODEL_CACHE:  # double-checked
+            from sentence_transformers import SentenceTransformer
+            _ST_MODEL_CACHE[name] = SentenceTransformer(name)
+        return _ST_MODEL_CACHE[name]
 
 
 def rerank(query: str, candidates: list[dict],
@@ -1066,3 +1081,28 @@ def ollama_available(model: str = EMBED_MODEL) -> bool:
         return any(model in m for m in models)
     except Exception:
         return False
+
+
+def embed_available() -> bool:
+    """Return True if at least one embedding backend is usable.
+
+    Checks cascade: Voyage (API key set) → Ollama (healthy endpoint) → SentenceTransformers (installed).
+    Does NOT make network calls — only checks config and installed packages.
+    """
+    import os
+    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
+    for backend in priority:
+        if backend == "voyage":
+            if os.environ.get("VOYAGE_API_KEY") or _cfg.get("voyage_api_key"):
+                return True
+        elif backend == "ollama":
+            from .ollama_client import get_ollama_client
+            if get_ollama_client().get_api_base(None) is not None:
+                return True
+        elif backend == "sentence_transformers":
+            try:
+                import sentence_transformers  # noqa: F401
+                return True
+            except ImportError:
+                pass
+    return False
