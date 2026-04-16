@@ -78,6 +78,14 @@ def api_tasks_list(request: Request) -> JSONResponse:
     })
 
 
+@router.get("/api/tasks/activity")
+def api_tasks_activity(request: Request, status: str | None = None) -> JSONResponse:
+    """Tasks with computed activity_state: active|idle|open|closed."""
+    store = request.app.state.store
+    rows = store.list_tasks_with_activity(status=status, limit=100)
+    return JSONResponse(rows)
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 def tasks_page(request: Request) -> Any:
     store = request.app.state.store
