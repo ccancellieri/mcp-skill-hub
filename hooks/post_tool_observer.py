@@ -33,6 +33,73 @@ def log(msg: str) -> None:
         pass
 
 
+def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
+    """If a Write/Edit touched a feedback_*.md, auto-teach from it. Best-effort."""
+    if tool_name not in ("Write", "Edit"):
+        return
+
+    file_path = tool_input.get("file_path") or tool_input.get("path") or ""
+    import re
+    if not re.search(r'feedback_[^/\\]+\.md$', file_path):
+        return
+
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("continuous_teaching_enabled"):
+            return
+    except Exception:
+        return
+
+    try:
+        from pathlib import Path
+        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        rule = ""
+        why = ""
+
+        # Strip YAML frontmatter
+        fm_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+        if fm_match:
+            body = content[fm_match.end():]
+        else:
+            body = content
+
+        # Get first paragraph as rule
+        paragraphs = [p.strip() for p in re.split(r'\n{2,}', body) if p.strip()]
+        if paragraphs:
+            rule = paragraphs[0][:500]
+
+        # Find **Why:** section
+        why_match = re.search(r'\*\*Why:\*\*\s*(.+?)(?=\n\n|\Z)', body, re.DOTALL)
+        if why_match:
+            why = why_match.group(1).strip()[:300]
+
+        if not rule:
+            return
+
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            try:
+                from skill_hub.embeddings import embed as _embed
+                vec = _embed(rule)
+            except Exception:
+                vec = []
+
+            store.add_teaching(
+                rule=rule,
+                rule_vector=vec,
+                action=why or "Auto-taught from feedback file update",
+                target_type="global",
+                target_id="global",
+            )
+            log(f"auto-teach  feedback_file=\"{file_path[-60:]}\"  rule=\"{rule[:60]}\"")
+        finally:
+            store.close()
+
+    except Exception as e:  # noqa: BLE001
+        log(f"auto-teach  error={e}")
+
+
 def main() -> int:
     cfg = verdict_cache.load_config()
     if not cfg.get("auto_approve_learn", True):
@@ -44,10 +111,15 @@ def main() -> int:
         return 0
 
     tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input") or {}
+
+    # Phase G.2 — auto-teach from feedback file writes (always attempt, regardless
+    # of auto_approve_learn; continuous_teaching_enabled guards it internally).
+    _maybe_auto_teach_from_feedback(tool_name, tool_input)
+
     if tool_name != "Bash":
         return 0
 
-    tool_input = data.get("tool_input") or {}
     cmd = (tool_input.get("command") or "").strip()
     if not cmd:
         return 0

@@ -134,6 +134,11 @@ _DEFAULTS = {
     # Silently skips if the local LLM judges the digest too thin to be worth saving
     "auto_memory_on_close_task": True,
 
+    # Continuous teaching — Phase G.2
+    # When enabled: feedback_*.md file writes auto-teach rules, and session-start
+    # messages matching "remember X" / "never do X" / "always do X" are auto-taught.
+    "continuous_teaching_enabled": False,
+
     # Semantic response cache — reuse cached answers for near-identical questions
     "response_cache_enabled": True,
     "response_cache_min_sim": 0.88,   # min similarity to serve from cache
