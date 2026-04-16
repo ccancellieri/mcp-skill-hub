@@ -365,6 +365,10 @@ _DEFAULTS = {
     "background_max_jobs_per_prompt": 1,
     "background_job_retry_max": 3,
 
+    # Task activity state thresholds — used by get_task_activity_state()
+    "task_activity_active_seconds": 60,    # last_activity_at within 60s → "active"
+    "task_activity_idle_seconds": 3600,    # within 60min → "idle", else "open"
+
     # Vector engine — "sqlite-vec" uses the native ANN extension with binary
     # quantization + float32 rerank; any other value falls back to the legacy
     # in-Python cosine path.

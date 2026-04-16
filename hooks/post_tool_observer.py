@@ -33,6 +33,27 @@ def log(msg: str) -> None:
         pass
 
 
+def _update_task_activity(session_id: str) -> None:
+    """Update last_activity_at for the session's open task. Never raises."""
+    if not session_id:
+        return
+    try:
+        import sys
+        from pathlib import Path as _Path
+        sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "src"))
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            task_id = store.get_open_task_id_for_session(session_id)
+            if task_id:
+                store.touch_task_activity(task_id)
+                log(f"HEARTBEAT  task_id={task_id}")
+        finally:
+            store.close()
+    except Exception as exc:
+        log(f"heartbeat  error={exc}")
+
+
 def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
     """If a Write/Edit touched a feedback_*.md, auto-teach from it. Best-effort."""
     if tool_name not in ("Write", "Edit"):
@@ -109,6 +130,9 @@ def main() -> int:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):
         return 0
+
+    session_id = data.get("session_id", "")
+    _update_task_activity(session_id)
 
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input") or {}

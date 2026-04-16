@@ -259,6 +259,27 @@ def _auto_switch_profile() -> str:
         return ""
 
 
+def _update_task_activity(session_id: str) -> None:
+    """Update last_activity_at for the session's open task. Never raises."""
+    if not session_id:
+        return
+    try:
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            task_id = store.get_open_task_id_for_session(session_id)
+            if task_id:
+                store.touch_task_activity(task_id)
+                log(f"HEARTBEAT  task_id={task_id}")
+        finally:
+            store.close()
+    except Exception as exc:
+        try:
+            log(f"heartbeat  error={exc}")
+        except Exception:
+            pass
+
+
 def _dispatch_background_jobs(session_id: str, ts: float) -> str:
     """Return a housekeeping block if background jobs are pending and user is idle.
 
@@ -471,16 +492,7 @@ def main():
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
 
     # Heartbeat: update last_activity_at for the session's open task
-    try:
-        from skill_hub.store import SkillStore as _SkillStore
-        _hb_store = _SkillStore()
-        _task_id = _hb_store.get_open_task_id_for_session(session_id)
-        if _task_id:
-            _hb_store.touch_task_activity(_task_id)
-            log(f"HEARTBEAT  task_id={_task_id}")
-        _hb_store.close()
-    except Exception:
-        pass
+    _update_task_activity(session_id)
 
     user_message = data.get("message") or data.get("prompt") or ""
 
