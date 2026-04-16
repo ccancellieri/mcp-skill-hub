@@ -146,14 +146,14 @@ def enqueue_job(
 
 
 def list_pending_jobs(db_path: str, max_jobs: int = 3) -> list[BackgroundJob]:
-    """Return up to *max_jobs* pending jobs ordered by priority ASC, created_at ASC."""
+    """Return up to *max_jobs* pending or deferred jobs ordered by priority ASC, created_at ASC."""
     conn = _connect(db_path)
     try:
         _ensure_schema(conn)
         rows = conn.execute(
             """
             SELECT * FROM background_jobs
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'deferred')
             ORDER BY priority ASC, created_at ASC
             LIMIT ?
             """,
@@ -225,18 +225,17 @@ def mark_failed(db_path: str, job_id: int, error: str) -> None:
         ).fetchone()
         if row is None:
             return
-        new_attempts = (row["attempts"] or 0) + 1
-        new_status = "failed" if new_attempts >= retry_max else "pending"
+        current_attempts = row["attempts"] or 0
+        new_status = "failed" if current_attempts >= retry_max else "pending"
         conn.execute(
             """
             UPDATE background_jobs
             SET status = ?,
                 error = ?,
-                attempts = ?,
                 completed_at = CASE WHEN ? = 'failed' THEN datetime('now') ELSE NULL END
             WHERE id = ?
             """,
-            (new_status, error, new_attempts, new_status, job_id),
+            (new_status, error[:500] if error else error, new_status, job_id),
         )
         conn.commit()
     finally:
@@ -347,12 +346,10 @@ class JobDispatcher:
             if row is None:
                 return False
             self._running = True
-
-        job_id = row["id"]
-        kind = row["kind"]
-        payload = json.loads(row["payload"] or "{}")
-
-        try:
+        try:                          # covers the post-lock lines too
+            job_id = row["id"]
+            kind = row["kind"]
+            payload = json.loads(row["payload"] or "{}")
             result = self._run_with_worker(kind, payload)
             self._store.complete_job(job_id, result=result, worker="local")
             _log.debug("background_job %d (%s) completed", job_id, kind)
@@ -394,7 +391,7 @@ class JobDispatcher:
         for worker in priority_order:
             if worker == "defer":
                 raise RuntimeError(
-                    f"all workers exhausted; deferred. errors: {'; '.join(errors)}"
+                    f"all configured workers failed; job will be retried. errors: {'; '.join(errors)}"
                 )
             if worker == "subagent":
                 # subagent dispatch is handled at the hook layer; skip here
@@ -405,7 +402,7 @@ class JobDispatcher:
                 errors.append(f"{worker}: {exc}")
                 continue
 
-        raise RuntimeError(f"no workers available: {'; '.join(errors)}")
+        raise RuntimeError(f"all configured workers failed: {'; '.join(errors)}")
 
     def _run_via_worker(
         self,
