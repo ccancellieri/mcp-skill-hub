@@ -484,6 +484,52 @@ class SkillStore:
                 updated_at   TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (task_class, domain, tier)
             );
+
+            -- FTS5 full-text search for tasks (BM25 fallback when embeddings unavailable)
+            CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+                title, summary, compact, tags,
+                content='tasks', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            -- FTS5 full-text search for teachings
+            CREATE VIRTUAL TABLE IF NOT EXISTS teachings_fts USING fts5(
+                rule, action,
+                content='teachings', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            -- Keep tasks_fts in sync with triggers
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_insert AFTER INSERT ON tasks BEGIN
+                INSERT INTO tasks_fts(rowid, title, summary, compact, tags)
+                VALUES (new.id, new.title, new.summary, new.compact, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_delete AFTER DELETE ON tasks BEGIN
+                INSERT INTO tasks_fts(tasks_fts, rowid, title, summary, compact, tags)
+                VALUES('delete', old.id, old.title, old.summary, old.compact, old.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_update AFTER UPDATE ON tasks BEGIN
+                INSERT INTO tasks_fts(tasks_fts, rowid, title, summary, compact, tags)
+                VALUES('delete', old.id, old.title, old.summary, old.compact, old.tags);
+                INSERT INTO tasks_fts(rowid, title, summary, compact, tags)
+                VALUES (new.id, new.title, new.summary, new.compact, new.tags);
+            END;
+
+            -- Keep teachings_fts in sync with triggers
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_insert AFTER INSERT ON teachings BEGIN
+                INSERT INTO teachings_fts(rowid, rule, action)
+                VALUES (new.id, new.rule, new.action);
+            END;
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_delete AFTER DELETE ON teachings BEGIN
+                INSERT INTO teachings_fts(teachings_fts, rowid, rule, action)
+                VALUES('delete', old.id, old.rule, old.action);
+            END;
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_update AFTER UPDATE ON teachings BEGIN
+                INSERT INTO teachings_fts(teachings_fts, rowid, rule, action)
+                VALUES('delete', old.id, old.rule, old.action);
+                INSERT INTO teachings_fts(rowid, rule, action)
+                VALUES (new.id, new.rule, new.action);
+            END;
         """)
         self._conn.commit()
 
@@ -644,6 +690,23 @@ class SkillStore:
                  cfg.get("max_docs", 0)),
             )
         self._conn.commit()
+
+        # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
+        self._rebuild_fts_index(self._conn)
+
+    def _rebuild_fts_index(self, conn: sqlite3.Connection) -> None:
+        """Rebuild FTS5 indexes from existing table content (run after migration).
+
+        FTS5 'rebuild' is idempotent — calling it twice does not corrupt data.
+        This populates the FTS tables for rows that existed before the triggers
+        were created (i.e., on first upgrade of an existing DB).
+        """
+        try:
+            conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
+            conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            _log.warning("FTS5 rebuild failed (FTS5 may be unavailable): %s", exc)
 
     # ------------------------------------------------------------------
     # Write
@@ -1439,13 +1502,26 @@ class SkillStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def search_tasks(self, query_vector: list[float], top_k: int = 3,
-                     status: str = "all", min_sim: float = 0.4) -> list[dict]:
-        """Search tasks by semantic similarity.
+    def search_tasks(self, query_vector: list[float] | None = None, top_k: int = 3,
+                     status: str = "all", min_sim: float = 0.4,
+                     text_query: str | None = None) -> list[dict]:
+        """Search tasks by semantic similarity or BM25 full-text search.
+
+        When ``query_vector`` is None or empty and ``text_query`` is provided,
+        falls back to FTS5 BM25 search (zero ML deps required).
 
         Uses the vec0 binary-KNN + float32 rerank path when available (S6);
         falls back to the in-Python cosine loop for legacy/short vectors.
         """
+        # FTS5 fallback: no vector provided but text query given
+        if not query_vector and text_query:
+            fts_status = None if status == "all" else status
+            return self.search_text(text_query, tables=["tasks"],
+                                    top_k=top_k, status=fts_status)
+
+        if query_vector is None:
+            return []
+
         if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
             vec_results = self._search_tasks_vec(query_vector, top_k, status, min_sim)
             if vec_results is not None:
@@ -1607,6 +1683,118 @@ class SkillStore:
             f"ORDER BY updated_at DESC LIMIT 100",
             params,
         ).fetchall()
+
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """Sanitize a user query string for safe use in FTS5 MATCH expressions.
+
+        FTS5 special characters that must be escaped or stripped: " * ( ) - ^
+        Strategy: strip characters that have no safe literal equivalent, then
+        wrap remaining terms to avoid accidental prefix/phrase operators.
+        """
+        import re
+        # Remove characters that are FTS5 operators or cause parse errors
+        cleaned = re.sub(r'["\*\(\)\-\^]', ' ', query)
+        # Collapse whitespace
+        cleaned = ' '.join(cleaned.split())
+        return cleaned if cleaned else '""'
+
+    def search_text(
+        self,
+        query: str,
+        tables: list[str] | None = None,
+        top_k: int = 10,
+        status: str | None = None,
+    ) -> list[dict]:
+        """BM25 full-text search via SQLite FTS5. Always available, zero ML deps.
+
+        Returns list of dicts with keys: id, type (tasks/teachings),
+        title_or_rule, summary_or_why, score, status (for tasks only).
+
+        Falls back to an empty list gracefully if FTS5 tables are unavailable.
+        """
+        if not query or not query.strip():
+            return []
+
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query or safe_query == '""':
+            return []
+
+        search_tables = tables if tables is not None else ["tasks", "teachings"]
+        results: list[dict] = []
+
+        # --- tasks ---
+        if "tasks" in search_tables:
+            try:
+                if status is not None:
+                    rows = self._conn.execute(
+                        """
+                        SELECT f.rowid AS id, f.rank AS score,
+                               t.title, t.summary, t.status
+                        FROM tasks_fts f
+                        JOIN tasks t ON t.id = f.rowid
+                        WHERE tasks_fts MATCH ? AND t.status = ?
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        (safe_query, status, top_k),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        """
+                        SELECT f.rowid AS id, f.rank AS score,
+                               t.title, t.summary, t.status
+                        FROM tasks_fts f
+                        JOIN tasks t ON t.id = f.rowid
+                        WHERE tasks_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        (safe_query, top_k),
+                    ).fetchall()
+                for row in rows:
+                    results.append({
+                        "id": row["id"],
+                        "type": "tasks",
+                        "title_or_rule": row["title"],
+                        "summary_or_why": row["summary"],
+                        "score": float(row["score"]),
+                        "status": row["status"],
+                    })
+            except sqlite3.OperationalError as exc:
+                _log.debug("FTS5 tasks search failed: %s", exc)
+
+        # --- teachings ---
+        if "teachings" in search_tables:
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT f.rowid AS id, f.rank AS score,
+                           t.rule, t.action
+                    FROM teachings_fts f
+                    JOIN teachings t ON t.id = f.rowid
+                    WHERE teachings_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (safe_query, top_k),
+                ).fetchall()
+                for row in rows:
+                    results.append({
+                        "id": row["id"],
+                        "type": "teachings",
+                        "title_or_rule": row["rule"],
+                        "summary_or_why": row["action"],
+                        "score": float(row["score"]),
+                        "status": None,
+                    })
+            except sqlite3.OperationalError as exc:
+                _log.debug("FTS5 teachings search failed: %s", exc)
+
+        # BM25 rank is negative in SQLite FTS5 — lower (more negative) = better match.
+        # Sort so best matches come first (ascending by score = most negative first).
+        results.sort(key=lambda x: x["score"])
+        return results[:top_k]
 
     def get_skill_usage_stats(self) -> list[dict]:
         """Aggregate skill usage.
