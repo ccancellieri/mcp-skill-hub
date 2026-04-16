@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 
+from croniter import croniter as _croniter
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -106,6 +108,10 @@ async def api_cron_create(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "name, schedule, and command are required"}, status_code=400
         )
+    if not _croniter.is_valid(schedule):
+        return JSONResponse(
+            {"error": f"invalid cron expression: {schedule!r}"}, status_code=400
+        )
     store = request.app.state.store
     try:
         job_id = store.upsert_cron_job(
@@ -133,27 +139,37 @@ async def api_cron_update(job_id: int, request: Request) -> JSONResponse:
     if row is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     job = _row_to_dict(row)
+    # Disallow name changes in PATCH — name is the natural key
+    if "name" in body and body["name"] != job["name"]:
+        return JSONResponse({"error": "cannot change job name"}, status_code=400)
     # Apply updates
     enabled = body.get("enabled", job.get("enabled", 1))
     if "enabled" in body:
         store.toggle_cron_job(job_id, bool(enabled))
-    # For schedule / name / command: rebuild via upsert using current values
-    if any(k in body for k in ("schedule", "name", "command", "description", "params")):
+    # For schedule / command / description: update by id, not by name
+    if any(k in body for k in ("schedule", "command", "description", "params")):
         if job.get("is_builtin"):
             return JSONResponse(
                 {"error": "cannot modify builtin job fields (use toggle to enable/disable)"},
                 status_code=403,
             )
-        store.upsert_cron_job(
-            name=body.get("name", job.get("name", "")),
-            description=body.get("description", job.get("description", "") or ""),
-            schedule=body.get("schedule", job.get("schedule", "")),
-            command=body.get("command", job.get("command", "")),
-            params=body.get("params", job.get("params", {})),
-            enabled=bool(body.get("enabled", job.get("enabled", 1))),
-            is_builtin=bool(job.get("is_builtin", 0)),
-            is_dangerous=bool(job.get("is_dangerous", 0)),
+        new_schedule = body.get("schedule", job.get("schedule", ""))
+        if new_schedule and not _croniter.is_valid(new_schedule):
+            return JSONResponse(
+                {"error": f"invalid cron expression: {new_schedule!r}"}, status_code=400
+            )
+        store._conn.execute(
+            "UPDATE cron_jobs SET schedule=?, command=?, enabled=?, description=?,"
+            " updated_at=datetime('now') WHERE id=?",
+            (
+                new_schedule,
+                body.get("command", job.get("command", "")),
+                int(bool(body.get("enabled", job.get("enabled", 1)))),
+                body.get("description", job.get("description", "") or ""),
+                job_id,
+            ),
         )
+        store._conn.commit()
     row = store.get_cron_job(job_id)
     return JSONResponse(_enrich(_row_to_dict(row)) if row else {})
 
@@ -171,13 +187,23 @@ def api_cron_delete(job_id: int, request: Request) -> JSONResponse:
 
 @router.post("/api/cron/{job_id}/run-now")
 def api_cron_run_now(job_id: int, request: Request) -> JSONResponse:
-    """Force a job to run on the next scheduler tick by resetting last_run_at."""
+    """Force a job to run immediately (background thread) and also reset last_run_at."""
     store = request.app.state.store
     row = store.get_cron_job(job_id)
     if row is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    # Reset last_run_at to epoch so croniter considers it overdue on next tick.
+    # Reset last_run_at to epoch so croniter considers it overdue on next tick too.
     store.reset_cron_job_for_run(job_id)
+    # Also fire immediately in a background thread — don't wait for the next tick.
+    job_dict = _row_to_dict(row)
+
+    def _run() -> None:
+        try:
+            _cron.get_scheduler()._run_job(job_dict)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
     row = store.get_cron_job(job_id)
     return JSONResponse(_enrich(_row_to_dict(row)) if row else {})
 

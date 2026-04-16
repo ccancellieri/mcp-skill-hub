@@ -86,6 +86,8 @@ class CronScheduler:
         self._db_path = db_path
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._running_jobs: set[str] = set()
+        self._running_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -142,33 +144,42 @@ class CronScheduler:
 
     def _run_job(self, job: dict) -> None:
         name = job["name"]
-        command = job["command"]
-        _log.info("cron: running job %r (command=%r)", name, command)
-        handler = _HANDLERS.get(command)
-        if handler is None:
-            _log.debug("cron: no handler for %r, skipping", command)
-            return
-        start = time.monotonic()
-        status = "ok"
-        error: str | None = None
+        with self._running_lock:
+            if name in self._running_jobs:
+                _log.debug("cron: job %r already running, skipping", name)
+                return
+            self._running_jobs.add(name)
         try:
-            handler()
-        except Exception as exc:
-            status = "error"
-            error = str(exc)[:500]
-            _log.warning("cron: job %r failed: %s", name, exc)
-        duration_ms = int((time.monotonic() - start) * 1000)
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute(
-                    "UPDATE cron_jobs"
-                    " SET last_run_at=datetime('now'), last_status=?,"
-                    " last_error=?, last_duration_ms=?, run_count=run_count+1"
-                    " WHERE name=?",
-                    (status, error, duration_ms, name),
-                )
-        except Exception as exc:
-            _log.warning("cron: failed to update job state for %r: %s", name, exc)
+            command = job["command"]
+            _log.info("cron: running job %r (command=%r)", name, command)
+            handler = _HANDLERS.get(command)
+            if handler is None:
+                _log.debug("cron: no handler for %r, skipping", command)
+                return
+            start = time.monotonic()
+            status = "ok"
+            error: str | None = None
+            try:
+                handler()
+            except Exception as exc:
+                status = "error"
+                error = str(exc)[:500]
+                _log.warning("cron: job %r failed: %s", name, exc)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            try:
+                with sqlite3.connect(self._db_path) as conn:
+                    conn.execute(
+                        "UPDATE cron_jobs"
+                        " SET last_run_at=datetime('now'), last_status=?,"
+                        " last_error=?, last_duration_ms=?, run_count=run_count+1"
+                        " WHERE name=?",
+                        (status, error, duration_ms, name),
+                    )
+            except Exception as exc:
+                _log.warning("cron: failed to update job state for %r: %s", name, exc)
+        finally:
+            with self._running_lock:
+                self._running_jobs.discard(name)
 
 
 # ---------------------------------------------------------------------------
