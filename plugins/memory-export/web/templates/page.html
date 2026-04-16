@@ -2,10 +2,83 @@
 {% block title %}memory-export{% endblock %}
 {% block content %}
 <style>
-  .me-page { padding: 1rem 1.5rem; max-width: 1200px; margin: 0 auto; }
-  .me-header { display:flex; align-items:baseline; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
-  .me-header h1 { margin:0; }
-  .me-section { margin-bottom: 18px; }
+  /* ── page layout ── */
+  .me-page { padding: 1.25rem 1.5rem; max-width: 900px; margin: 0 auto; }
+  .me-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .me-page-header h1 { margin:0; }
+  .me-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 20px; }
+
+  /* ── section headings ── */
+  .me-section { margin-bottom: 20px; }
+  .me-section-head {
+    padding:14px 18px 12px;
+    border-bottom:1px solid var(--color-border);
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .me-section-head h2 {
+    margin:0; font-size:14px; font-weight:600;
+  }
+  .me-section-body { padding:16px 18px; }
+
+  /* ── stats row ── */
+  .me-stats {
+    display:flex; gap:20px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .me-stat { display:flex; flex-direction:column; gap:2px; }
+  .me-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .me-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  /* ── conflict mode card chooser ── */
+  .me-mode-cards { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
+  .me-mode-card {
+    flex:1; min-width:130px; max-width:220px;
+    border:2px solid var(--color-border); border-radius:8px;
+    padding:12px 14px; cursor:pointer; transition:border-color .15s, background .15s;
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .me-mode-card:hover { border-color:rgba(58,160,255,0.4); background:rgba(58,160,255,0.04); }
+  .me-mode-card input[type=radio] { display:none; }
+  .me-mode-card.selected { border-color:#6bbeff; background:rgba(58,160,255,0.08); }
+  .me-mode-card.selected .me-mode-name { color:#6bbeff; }
+  .me-mode-name { font-size:13px; font-weight:600; }
+  .me-mode-desc { font-size:11px; color:var(--color-muted); line-height:1.4; }
+  .me-mode-badge {
+    display:inline-block; margin-top:4px; padding:2px 7px;
+    border-radius:10px; font-size:9px; font-weight:700; text-transform:uppercase;
+    letter-spacing:.06em; width:fit-content;
+  }
+  .badge-default { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .badge-warn    { background:rgba(232,166,75,0.2);   color:var(--color-warn,#e0a040); }
+  .badge-ai      { background:rgba(74,211,107,0.2);   color:#5fcf7b; }
+
+  /* ── export action row ── */
+  .me-export-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px; }
+  .me-export-result { font-size:12px; }
+  .me-export-result.ok  { color:#5fcf7b; }
+  .me-export-result.err { color:var(--color-bad,#e06060); }
+
+  /* ── spinner ── */
+  .me-spinner {
+    display:inline-block; width:12px; height:12px;
+    border:2px solid rgba(255,255,255,0.2);
+    border-top-color:var(--color-fg,#e8eaf0);
+    border-radius:50%; animation:me-spin .65s linear infinite;
+    vertical-align:middle; margin-right:5px;
+  }
+  @keyframes me-spin { to { transform:rotate(360deg); } }
+
+  /* ── import file area ── */
+  .me-file-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .me-file-row input[type=file] { font-size:12px; flex:1; min-width:200px; }
+
+  /* ── status pills ── */
+  .me-status { font-size:12px; padding:5px 12px; border-radius:5px; }
+  .me-status.ok   { background:rgba(74,211,107,0.12); color:#5fcf7b; border:1px solid rgba(74,211,107,0.25); }
+  .me-status.err  { background:rgba(192,57,43,0.12);  color:#e06060; border:1px solid rgba(192,57,43,0.25); }
+  .me-status.info { color:var(--color-muted); border:1px solid var(--color-border); background:transparent; }
 
   /* ── scoped table styles ── */
   .me-table { width:100%; border-collapse:collapse; font-size:12px; }
@@ -28,27 +101,6 @@
   }
   .me-table select:disabled { opacity:.35; }
 
-  /* ── conflict mode radio group ── */
-  .me-modes { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
-  .me-modes label { display:flex; align-items:center; gap:5px; font-size:13px; cursor:pointer; }
-
-  /* ── action / status row ── */
-  .me-action-row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
-  .me-status { font-size:12px; padding:4px 10px; border-radius:4px; }
-  .me-status.ok   { background:rgba(74,211,107,0.15); color:#5fcf7b; }
-  .me-status.err  { background:rgba(192,57,43,0.15);  color:#e06060; }
-  .me-status.info { color:var(--color-muted); }
-
-  /* ── import file area ── */
-  .me-file-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  .me-file-row input[type=file] { font-size:12px; }
-
-  /* ── preview summary row ── */
-  .me-summary { display:flex; gap:20px; align-items:center; flex-wrap:wrap; padding:8px 0 4px; }
-  .me-kv { display:flex; flex-direction:column; gap:2px; }
-  .me-kv-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-muted); }
-  .me-kv-val { font-size:14px; font-weight:600; }
-
   /* ── pill ── */
   .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
   .pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
@@ -61,110 +113,101 @@
 
   /* ── scope table ── */
   .me-scope-wrap { overflow-x:auto; max-height:300px; overflow-y:auto; }
+
+  /* ── about section ── */
+  .me-about-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:600px) { .me-about-grid { grid-template-columns:1fr; } }
+  .me-about-item { display:flex; flex-direction:column; gap:3px; }
+  .me-about-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .me-about-val { font-size:12px; line-height:1.5; }
+
+  /* ── PII warning ── */
+  .me-pii-warn {
+    font-size:12px; padding:5px 12px; border-radius:5px;
+    background:rgba(192,57,43,0.12); color:#e06060;
+    border:1px solid rgba(192,57,43,0.25);
+  }
 </style>
 
 <div class="me-page">
-  <div class="me-header">
+
+  <div class="me-page-header">
     <h1 class="page-h" style="margin:0">Memory Export</h1>
     <span class="pill pill-none" id="me-scope-pill">loading…</span>
   </div>
-  <p style="font-size:13px;color:var(--color-muted);margin:0 0 18px">
-    Export and re-import the full mcp-skill-hub memory: hub DB tables,
-    configuration, and the project memories you select.
+  <p class="me-subtitle">
+    Export and re-import the full mcp-skill-hub memory: hub DB tables, configuration,
+    and the project memories you select.
     <code>private/</code> directories are <strong>always</strong> excluded.
   </p>
 
-  <!-- ═══════════════════════ EXPORT CARD ═══════════════════════ -->
-  <div class="card me-section" style="padding:16px 18px">
-    <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Export Snapshot</h3>
-
-    <!-- summary row (populated by JS) -->
-    <div class="me-summary" id="me-export-summary">
-      <div class="me-kv">
-        <span class="me-kv-label">Tables</span>
-        <span class="me-kv-val" id="me-table-count">—</span>
-      </div>
-      <div class="me-kv">
-        <span class="me-kv-label">Total rows</span>
-        <span class="me-kv-val" id="me-total-rows">—</span>
-      </div>
-      <div class="me-kv">
-        <span class="me-kv-label">DB size</span>
-        <span class="me-kv-val" id="me-db-size">—</span>
-      </div>
+  <!-- ═══════════════════════ SECTION 1: EXPORT ═══════════════════════ -->
+  <div class="card me-section" style="padding:0">
+    <div class="me-section-head">
+      <h2>Export Memory Snapshot</h2>
     </div>
+    <div class="me-section-body">
+      <p style="font-size:12px;color:var(--color-muted);margin:0 0 12px">
+        Creates a portable <code>.tar.gz</code> archive containing all hub DB tables,
+        your hub config, and any selected project memory files. The snapshot can be
+        imported on any other mcp-skill-hub instance to restore your context.
+      </p>
 
-    <!-- scope table (collapsed by default) -->
-    <details style="margin:10px 0 0">
-      <summary style="cursor:pointer;font-size:12px;color:var(--color-muted);user-select:none">
-        Show per-table scope &amp; conflict modes
-      </summary>
-      <div class="me-scope-wrap" style="margin-top:8px">
-        <table class="me-table" id="me-tables">
-          <thead>
-            <tr>
-              <th><input type="checkbox" id="me-tables-all" checked title="Select all"></th>
-              <th>Table</th>
-              <th>Rows</th>
-              <th>Mode (import)</th>
-              <th>LLM tier</th>
-            </tr>
-          </thead>
-          <tbody>
-          {% for t in tables %}
-            <tr data-table="{{ t }}">
-              <td><input type="checkbox" class="me-tbl-include" checked></td>
-              <td><code>{{ t }}</code></td>
-              <td class="me-tbl-rowcount">—</td>
-              <td>
-                <select class="me-tbl-mode">
-                  {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
-                </select>
-              </td>
-              <td>
-                <select class="me-tbl-tier" disabled>
-                  {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
-                </select>
-              </td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
+      <!-- Stats row -->
+      <div class="me-stats" id="me-export-summary">
+        <div class="me-stat">
+          <span class="me-stat-label">Tables</span>
+          <span class="me-stat-value" id="me-table-count">—</span>
+        </div>
+        <div class="me-stat">
+          <span class="me-stat-label">Total rows</span>
+          <span class="me-stat-value" id="me-total-rows">—</span>
+        </div>
+        <div class="me-stat">
+          <span class="me-stat-label">DB size</span>
+          <span class="me-stat-value" id="me-db-size">—</span>
+        </div>
       </div>
 
-      <details style="margin-top:10px">
+      <!-- Action row -->
+      <div class="me-export-row">
+        <a id="me-download" class="btn" href="/memory-export/snapshot.tar.gz"
+           style="text-decoration:none" onclick="handleExportClick(this)">
+          Download snapshot
+        </a>
+        <span id="me-export-feedback" class="me-export-result" style="display:none"></span>
+        <span id="me-pii-warn" class="me-pii-warn" hidden></span>
+      </div>
+
+      <!-- Scope table (collapsed) -->
+      <details style="margin-top:14px">
         <summary style="cursor:pointer;font-size:12px;color:var(--color-muted);user-select:none">
-          Project memories
+          Advanced: per-table scope &amp; conflict modes
         </summary>
-        <p style="font-size:11px;color:var(--color-muted);margin:6px 0 4px">
-          Top-level <code>*.md</code> files only. <code>private/</code> always excluded.
-        </p>
-        <div class="me-scope-wrap">
-          <table class="me-table" id="me-projects">
+        <div class="me-scope-wrap" style="margin-top:8px">
+          <table class="me-table" id="me-tables">
             <thead>
               <tr>
-                <th><input type="checkbox" id="me-projects-all" title="Select all"></th>
-                <th>Project</th>
-                <th>Files</th>
-                <th>Has private/</th>
-                <th>Mode</th>
+                <th><input type="checkbox" id="me-tables-all" checked title="Select all"></th>
+                <th>Table</th>
+                <th>Rows</th>
+                <th>Mode (import)</th>
                 <th>LLM tier</th>
               </tr>
             </thead>
             <tbody>
-            {% for p in projects %}
-              <tr data-project="{{ p.key }}">
-                <td><input type="checkbox" class="me-proj-include"></td>
-                <td><code style="word-break:break-all">{{ p.key }}</code></td>
-                <td>{{ p.top_level_md_count }}</td>
-                <td>{% if p.private_md_count %}<span style="color:var(--color-warn,#e0a040)">yes ({{ p.private_md_count }})</span>{% else %}no{% endif %}</td>
+            {% for t in tables %}
+              <tr data-table="{{ t }}">
+                <td><input type="checkbox" class="me-tbl-include" checked></td>
+                <td><code>{{ t }}</code></td>
+                <td class="me-tbl-rowcount">—</td>
                 <td>
-                  <select class="me-proj-mode">
+                  <select class="me-tbl-mode">
                     {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
                   </select>
                 </td>
                 <td>
-                  <select class="me-proj-tier" disabled>
+                  <select class="me-tbl-tier" disabled>
                     {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
                   </select>
                 </td>
@@ -173,56 +216,120 @@
             </tbody>
           </table>
         </div>
-        <label style="display:inline-flex;gap:6px;align-items:center;margin-top:8px;font-size:12px">
-          <input type="checkbox" id="me-include-local-skills">
-          Include <code>~/.claude/local-skills/*.json</code>
-        </label>
+
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--color-muted);user-select:none">
+            Project memories
+          </summary>
+          <p style="font-size:11px;color:var(--color-muted);margin:6px 0 4px">
+            Top-level <code>*.md</code> files only. <code>private/</code> always excluded.
+          </p>
+          <div class="me-scope-wrap">
+            <table class="me-table" id="me-projects">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="me-projects-all" title="Select all"></th>
+                  <th>Project</th>
+                  <th>Files</th>
+                  <th>Has private/</th>
+                  <th>Mode</th>
+                  <th>LLM tier</th>
+                </tr>
+              </thead>
+              <tbody>
+              {% for p in projects %}
+                <tr data-project="{{ p.key }}">
+                  <td><input type="checkbox" class="me-proj-include"></td>
+                  <td><code style="word-break:break-all">{{ p.key }}</code></td>
+                  <td>{{ p.top_level_md_count }}</td>
+                  <td>{% if p.private_md_count %}<span style="color:var(--color-warn,#e0a040)">yes ({{ p.private_md_count }})</span>{% else %}no{% endif %}</td>
+                  <td>
+                    <select class="me-proj-mode">
+                      {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
+                    </select>
+                  </td>
+                  <td>
+                    <select class="me-proj-tier" disabled>
+                      {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
+                    </select>
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <label style="display:inline-flex;gap:6px;align-items:center;margin-top:8px;font-size:12px">
+            <input type="checkbox" id="me-include-local-skills">
+            Include <code>~/.claude/local-skills/*.json</code>
+          </label>
+        </details>
       </details>
-    </details>
-
-    <div class="me-action-row">
-      <a id="me-download" class="btn" href="/memory-export/snapshot.tar.gz" style="text-decoration:none">
-        Download snapshot
-      </a>
-      <span id="me-pii-warn" class="me-status err" hidden></span>
     </div>
   </div>
 
-  <!-- ═══════════════════════ IMPORT CARD ═══════════════════════ -->
-  <div class="card me-section" style="padding:16px 18px">
-    <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Import Snapshot</h3>
-    <p style="font-size:12px;color:var(--color-muted);margin:0 0 12px">
-      Upload a <code>.tar.gz</code> snapshot. Choose how to handle conflicts below.
-    </p>
-
-    <div style="margin-bottom:12px">
-      <div class="me-kv-label" style="margin-bottom:6px">Default conflict mode</div>
-      <div class="me-modes">
-        <label><input type="radio" name="me-import-mode" value="skip" checked> Skip existing</label>
-        <label><input type="radio" name="me-import-mode" value="override"> Override</label>
-        <label><input type="radio" name="me-import-mode" value="llm"> LLM merge</label>
-      </div>
-    </div>
-
-    <form id="me-import-form" enctype="multipart/form-data">
-      <div class="me-file-row">
-        <input type="file" name="file" accept=".tar.gz,.tgz,application/gzip" required>
-        <button type="submit" class="btn">Import</button>
-      </div>
-    </form>
-
-    <div id="me-import-status" class="me-status info" style="margin-top:10px" hidden></div>
-    <pre id="me-import-report" style="
-      background:var(--color-surface);border:1px solid var(--color-border);
-      border-radius:6px;padding:10px;font-size:11px;line-height:1.5;
-      max-height:250px;overflow:auto;white-space:pre-wrap;margin-top:8px
-    " hidden></pre>
-  </div>
-
-  <!-- ═══════════════════════ HISTORY CARD ═══════════════════════ -->
+  <!-- ═══════════════════════ SECTION 2: IMPORT ═══════════════════════ -->
   <div class="card me-section" style="padding:0">
-    <div style="padding:14px 16px 10px;border-bottom:1px solid var(--color-border);display:flex;gap:10px;align-items:baseline">
-      <h3 style="margin:0;font-size:14px;font-weight:600">Export History</h3>
+    <div class="me-section-head">
+      <h2>Import Memory Snapshot</h2>
+    </div>
+    <div class="me-section-body">
+      <p style="font-size:12px;color:var(--color-muted);margin:0 0 16px">
+        Upload a <code>.tar.gz</code> snapshot. Choose how to handle conflicts
+        between the incoming snapshot and your existing data.
+      </p>
+
+      <!-- Conflict mode card chooser -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);font-weight:600;margin-bottom:8px">
+          Conflict resolution
+        </div>
+        <div class="me-mode-cards" id="me-mode-cards">
+
+          <label class="me-mode-card selected" data-mode="skip">
+            <input type="radio" name="me-import-mode" value="skip" checked>
+            <span class="me-mode-name">Skip</span>
+            <span class="me-mode-desc">Keep existing records. Only add rows and files that don't exist yet.</span>
+            <span class="me-mode-badge badge-default">safe default</span>
+          </label>
+
+          <label class="me-mode-card" data-mode="override">
+            <input type="radio" name="me-import-mode" value="override">
+            <span class="me-mode-name">Override</span>
+            <span class="me-mode-desc">Overwrite all existing records with the snapshot version.</span>
+            <span class="me-mode-badge badge-warn">destructive</span>
+          </label>
+
+          <label class="me-mode-card" data-mode="llm">
+            <input type="radio" name="me-import-mode" value="llm">
+            <span class="me-mode-name">LLM Merge</span>
+            <span class="me-mode-desc">Use AI to intelligently merge conflicting rows and markdown files.</span>
+            <span class="me-mode-badge badge-ai">recommended</span>
+          </label>
+
+        </div>
+      </div>
+
+      <!-- File picker + submit -->
+      <form id="me-import-form" enctype="multipart/form-data">
+        <div class="me-file-row">
+          <input type="file" name="file" accept=".tar.gz,.tgz,application/gzip" required>
+          <button type="submit" class="btn" id="me-import-btn">Import</button>
+        </div>
+      </form>
+
+      <div id="me-import-status" class="me-status info" style="margin-top:10px;display:none"></div>
+      <pre id="me-import-report" style="
+        background:var(--color-surface);border:1px solid var(--color-border);
+        border-radius:6px;padding:10px;font-size:11px;line-height:1.5;
+        max-height:260px;overflow:auto;white-space:pre-wrap;margin-top:8px;display:none
+      "></pre>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ SECTION 3: HISTORY ═══════════════════════ -->
+  <div class="card me-section" style="padding:0">
+    <div class="me-section-head">
+      <h2>Recent Exports</h2>
       <span class="pill pill-none" id="me-hist-count">—</span>
     </div>
     <div style="overflow-x:auto">
@@ -231,7 +338,7 @@
           <tr>
             <th>Date</th>
             <th>Type</th>
-            <th>Path / File</th>
+            <th>File</th>
             <th>Rows</th>
             <th>Size</th>
             <th>Mode</th>
@@ -245,26 +352,81 @@
       </table>
     </div>
   </div>
-</div>
+
+  <!-- ═══════════════════════ SECTION 4: ABOUT ═══════════════════════ -->
+  <div class="card me-section" style="padding:0">
+    <div class="me-section-head">
+      <h2>About</h2>
+    </div>
+    <div class="me-section-body">
+      <p style="font-size:12px;color:var(--color-muted);margin:0 0 12px">
+        The memory-export plugin lets you create portable snapshots of your
+        mcp-skill-hub state and restore them on any other instance.
+      </p>
+      <div class="me-about-grid">
+        <div class="me-about-item">
+          <span class="me-about-label">Snapshot contents</span>
+          <span class="me-about-val" style="color:var(--color-muted)">
+            Tasks, teachings, skills, memory segments, hub configuration, and
+            enabledPlugins settings. Excludes ephemeral runtime tables (logs,
+            cache, session state).
+          </span>
+        </div>
+        <div class="me-about-item">
+          <span class="me-about-label">Privacy</span>
+          <span class="me-about-val" style="color:var(--color-muted)">
+            <code>private/</code> directories are always excluded. Files containing
+            known PII tokens are flagged before export. Never share snapshots
+            containing sensitive credentials.
+          </span>
+        </div>
+        <div class="me-about-item">
+          <span class="me-about-label">FTS indexes</span>
+          <span class="me-about-val" style="color:var(--color-muted)">
+            Full-text search virtual tables (tasks_fts, teachings_fts) are excluded
+            from snapshots and automatically rebuilt from base tables on restore.
+          </span>
+        </div>
+        <div class="me-about-item">
+          <span class="me-about-label">Format</span>
+          <span class="me-about-val" style="color:var(--color-muted)">
+            .tar.gz with a manifest.json, JSONL table dumps, and .md project memory
+            files. Schema version is checked on import.
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- .me-page -->
 
 <script>
 (function () {
   'use strict';
 
   /* ── element refs ── */
-  var tablesTable   = document.getElementById('me-tables');
-  var projectsTable = document.getElementById('me-projects');
-  var downloadEl    = document.getElementById('me-download');
-  var localSkillsEl = document.getElementById('me-include-local-skills');
-  var importForm    = document.getElementById('me-import-form');
-  var importStatus  = document.getElementById('me-import-status');
-  var importReport  = document.getElementById('me-import-report');
-  var piiWarnEl     = document.getElementById('me-pii-warn');
-  var tablesAll     = document.getElementById('me-tables-all');
-  var projectsAll   = document.getElementById('me-projects-all');
-  var scopePill     = document.getElementById('me-scope-pill');
-  var histTbody     = document.getElementById('me-history-tbody');
-  var histCount     = document.getElementById('me-hist-count');
+  var tablesTable    = document.getElementById('me-tables');
+  var projectsTable  = document.getElementById('me-projects');
+  var downloadEl     = document.getElementById('me-download');
+  var localSkillsEl  = document.getElementById('me-include-local-skills');
+  var importForm     = document.getElementById('me-import-form');
+  var importStatus   = document.getElementById('me-import-status');
+  var importReport   = document.getElementById('me-import-report');
+  var importBtn      = document.getElementById('me-import-btn');
+  var piiWarnEl      = document.getElementById('me-pii-warn');
+  var tablesAll      = document.getElementById('me-tables-all');
+  var projectsAll    = document.getElementById('me-projects-all');
+  var scopePill      = document.getElementById('me-scope-pill');
+  var histTbody      = document.getElementById('me-history-tbody');
+  var histCount      = document.getElementById('me-hist-count');
+  var exportFeedback = document.getElementById('me-export-feedback');
+
+  /* ── spinner element factory ── */
+  function makeSpinner() {
+    var s = document.createElement('span');
+    s.className = 'me-spinner';
+    return s;
+  }
 
   /* ── utility ── */
   function humanBytes(n) {
@@ -277,7 +439,18 @@
     return n.toFixed(1) + ' GB';
   }
 
-  /* ── preview summary ── */
+  /* ── conflict mode card chooser ── */
+  var modeCards = document.querySelectorAll('.me-mode-card');
+  modeCards.forEach(function (card) {
+    card.addEventListener('click', function () {
+      modeCards.forEach(function (c) { c.classList.remove('selected'); });
+      card.classList.add('selected');
+      var radio = card.querySelector('input[type=radio]');
+      if (radio) radio.checked = true;
+    });
+  });
+
+  /* ── export: fetch preview and back-fill stats ── */
   fetch('/memory-export/api/export/preview')
     .then(function (r) { return r.json(); })
     .then(function (j) {
@@ -299,6 +472,26 @@
       scopePill.textContent = 'preview error';
       scopePill.className = 'pill pill-warn';
     });
+
+  /* ── export button: spinner feedback then allow native download ── */
+  window.handleExportClick = function (link) {
+    if (!exportFeedback) return;
+    exportFeedback.textContent = '';
+    exportFeedback.appendChild(makeSpinner());
+    exportFeedback.appendChild(document.createTextNode('Preparing\u2026'));
+    exportFeedback.className = 'me-export-result';
+    exportFeedback.style.display = '';
+    var dbSizeEl = document.getElementById('me-db-size');
+    var sizeText = dbSizeEl ? dbSizeEl.textContent : '';
+    setTimeout(function () {
+      exportFeedback.textContent =
+        'Download started' +
+        (sizeText && sizeText !== '\u2014' ? ' (\u2248' + sizeText + ')' : '') + '.';
+      exportFeedback.className = 'me-export-result ok';
+      setTimeout(function () { exportFeedback.style.display = 'none'; }, 4000);
+    }, 800);
+    /* return undefined — browser follows href normally */
+  };
 
   /* ── selection helpers ── */
   function selectedTables() {
@@ -403,12 +596,12 @@
       });
     }
     return {
-      hub_modes:      hub_modes,
-      project_modes:  project_modes,
-      llm_per_target: llm_per_target,
-      default_mode:   defaultMode,
+      hub_modes:        hub_modes,
+      project_modes:    project_modes,
+      llm_per_target:   llm_per_target,
+      default_mode:     defaultMode,
       default_llm_tier: 'tier_cheap',
-      max_llm_calls:  200,
+      max_llm_calls:    200,
     };
   }
 
@@ -418,10 +611,12 @@
     var fd = new FormData(importForm);
     fd.set('plan', JSON.stringify(buildPlan()));
 
-    importStatus.textContent = 'Importing…';
+    importBtn.disabled = true;
+    importBtn.textContent = 'Importing\u2026';
+    importStatus.textContent = 'Uploading and processing snapshot\u2026';
     importStatus.className = 'me-status info';
-    importStatus.hidden = false;
-    importReport.hidden = true;
+    importStatus.style.display = '';
+    importReport.style.display = 'none';
 
     fetch('/memory-export/import', {method: 'POST', body: fd})
       .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
@@ -429,19 +624,29 @@
         var j = res.j;
         var errors = j.errors || [];
         if (errors.length) {
-          importStatus.textContent = errors.length + ' error(s) during import.';
+          importStatus.textContent =
+            errors.length + ' error(s) during import — see report below.';
           importStatus.className = 'me-status err';
         } else {
-          importStatus.textContent = 'Import completed.';
+          var inserted = 0;
+          Object.values(j.tables || {}).forEach(function (t) {
+            inserted += (t.inserted || 0) + (t.replaced || 0) + (t.llm_merged || 0);
+          });
+          importStatus.textContent =
+            'Import completed. ' + inserted.toLocaleString() + ' row(s) written.';
           importStatus.className = 'me-status ok';
         }
         importReport.textContent = JSON.stringify(j, null, 2);
-        importReport.hidden = false;
+        importReport.style.display = '';
         loadHistory();
       })
       .catch(function (err) {
         importStatus.textContent = 'Import error: ' + err.message;
         importStatus.className = 'me-status err';
+      })
+      .finally(function () {
+        importBtn.disabled = false;
+        importBtn.textContent = 'Import';
       });
   });
 
@@ -453,13 +658,13 @@
         var records = j.records || [];
         histCount.textContent = records.length;
         histCount.className = records.length ? 'pill pill-ok' : 'pill pill-none';
-        histTbody.textContent = '';
+        while (histTbody.firstChild) histTbody.removeChild(histTbody.firstChild);
         if (!records.length) {
           var tr = document.createElement('tr');
           var td = document.createElement('td');
           td.colSpan = 8;
           td.className = 'me-empty';
-          td.textContent = 'No export/import operations recorded yet.';
+          td.textContent = 'No export or import operations recorded yet.';
           tr.appendChild(td);
           histTbody.appendChild(tr);
           return;
@@ -467,13 +672,13 @@
         records.forEach(function (rec) {
           var tr = document.createElement('tr');
           [
-            rec.created_at ? rec.created_at.replace('T', ' ').slice(0, 16) : '—',
-            rec.kind || '—',
-            rec.path ? rec.path.split('/').pop() : '—',
-            rec.row_count != null ? rec.row_count.toLocaleString() : '—',
+            rec.created_at ? rec.created_at.replace('T', ' ').slice(0, 16) : '\u2014',
+            rec.kind || '\u2014',
+            rec.path ? rec.path.split('/').pop() : '\u2014',
+            rec.row_count != null ? rec.row_count.toLocaleString() : '\u2014',
             humanBytes(rec.size_bytes),
-            rec.conflict_mode || '—',
-            rec.status || '—',
+            rec.conflict_mode || '\u2014',
+            rec.status || '\u2014',
             rec.notes || '',
           ].forEach(function (val, i) {
             var td = document.createElement('td');
@@ -485,7 +690,7 @@
         });
       })
       .catch(function () {
-        histTbody.textContent = '';
+        while (histTbody.firstChild) histTbody.removeChild(histTbody.firstChild);
         var tr = document.createElement('tr');
         var td = document.createElement('td');
         td.colSpan = 8;
