@@ -195,8 +195,23 @@ def run(
         return 0
 
     # --- Duplicate detection ---
+    # Fetch existing teachings unconditionally — read-only, safe in dry-run too.
     existing_rules: list[str] = []
     store: object | None = None
+
+    if _SKILL_HUB_AVAILABLE and SkillStore is not None:
+        try:
+            _store_kwargs: dict = {}
+            if db_path:
+                _store_kwargs["db_path"] = Path(db_path)
+            _probe_store = SkillStore(**_store_kwargs)  # type: ignore[call-arg]
+            existing_rules = [row["rule"] for row in _probe_store.list_teachings()]  # type: ignore[union-attr]
+            if dry_run:
+                _probe_store.close()  # type: ignore[union-attr]
+            else:
+                store = _probe_store  # reuse in live mode
+        except Exception as exc:
+            print(f"  WARN: could not fetch existing teachings: {exc}", file=sys.stderr)
 
     if not dry_run:
         if not _SKILL_HUB_AVAILABLE or SkillStore is None:
@@ -206,15 +221,12 @@ def run(
                 file=sys.stderr,
             )
             sys.exit(1)
-        store_kwargs: dict = {}
-        if db_path:
-            store_kwargs["db_path"] = Path(db_path)
-        store = SkillStore(**store_kwargs)  # type: ignore[call-arg]
-        try:
-            rows = store.list_teachings()  # type: ignore[union-attr]
-            existing_rules = [row["rule"] for row in rows]
-        except Exception as exc:
-            print(f"  WARN: could not fetch existing teachings: {exc}", file=sys.stderr)
+        if store is None:
+            # _probe_store failed; open a fresh store for writes
+            store_kwargs: dict = {}
+            if db_path:
+                store_kwargs["db_path"] = Path(db_path)
+            store = SkillStore(**store_kwargs)  # type: ignore[call-arg]
 
     to_insert: list[dict[str, str]] = []
     already_exists: list[dict[str, str]] = []
@@ -258,10 +270,8 @@ def run(
                 rule_vector = embed(rule)  # type: ignore[operator]
             except Exception as exc:
                 print(f"  WARN: embedding failed for {item['name']!r}: {exc} — saving without vector")
-
-        if not rule_vector:
-            from skill_hub.store import VEC_DIM  # type: ignore[import]
-            rule_vector = [0.0] * VEC_DIM
+        # Do NOT fall back to [0.0]*VEC_DIM — an empty list signals _mirror_teaching_vec
+        # to skip the vec0 write, avoiding zero-vector poisoning of semantic search.
 
         try:
             teaching_id = store.add_teaching(  # type: ignore[union-attr]
