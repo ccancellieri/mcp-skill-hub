@@ -1,0 +1,39 @@
+{% for job in jobs %}
+<tr>
+  <td><strong>{{ job.name }}</strong></td>
+  <td>
+    <code class="sched">{{ job.schedule }}</code>
+    {% if job.human_schedule and job.human_schedule != job.schedule %}
+    <br><span class="muted-ts">{{ job.human_schedule }}</span>
+    {% endif %}
+  </td>
+  <td><code style="font-family:ui-monospace,monospace;font-size:11px">{{ job.command }}</code></td>
+  <td>
+    {% if job.last_status == 'ok' %}
+      <span class="pill pill-ok">ok</span>
+    {% elif job.last_status == 'error' %}
+      <span class="pill pill-error" title="{{ job.last_error or '' }}">error</span>
+    {% else %}
+      <span class="pill pill-none">—</span>
+    {% endif %}
+  </td>
+  <td class="muted-ts">{{ (job.last_run_at or '—')[:16] }}</td>
+  <td class="muted-ts">{{ (job.next_run_at or '—')[:16] }}</td>
+  <td class="muted-ts">{% if job.last_duration_ms is not none %}{{ job.last_duration_ms }} ms{% else %}—{% endif %}</td>
+  <td class="muted-ts">{{ job.run_count or 0 }}</td>
+  <td>
+    <div class="action-row">
+      <button class="btn sm"
+              data-toggle-job="{{ job.id }}"
+              data-enabled="{{ '1' if job.enabled else '0' }}"
+              title="{{ 'Disable' if job.enabled else 'Enable' }}">
+        {% if job.enabled %}<span class="pill pill-on" style="font-size:9px">on</span>{% else %}<span class="pill pill-off" style="font-size:9px">off</span>{% endif %}
+      </button>
+      <button class="btn sm" data-run-job="{{ job.id }}" title="Run now">Run</button>
+      <button class="btn sm danger" data-delete-job="{{ job.id }}" title="Delete">Del</button>
+    </div>
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="9" style="text-align:center;color:var(--color-muted);padding:20px">No cron jobs configured.</td></tr>
+{% endfor %}

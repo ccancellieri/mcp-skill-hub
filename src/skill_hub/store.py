@@ -553,6 +553,21 @@ class SkillStore:
                 INSERT INTO teachings_fts(rowid, rule, action)
                 VALUES (new.id, new.rule, new.action);
             END;
+
+            -- Cron scheduler: job definitions with execution history.
+            CREATE TABLE IF NOT EXISTS cron_jobs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                TEXT NOT NULL UNIQUE,
+                schedule            TEXT NOT NULL,
+                command             TEXT NOT NULL,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                last_run_at         TEXT,
+                last_status         TEXT,
+                last_error          TEXT,
+                last_duration_ms    INTEGER,
+                run_count           INTEGER NOT NULL DEFAULT 0,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
         self._conn.commit()
 
@@ -713,6 +728,23 @@ class SkillStore:
                  cfg.get("max_docs", 0)),
             )
         self._conn.commit()
+
+        # Incremental migrations for cron_jobs table (new columns added in H.1)
+        cron_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(cron_jobs)")}
+        _cron_additions = [
+            ("description",      "TEXT"),
+            ("params",           "TEXT NOT NULL DEFAULT '{}'"),
+            ("is_builtin",       "INTEGER NOT NULL DEFAULT 0"),
+            ("is_dangerous",     "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at",       "TEXT NOT NULL DEFAULT (datetime('now'))"),
+        ]
+        for col, ddl in _cron_additions:
+            if col not in cron_cols:
+                self._conn.execute(f"ALTER TABLE cron_jobs ADD COLUMN {col} {ddl}")
+        self._conn.commit()
+
+        # Seed built-in cron jobs (idempotent — ON CONFLICT DO UPDATE).
+        self._seed_builtin_cron_jobs()
 
         # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
         self._rebuild_fts_index(self._conn)
@@ -2723,6 +2755,97 @@ class SkillStore:
         self._conn.commit()
         return cur.rowcount
 
+    # ------------------------------------------------------------------
+    # Cron jobs — Phase H.1
+
+    def _seed_builtin_cron_jobs(self) -> None:
+        """Seed built-in cron jobs on first run (idempotent due to ON CONFLICT)."""
+        defaults = [
+            ("memory-optimize-preview", "Memory optimize (dry-run preview)", "0 2 * * *",
+             "optimize_memory_dry_run", {}, True, False),
+            ("teachings-sync", "Teachings sync from feedback files", "0 3 * * *",
+             "feedback_to_teachings", {}, True, False),
+            ("archive-closed-tasks", "Archive DONE/SHIPPED entries to DB", "0 4 * * *",
+             "archive_memory_to_db_dry_run", {}, True, True),
+            ("memory-export-snapshot", "Weekly memory export snapshot", "0 0 * * 0",
+             "memexp_snapshot_create", {}, False, False),
+            ("pipeline-health-check", "Pipeline backend health check", "*/15 * * * *",
+             "check_embedding_backends", {}, True, False),
+        ]
+        for name, desc, sched, cmd, params, enabled, is_dangerous in defaults:
+            self._conn.execute(
+                """INSERT INTO cron_jobs (name, description, schedule, command, params,
+                       enabled, is_builtin, is_dangerous)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       description=excluded.description,
+                       schedule=excluded.schedule,
+                       command=excluded.command,
+                       is_builtin=1,
+                       updated_at=datetime('now')""",
+                (name, desc, sched, cmd, json.dumps(params),
+                 1 if enabled else 0, 1 if is_dangerous else 0),
+            )
+        self._conn.commit()
+
+    def list_cron_jobs(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs ORDER BY is_builtin DESC, name ASC"
+        ).fetchall()
+
+    def get_cron_job(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+
+    def upsert_cron_job(self, name: str, description: str, schedule: str,
+                        command: str, params: dict, enabled: bool = True,
+                        is_builtin: bool = False, is_dangerous: bool = False) -> int:
+        cur = self._conn.execute(
+            """INSERT INTO cron_jobs (name, description, schedule, command, params,
+                   enabled, is_builtin, is_dangerous)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   description=excluded.description,
+                   schedule=excluded.schedule,
+                   command=excluded.command,
+                   params=excluded.params,
+                   enabled=excluded.enabled,
+                   is_dangerous=excluded.is_dangerous,
+                   updated_at=datetime('now')""",
+            (name, description, schedule, command, json.dumps(params),
+             1 if enabled else 0, 1 if is_builtin else 0, 1 if is_dangerous else 0),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def delete_cron_job(self, job_id: int) -> bool:
+        """Delete non-builtin cron job."""
+        cur = self._conn.execute(
+            "DELETE FROM cron_jobs WHERE id = ? AND is_builtin = 0", (job_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def update_cron_job_status(self, job_id: int, status: str,
+                               duration_ms: int | None = None,
+                               error: str | None = None) -> None:
+        self._conn.execute(
+            """UPDATE cron_jobs SET last_run_at=datetime('now'), last_status=?,
+                   last_duration_ms=?, last_error=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (status, duration_ms, error, job_id),
+        )
+        self._conn.commit()
+
+    def toggle_cron_job(self, job_id: int, enabled: bool) -> bool:
+        cur = self._conn.execute(
+            "UPDATE cron_jobs SET enabled=?, updated_at=datetime('now') WHERE id=?",
+            (1 if enabled else 0, job_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._conn.close()
 
@@ -3031,3 +3154,76 @@ def _maybe_apply_plugin_schema(conn: sqlite3.Connection, namespace: str) -> None
                 "plugin %s: schema apply failed: %s", namespace, exc,
             )
         return
+
+    # ------------------------------------------------------------------
+    # Cron jobs CRUD
+    # ------------------------------------------------------------------
+
+    def list_cron_jobs(self) -> list[sqlite3.Row]:
+        self._conn.row_factory = sqlite3.Row
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs ORDER BY id"
+        ).fetchall()
+
+    def get_cron_job(self, job_id: int) -> sqlite3.Row | None:
+        self._conn.row_factory = sqlite3.Row
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+
+    def upsert_cron_job(
+        self,
+        name: str,
+        schedule: str,
+        command: str,
+        enabled: bool = True,
+        description: str = "",
+        params: dict | None = None,
+        is_builtin: bool = False,
+        is_dangerous: bool = False,
+    ) -> int:
+        """Insert or replace a cron job; returns the row id."""
+        cur = self._conn.execute(
+            "INSERT INTO cron_jobs(name, schedule, command, enabled)"
+            " VALUES(?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET"
+            " schedule=excluded.schedule, command=excluded.command,"
+            " enabled=excluded.enabled",
+            (name, schedule, command, int(enabled)),
+        )
+        self._conn.commit()
+        if cur.lastrowid:
+            return cur.lastrowid
+        row = self._conn.execute(
+            "SELECT id FROM cron_jobs WHERE name=?", (name,)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def toggle_cron_job(self, job_id: int, enabled: bool) -> None:
+        self._conn.execute(
+            "UPDATE cron_jobs SET enabled=? WHERE id=?",
+            (int(enabled), job_id),
+        )
+        self._conn.commit()
+
+    def delete_cron_job(self, job_id: int) -> bool:
+        """Delete a cron job. Returns True if deleted."""
+        self._conn.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
+        self._conn.commit()
+        return True
+
+    def update_cron_job_status(
+        self,
+        job_id: int,
+        status: str,
+        error: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE cron_jobs"
+            " SET last_run_at=datetime('now'), last_status=?,"
+            " last_error=?, last_duration_ms=?, run_count=run_count+1"
+            " WHERE id=?",
+            (status, error, duration_ms, job_id),
+        )
+        self._conn.commit()

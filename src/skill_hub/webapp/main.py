@@ -17,6 +17,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 from .middleware.banner import BannerMiddleware
 from .routes import control as control_routes
 from .routes import control_plugins as control_plugins_routes
+from .routes import cron as cron_routes
 from .routes import dashboard as dashboard_routes
 from .routes import intents as intents_routes
 from .routes import logs as logs_routes
@@ -54,6 +55,7 @@ _CORE_NAV: list[dict[str, Any]] = [
     {"key": "vector", "label": "Vector", "href": "/vector"},
     {"key": "intents", "label": "Intents", "href": "/intents"},
     {"key": "questions", "label": "Questions", "href": "/questions"},
+    {"key": "cron", "label": "Cron", "href": "/cron"},
 ]
 
 
@@ -178,6 +180,19 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(vector_routes.router)
     app.include_router(intents_routes.router)
     app.include_router(questions_routes.router)
+    app.include_router(cron_routes.router)
+
+    # Seed default cron jobs (no-op if table already populated) and start
+    # the background scheduler when cron_jobs_enabled is True.
+    try:
+        from .. import config as _cfg
+        from .. import cron as _cron_mod
+        from ..store import DB_PATH as _DB_PATH
+        _cron_mod.seed_defaults(str(_DB_PATH))
+        if _cfg.get("cron_jobs_enabled"):
+            _cron_mod.get_scheduler().start()
+    except Exception as _exc:
+        _log.warning("cron init failed (non-fatal): %s", _exc)
 
     # Plugin extension-point: A1 — mount plugin web sub-apps.
     # See docs/plugin-extension-points.md for plugin.json "web_mount" + the
