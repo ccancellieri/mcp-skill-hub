@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}memory-export{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/memory-export/static/page.css">
+
+<section class="me-page">
+  <header class="me-header">
+    <h1>Memory Export</h1>
+    <p class="me-sub">
+      Export and re-import the full mcp-skill-hub memory: hub DB tables,
+      configuration, and the project memories you select. <code>private/</code>
+      directories are <strong>always</strong> excluded.
+    </p>
+  </header>
+
+  <div class="me-grid">
+    <!-- ============================================================
+         Column 1 — Hub tables (with per-table mode controls)
+         ============================================================ -->
+    <div class="me-col">
+      <h2>Hub tables</h2>
+      <p class="me-help">Mode is applied at <em>import</em> time. Pick LLM to
+        invoke an LLM-driven 3-way merge for conflicting rows.</p>
+      <table class="me-table" id="me-tables">
+        <thead>
+          <tr><th><input type="checkbox" id="me-tables-all" checked></th>
+              <th>Table</th><th>Mode</th><th>LLM tier</th></tr>
+        </thead>
+        <tbody>
+        {% for t in tables %}
+          <tr data-table="{{ t }}">
+            <td><input type="checkbox" class="me-tbl-include" checked></td>
+            <td><code>{{ t }}</code></td>
+            <td>
+              <select class="me-tbl-mode">
+                {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
+              </select>
+            </td>
+            <td>
+              <select class="me-tbl-tier" disabled>
+                {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
+              </select>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============================================================
+         Column 2 — Project memories
+         ============================================================ -->
+    <div class="me-col">
+      <h2>Project memories</h2>
+      <p class="me-help">Top-level <code>*.md</code> files only. The
+        <code>private/</code> subdirectory of each project is always excluded.</p>
+      <table class="me-table" id="me-projects">
+        <thead>
+          <tr><th><input type="checkbox" id="me-projects-all"></th>
+              <th>Project</th><th>Files</th><th>Has private/</th>
+              <th>Mode</th><th>LLM tier</th></tr>
+        </thead>
+        <tbody>
+        {% for p in projects %}
+          <tr data-project="{{ p.key }}">
+            <td><input type="checkbox" class="me-proj-include"></td>
+            <td><code class="me-proj-key">{{ p.key }}</code></td>
+            <td>{{ p.top_level_md_count }}</td>
+            <td>{% if p.private_md_count %}<span class="me-warn">yes ({{ p.private_md_count }})</span>{% else %}no{% endif %}</td>
+            <td>
+              <select class="me-proj-mode">
+                {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
+              </select>
+            </td>
+            <td>
+              <select class="me-proj-tier" disabled>
+                {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
+              </select>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <label class="me-checkbox">
+        <input type="checkbox" id="me-include-local-skills">
+        Also include <code>~/.claude/local-skills/*.json</code>
+      </label>
+    </div>
+
+    <!-- ============================================================
+         Column 3 — Live preview
+         ============================================================ -->
+    <div class="me-col">
+      <h2>Preview</h2>
+      <p class="me-help">Updates as you toggle checkboxes.</p>
+      <pre id="me-preview" class="me-preview">(select something to preview)</pre>
+      <div id="me-pii-warn" class="me-pii-warn" hidden></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       Footer — actions
+       ============================================================ -->
+  <footer class="me-actions">
+    <a id="me-download" class="me-btn me-btn-primary" href="#">Download snapshot</a>
+
+    <form id="me-import-form" class="me-import" enctype="multipart/form-data">
+      <label class="me-file">
+        <span>Upload a snapshot</span>
+        <input type="file" name="file" accept=".tar.gz,.tgz,application/gzip" required>
+      </label>
+      <button type="submit" class="me-btn">Import</button>
+    </form>
+
+    <pre id="me-import-report" class="me-preview" hidden></pre>
+  </footer>
+</section>
+
+<script src="/memory-export/static/page.js" defer></script>
+{% endblock %}

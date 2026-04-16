@@ -23,6 +23,30 @@ _log = logging.getLogger(__name__)
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
+# Repo-root-relative folder for first-party bundled plugins. Resolved from this
+# file's location: src/skill_hub/plugin_registry.py -> ../../../plugins
+BUNDLED_PLUGINS_DIR = Path(__file__).resolve().parents[2] / "plugins"
+
+
+def _iter_bundled_sources() -> Iterator[dict[str, Any]]:
+    """Synthetic ``extra_plugin_dirs`` entries for ``<repo>/plugins/*``.
+
+    Each subdirectory containing a ``plugin.json`` becomes an entry. Honours
+    the ``bundled_plugins_enabled`` config flag (default True). Bundled
+    plugins still respect the per-plugin enabled bit in
+    ``~/.claude/settings.json["enabledPlugins"]`` via ``iter_all_plugins``.
+    """
+    if not bool(_cfg.get("bundled_plugins_enabled")):
+        return
+    if not BUNDLED_PLUGINS_DIR.exists():
+        return
+    for d in sorted(BUNDLED_PLUGINS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        if not (d / "plugin.json").exists():
+            continue
+        yield {"path": str(d), "source": "bundled", "enabled": True}
+
 
 def _load_settings() -> dict:
     if not SETTINGS_PATH.exists():
@@ -60,7 +84,7 @@ def iter_enabled_plugins() -> Iterator[dict[str, Any]]:
     the file is missing/invalid). ``name`` falls back to the directory name.
     """
     cfg = _cfg.load_config() if hasattr(_cfg, "load_config") else {}
-    entries = cfg.get("extra_plugin_dirs") or []
+    entries = list(_iter_bundled_sources()) + list(cfg.get("extra_plugin_dirs") or [])
     for entry in entries:
         if not entry.get("enabled", True):
             continue
@@ -102,7 +126,8 @@ def iter_all_plugins() -> Iterator[dict[str, Any]]:
     cfg = _cfg.load_config() if hasattr(_cfg, "load_config") else {}
     enabled_map = _enabled_map()
     # Reuse iter_enabled_plugins' parsing by briefly bypassing the source flag.
-    for entry in cfg.get("extra_plugin_dirs") or []:
+    sources = list(_iter_bundled_sources()) + list(cfg.get("extra_plugin_dirs") or [])
+    for entry in sources:
         base = Path(str(entry.get("path", ""))).expanduser()
         if not base.exists():
             continue

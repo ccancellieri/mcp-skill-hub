@@ -1,0 +1,14 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--memory-export">
+  <header class="dash-card-head">
+    <h3>Memory Export</h3>
+    <a class="dash-card-link" href="/memory-export/">Open →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Last export", last_export_at or "never",
+                kind=("good" if last_export_at else "warn"),
+                sub=(last_export_size or "")) }}
+    {{ kpi_card("Projects detected", project_count|string, kind="default") }}
+    {{ kpi_card("Hub tables", table_count|string, kind="default") }}
+  </div>
+</section>

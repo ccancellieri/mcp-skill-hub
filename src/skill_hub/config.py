@@ -16,6 +16,10 @@ _DEFAULTS = {
     # Ollama connection
     "ollama_base": "http://localhost:11434",
 
+    # Bundled (in-tree) plugins under <repo>/plugins/* are auto-discovered
+    # at startup unless this is set to False.
+    "bundled_plugins_enabled": True,
+
     # Embedding model — used for all vector operations
     # Options: nomic-embed-text (274MB), mxbai-embed-large (669MB), all-minilm (45MB)
     "embed_model": "nomic-embed-text",

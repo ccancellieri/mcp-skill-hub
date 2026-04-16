@@ -1,0 +1,7 @@
+{
+  "name": "memory-export",
+  "version": "0.1.0",
+  "description": "Export and import the full mcp-skill-hub memory (hub DB + project memories) as portable tar.gz, with optional LLM-driven conflict resolution",
+  "web_mount": {"mount": "/memory-export", "title": "Memory Export", "icon": "archive", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py"
+}

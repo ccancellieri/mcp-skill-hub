@@ -1,0 +1,5 @@
+[project]
+name = "memory-export-skill-hub-plugin"
+version = "0.1.0"
+description = "Bundled mcp-skill-hub plugin: export and import the full hub memory"
+requires-python = ">=3.10"
