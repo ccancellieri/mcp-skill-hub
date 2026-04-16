@@ -161,6 +161,19 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
                 </button>
               </span>
             </template>
+            {# Per-task option toggles #}
+            <button class="btn sm"
+                    :class="taskOptions.auto_approve === true ? 'on' : taskOptions.auto_approve === false ? 'off' : ''"
+                    :title="'Auto-approve: ' + (taskOptions.auto_approve === true ? 'ON (click to disable)' : taskOptions.auto_approve === false ? 'OFF (click to clear)' : 'inherit global (click to enable)')"
+                    @click="cycleAutoApprove()"
+                    x-text="'AA:' + (taskOptions.auto_approve === true ? 'on' : taskOptions.auto_approve === false ? 'off' : '—')">
+            </button>
+            <button class="btn sm"
+                    :class="taskOptions.routing_disabled ? 'off' : ''"
+                    :title="taskOptions.routing_disabled ? 'Routing disabled — click to re-enable' : 'Routing active — click to disable'"
+                    @click="toggleRouting()"
+                    x-text="'R:' + (taskOptions.routing_disabled ? 'off' : 'on')">
+            </button>
             <button class="btn sm danger"
                     @click="if(confirm('Delete task #'+selectedId+'?')) fetch('/tasks/'+selectedId+'/delete',{method:'POST'}).then(()=>location.reload())"
                     title="Permanently delete task">
@@ -227,14 +240,20 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
             </template>
           </div>
 
-          {# Model routing section #}
+          {# Model routing section — shown when we have data OR when matched_by is known #}
           <template x-if="modelStats.models && modelStats.models.length > 0">
             <div style="padding: 10px 18px 12px; border-bottom: 1px solid var(--color-border)">
               <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom: 8px">
                 <span class="task-detail-section-label">Router · model distribution</span>
-                <span style="font-size:10px; color:var(--color-muted)"
-                      x-text="'~$' + estCost(modelStats.models).toFixed(3)"
-                      title="Rough cost estimate: haiku $0.003, sonnet $0.010, opus $0.050 per prompt"></span>
+                <span style="display:flex; gap:8px; align-items:baseline">
+                  <span style="font-size:9px; padding:1px 5px; border-radius:3px"
+                        :style="{background: modelStats.matched_by==='task_id' ? 'rgba(166,227,161,0.12)' : modelStats.matched_by==='time_window' ? 'rgba(249,226,175,0.12)' : 'rgba(255,255,255,0.05)', color: modelStats.matched_by==='task_id' ? 'var(--color-good)' : modelStats.matched_by==='time_window' ? 'var(--color-warn)' : 'var(--color-muted)'}"
+                        x-text="'matched: ' + (modelStats.matched_by || 'none')"
+                        :title="modelStats.matched_by==='task_id' ? 'Exact task match' : modelStats.matched_by==='time_window' ? 'Time-window match (may include concurrent tasks)' : 'No router data found for this task'"></span>
+                  <span style="font-size:10px; color:var(--color-muted)"
+                        x-text="'~$' + estCost(modelStats.models).toFixed(3)"
+                        title="Rough cost estimate: haiku $0.003, sonnet $0.010, opus $0.050 per prompt"></span>
+                </span>
               </div>
               <div style="display: flex; flex-direction: column; gap: 8px">
                 <template x-for="model in modelStats.models" :key="model.name">
@@ -263,6 +282,14 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
                   </div>
                 </div>
               </template>
+            </div>
+          </template>
+
+          {# No-data notice when routing log has no match for this task #}
+          <template x-if="modelStats.matched_by === 'none' && selectedId">
+            <div style="padding:8px 18px; border-bottom:1px solid var(--color-border); font-size:11px; color:var(--color-muted); display:flex; align-items:center; gap:6px">
+              <span style="opacity:.6">○</span>
+              <span>No router data found for this task — stats will appear after the next prompt is routed with this task active.</span>
             </div>
           </template>
 
@@ -397,11 +424,12 @@ function tasksApp() {
     mode: 'text',
     selectedId: null,
     selectedTask: {},
+    taskOptions: {},
     selected: [],
     logLines: [],
     liveLog: false,
     autoScroll: true,
-    modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [] },
+    modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none' },
     sessionStats: { message_count: null, duration_hours: null, log_count: 0, updated_at: null },
     _ws: null,
 
@@ -432,13 +460,40 @@ function tasksApp() {
       this._stopLive();
       this.selectedId = id;
       this.selectedTask = task;
+      this.taskOptions = task.options || {};
       this.logLines = [];
-      this.modelStats = { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [] };
+      this.modelStats = { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none' };
       this.sessionStats = { message_count: null, duration_hours: null, log_count: 0, updated_at: null };
       this.autoScroll = true;
       this.refreshLogs();
       this.fetchModelStats();
       this.fetchSessionStats();
+    },
+
+    async _patchOptions(patch) {
+      if (!this.selectedId) return;
+      try {
+        const r = await fetch('/tasks/' + this.selectedId + '/options', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(patch),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          this.taskOptions = j.options || {};
+        }
+      } catch(_) {}
+    },
+
+    cycleAutoApprove() {
+      // null → true → false → null
+      const cur = this.taskOptions.auto_approve;
+      const next = cur === null || cur === undefined ? true : cur === true ? false : null;
+      this._patchOptions({auto_approve: next});
+    },
+
+    toggleRouting() {
+      this._patchOptions({routing_disabled: !this.taskOptions.routing_disabled});
     },
 
     async fetchModelStats() {

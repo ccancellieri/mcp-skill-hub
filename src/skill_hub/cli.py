@@ -6474,9 +6474,10 @@ def main() -> None:
 
     elif cmd == "route":
         # Prompt router — called by hooks/prompt_router.py on every UserPromptSubmit.
-        # Args: [--session-id <id>] [--cwd <path>] <message>
+        # Args: [--session-id <id>] [--cwd <path>] [--task-id <int>] <message>
         session_id = ""
         cwd = ""
+        task_id: int | None = None
         filtered_args = []
         i = 0
         while i < len(args):
@@ -6486,12 +6487,18 @@ def main() -> None:
             elif args[i] == "--cwd" and i + 1 < len(args):
                 cwd = args[i + 1]
                 i += 2
+            elif args[i] == "--task-id" and i + 1 < len(args):
+                try:
+                    task_id = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
             else:
                 filtered_args.append(args[i])
                 i += 1
         message = " ".join(filtered_args) if filtered_args else sys.stdin.read()
         from .router.route import route as _route
-        result = _route(message.strip(), session_id=session_id, cwd=cwd)
+        result = _route(message.strip(), session_id=session_id, cwd=cwd, task_id=task_id)
         print(json.dumps(result))
 
     else:

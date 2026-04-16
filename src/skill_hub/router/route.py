@@ -53,6 +53,7 @@ def route(
     prompt: str,
     session_id: str = "",
     cwd: str = "",
+    task_id: int | None = None,
 ) -> dict[str, Any]:
     """Classify *prompt* and return a hook-compatible output dict.
 
@@ -229,6 +230,7 @@ def route(
         tier2_ms=tier2_ms,
         tier3_ms=tier3_ms,
         session_id=session_id,
+        task_id=task_id,
         prompt_preview=prompt[:80],
         prompt_len=len(prompt),
     )

@@ -59,11 +59,30 @@ def main() -> None:
         log("skip  reason=empty_message")
         return
 
+    # Read active task marker — provides task_id for telemetry and option overrides.
+    _active_marker = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
+    active_task: dict = {}
+    try:
+        if _active_marker.exists():
+            active_task = json.loads(_active_marker.read_text()) or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # Check per-task routing_disabled option — skip routing entirely if set.
+    task_options: dict = active_task.get("options") or {}
+    if task_options.get("routing_disabled"):
+        log(f"skip  reason=routing_disabled  task_id={active_task.get('task_id')}")
+        return
+
+    active_task_id = active_task.get("task_id")
+
     cmd = [str(CLI), "route"]
     if session_id:
         cmd.extend(["--session-id", session_id])
     if cwd:
         cmd.extend(["--cwd", cwd])
+    if active_task_id is not None:
+        cmd.extend(["--task-id", str(active_task_id)])
     cmd.append(message)
 
     t_cli = time.monotonic()

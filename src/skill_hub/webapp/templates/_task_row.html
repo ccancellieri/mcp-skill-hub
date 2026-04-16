@@ -1,4 +1,6 @@
 {% set aa = t.get('auto_approve') %}
+{% set opts = t.get('options') or {} %}
+{% set routing_disabled = opts.get('routing_disabled') %}
 {% set desc = (t.get('summary') or t.get('context') or '') %}
 {% set desc_short = desc[:140] %}
 <tr id="task-{{ t.id }}" x-data="{open:false, logsLoaded:false}">
@@ -43,10 +45,16 @@
       </span>
     </template>
   </td>
-  <td>
+  <td style="white-space:nowrap">
     <button class="btn sm {% if aa == True %}on{% elif aa == False %}off{% endif %}"
+            title="Auto-approve: cycle null→on→off"
             onclick="cycleAutoApprove({{ t.id }}, {% if aa is none %}null{% elif aa %}true{% else %}false{% endif %})">
-      {% if aa is none %}—{% elif aa %}ON{% else %}OFF{% endif %}
+      AA:{% if aa is none %}—{% elif aa %}on{% else %}off{% endif %}
+    </button>
+    <button class="btn sm {% if routing_disabled %}off{% endif %}"
+            title="{% if routing_disabled %}Routing disabled — click to re-enable{% else %}Routing active — click to disable{% endif %}"
+            onclick="toggleRouting({{ t.id }}, {% if routing_disabled %}true{% else %}false{% endif %})">
+      R:{% if routing_disabled %}off{% else %}on{% endif %}
     </button>
   </td>
   <td>

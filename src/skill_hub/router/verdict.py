@@ -138,6 +138,7 @@ class Verdict:
 
     # Identity
     session_id: str = ""
+    task_id: int | None = None       # active task at routing time (from active_task.json)
     prompt_preview: str = ""         # first 80 chars
     prompt_len: int = 0              # full prompt length in chars (for savings estimation)
 
@@ -220,6 +221,7 @@ def append_audit_log(v: Verdict, log_path: str | Path) -> None:
     entry: dict[str, Any] = {
         "ts": ts,
         "session_id": v.session_id,
+        "task_id": v.task_id,
         "prompt": v.prompt_preview,
         "verdict": {
             "model": v.model,

@@ -524,6 +524,14 @@ class SkillStore:
                 "ALTER TABLE tasks ADD COLUMN auto_approve INTEGER"
             )
             self._conn.commit()
+            task_cols = task_cols | {"auto_approve"}
+
+        # Per-task options blob: JSON object with routing_disabled, model_pin, etc.
+        if "options" not in task_cols:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN options TEXT"
+            )
+            self._conn.commit()
 
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
@@ -1361,23 +1369,75 @@ class SkillStore:
         ).fetchone()
 
     def set_task_auto_approve(self, task_id: int, enabled: bool | None) -> bool:
-        """Set per-task auto_approve flag. None clears (global behavior)."""
-        val = None if enabled is None else (1 if enabled else 0)
-        cur = self._conn.execute(
-            "UPDATE tasks SET auto_approve = ?, updated_at = datetime('now') "
-            "WHERE id = ?",
-            (val, task_id),
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+        """Set per-task auto_approve flag. None clears (global behavior).
+
+        Delegates to set_task_options to keep options column in sync.
+        """
+        return self.set_task_options(task_id, {"auto_approve": enabled})
 
     def get_task_auto_approve(self, task_id: int) -> bool | None:
         row = self._conn.execute(
-            "SELECT auto_approve FROM tasks WHERE id = ?", (task_id,)
+            "SELECT auto_approve, options FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
-        if row is None or row["auto_approve"] is None:
+        if row is None:
+            return None
+        # options.auto_approve takes priority if set explicitly
+        if row["options"]:
+            try:
+                opts = json.loads(row["options"])
+                if "auto_approve" in opts and opts["auto_approve"] is not None:
+                    return bool(opts["auto_approve"])
+            except (TypeError, json.JSONDecodeError):
+                pass
+        if row["auto_approve"] is None:
             return None
         return bool(row["auto_approve"])
+
+    def get_task_options(self, task_id: int) -> dict:
+        """Return per-task options dict (merged from options column + auto_approve column).
+
+        Keys: auto_approve, routing_disabled, model_pin, preload_skills, forbid_skills.
+        All keys are optional; absence means "inherit global default".
+        """
+        row = self._conn.execute(
+            "SELECT auto_approve, options FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None:
+            return {}
+        opts: dict = {}
+        if row["options"]:
+            try:
+                opts = json.loads(row["options"]) or {}
+            except (TypeError, json.JSONDecodeError):
+                opts = {}
+        # Back-fill from the legacy auto_approve column when not in options.
+        if "auto_approve" not in opts and row["auto_approve"] is not None:
+            opts["auto_approve"] = bool(row["auto_approve"])
+        return opts
+
+    def set_task_options(self, task_id: int, patch: dict) -> bool:
+        """Patch per-task options.  Keys with value None are removed.
+
+        Example: set_task_options(1, {"routing_disabled": True}) enables the flag.
+                 set_task_options(1, {"routing_disabled": None}) removes the key.
+        """
+        current = self.get_task_options(task_id)
+        for k, v in patch.items():
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+        # Mirror auto_approve into the legacy column for backwards compat.
+        aa = current.get("auto_approve")
+        aa_val = None if aa is None else (1 if aa else 0)
+        options_json = json.dumps(current) if current else None
+        cur = self._conn.execute(
+            "UPDATE tasks SET options = ?, auto_approve = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (options_json, aa_val, task_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def search_tasks(self, query_vector: list[float], top_k: int = 3,
                      status: str = "all", min_sim: float = 0.4) -> list[dict]:

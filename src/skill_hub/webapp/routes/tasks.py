@@ -1,11 +1,29 @@
 """Tasks route — open/closed panels, CRUD, search, teaching, auto-approve."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+_ACTIVE_TASK_MARKER = (
+    Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
+)
+
+
+def _clear_marker_if_matches(task_id: int) -> None:
+    """Remove active_task.json if it points at task_id (parity with MCP close_task)."""
+    try:
+        if not _ACTIVE_TASK_MARKER.exists():
+            return
+        cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
+        if cur.get("task_id") == task_id:
+            _ACTIVE_TASK_MARKER.unlink(missing_ok=True)
+    except (OSError, json.JSONDecodeError):
+        pass
 
 router = APIRouter()
 
@@ -34,10 +52,13 @@ def _list_for_panel(store, status: str, limit: int | None = None) -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
-        # attach auto_approve flag (best-effort; method doesn't throw)
+        task_id = d["id"]
+        # attach options + auto_approve flag (best-effort; method doesn't throw)
         try:
-            d["auto_approve"] = store.get_task_auto_approve(d["id"])
+            d["options"] = store.get_task_options(task_id)
+            d["auto_approve"] = d["options"].get("auto_approve")
         except Exception:
+            d["options"] = {}
             d["auto_approve"] = None
         out.append(d)
     if limit:
@@ -49,7 +70,7 @@ def _list_for_panel(store, status: str, limit: int | None = None) -> list[dict]:
 def tasks_page(request: Request) -> Any:
     store = request.app.state.store
     open_tasks = _list_for_panel(store, "open")
-    closed_tasks = _list_for_panel(store, "closed", limit=50)
+    closed_tasks = _list_for_panel(store, "closed")
     templates = request.app.state.templates
     embed_ok = _try_embed("ping") is not None
     return templates.TemplateResponse(
@@ -134,9 +155,10 @@ async def close_task(task_id: int, request: Request) -> Any:
         task = _row_to_dict(store.get_task(task_id))
         summary = _auto_compact(task)
     store.close_task(task_id, compact=summary, compact_vector=None)
+    _clear_marker_if_matches(task_id)
     row = store.get_task(task_id)
     d = dict(row) if row else {}
-    d["auto_approve"] = None
+    d["auto_approve"] = store.get_task_auto_approve(task_id)
     return _render_row(request.app.state.templates, request, d, "closed")
 
 
@@ -223,8 +245,39 @@ def auto_approve(task_id: int, enabled: str, request: Request) -> Any:
     row = store.get_task(task_id)
     d = dict(row) if row else {}
     d["auto_approve"] = val
+    try:
+        d["options"] = store.get_task_options(task_id)
+    except Exception:
+        d["options"] = {}
     panel = "open" if d.get("status") == "open" else "closed"
     return _render_row(request.app.state.templates, request, d, panel)
+
+
+@router.post("/tasks/{task_id}/options")
+async def set_task_options(task_id: int, request: Request) -> JSONResponse:
+    """Patch per-task options (JSON body: {key: value, ...}).  null removes a key."""
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    store = request.app.state.store
+    ok = store.set_task_options(task_id, body)
+    if not ok:
+        return JSONResponse({"error": "task not found"}, status_code=404)
+    new_opts = store.get_task_options(task_id)
+    # Mirror into active_task.json marker if this task is currently active
+    try:
+        if _ACTIVE_TASK_MARKER.exists():
+            cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
+            if cur.get("task_id") == task_id:
+                cur["options"] = new_opts
+                cur["auto_approve"] = new_opts.get("auto_approve")
+                _ACTIVE_TASK_MARKER.write_text(json.dumps(cur, indent=2))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return JSONResponse({"options": new_opts})
 
 
 class MergeBody(BaseModel):
@@ -270,42 +323,39 @@ def _parse_router_log(
     session_id: str,
     created_at: str | None = None,
     closed_at: str | None = None,
+    task_id: int | None = None,
 ) -> dict:
     """Parse router.jsonl for model routing stats for a given task window.
 
-    Strategy:
-      1. Exact session_id match (fast path).
-      2. Time-window fallback: entries whose timestamp falls between
-         created_at and closed_at (or now for open tasks).
-         Needed because the MCP server's internal session UUID differs from
-         the Claude Code conversation UUID recorded in the router log.
+    Strategy (priority order):
+      1. task_id match — router entries carry task_id since prompt_router.py
+         was updated to pass --task-id; most reliable, works for open tasks.
+      2. Time-window fallback for closed tasks: entries whose timestamp falls
+         between created_at and closed_at.
     """
     import json as _json
     from pathlib import Path
     from collections import Counter
-    from datetime import datetime
 
     _EMPTY: dict = {"models": [], "plan_mode_count": 0, "tier_counts": {},
-                    "total_prompts": 0, "top_skills": [], "matched_by": "none"}
+                    "total_prompts": 0, "top_skills": [], "matched_by": "none",
+                    "tokens_saved": 0, "compact_count": 0}
 
     router_log = Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"
     if not router_log.exists():
         return _EMPTY.copy()
 
-    # Parse task time window for fallback (stored as "YYYY-MM-DD HH:MM:SS")
-    # Time-window matching only works reliably for closed tasks (exact boundaries).
-    # For open tasks with no session_id match, return empty stats to avoid false
-    # correlations when multiple tasks are created near each other.
+    # Time-window fallback — only for closed tasks (exact boundaries known).
     ts_start: str | None = None
     ts_end: str | None = None
     try:
-        if created_at and closed_at:  # Only use time window for closed tasks
-            ts_start = created_at[:19].replace(" ", "T")  # ISO-compatible prefix
+        if created_at and closed_at:
+            ts_start = created_at[:19].replace(" ", "T")
             ts_end = closed_at[:19].replace(" ", "T")
     except Exception:
         pass
 
-    by_session: list[dict] = []
+    by_task_id: list[dict] = []
     by_time: list[dict] = []
 
     try:
@@ -319,12 +369,12 @@ def _parse_router_log(
                 except _json.JSONDecodeError:
                     continue
 
-                # Exact session_id match
-                if session_id and entry.get("session_id") == session_id:
-                    by_session.append(entry)
-                    continue  # no need to check time window
+                # task_id match — most reliable (set by prompt_router hook)
+                if task_id is not None and entry.get("task_id") == task_id:
+                    by_task_id.append(entry)
+                    continue
 
-                # Time-window match (normalise "2026-04-15T20:57:48Z" → "2026-04-15T20:57:48")
+                # Time-window match for closed tasks (legacy + task_id not yet in log)
                 if ts_start:
                     raw_ts = (entry.get("ts") or "")[:19]
                     if raw_ts >= ts_start and (ts_end is None or raw_ts <= ts_end):
@@ -332,8 +382,8 @@ def _parse_router_log(
     except OSError:
         pass
 
-    entries = by_session if by_session else by_time
-    matched_by = "session_id" if by_session else ("time_window" if by_time else "none")
+    entries = by_task_id if by_task_id else by_time
+    matched_by = "task_id" if by_task_id else ("time_window" if by_time else "none")
 
     model_counter: Counter = Counter()
     tier_counter: Counter = Counter()
@@ -393,6 +443,7 @@ def task_model_stats(task_id: int, request: Request) -> JSONResponse:
         session_id=session_id,
         created_at=task_dict.get("created_at"),
         closed_at=task_dict.get("closed_at"),
+        task_id=task_id,
     )
     stats["session_id"] = session_id
     return JSONResponse(stats)
@@ -411,6 +462,7 @@ def task_skills_stats(task_id: int, request: Request) -> JSONResponse:
         session_id=session_id,
         created_at=task_dict.get("created_at"),
         closed_at=task_dict.get("closed_at"),
+        task_id=task_id,
     )
     return JSONResponse({
         "top_skills": stats.get("top_skills", []),

@@ -70,16 +70,19 @@ _ACTIVE_TASK_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "act
 
 
 def _write_active_task_marker(task_id: int, session_id: str, title: str,
-                              auto_approve: bool | None) -> None:
+                              auto_approve: bool | None,
+                              options: dict | None = None) -> None:
     """Write active task marker so hooks can read it without touching the DB."""
     try:
         _ACTIVE_TASK_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _ACTIVE_TASK_MARKER.write_text(json.dumps({
+        payload: dict = {
             "task_id": task_id,
             "session_id": session_id,
             "title": title,
             "auto_approve": auto_approve,
-        }, indent=2))
+            "options": options or {},
+        }
+        _ACTIVE_TASK_MARKER.write_text(json.dumps(payload, indent=2))
     except OSError:
         pass
 
@@ -97,6 +100,27 @@ def _clear_active_task_marker(task_id: int | None = None) -> None:
         _ACTIVE_TASK_MARKER.unlink(missing_ok=True)
     except OSError:
         pass
+
+def _refresh_active_marker_options(task_id: int, task, options: dict) -> None:
+    """Re-write the active marker when options change — keeps hooks in sync."""
+    try:
+        aa = options.get("auto_approve")
+        if _ACTIVE_TASK_MARKER.exists():
+            cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
+            if cur.get("task_id") == task_id:
+                _write_active_task_marker(
+                    task_id, cur.get("session_id", _session["id"]),
+                    cur.get("title", task["title"]), auto_approve=aa, options=options,
+                )
+                return
+        if task["session_id"] == _session["id"] and task["status"] == "open":
+            _write_active_task_marker(
+                task_id, task["session_id"], task["title"],
+                auto_approve=aa, options=options,
+            )
+    except (OSError, json.JSONDecodeError):
+        pass
+
 
 # Warm up the FastAPI dashboard in a daemon thread so it's ready before
 # the first close_task / render_dashboard call. Safe no-op if disabled or
@@ -556,7 +580,10 @@ def save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
     )
-    _write_active_task_marker(tid, _session["id"], title, auto_approve=None)
+    task_opts = _store.get_task_options(tid)
+    _write_active_task_marker(tid, _session["id"], title,
+                              auto_approve=task_opts.get("auto_approve"),
+                              options=task_opts)
     return f"Task #{tid} saved (open): \"{title}\"\nWill surface in future search_context() calls."
 
 
@@ -635,24 +662,44 @@ def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
     ok = _store.set_task_auto_approve(task_id, enabled)
     if not ok:
         return f"Task #{task_id}: no change."
-    # Update active marker if this task is the currently active one.
-    try:
-        if _ACTIVE_TASK_MARKER.exists():
-            cur = json.loads(_ACTIVE_TASK_MARKER.read_text())
-            if cur.get("task_id") == task_id:
-                _write_active_task_marker(
-                    task_id, cur.get("session_id", _session["id"]),
-                    cur.get("title", task["title"]), auto_approve=enabled,
-                )
-        elif task["session_id"] == _session["id"] and task["status"] == "open":
-            _write_active_task_marker(
-                task_id, task["session_id"], task["title"],
-                auto_approve=enabled,
-            )
-    except (OSError, json.JSONDecodeError):
-        pass
+    task_opts = _store.get_task_options(task_id)
+    _refresh_active_marker_options(task_id, task, task_opts)
     label = "null" if enabled is None else str(bool(enabled)).lower()
     return f"Task #{task_id} auto_approve set to {label}."
+
+
+@mcp.tool()
+def set_task_options(task_id: int, options: str = "") -> str:
+    """Set per-task option overrides as a JSON object.
+
+    options is a JSON string with keys:
+      auto_approve     bool | null  — permissive auto-approve (same as set_task_auto_approve)
+      routing_disabled bool | null  — skip model routing for this task entirely
+      model_pin        str  | null  — force a specific model ("haiku"/"sonnet"/"opus")
+
+    Keys with value null remove that override (revert to global default).
+    Pass an empty JSON object "{}" to clear all overrides.
+
+    Example: set_task_options(1, '{"routing_disabled": true}')
+             set_task_options(1, '{"auto_approve": true, "routing_disabled": false}')
+             set_task_options(1, '{"routing_disabled": null}')  -- removes key
+    """
+    log_tool("set_task_options", task_id=task_id)
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    try:
+        patch = json.loads(options) if options.strip() else {}
+        if not isinstance(patch, dict):
+            return "options must be a JSON object."
+    except json.JSONDecodeError as e:
+        return f"Invalid JSON: {e}"
+    ok = _store.set_task_options(task_id, patch)
+    if not ok:
+        return f"Task #{task_id}: no change."
+    new_opts = _store.get_task_options(task_id)
+    _refresh_active_marker_options(task_id, task, new_opts)
+    return f"Task #{task_id} options updated: {json.dumps(new_opts)}"
 
 
 @mcp.tool()
