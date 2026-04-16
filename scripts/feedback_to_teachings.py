@@ -2,11 +2,13 @@
 directory into the skill-hub SQLite DB as persistent teachings.
 
 Usage:
-    python scripts/feedback_to_teachings.py [--no-dry-run] [--memory-path PATH]
+    uv run python scripts/feedback_to_teachings.py [--no-dry-run] \
+        [--memory-dir PATH] [--db-path PATH]
 
 Default: dry-run mode (prints what would be stored, makes no changes).
 --no-dry-run: actually store teachings to DB.
---memory-path PATH: override default memory directory path.
+--memory-dir PATH: override default memory directory path.
+--db-path PATH: override default DB path.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ _DEFAULT_MEMORY_PATH = (
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
 _WHY_RE = re.compile(r"\*\*Why:\*\*\s*(.+?)(?=\n\n|\n\*\*|\Z)", re.DOTALL)
+_HOW_RE = re.compile(r"\*\*How to apply:\*\*\s*(.+?)(?=\n\n|\n\*\*|\Z)", re.DOTALL)
 
 _TARGET_TYPE = "global"
 _TARGET_ID = "global"
@@ -73,7 +76,7 @@ def _parse_frontmatter(text: str) -> dict[str, str]:
 
 def _parse_feedback_file(path: Path) -> dict[str, str] | None:
     """Parse a feedback_*.md file and return a dict with keys:
-    rule, why, description, name.
+    rule, why, how_to_apply, description, name.
 
     Returns None if the file cannot be parsed or yields no usable content.
     """
@@ -114,12 +117,37 @@ def _parse_feedback_file(path: Path) -> dict[str, str] | None:
     if not why:
         why = description
 
+    # How to apply = text after **How to apply:** section
+    how_to_apply = ""
+    how_match = _HOW_RE.search(body)
+    if how_match:
+        how_to_apply = how_match.group(1).strip()[:300]
+
     return {
         "name": name,
         "rule": rule,
-        "why": why,
+        "why": why[:300],
+        "how_to_apply": how_to_apply,
         "description": description,
+        "filename": path.name,
     }
+
+
+def _build_action(item: dict[str, str]) -> str:
+    """Build the action/context string from why + how_to_apply fields."""
+    parts = []
+    if item["why"]:
+        parts.append(f"Why: {item['why']}")
+    if item["how_to_apply"]:
+        parts.append(f"How to apply: {item['how_to_apply']}")
+    if parts:
+        return "\n".join(parts)
+    return f"apply rule: {item['name']}"
+
+
+def _is_duplicate(existing_rules: list[str], candidate_rule: str) -> bool:
+    """Return True if candidate_rule matches an existing teaching exactly."""
+    return candidate_rule in existing_rules
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +159,7 @@ def run(
     memory_dir: Path,
     *,
     dry_run: bool = True,
+    db_path: str | None = None,
 ) -> int:
     """Seed teachings from feedback_*.md files in *memory_dir*.
 
@@ -141,9 +170,19 @@ def run(
         sys.exit(1)
 
     feedback_files = sorted(memory_dir.glob("feedback_*.md"))
+
+    print("Feedback → Teachings Migration")
+    print("================================")
+    print(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    print()
+    print(f"Memory dir: {memory_dir}")
+
     if not feedback_files:
         print(f"No feedback_*.md files found in {memory_dir}")
         return 0
+
+    print(f"Found {len(feedback_files)} feedback_*.md files")
+    print()
 
     parsed: list[dict[str, str]] = []
     for path in feedback_files:
@@ -155,61 +194,93 @@ def run(
         print("No parseable feedback files found.")
         return 0
 
-    print(f"Found {len(parsed)} feedback file(s) to convert:")
+    # --- Duplicate detection ---
+    existing_rules: list[str] = []
+    store: object | None = None
+
+    if not dry_run:
+        if not _SKILL_HUB_AVAILABLE or SkillStore is None:
+            print(
+                "ERROR: skill_hub package not importable. "
+                "Run from the project root with uv run or after installing the package.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        store_kwargs: dict = {}
+        if db_path:
+            store_kwargs["db_path"] = Path(db_path)
+        store = SkillStore(**store_kwargs)  # type: ignore[call-arg]
+        try:
+            rows = store.list_teachings()  # type: ignore[union-attr]
+            existing_rules = [row["rule"] for row in rows]
+        except Exception as exc:
+            print(f"  WARN: could not fetch existing teachings: {exc}", file=sys.stderr)
+
+    to_insert: list[dict[str, str]] = []
+    already_exists: list[dict[str, str]] = []
+    errors: list[tuple[dict[str, str], str]] = []
+
     for item in parsed:
-        print(f"  - {item['name']}: {item['rule'][:60]!r}...")
+        if _is_duplicate(existing_rules, item["rule"]):
+            already_exists.append(item)
+        else:
+            to_insert.append(item)
+
+    # --- Print per-file status ---
+    for item in parsed:
+        filename = item["filename"]
+        if item in already_exists:
+            print(f"  ~ {filename:<60} [already exists, skip]")
+        else:
+            print(f"  ✓ {filename:<60} [new]")
+
+    print()
 
     if dry_run:
         print(
-            f"\n[DRY-RUN] Would store {len(parsed)} teaching(s). "
-            "Pass --no-dry-run to apply."
+            f"To insert: {len(to_insert)}  |  "
+            f"Already exists: {len(already_exists)}  |  "
+            f"Errors: 0"
         )
-        return len(parsed)
+        print()
+        print("(Pass --no-dry-run to apply.)")
+        return len(to_insert)
 
-    # --- Live mode ---
-    if not _SKILL_HUB_AVAILABLE or SkillStore is None:
-        print(
-            "ERROR: skill_hub package not importable. "
-            "Run from the project root with uv run or after installing the package.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    store = SkillStore()
-
+    # --- Live mode: insert new teachings ---
     added = 0
-    for item in parsed:
+    for item in to_insert:
         rule = item["rule"]
-        why = item["why"]
-        name = item["name"]
+        action = _build_action(item)
 
-        # Build the action text from why context
-        action = why if why else f"apply rule: {name}"
-
-        # Embed the rule text
         rule_vector: list[float] = []
         if embed_available():
             try:
-                rule_vector = embed(rule)
+                rule_vector = embed(rule)  # type: ignore[operator]
             except Exception as exc:
-                print(f"  WARN: embedding failed for {name!r}: {exc} — saving without vector")
+                print(f"  WARN: embedding failed for {item['name']!r}: {exc} — saving without vector")
 
         if not rule_vector:
-            # add_teaching requires rule_vector; use a zero vector as fallback
             from skill_hub.store import VEC_DIM  # type: ignore[import]
             rule_vector = [0.0] * VEC_DIM
 
-        teaching_id = store.add_teaching(
-            rule=rule,
-            rule_vector=rule_vector,
-            action=action,
-            target_type=_TARGET_TYPE,
-            target_id=_TARGET_ID,
-        )
-        print(f"  Teaching #{teaching_id}: {name!r}")
-        added += 1
+        try:
+            teaching_id = store.add_teaching(  # type: ignore[union-attr]
+                rule=rule,
+                rule_vector=rule_vector,
+                action=action,
+                target_type=_TARGET_TYPE,
+                target_id=_TARGET_ID,
+            )
+            added += 1
+        except Exception as exc:
+            errors.append((item, str(exc)))
+            print(f"  ERROR: {item['filename']}: {exc}", file=sys.stderr)
 
-    print(f"\nConverted {added} feedback file(s) to teachings.")
+    print(
+        f"To insert: {len(to_insert)}  |  "
+        f"Already exists: {len(already_exists)}  |  "
+        f"Errors: {len(errors)}"
+    )
     return added
 
 
@@ -230,12 +301,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Actually store teachings (default: dry-run only).",
     )
     p.add_argument(
-        "--memory-path",
-        dest="memory_path",
+        "--memory-dir",
+        dest="memory_dir",
         type=Path,
         default=_DEFAULT_MEMORY_PATH,
         help=f"Path to memory directory containing feedback_*.md files "
              f"(default: {_DEFAULT_MEMORY_PATH}).",
+    )
+    p.add_argument(
+        "--db-path",
+        dest="db_path",
+        default=None,
+        help="Path to the skill-hub SQLite database (default: auto-detected from config).",
     )
     return p
 
@@ -243,9 +320,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
     dry_run = not args.no_dry_run
-    if dry_run:
-        print("[DRY-RUN MODE] No changes will be made.\n")
-    run(memory_dir=args.memory_path, dry_run=dry_run)
+    run(memory_dir=args.memory_dir, dry_run=dry_run, db_path=args.db_path)
 
 
 if __name__ == "__main__":

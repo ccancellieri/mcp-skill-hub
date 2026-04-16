@@ -86,6 +86,18 @@ class TestParseFeedbackFile:
         assert "stop hook" in result["why"]
         assert result["name"] == "Don't end responses with clarifying questions"
 
+    def test_full_file_extracts_how_to_apply(self, tmp_path: Path):
+        path = _make_feedback_file(tmp_path, "feedback_full.md", _FULL_FEEDBACK)
+        result = _mod._parse_feedback_file(path)
+        assert result is not None
+        assert "State your assumption" in result["how_to_apply"]
+
+    def test_missing_how_to_apply_returns_empty_string(self, tmp_path: Path):
+        path = _make_feedback_file(tmp_path, "feedback_nowhy.md", _NO_WHY_FEEDBACK)
+        result = _mod._parse_feedback_file(path)
+        assert result is not None
+        assert result["how_to_apply"] == ""
+
     def test_rule_capped_at_500_chars(self, tmp_path: Path):
         long_body = "x" * 1000
         content = "---\nname: long\ndescription: desc\ntype: feedback\n---\n" + long_body
@@ -138,6 +150,57 @@ class TestParseFeedbackFile:
         assert result is not None
         assert "clarifying question" in result["description"]
 
+    def test_filename_key_present(self, tmp_path: Path):
+        path = _make_feedback_file(tmp_path, "feedback_full.md", _FULL_FEEDBACK)
+        result = _mod._parse_feedback_file(path)
+        assert result is not None
+        assert result["filename"] == "feedback_full.md"
+
+
+# ---------------------------------------------------------------------------
+# _build_action
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAction:
+    def test_why_and_how_combined(self):
+        item = {
+            "name": "test",
+            "why": "because reasons",
+            "how_to_apply": "use it here",
+        }
+        action = _mod._build_action(item)
+        assert "Why: because reasons" in action
+        assert "How to apply: use it here" in action
+
+    def test_only_why(self):
+        item = {"name": "test", "why": "because reasons", "how_to_apply": ""}
+        action = _mod._build_action(item)
+        assert "Why: because reasons" in action
+        assert "How to apply" not in action
+
+    def test_neither_falls_back_to_name(self):
+        item = {"name": "my-rule", "why": "", "how_to_apply": ""}
+        action = _mod._build_action(item)
+        assert "my-rule" in action
+
+
+# ---------------------------------------------------------------------------
+# _is_duplicate
+# ---------------------------------------------------------------------------
+
+
+class TestIsDuplicate:
+    def test_exact_match_is_duplicate(self):
+        rule = "Never use hasattr for type dispatch."
+        assert _mod._is_duplicate([rule, "other rule"], rule) is True
+
+    def test_no_match_is_not_duplicate(self):
+        assert _mod._is_duplicate(["something else"], "new rule") is False
+
+    def test_empty_existing_is_not_duplicate(self):
+        assert _mod._is_duplicate([], "any rule") is False
+
 
 # ---------------------------------------------------------------------------
 # run() — dry-run mode
@@ -177,6 +240,15 @@ class TestDryRunMode:
         count = _mod.run(memory_dir=tmp_path, dry_run=True)
         assert count == 1
 
+    def test_dry_run_report_output(self, tmp_path: Path, capsys):
+        _make_feedback_file(tmp_path, "feedback_test.md", _FULL_FEEDBACK)
+        _mod.run(memory_dir=tmp_path, dry_run=True)
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+        assert "feedback_test.md" in captured.out
+        assert "[new]" in captured.out
+        assert "To insert: 1" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # run() — live mode
@@ -187,6 +259,7 @@ class TestLiveMode:
     def _make_store_mock(self) -> MagicMock:
         store = MagicMock()
         store.add_teaching.return_value = 1
+        store.list_teachings.return_value = []
         return store
 
     def test_add_teaching_called_for_each_file(self, tmp_path: Path):
@@ -235,7 +308,7 @@ class TestLiveMode:
         assert kw.get("target_type") == "global"
         assert kw.get("target_id") == "global"
 
-    def test_add_teaching_action_from_why(self, tmp_path: Path):
+    def test_add_teaching_action_contains_why(self, tmp_path: Path):
         _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
         store_mock = self._make_store_mock()
 
@@ -250,6 +323,23 @@ class TestLiveMode:
         action_arg = call_kwargs.kwargs.get("action")
         assert action_arg is not None
         assert "stop hook" in action_arg
+
+    def test_add_teaching_action_contains_how_to_apply(self, tmp_path: Path):
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = self._make_store_mock()
+
+        with (
+            patch("feedback_to_teachings.SkillStore", return_value=store_mock),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+            patch("feedback_to_teachings._SKILL_HUB_AVAILABLE", True),
+        ):
+            _mod.run(memory_dir=tmp_path, dry_run=False)
+
+        call_kwargs = store_mock.add_teaching.call_args
+        action_arg = call_kwargs.kwargs.get("action")
+        assert action_arg is not None
+        assert "How to apply" in action_arg
+        assert "State your assumption" in action_arg
 
     def test_add_teaching_action_falls_back_to_name(self, tmp_path: Path):
         # File with no why and no description => action falls back to name
@@ -300,6 +390,79 @@ class TestLiveMode:
 
 
 # ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateDetection:
+    def test_existing_teaching_is_skipped(self, tmp_path: Path):
+        """A teaching whose rule already exists in the DB must not be inserted."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = MagicMock()
+        store_mock.add_teaching.return_value = 1
+
+        # Parse the rule that would be stored, then pre-populate list_teachings
+        parsed = _mod._parse_feedback_file(tmp_path / "feedback_a.md")
+        assert parsed is not None
+        existing_row = MagicMock()
+        existing_row.__getitem__ = lambda self, key: parsed["rule"] if key == "rule" else ""
+        store_mock.list_teachings.return_value = [existing_row]
+
+        with (
+            patch("feedback_to_teachings.SkillStore", return_value=store_mock),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+            patch("feedback_to_teachings._SKILL_HUB_AVAILABLE", True),
+        ):
+            count = _mod.run(memory_dir=tmp_path, dry_run=False)
+
+        store_mock.add_teaching.assert_not_called()
+        assert count == 0
+
+    def test_new_teaching_is_inserted_when_different(self, tmp_path: Path):
+        """A teaching with a different rule must still be inserted."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = MagicMock()
+        store_mock.add_teaching.return_value = 1
+
+        existing_row = MagicMock()
+        existing_row.__getitem__ = lambda self, key: "completely unrelated rule" if key == "rule" else ""
+        store_mock.list_teachings.return_value = [existing_row]
+
+        with (
+            patch("feedback_to_teachings.SkillStore", return_value=store_mock),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+            patch("feedback_to_teachings._SKILL_HUB_AVAILABLE", True),
+        ):
+            count = _mod.run(memory_dir=tmp_path, dry_run=False)
+
+        store_mock.add_teaching.assert_called_once()
+        assert count == 1
+
+    def test_report_shows_already_exists_for_skip(self, tmp_path: Path, capsys):
+        """The output report must mark skipped files with [already exists, skip]."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = MagicMock()
+        store_mock.add_teaching.return_value = 1
+
+        parsed = _mod._parse_feedback_file(tmp_path / "feedback_a.md")
+        assert parsed is not None
+        existing_row = MagicMock()
+        existing_row.__getitem__ = lambda self, key: parsed["rule"] if key == "rule" else ""
+        store_mock.list_teachings.return_value = [existing_row]
+
+        with (
+            patch("feedback_to_teachings.SkillStore", return_value=store_mock),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+            patch("feedback_to_teachings._SKILL_HUB_AVAILABLE", True),
+        ):
+            _mod.run(memory_dir=tmp_path, dry_run=False)
+
+        captured = capsys.readouterr()
+        assert "[already exists, skip]" in captured.out
+        assert "Already exists: 1" in captured.out
+
+
+# ---------------------------------------------------------------------------
 # Embedding handling
 # ---------------------------------------------------------------------------
 
@@ -309,6 +472,7 @@ class TestEmbeddingHandling:
         _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
         store_mock = MagicMock()
         store_mock.add_teaching.return_value = 5
+        store_mock.list_teachings.return_value = []
 
         with (
             patch("feedback_to_teachings.SkillStore", return_value=store_mock),
@@ -330,6 +494,7 @@ class TestEmbeddingHandling:
         _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
         store_mock = MagicMock()
         store_mock.add_teaching.return_value = 6
+        store_mock.list_teachings.return_value = []
         fake_vec = [0.1, 0.2, 0.3]
 
         with (
@@ -343,3 +508,52 @@ class TestEmbeddingHandling:
         call_kwargs = store_mock.add_teaching.call_args
         vec_arg = call_kwargs.kwargs.get("rule_vector")
         assert vec_arg == fake_vec
+
+
+# ---------------------------------------------------------------------------
+# CLI argument parsing
+# ---------------------------------------------------------------------------
+
+
+class TestCLIArgs:
+    def test_default_is_dry_run(self, tmp_path: Path):
+        """Running without --no-dry-run must not call add_teaching."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = MagicMock()
+
+        with (
+            patch("feedback_to_teachings.SkillStore", return_value=store_mock),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+        ):
+            _mod.main(["--memory-dir", str(tmp_path)])
+
+        store_mock.add_teaching.assert_not_called()
+
+    def test_memory_dir_arg_accepted(self, tmp_path: Path):
+        """--memory-dir must be forwarded to run()."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        # Dry run, just verify it doesn't crash and uses the right dir
+        _mod.main(["--memory-dir", str(tmp_path)])
+
+    def test_db_path_arg_forwarded(self, tmp_path: Path):
+        """--db-path must be forwarded to run() and on to SkillStore."""
+        _make_feedback_file(tmp_path, "feedback_a.md", _FULL_FEEDBACK)
+        store_mock = MagicMock()
+        store_mock.add_teaching.return_value = 1
+        store_mock.list_teachings.return_value = []
+
+        captured_kwargs: dict = {}
+
+        def fake_store(**kw):
+            captured_kwargs.update(kw)
+            return store_mock
+
+        with (
+            patch("feedback_to_teachings.SkillStore", side_effect=fake_store),
+            patch("feedback_to_teachings.embed_available", return_value=False),
+            patch("feedback_to_teachings._SKILL_HUB_AVAILABLE", True),
+        ):
+            _mod.main(["--memory-dir", str(tmp_path), "--no-dry-run", "--db-path", "/tmp/test.db"])
+
+        assert "db_path" in captured_kwargs
+        assert str(captured_kwargs["db_path"]) == "/tmp/test.db"
