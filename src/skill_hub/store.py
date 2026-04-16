@@ -568,6 +568,21 @@ class SkillStore:
                 run_count           INTEGER NOT NULL DEFAULT 0,
                 created_at          TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Pre-conversation 4-tier pipeline telemetry.
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id       TEXT,
+                task_id          INTEGER,
+                tier1_ms         INTEGER,
+                tier2_ms         INTEGER,
+                tier3_ms         INTEGER,
+                tier4_ms         INTEGER,
+                fallbacks_used   TEXT,           -- JSON list of tier names that fell back
+                top_similarity   REAL,           -- L2: best task similarity score
+                token_cost_usd   REAL,
+                created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
         self._conn.commit()
 
@@ -1738,6 +1753,42 @@ class SkillStore:
             f"ORDER BY updated_at DESC LIMIT 100",
             params,
         ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Pipeline telemetry
+
+    def record_pipeline_run(
+        self,
+        session_id: str,
+        task_id: int | None,
+        tier_ms: dict[str, int | None],
+        fallbacks: list[str],
+        top_similarity: float | None = None,
+        token_cost_usd: float = 0.0,
+    ) -> int:
+        """Insert one telemetry row for a completed pipeline run.
+
+        Returns the rowid of the inserted record.
+        """
+        cur = self._conn.execute(
+            """INSERT INTO pipeline_runs
+               (session_id, task_id, tier1_ms, tier2_ms, tier3_ms, tier4_ms,
+                fallbacks_used, top_similarity, token_cost_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                task_id,
+                tier_ms.get("tier1"),
+                tier_ms.get("tier2"),
+                tier_ms.get("tier3"),
+                tier_ms.get("tier4"),
+                json.dumps(fallbacks),
+                top_similarity,
+                token_cost_usd,
+            ),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:

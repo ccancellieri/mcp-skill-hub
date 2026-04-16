@@ -35,6 +35,7 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "litellm>=1.52",
     "pyyaml>=6.0",
+    "croniter>=3.0",
 ]
 
 [project.optional-dependencies]

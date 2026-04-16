@@ -171,6 +171,17 @@ _DEFAULTS = {
     "skill_evolution_cross_pollinate": True,    # reference official Claude skills during evolution
     "skill_sync_on_index": True,               # check for plugin updates when indexing
 
+    # Pre-conversation pipeline — 4-tier enrichment (L1-L4)
+    "pre_conversation_pipeline_enabled": False,  # opt-in
+    "pipeline_tier1_timeout_ms": 500,
+    "pipeline_tier2_timeout_ms": 400,
+    "pipeline_tier3_timeout_ms": 1200,
+    "pipeline_tier4_timeout_ms": 1500,
+    "pipeline_tier4_min_complexity": "medium",   # low | medium | high
+    "task_similarity_threshold": 0.75,
+    "task_auto_create_min_chars": 0,             # every conversation
+    "pipeline_synthesis_max_sentences": 5,
+
     # Model/effort recommendation — inject hints based on task complexity
     "model_recommendation_enabled": True,       # inject model/effort hints in systemMessage
     "always_forward_to_claude": True,           # NEVER block — always forward to Claude
@@ -338,6 +349,9 @@ _DEFAULTS = {
     "session_memory_inject_on_resume": True,
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
+
+    # Cron scheduler — background jobs driven by cron_jobs table
+    "cron_jobs_enabled": True,
 
     # Background job queue — deferred work via subagent / litellm / Ollama
     "background_via_subagent_enabled": False,       # opt-in
