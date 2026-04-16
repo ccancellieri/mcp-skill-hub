@@ -1081,6 +1081,30 @@ class SkillStore:
                 stats[tag]["avg_rating"] = round(sum(ratings) / len(ratings), 2)
         return stats
 
+    def cancel_experiment(self, experiment_id: int) -> bool:
+        """Mark an experiment as cancelled. Returns True if the row was updated."""
+        try:
+            cur = self._conn.execute(
+                "UPDATE experiments SET status='cancelled', ended_at=datetime('now') "
+                "WHERE id=? AND status='active'",
+                (experiment_id,),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    def rate_experiment_run(self, run_id: int, rating: int) -> None:
+        """Set user_rating on an experiment run. Rating must be 1 or -1."""
+        try:
+            self._conn.execute(
+                "UPDATE experiment_runs SET user_rating=? WHERE id=?",
+                (rating, run_id),
+            )
+            self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
     # ------------------------------------------------------------------
     # Write
 
