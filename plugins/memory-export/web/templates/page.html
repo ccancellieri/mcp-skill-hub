@@ -1,121 +1,502 @@
 {% extends "base.html" %}
 {% block title %}memory-export{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/memory-export/static/page.css">
+<style>
+  .me-page { padding: 1rem 1.5rem; max-width: 1200px; margin: 0 auto; }
+  .me-header { display:flex; align-items:baseline; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
+  .me-header h1 { margin:0; }
+  .me-section { margin-bottom: 18px; }
 
-<section class="me-page">
-  <header class="me-header">
-    <h1>Memory Export</h1>
-    <p class="me-sub">
-      Export and re-import the full mcp-skill-hub memory: hub DB tables,
-      configuration, and the project memories you select. <code>private/</code>
-      directories are <strong>always</strong> excluded.
-    </p>
-  </header>
+  /* ── scoped table styles ── */
+  .me-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .me-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .me-table td {
+    padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .me-table tr:last-child td { border-bottom:none; }
+  .me-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .me-table code { font-size:11px; }
+  .me-table select {
+    background:var(--color-surface); color:var(--color-fg);
+    border:1px solid var(--color-border); border-radius:4px; padding:2px 5px;
+    font-size:11px;
+  }
+  .me-table select:disabled { opacity:.35; }
 
-  <div class="me-grid">
-    <!-- ============================================================
-         Column 1 — Hub tables (with per-table mode controls)
-         ============================================================ -->
-    <div class="me-col">
-      <h2>Hub tables</h2>
-      <p class="me-help">Mode is applied at <em>import</em> time. Pick LLM to
-        invoke an LLM-driven 3-way merge for conflicting rows.</p>
-      <table class="me-table" id="me-tables">
-        <thead>
-          <tr><th><input type="checkbox" id="me-tables-all" checked></th>
-              <th>Table</th><th>Mode</th><th>LLM tier</th></tr>
-        </thead>
-        <tbody>
-        {% for t in tables %}
-          <tr data-table="{{ t }}">
-            <td><input type="checkbox" class="me-tbl-include" checked></td>
-            <td><code>{{ t }}</code></td>
-            <td>
-              <select class="me-tbl-mode">
-                {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
-              </select>
-            </td>
-            <td>
-              <select class="me-tbl-tier" disabled>
-                {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
-              </select>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+  /* ── conflict mode radio group ── */
+  .me-modes { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  .me-modes label { display:flex; align-items:center; gap:5px; font-size:13px; cursor:pointer; }
+
+  /* ── action / status row ── */
+  .me-action-row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  .me-status { font-size:12px; padding:4px 10px; border-radius:4px; }
+  .me-status.ok   { background:rgba(74,211,107,0.15); color:#5fcf7b; }
+  .me-status.err  { background:rgba(192,57,43,0.15);  color:#e06060; }
+  .me-status.info { color:var(--color-muted); }
+
+  /* ── import file area ── */
+  .me-file-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .me-file-row input[type=file] { font-size:12px; }
+
+  /* ── preview summary row ── */
+  .me-summary { display:flex; gap:20px; align-items:center; flex-wrap:wrap; padding:8px 0 4px; }
+  .me-kv { display:flex; flex-direction:column; gap:2px; }
+  .me-kv-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-muted); }
+  .me-kv-val { font-size:14px; font-weight:600; }
+
+  /* ── pill ── */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
+  .pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .pill-ok   { background:rgba(74,211,107,0.2);  color:#5fcf7b; }
+  .pill-warn { background:rgba(224,160,64,0.2);  color:#e0a040; }
+
+  /* ── history ── */
+  .me-empty { padding:18px 10px; color:var(--color-muted); font-size:12px; text-align:center; }
+  .me-ts { font-size:10px; font-family:ui-monospace,monospace; color:var(--color-muted); }
+
+  /* ── scope table ── */
+  .me-scope-wrap { overflow-x:auto; max-height:300px; overflow-y:auto; }
+</style>
+
+<div class="me-page">
+  <div class="me-header">
+    <h1 class="page-h" style="margin:0">Memory Export</h1>
+    <span class="pill pill-none" id="me-scope-pill">loading…</span>
+  </div>
+  <p style="font-size:13px;color:var(--color-muted);margin:0 0 18px">
+    Export and re-import the full mcp-skill-hub memory: hub DB tables,
+    configuration, and the project memories you select.
+    <code>private/</code> directories are <strong>always</strong> excluded.
+  </p>
+
+  <!-- ═══════════════════════ EXPORT CARD ═══════════════════════ -->
+  <div class="card me-section" style="padding:16px 18px">
+    <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Export Snapshot</h3>
+
+    <!-- summary row (populated by JS) -->
+    <div class="me-summary" id="me-export-summary">
+      <div class="me-kv">
+        <span class="me-kv-label">Tables</span>
+        <span class="me-kv-val" id="me-table-count">—</span>
+      </div>
+      <div class="me-kv">
+        <span class="me-kv-label">Total rows</span>
+        <span class="me-kv-val" id="me-total-rows">—</span>
+      </div>
+      <div class="me-kv">
+        <span class="me-kv-label">DB size</span>
+        <span class="me-kv-val" id="me-db-size">—</span>
+      </div>
     </div>
 
-    <!-- ============================================================
-         Column 2 — Project memories
-         ============================================================ -->
-    <div class="me-col">
-      <h2>Project memories</h2>
-      <p class="me-help">Top-level <code>*.md</code> files only. The
-        <code>private/</code> subdirectory of each project is always excluded.</p>
-      <table class="me-table" id="me-projects">
-        <thead>
-          <tr><th><input type="checkbox" id="me-projects-all"></th>
-              <th>Project</th><th>Files</th><th>Has private/</th>
-              <th>Mode</th><th>LLM tier</th></tr>
-        </thead>
-        <tbody>
-        {% for p in projects %}
-          <tr data-project="{{ p.key }}">
-            <td><input type="checkbox" class="me-proj-include"></td>
-            <td><code class="me-proj-key">{{ p.key }}</code></td>
-            <td>{{ p.top_level_md_count }}</td>
-            <td>{% if p.private_md_count %}<span class="me-warn">yes ({{ p.private_md_count }})</span>{% else %}no{% endif %}</td>
-            <td>
-              <select class="me-proj-mode">
-                {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
-              </select>
-            </td>
-            <td>
-              <select class="me-proj-tier" disabled>
-                {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
-              </select>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
+    <!-- scope table (collapsed by default) -->
+    <details style="margin:10px 0 0">
+      <summary style="cursor:pointer;font-size:12px;color:var(--color-muted);user-select:none">
+        Show per-table scope &amp; conflict modes
+      </summary>
+      <div class="me-scope-wrap" style="margin-top:8px">
+        <table class="me-table" id="me-tables">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="me-tables-all" checked title="Select all"></th>
+              <th>Table</th>
+              <th>Rows</th>
+              <th>Mode (import)</th>
+              <th>LLM tier</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for t in tables %}
+            <tr data-table="{{ t }}">
+              <td><input type="checkbox" class="me-tbl-include" checked></td>
+              <td><code>{{ t }}</code></td>
+              <td class="me-tbl-rowcount">—</td>
+              <td>
+                <select class="me-tbl-mode">
+                  {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
+                </select>
+              </td>
+              <td>
+                <select class="me-tbl-tier" disabled>
+                  {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
+                </select>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
 
-      <label class="me-checkbox">
-        <input type="checkbox" id="me-include-local-skills">
-        Also include <code>~/.claude/local-skills/*.json</code>
-      </label>
-    </div>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--color-muted);user-select:none">
+          Project memories
+        </summary>
+        <p style="font-size:11px;color:var(--color-muted);margin:6px 0 4px">
+          Top-level <code>*.md</code> files only. <code>private/</code> always excluded.
+        </p>
+        <div class="me-scope-wrap">
+          <table class="me-table" id="me-projects">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="me-projects-all" title="Select all"></th>
+                <th>Project</th>
+                <th>Files</th>
+                <th>Has private/</th>
+                <th>Mode</th>
+                <th>LLM tier</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for p in projects %}
+              <tr data-project="{{ p.key }}">
+                <td><input type="checkbox" class="me-proj-include"></td>
+                <td><code style="word-break:break-all">{{ p.key }}</code></td>
+                <td>{{ p.top_level_md_count }}</td>
+                <td>{% if p.private_md_count %}<span style="color:var(--color-warn,#e0a040)">yes ({{ p.private_md_count }})</span>{% else %}no{% endif %}</td>
+                <td>
+                  <select class="me-proj-mode">
+                    {% for m in modes %}<option value="{{ m }}"{% if m=='skip' %} selected{% endif %}>{{ m }}</option>{% endfor %}
+                  </select>
+                </td>
+                <td>
+                  <select class="me-proj-tier" disabled>
+                    {% for tier in llm_tiers %}<option value="{{ tier }}">{{ tier }}</option>{% endfor %}
+                  </select>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <label style="display:inline-flex;gap:6px;align-items:center;margin-top:8px;font-size:12px">
+          <input type="checkbox" id="me-include-local-skills">
+          Include <code>~/.claude/local-skills/*.json</code>
+        </label>
+      </details>
+    </details>
 
-    <!-- ============================================================
-         Column 3 — Live preview
-         ============================================================ -->
-    <div class="me-col">
-      <h2>Preview</h2>
-      <p class="me-help">Updates as you toggle checkboxes.</p>
-      <pre id="me-preview" class="me-preview">(select something to preview)</pre>
-      <div id="me-pii-warn" class="me-pii-warn" hidden></div>
+    <div class="me-action-row">
+      <a id="me-download" class="btn" href="/memory-export/snapshot.tar.gz" style="text-decoration:none">
+        Download snapshot
+      </a>
+      <span id="me-pii-warn" class="me-status err" hidden></span>
     </div>
   </div>
 
-  <!-- ============================================================
-       Footer — actions
-       ============================================================ -->
-  <footer class="me-actions">
-    <a id="me-download" class="me-btn me-btn-primary" href="#">Download snapshot</a>
+  <!-- ═══════════════════════ IMPORT CARD ═══════════════════════ -->
+  <div class="card me-section" style="padding:16px 18px">
+    <h3 style="margin:0 0 10px;font-size:14px;font-weight:600">Import Snapshot</h3>
+    <p style="font-size:12px;color:var(--color-muted);margin:0 0 12px">
+      Upload a <code>.tar.gz</code> snapshot. Choose how to handle conflicts below.
+    </p>
 
-    <form id="me-import-form" class="me-import" enctype="multipart/form-data">
-      <label class="me-file">
-        <span>Upload a snapshot</span>
+    <div style="margin-bottom:12px">
+      <div class="me-kv-label" style="margin-bottom:6px">Default conflict mode</div>
+      <div class="me-modes">
+        <label><input type="radio" name="me-import-mode" value="skip" checked> Skip existing</label>
+        <label><input type="radio" name="me-import-mode" value="override"> Override</label>
+        <label><input type="radio" name="me-import-mode" value="llm"> LLM merge</label>
+      </div>
+    </div>
+
+    <form id="me-import-form" enctype="multipart/form-data">
+      <div class="me-file-row">
         <input type="file" name="file" accept=".tar.gz,.tgz,application/gzip" required>
-      </label>
-      <button type="submit" class="me-btn">Import</button>
+        <button type="submit" class="btn">Import</button>
+      </div>
     </form>
 
-    <pre id="me-import-report" class="me-preview" hidden></pre>
-  </footer>
-</section>
+    <div id="me-import-status" class="me-status info" style="margin-top:10px" hidden></div>
+    <pre id="me-import-report" style="
+      background:var(--color-surface);border:1px solid var(--color-border);
+      border-radius:6px;padding:10px;font-size:11px;line-height:1.5;
+      max-height:250px;overflow:auto;white-space:pre-wrap;margin-top:8px
+    " hidden></pre>
+  </div>
 
-<script src="/memory-export/static/page.js" defer></script>
+  <!-- ═══════════════════════ HISTORY CARD ═══════════════════════ -->
+  <div class="card me-section" style="padding:0">
+    <div style="padding:14px 16px 10px;border-bottom:1px solid var(--color-border);display:flex;gap:10px;align-items:baseline">
+      <h3 style="margin:0;font-size:14px;font-weight:600">Export History</h3>
+      <span class="pill pill-none" id="me-hist-count">—</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="me-table" id="me-history-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Path / File</th>
+            <th>Rows</th>
+            <th>Size</th>
+            <th>Mode</th>
+            <th>Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="me-history-tbody">
+          <tr><td colspan="8" class="me-empty">Loading history…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── element refs ── */
+  var tablesTable   = document.getElementById('me-tables');
+  var projectsTable = document.getElementById('me-projects');
+  var downloadEl    = document.getElementById('me-download');
+  var localSkillsEl = document.getElementById('me-include-local-skills');
+  var importForm    = document.getElementById('me-import-form');
+  var importStatus  = document.getElementById('me-import-status');
+  var importReport  = document.getElementById('me-import-report');
+  var piiWarnEl     = document.getElementById('me-pii-warn');
+  var tablesAll     = document.getElementById('me-tables-all');
+  var projectsAll   = document.getElementById('me-projects-all');
+  var scopePill     = document.getElementById('me-scope-pill');
+  var histTbody     = document.getElementById('me-history-tbody');
+  var histCount     = document.getElementById('me-hist-count');
+
+  /* ── utility ── */
+  function humanBytes(n) {
+    if (n == null) return '—';
+    var units = ['B','KB','MB','GB'];
+    for (var i = 0; i < units.length - 1; i++) {
+      if (n < 1024) return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+      n /= 1024;
+    }
+    return n.toFixed(1) + ' GB';
+  }
+
+  /* ── preview summary ── */
+  fetch('/memory-export/api/export/preview')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      document.getElementById('me-table-count').textContent = (j.tables || []).length;
+      document.getElementById('me-total-rows').textContent  = (j.total_rows || 0).toLocaleString();
+      document.getElementById('me-db-size').textContent     = humanBytes(j.total_size_bytes || 0);
+      scopePill.textContent = (j.tables || []).length + ' tables';
+      scopePill.className = 'pill pill-ok';
+      /* back-fill row counts in per-table rows */
+      (j.tables || []).forEach(function (t) {
+        var row = tablesTable.querySelector('tr[data-table="' + t.name + '"]');
+        if (row) {
+          var cell = row.querySelector('.me-tbl-rowcount');
+          if (cell) cell.textContent = (t.row_count || 0).toLocaleString();
+        }
+      });
+    })
+    .catch(function () {
+      scopePill.textContent = 'preview error';
+      scopePill.className = 'pill pill-warn';
+    });
+
+  /* ── selection helpers ── */
+  function selectedTables() {
+    return Array.from(tablesTable.querySelectorAll('tr[data-table]'))
+      .filter(function (r) { return r.querySelector('.me-tbl-include').checked; })
+      .map(function (r) { return r.dataset.table; });
+  }
+  function selectedProjects() {
+    if (!projectsTable) return [];
+    return Array.from(projectsTable.querySelectorAll('tr[data-project]'))
+      .filter(function (r) { return r.querySelector('.me-proj-include').checked; })
+      .map(function (r) { return r.dataset.project; });
+  }
+
+  /* ── PII preview (debounced) ── */
+  var piiTimer = null;
+  function schedulePiiCheck() {
+    clearTimeout(piiTimer);
+    piiTimer = setTimeout(checkPii, 300);
+  }
+  function checkPii() {
+    var tables   = selectedTables();
+    var projects = selectedProjects();
+    if (!tables.length && !projects.length) { piiWarnEl.hidden = true; return; }
+    var params = new URLSearchParams();
+    if (tables.length)   params.set('tables',   tables.join(','));
+    if (projects.length) params.set('projects', projects.join(','));
+    if (localSkillsEl && localSkillsEl.checked) params.set('include_local_skills', 'true');
+    fetch('/memory-export/preview?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.pii_offenders && j.pii_offenders.length) {
+          piiWarnEl.textContent =
+            'PII tokens detected in ' + j.pii_offenders.length + ' file(s) — review before exporting.';
+          piiWarnEl.hidden = false;
+        } else {
+          piiWarnEl.hidden = true;
+        }
+        updateDownloadLink(params);
+      })
+      .catch(function () {});
+  }
+
+  function updateDownloadLink(params) {
+    downloadEl.href = '/memory-export/snapshot.tar.gz?' + params.toString();
+  }
+
+  /* ── mode/tier sync ── */
+  function syncModeTier(rowSelector, modeClass, tierClass) {
+    document.querySelectorAll(rowSelector).forEach(function (row) {
+      var mode = row.querySelector(modeClass);
+      var tier = row.querySelector(tierClass);
+      if (!mode || !tier) return;
+      mode.addEventListener('change', function () {
+        tier.disabled = mode.value !== 'llm';
+        schedulePiiCheck();
+      });
+    });
+  }
+  syncModeTier('tr[data-table]',   '.me-tbl-mode',  '.me-tbl-tier');
+  syncModeTier('tr[data-project]', '.me-proj-mode', '.me-proj-tier');
+
+  /* ── bulk-select ── */
+  function bindBulk(allBox, rowSel, includeSel) {
+    if (!allBox) return;
+    allBox.addEventListener('change', function () {
+      document.querySelectorAll(rowSel + ' ' + includeSel).forEach(function (c) {
+        c.checked = allBox.checked;
+      });
+      schedulePiiCheck();
+    });
+  }
+  bindBulk(tablesAll,   'tr[data-table]',   '.me-tbl-include');
+  bindBulk(projectsAll, 'tr[data-project]', '.me-proj-include');
+
+  document.querySelectorAll('.me-tbl-include, .me-proj-include').forEach(function (c) {
+    c.addEventListener('change', schedulePiiCheck);
+  });
+  if (localSkillsEl) localSkillsEl.addEventListener('change', schedulePiiCheck);
+
+  /* ── build RestorePlan from current UI state ── */
+  function buildPlan() {
+    var defaultMode = 'skip';
+    document.querySelectorAll('input[name="me-import-mode"]').forEach(function (r) {
+      if (r.checked) defaultMode = r.value;
+    });
+    var hub_modes = {};
+    var llm_per_target = {};
+    tablesTable.querySelectorAll('tr[data-table]').forEach(function (r) {
+      var t    = r.dataset.table;
+      var mode = r.querySelector('.me-tbl-mode').value;
+      hub_modes[t] = mode;
+      if (mode === 'llm') llm_per_target[t] = r.querySelector('.me-tbl-tier').value;
+    });
+    var project_modes = {};
+    if (projectsTable) {
+      projectsTable.querySelectorAll('tr[data-project]').forEach(function (r) {
+        var k    = r.dataset.project;
+        var mode = r.querySelector('.me-proj-mode').value;
+        var tier = r.querySelector('.me-proj-tier').value;
+        project_modes[k] = {mode: mode, llm_tier: tier};
+      });
+    }
+    return {
+      hub_modes:      hub_modes,
+      project_modes:  project_modes,
+      llm_per_target: llm_per_target,
+      default_mode:   defaultMode,
+      default_llm_tier: 'tier_cheap',
+      max_llm_calls:  200,
+    };
+  }
+
+  /* ── import ── */
+  importForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var fd = new FormData(importForm);
+    fd.set('plan', JSON.stringify(buildPlan()));
+
+    importStatus.textContent = 'Importing…';
+    importStatus.className = 'me-status info';
+    importStatus.hidden = false;
+    importReport.hidden = true;
+
+    fetch('/memory-export/import', {method: 'POST', body: fd})
+      .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+      .then(function (res) {
+        var j = res.j;
+        var errors = j.errors || [];
+        if (errors.length) {
+          importStatus.textContent = errors.length + ' error(s) during import.';
+          importStatus.className = 'me-status err';
+        } else {
+          importStatus.textContent = 'Import completed.';
+          importStatus.className = 'me-status ok';
+        }
+        importReport.textContent = JSON.stringify(j, null, 2);
+        importReport.hidden = false;
+        loadHistory();
+      })
+      .catch(function (err) {
+        importStatus.textContent = 'Import error: ' + err.message;
+        importStatus.className = 'me-status err';
+      });
+  });
+
+  /* ── history ── */
+  function loadHistory() {
+    fetch('/memory-export/api/export/history')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var records = j.records || [];
+        histCount.textContent = records.length;
+        histCount.className = records.length ? 'pill pill-ok' : 'pill pill-none';
+        histTbody.textContent = '';
+        if (!records.length) {
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.colSpan = 8;
+          td.className = 'me-empty';
+          td.textContent = 'No export/import operations recorded yet.';
+          tr.appendChild(td);
+          histTbody.appendChild(tr);
+          return;
+        }
+        records.forEach(function (rec) {
+          var tr = document.createElement('tr');
+          [
+            rec.created_at ? rec.created_at.replace('T', ' ').slice(0, 16) : '—',
+            rec.kind || '—',
+            rec.path ? rec.path.split('/').pop() : '—',
+            rec.row_count != null ? rec.row_count.toLocaleString() : '—',
+            humanBytes(rec.size_bytes),
+            rec.conflict_mode || '—',
+            rec.status || '—',
+            rec.notes || '',
+          ].forEach(function (val, i) {
+            var td = document.createElement('td');
+            td.className = i === 0 ? 'me-ts' : '';
+            td.textContent = val;
+            tr.appendChild(td);
+          });
+          histTbody.appendChild(tr);
+        });
+      })
+      .catch(function () {
+        histTbody.textContent = '';
+        var tr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.colSpan = 8;
+        td.className = 'me-empty';
+        td.textContent = 'Could not load history.';
+        tr.appendChild(td);
+        histTbody.appendChild(tr);
+      });
+  }
+
+  loadHistory();
+}());
+</script>
 {% endblock %}

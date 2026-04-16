@@ -856,6 +856,23 @@ class SkillStore:
         # Phase B.10 — seed built-in pipeline presets (idempotent).
         self._seed_builtin_presets()
 
+        # Phase B.11 — memory-export history log.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS export_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind          TEXT NOT NULL CHECK(kind IN ('export','import')),
+                path          TEXT,
+                tables_json   TEXT,
+                row_count     INTEGER,
+                size_bytes    INTEGER,
+                conflict_mode TEXT,
+                status        TEXT DEFAULT 'completed',
+                notes         TEXT,
+                created_at    TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self._conn.commit()
+
         # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
         self._rebuild_fts_index(self._conn)
 
