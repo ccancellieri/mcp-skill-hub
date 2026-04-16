@@ -48,7 +48,9 @@ class LitellmProvider:
 
     def _api_base(self, model: str) -> str | None:
         if model.startswith("ollama/"):
-            return str(_cfg.get("ollama_base") or "http://localhost:11434")
+            # Import inside function to avoid circular imports.
+            from skill_hub.ollama_client import get_ollama_client
+            return get_ollama_client().get_api_base(model)
         return None
 
     def _normalize_messages(
