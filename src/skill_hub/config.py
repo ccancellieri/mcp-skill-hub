@@ -579,6 +579,13 @@ def get(key: str) -> str | int | float | bool:
     return load_config().get(key, _DEFAULTS.get(key))
 
 
+def set(key: str, value) -> None:  # noqa: A001
+    """Persist a single top-level config key."""
+    cfg = load_config()
+    cfg[key] = value
+    save_config(cfg)
+
+
 def service_field(service_name: str, field: str, default=None):
     """Read a field from ``services.<service_name>.<field>`` with default fallback."""
     cfg = load_config()

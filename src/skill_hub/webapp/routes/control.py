@@ -404,8 +404,120 @@ def control_log_tail(request: Request, lines: int = 60) -> Any:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase H.3 — Backend Health, Pipeline Config, Pipeline Telemetry
+# Phase H.3 — Backend Health, Tier Config, Pipeline Telemetry
 # ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/api/control/tier-config")
+def api_get_tier_config() -> Any:
+    return JSONResponse({
+        "pre_conversation_pipeline_enabled": bool(_cfg.get("pre_conversation_pipeline_enabled")),
+        "tiers": [
+            {
+                "id": "L1",
+                "name": "Classify",
+                "backend": _cfg.get("classify_backend") or "haiku_json",
+                "timeout_ms": _cfg.get("pipeline_tier1_timeout_ms") or 500,
+                "description": "Intent classification and domain tagging",
+            },
+            {
+                "id": "L2",
+                "name": "Retrieve",
+                "backend": _cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"],
+                "timeout_ms": _cfg.get("pipeline_tier2_timeout_ms") or 400,
+                "description": "Semantic retrieval and task dedup",
+            },
+            {
+                "id": "L3",
+                "name": "Synthesize",
+                "backend": _cfg.get("synthesis_backend") or "haiku",
+                "timeout_ms": _cfg.get("pipeline_tier3_timeout_ms") or 1200,
+                "description": "Context synthesis and profile curation",
+            },
+            {
+                "id": "L4",
+                "name": "Rewrite",
+                "backend": _cfg.get("rewrite_backend") or "sonnet",
+                "timeout_ms": _cfg.get("pipeline_tier4_timeout_ms") or 1500,
+                "min_complexity": _cfg.get("pipeline_tier4_min_complexity") or "medium",
+                "description": "Prompt enrichment (complex queries only)",
+            },
+        ],
+        "task_similarity_threshold": _cfg.get("task_similarity_threshold") or 0.75,
+    })
+
+
+@router.patch("/api/control/tier-config")
+async def api_patch_tier_config(request: Request) -> Any:
+    body = await request.json()
+    _allowed_keys = {
+        "pre_conversation_pipeline_enabled", "classify_backend", "synthesis_backend",
+        "rewrite_backend", "pipeline_tier1_timeout_ms", "pipeline_tier2_timeout_ms",
+        "pipeline_tier3_timeout_ms", "pipeline_tier4_timeout_ms",
+        "pipeline_tier4_min_complexity", "task_similarity_threshold",
+    }
+    updated: dict[str, Any] = {}
+    for k, v in body.items():
+        if k in _allowed_keys:
+            _cfg.set(k, v)
+            updated[k] = v
+    return JSONResponse({"updated": updated})
+
+
+@router.get("/api/control/telemetry")
+def api_telemetry() -> Any:
+    import json as _json
+    from collections import Counter
+    from skill_hub.store import SkillStore  # type: ignore[import]
+
+    store = SkillStore()
+    try:
+        tables = [r[0] for r in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        if "pipeline_runs" not in tables:
+            return JSONResponse({"runs": [], "summary": {"total": 0, "avg_duration_ms": 0}})
+
+        rows = store._conn.execute(
+            "SELECT tier1_ms, tier2_ms, tier3_ms, tier4_ms, "
+            "fallbacks_used, token_cost_usd, created_at "
+            "FROM pipeline_runs "
+            "ORDER BY created_at DESC "
+            "LIMIT 50"
+        ).fetchall()
+
+        result = []
+        for r in rows:
+            rd = dict(r)
+            tiers = {
+                "L1": rd.get("tier1_ms"),
+                "L2": rd.get("tier2_ms"),
+                "L3": rd.get("tier3_ms"),
+                "L4": rd.get("tier4_ms"),
+            }
+            try:
+                fallbacks = _json.loads(rd.get("fallbacks_used") or "[]")
+            except Exception:  # noqa: BLE001
+                fallbacks = []
+            parts = [v for v in tiers.values() if v is not None]
+            total_ms = sum(parts) if parts else 0
+            result.append({
+                "tier_durations": tiers,
+                "fallbacks": fallbacks,
+                "total_ms": total_ms,
+                "token_cost_usd": rd.get("token_cost_usd"),
+                "created_at": rd.get("created_at"),
+            })
+
+        avg_ms = (sum(r["total_ms"] for r in result) // len(result)) if result else 0
+        return JSONResponse({
+            "runs": result,
+            "summary": {"total": len(result), "avg_duration_ms": avg_ms},
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"runs": [], "summary": {"total": 0, "avg_duration_ms": 0, "error": str(exc)}})
+    finally:
+        store.close()
 
 
 @router.get("/api/control/backend-health")

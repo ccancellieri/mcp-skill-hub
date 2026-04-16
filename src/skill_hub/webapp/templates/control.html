@@ -18,6 +18,9 @@
       <button class="tab-btn" :class="{active: tab==='plugins'}" @click="tab='plugins'">Plugins</button>
       <button class="tab-btn" :class="{active: tab==='models'}" @click="tab='models'">Models</button>
       <button class="tab-btn" :class="{active: tab==='pipeline'}" @click="tab='pipeline'; loadPipelinePanel()">Pipeline &amp; Backend</button>
+      <button class="tab-btn" :class="{active: tab==='backend-health'}" @click="tab='backend-health'; loadBackendHealth(false)">Backend Health</button>
+      <button class="tab-btn" :class="{active: tab==='tier-config'}" @click="tab='tier-config'; loadTierConfig(false)">Tier Config</button>
+      <button class="tab-btn" :class="{active: tab==='telemetry'}" @click="tab='telemetry'; loadTelemetry(false)">Telemetry</button>
     </div>
 
     <div x-show="tab==='services'" class="tab-panel">
@@ -56,108 +59,176 @@
     <div x-show="tab==='pipeline'" class="tab-panel" id="pipeline-panel">
       <p class="muted" id="pipeline-loading">Loading pipeline &amp; backend info…</p>
     </div>
+
+    <!-- Backend Health tab -->
+    <div x-show="tab==='backend-health'" class="tab-panel" id="tab-backend-health">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <h3 style="margin:0">Backend Health</h3>
+          <button onclick="loadBackendHealth(true)" class="btn sm">Refresh</button>
+          <span id="bh-checked-at" style="font-size:11px;color:var(--color-muted);margin-left:auto"></span>
+        </div>
+        <div id="backend-health-grid" class="backend-grid">
+          <p class="muted" id="bh-loading">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tier Config tab -->
+    <div x-show="tab==='tier-config'" class="tab-panel" id="tab-tier-config">
+      <div class="card">
+        <div style="margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <h3 style="margin:0">Pipeline Tier Config</h3>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+              <input type="checkbox" id="pipeline-enabled-toggle">
+              Enable pre-conversation pipeline
+            </label>
+          </div>
+        </div>
+        <div id="tier-config-body">
+          <p class="muted" id="tc-loading">Loading…</p>
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+          <button onclick="saveTierConfig()" class="btn btn-primary" id="tier-save-btn">Save</button>
+          <span id="tier-save-status" style="font-size:12px;color:var(--color-muted)"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry tab -->
+    <div x-show="tab==='telemetry'" class="tab-panel" id="tab-telemetry">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <h3 style="margin:0">Pipeline Telemetry</h3>
+          <button onclick="loadTelemetry(true)" class="btn sm">Refresh</button>
+        </div>
+        <div id="telemetry-summary" style="margin-bottom:12px;font-size:13px"></div>
+        <div id="telemetry-table-wrap">
+          <p class="muted" id="tel-loading">Loading…</p>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
+
+<style>
+.backend-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; padding:4px 0; }
+.backend-card { border:1px solid var(--color-border,#e5e7eb); border-radius:8px; padding:14px 12px; text-align:center; }
+.bc-name { font-weight:600; font-size:13px; margin-bottom:6px; }
+.bc-status { font-size:12px; font-weight:600; }
+.bc-ok, .bc-configured, .bc-available { color:#22c55e; }
+.bc-unconfigured { color:#f59e0b; }
+.bc-unreachable, .bc-error { color:#ef4444; }
+.bc-not_installed { color:#94a3b8; }
+.bc-latency { font-size:11px; color:var(--color-muted); margin-top:4px; }
+</style>
 
 <script>
 (function () {
   var _loaded = false;
+  var _bhLoaded = false;
+  var _tcLoaded = false;
+  var _telLoaded = false;
+  var _tierData = null;
 
-  function cell(text, extra) {
-    var td = document.createElement('td');
-    td.textContent = text;
-    if (extra) { Object.assign(td.style, extra); }
+  /* ── DOM helpers (no innerHTML assignments) ── */
+  function clearEl(el) {
+    while (el.firstChild) { el.removeChild(el.firstChild); }
+  }
+
+  function mkEl(tag, attrs) {
+    var el = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function(k) {
+        if (k === 'cls') { el.className = attrs[k]; }
+        else if (k === 'css') { el.style.cssText = attrs[k]; }
+        else if (k === 'txt') { el.textContent = attrs[k]; }
+        else { el[k] = attrs[k]; }
+      });
+    }
+    return el;
+  }
+
+  function mkTh(text) {
+    return mkEl('th', { txt: text, css: 'text-align:left;padding:4px 8px;border-bottom:1px solid var(--color-border);color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase' });
+  }
+
+  function mkTd(content) {
+    var td = mkEl('td', { css: 'padding:4px 8px;border-bottom:1px solid var(--color-border,#e5e7eb);font-size:13px' });
+    if (content && typeof content === 'object' && content.nodeType) {
+      td.appendChild(content);
+    } else {
+      td.textContent = String(content !== null && content !== undefined ? content : '—');
+    }
     return td;
   }
 
-  function statusBadge(ok) {
-    var span = document.createElement('span');
-    span.textContent = ok ? '\u2713 reachable' : '\u2717 unreachable';
-    span.style.color = ok ? 'var(--color-success, #22c55e)' : 'var(--color-error, #ef4444)';
-    span.style.fontWeight = '600';
-    return span;
-  }
-
-  function sectionTitle(text) {
-    var h3 = document.createElement('h3');
-    h3.textContent = text;
-    h3.style.cssText = 'font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:16px 0 8px';
-    return h3;
-  }
-
-  function kv(label, value) {
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;margin:4px 0;font-size:13px';
-    var lbl = document.createElement('span');
-    lbl.style.cssText = 'color:var(--color-muted);min-width:220px';
-    lbl.textContent = label + ':';
-    var val = document.createElement('span');
-    val.style.fontWeight = '500';
-    if (typeof value === 'object' && value !== null) {
-      row.appendChild(lbl);
-      row.appendChild(value);
-    } else {
-      val.textContent = String(value !== null && value !== undefined ? value : '—');
-      row.appendChild(lbl);
-      row.appendChild(val);
-    }
-    return row;
-  }
-
   function buildTable(headers, rowsData) {
-    var tbl = document.createElement('table');
-    tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px';
+    var tbl = mkEl('table', { css: 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px' });
     var thead = document.createElement('thead');
-    var tr = document.createElement('tr');
-    headers.forEach(function(h) {
-      var th = document.createElement('th');
-      th.textContent = h;
-      th.style.cssText = 'text-align:left;padding:4px 8px;border-bottom:1px solid var(--color-border);color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase';
-      tr.appendChild(th);
-    });
-    thead.appendChild(tr);
+    var hrow = document.createElement('tr');
+    headers.forEach(function(h) { hrow.appendChild(mkTh(h)); });
+    thead.appendChild(hrow);
     tbl.appendChild(thead);
     var tbody = document.createElement('tbody');
     rowsData.forEach(function(cells) {
       var row = document.createElement('tr');
-      cells.forEach(function(c) {
-        var td = document.createElement('td');
-        td.style.cssText = 'padding:4px 8px;border-bottom:1px solid var(--color-border,#e5e7eb)';
-        if (typeof c === 'object' && c !== null && c.nodeType) {
-          td.appendChild(c);
-        } else {
-          td.textContent = String(c !== null && c !== undefined ? c : '—');
-        }
-        row.appendChild(td);
-      });
+      cells.forEach(function(c) { row.appendChild(mkTd(c)); });
       tbody.appendChild(row);
     });
     tbl.appendChild(tbody);
     return tbl;
   }
 
+  function statusBadge(ok) {
+    return mkEl('span', {
+      txt: ok ? '\u2713 reachable' : '\u2717 unreachable',
+      css: 'font-weight:600;color:' + (ok ? 'var(--color-success,#22c55e)' : 'var(--color-error,#ef4444)')
+    });
+  }
+
+  function sectionTitle(text) {
+    return mkEl('h3', { txt: text, css: 'font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:16px 0 8px' });
+  }
+
+  function kv(label, value) {
+    var row = mkEl('div', { css: 'display:flex;gap:8px;margin:4px 0;font-size:13px' });
+    row.appendChild(mkEl('span', { txt: label + ':', css: 'color:var(--color-muted);min-width:220px' }));
+    if (value && typeof value === 'object' && value.nodeType) {
+      row.appendChild(value);
+    } else {
+      row.appendChild(mkEl('span', { txt: String(value !== null && value !== undefined ? value : '—'), css: 'font-weight:500' }));
+    }
+    return row;
+  }
+
+  function showLoading(el, text) {
+    clearEl(el);
+    el.appendChild(mkEl('p', { cls: 'muted', txt: text || 'Loading…' }));
+  }
+
+  function showError(el, msg) {
+    clearEl(el);
+    el.appendChild(mkEl('p', { txt: msg, css: 'color:var(--color-error,#ef4444)' }));
+  }
+
+  /* ── legacy pipeline panel ── */
   function renderHealth(panel, data) {
     panel.appendChild(sectionTitle('Backend Health'));
-
     var backends = [
       { label: 'Embedding', info: data.embedding },
       { label: 'Classify',  info: data.classify },
       { label: 'Synthesis', info: data.synthesis },
     ];
-
     var rows = backends.filter(function(b) { return b.info; }).map(function(b) {
       var latency = (b.info.latency_ms != null) ? (b.info.latency_ms + ' ms') : '—';
       return [b.label, b.info.backend || '—', statusBadge(b.info.reachable), latency];
     });
     panel.appendChild(buildTable(['Backend', 'Provider', 'Status', 'Latency'], rows));
-
     var mode = data.search_mode === 'hybrid' ? 'Hybrid (vector + FTS5)' : 'FTS5 only';
     panel.appendChild(kv('Search mode', mode));
-
-    var ts = document.createElement('span');
-    ts.style.cssText = 'font-size:11px;color:var(--color-muted)';
-    ts.textContent = 'Checked at: ' + (data.checked_at || '—');
-    panel.appendChild(ts);
+    panel.appendChild(mkEl('span', { txt: 'Checked at: ' + (data.checked_at || '—'), css: 'font-size:11px;color:var(--color-muted)' }));
   }
 
   function renderPipelineConfig(panel, data) {
@@ -165,7 +236,6 @@
     panel.appendChild(kv('Pipeline enabled', data.enabled ? 'Yes' : 'No'));
     panel.appendChild(kv('Task similarity threshold', data.task_similarity_threshold));
     panel.appendChild(kv('Synthesis max sentences', data.synthesis_max_sentences));
-
     var tiers = data.tiers || {};
     var tierRows = [
       ['Tier 1 (heuristics)', tiers.tier1_timeout_ms != null ? tiers.tier1_timeout_ms + ' ms' : '—'],
@@ -173,9 +243,7 @@
       ['Tier 3 (LLM classify)', tiers.tier3_timeout_ms != null ? tiers.tier3_timeout_ms + ' ms' : '—'],
       ['Tier 4 (synthesis)', tiers.tier4_timeout_ms != null ? tiers.tier4_timeout_ms + ' ms' : '—'],
     ];
-    if (tiers.tier4_min_complexity) {
-      tierRows.push(['Tier 4 min complexity', tiers.tier4_min_complexity]);
-    }
+    if (tiers.tier4_min_complexity) { tierRows.push(['Tier 4 min complexity', tiers.tier4_min_complexity]); }
     panel.appendChild(buildTable(['Tier', 'Timeout'], tierRows));
   }
 
@@ -183,7 +251,6 @@
     if (!data || data.total_runs === 0) { return; }
     panel.appendChild(sectionTitle('Pipeline Telemetry (last ' + data.days + ' days)'));
     panel.appendChild(kv('Total runs', data.total_runs));
-
     var lat = data.avg_latencies || {};
     var latRows = [
       ['Tier 1', lat.tier1_ms != null ? lat.tier1_ms + ' ms' : '—'],
@@ -193,14 +260,12 @@
       ['Total',  lat.total_ms != null ? lat.total_ms + ' ms' : '—'],
     ];
     panel.appendChild(buildTable(['Tier', 'Avg Latency'], latRows));
-
     var fb = data.fallback_rates || {};
     var fbKeys = Object.keys(fb);
     if (fbKeys.length) {
       var fbRows = fbKeys.map(function(k) { return [k, fb[k] + '%']; });
       panel.appendChild(buildTable(['Fallback', 'Rate'], fbRows));
     }
-
     if (data.total_cost_usd != null && data.total_cost_usd > 0) {
       panel.appendChild(kv('Total LLM cost (period)', '$' + data.total_cost_usd.toFixed(4)));
     }
@@ -209,11 +274,9 @@
   window.loadPipelinePanel = function () {
     if (_loaded) { return; }
     _loaded = true;
-
     var panel = document.getElementById('pipeline-panel');
     if (!panel) { return; }
     var loading = document.getElementById('pipeline-loading');
-
     Promise.all([
       fetch('/api/control/backend-health').then(function(r) { return r.json(); }),
       fetch('/api/control/pipeline-config').then(function(r) { return r.json(); }),
@@ -226,6 +289,195 @@
     }).catch(function(err) {
       if (loading) { loading.textContent = 'Error loading pipeline data: ' + err; }
     });
+  };
+
+  /* ── Backend Health tab ── */
+  window.loadBackendHealth = function (force) {
+    if (_bhLoaded && !force) { return; }
+    _bhLoaded = true;
+    var grid = document.getElementById('backend-health-grid');
+    var tsEl = document.getElementById('bh-checked-at');
+    if (!grid) { return; }
+    showLoading(grid);
+    fetch('/api/control/backend-health').then(function(r) { return r.json(); }).then(function(data) {
+      clearEl(grid);
+      if (tsEl) { tsEl.textContent = 'Checked at: ' + (data.checked_at || '—'); }
+      var items = [
+        { name: 'Voyage',               key: 'voyage' },
+        { name: 'Ollama',               key: 'ollama' },
+        { name: 'Anthropic',            key: 'anthropic' },
+        { name: 'SentenceTransformers', key: 'sentence_transformers' },
+        { name: 'Embedding',            key: 'embedding' },
+        { name: 'Classify',             key: 'classify' },
+        { name: 'Synthesis',            key: 'synthesis' },
+      ];
+      var found = false;
+      items.forEach(function(item) {
+        var info = data[item.key];
+        if (!info) { return; }
+        found = true;
+        var card = mkEl('div', { cls: 'backend-card' });
+        card.appendChild(mkEl('div', { cls: 'bc-name', txt: item.name }));
+        var s = info.status || (info.reachable ? 'ok' : 'unreachable');
+        var safeS = s.replace(/[^a-z_]/g, '_');
+        card.appendChild(mkEl('div', { cls: 'bc-status bc-' + safeS, txt: s }));
+        if (info.backend) {
+          var bval = Array.isArray(info.backend) ? info.backend.join(', ') : String(info.backend);
+          card.appendChild(mkEl('div', { txt: bval, css: 'font-size:11px;color:var(--color-muted);margin-top:4px' }));
+        }
+        if (info.latency_ms != null) {
+          card.appendChild(mkEl('div', { cls: 'bc-latency', txt: info.latency_ms + ' ms' }));
+        }
+        grid.appendChild(card);
+      });
+      if (!found) { grid.appendChild(mkEl('p', { cls: 'muted', txt: 'No backend info returned.' })); }
+    }).catch(function(err) { showError(grid, 'Error: ' + err); });
+  };
+
+  /* ── Tier Config tab ── */
+  window.loadTierConfig = function (force) {
+    if (_tcLoaded && !force) { return; }
+    _tcLoaded = true;
+    var body = document.getElementById('tier-config-body');
+    if (!body) { return; }
+    showLoading(body);
+    fetch('/api/control/tier-config').then(function(r) { return r.json(); }).then(function(data) {
+      _tierData = data;
+      clearEl(body);
+      var tog = document.getElementById('pipeline-enabled-toggle');
+      if (tog) { tog.checked = !!data.pre_conversation_pipeline_enabled; }
+
+      /* threshold slider */
+      var threshRow = mkEl('div', { css: 'display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px' });
+      threshRow.appendChild(mkEl('label', { txt: 'Task similarity threshold:', css: 'min-width:200px;color:var(--color-muted)' }));
+      var threshSlider = mkEl('input', { type: 'range', id: 'thresh-slider', min: '0', max: '1', step: '0.01', value: data.task_similarity_threshold });
+      var threshVal = mkEl('span', { id: 'thresh-val', txt: String(data.task_similarity_threshold) });
+      threshSlider.oninput = function() { threshVal.textContent = parseFloat(this.value).toFixed(2); };
+      threshRow.appendChild(threshSlider);
+      threshRow.appendChild(threshVal);
+      body.appendChild(threshRow);
+
+      /* tiers table */
+      var tbl = mkEl('table', { css: 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px' });
+      var thead = document.createElement('thead');
+      var hrow = document.createElement('tr');
+      ['Tier', 'Name', 'Backend', 'Timeout (ms)', 'Description'].forEach(function(h) { hrow.appendChild(mkTh(h)); });
+      thead.appendChild(hrow);
+      tbl.appendChild(thead);
+      var tbody = document.createElement('tbody');
+      (data.tiers || []).forEach(function(tier) {
+        var tr = document.createElement('tr');
+        tr.appendChild(mkTd(tier.id));
+        tr.appendChild(mkTd(tier.name));
+
+        var backendTd = mkEl('td', { css: 'padding:4px 8px;border-bottom:1px solid var(--color-border,#e5e7eb)' });
+        var backendInp = mkEl('input', { type: 'text', id: 'tier-backend-' + tier.id });
+        backendInp.value = Array.isArray(tier.backend) ? tier.backend.join(', ') : (tier.backend || '');
+        backendInp.style.cssText = 'width:100%;font-size:12px;padding:2px 4px;border:1px solid var(--color-border,#e5e7eb);border-radius:4px;background:var(--color-bg,#fff);color:inherit';
+        backendTd.appendChild(backendInp);
+        tr.appendChild(backendTd);
+
+        var timeoutTd = mkEl('td', { css: 'padding:4px 8px;border-bottom:1px solid var(--color-border,#e5e7eb)' });
+        var timeoutInp = mkEl('input', { type: 'number', id: 'tier-timeout-' + tier.id });
+        timeoutInp.value = String(tier.timeout_ms || '');
+        timeoutInp.min = '100'; timeoutInp.max = '30000'; timeoutInp.step = '50';
+        timeoutInp.style.cssText = 'width:80px;font-size:12px;padding:2px 4px;border:1px solid var(--color-border,#e5e7eb);border-radius:4px;background:var(--color-bg,#fff);color:inherit';
+        timeoutTd.appendChild(timeoutInp);
+        tr.appendChild(timeoutTd);
+
+        var noteTxt = tier.description || '';
+        if (tier.min_complexity) { noteTxt += ' (min: ' + tier.min_complexity + ')'; }
+        tr.appendChild(mkTd(noteTxt));
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      body.appendChild(tbl);
+    }).catch(function(err) { showError(body, 'Error: ' + err); });
+  };
+
+  window.saveTierConfig = function () {
+    var statusEl = document.getElementById('tier-save-status');
+    if (statusEl) { statusEl.textContent = 'Saving…'; }
+    var payload = {
+      pre_conversation_pipeline_enabled: !!(document.getElementById('pipeline-enabled-toggle') || {}).checked,
+    };
+    var threshEl = document.getElementById('thresh-slider');
+    if (threshEl) { payload.task_similarity_threshold = parseFloat(threshEl.value); }
+    if (_tierData && _tierData.tiers) {
+      var keyMap = { L1: 'pipeline_tier1_timeout_ms', L2: 'pipeline_tier2_timeout_ms', L3: 'pipeline_tier3_timeout_ms', L4: 'pipeline_tier4_timeout_ms' };
+      var backendMap = { L1: 'classify_backend', L2: null, L3: 'synthesis_backend', L4: 'rewrite_backend' };
+      _tierData.tiers.forEach(function(tier) {
+        var tEl = document.getElementById('tier-timeout-' + tier.id);
+        if (tEl && keyMap[tier.id]) { payload[keyMap[tier.id]] = parseInt(tEl.value, 10); }
+        var bEl = document.getElementById('tier-backend-' + tier.id);
+        if (bEl && backendMap[tier.id]) { payload[backendMap[tier.id]] = bEl.value.trim(); }
+      });
+    }
+    fetch('/api/control/tier-config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(function(r) { return r.json(); }).then(function(resp) {
+      if (statusEl) {
+        statusEl.textContent = 'Saved ' + Object.keys(resp.updated || {}).length + ' key(s)';
+        statusEl.style.color = 'var(--color-success,#22c55e)';
+      }
+      _tcLoaded = false;
+      loadTierConfig(true);
+    }).catch(function(err) {
+      if (statusEl) { statusEl.textContent = 'Error: ' + err; statusEl.style.color = 'var(--color-error,#ef4444)'; }
+    });
+  };
+
+  /* ── Telemetry tab ── */
+  window.loadTelemetry = function (force) {
+    if (_telLoaded && !force) { return; }
+    _telLoaded = true;
+    var summary = document.getElementById('telemetry-summary');
+    var wrap = document.getElementById('telemetry-table-wrap');
+    if (!wrap) { return; }
+    showLoading(wrap);
+    fetch('/api/control/telemetry').then(function(r) { return r.json(); }).then(function(data) {
+      var s = data.summary || {};
+      if (summary) {
+        clearEl(summary);
+        var stats = mkEl('div', { css: 'display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px' });
+        function statCard(label, value) {
+          var d = mkEl('div', { css: 'text-align:center' });
+          d.appendChild(mkEl('div', { txt: String(value != null ? value : '—'), css: 'font-size:24px;font-weight:700' }));
+          d.appendChild(mkEl('div', { txt: label, css: 'font-size:11px;color:var(--color-muted);text-transform:uppercase;letter-spacing:.05em' }));
+          return d;
+        }
+        stats.appendChild(statCard('Total runs', s.total));
+        stats.appendChild(statCard('Avg duration', s.avg_duration_ms != null ? s.avg_duration_ms + ' ms' : '—'));
+        summary.appendChild(stats);
+      }
+      clearEl(wrap);
+      if (!data.runs || data.runs.length === 0) {
+        wrap.appendChild(mkEl('p', { cls: 'muted', txt: 'No pipeline runs recorded yet.' }));
+        return;
+      }
+      var tbl = mkEl('table', { css: 'width:100%;border-collapse:collapse;font-size:12px' });
+      var thead = document.createElement('thead');
+      var hrow = document.createElement('tr');
+      ['L1 ms', 'L2 ms', 'L3 ms', 'L4 ms', 'Total ms', 'Fallbacks', 'Cost', 'Time'].forEach(function(h) { hrow.appendChild(mkTh(h)); });
+      thead.appendChild(hrow);
+      tbl.appendChild(thead);
+      var tbody = document.createElement('tbody');
+      data.runs.forEach(function(run) {
+        var tr = document.createElement('tr');
+        var td = run.tier_durations || {};
+        [td.L1, td.L2, td.L3, td.L4].forEach(function(v) { tr.appendChild(mkTd(v != null ? v : '—')); });
+        tr.appendChild(mkTd(run.total_ms != null ? run.total_ms : '—'));
+        tr.appendChild(mkTd(run.fallbacks && run.fallbacks.length ? run.fallbacks.join(', ') : '—'));
+        tr.appendChild(mkTd(run.token_cost_usd != null ? '$' + run.token_cost_usd.toFixed(5) : '—'));
+        var ts = run.created_at ? run.created_at.replace('T', ' ').split('.')[0] : '—';
+        tr.appendChild(mkTd(ts));
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      wrap.appendChild(tbl);
+    }).catch(function(err) { showError(wrap, 'Error: ' + err); });
   };
 }());
 </script>
