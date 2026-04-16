@@ -19,6 +19,7 @@ from .routes import control as control_routes
 from .routes import control_plugins as control_plugins_routes
 from .routes import cron as cron_routes
 from .routes import dashboard as dashboard_routes
+from .routes import memory as memory_routes
 from .routes import intents as intents_routes
 from .routes import logs as logs_routes
 from .routes import questions as questions_routes
@@ -56,6 +57,7 @@ _CORE_NAV: list[dict[str, Any]] = [
     {"key": "intents", "label": "Intents", "href": "/intents"},
     {"key": "questions", "label": "Questions", "href": "/questions"},
     {"key": "cron", "label": "Cron", "href": "/cron"},
+    {"key": "memory", "label": "Memory", "href": "/memory"},
 ]
 
 
@@ -181,6 +183,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(intents_routes.router)
     app.include_router(questions_routes.router)
     app.include_router(cron_routes.router)
+    app.include_router(memory_routes.router)
 
     # Seed default cron jobs (no-op if table already populated) and start
     # the background scheduler when cron_jobs_enabled is True.
