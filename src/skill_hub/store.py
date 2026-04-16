@@ -2838,6 +2838,17 @@ class SkillStore:
         )
         self._conn.commit()
 
+    def reset_cron_job_for_run(self, job_id: int) -> None:
+        """Mark a cron job as pending for immediate run (resets last_run_at)."""
+        self._conn.execute(
+            """UPDATE cron_jobs
+               SET last_run_at='2000-01-01T00:00:00', last_status='pending',
+                   updated_at=datetime('now')
+               WHERE id=?""",
+            (job_id,),
+        )
+        self._conn.commit()
+
     def toggle_cron_job(self, job_id: int, enabled: bool) -> bool:
         cur = self._conn.execute(
             "UPDATE cron_jobs SET enabled=?, updated_at=datetime('now') WHERE id=?",
@@ -3207,10 +3218,12 @@ def _maybe_apply_plugin_schema(conn: sqlite3.Connection, namespace: str) -> None
         self._conn.commit()
 
     def delete_cron_job(self, job_id: int) -> bool:
-        """Delete a cron job. Returns True if deleted."""
-        self._conn.execute("DELETE FROM cron_jobs WHERE id=?", (job_id,))
+        """Delete a non-builtin cron job. Returns True if deleted."""
+        cur = self._conn.execute(
+            "DELETE FROM cron_jobs WHERE id=? AND is_builtin=0", (job_id,)
+        )
         self._conn.commit()
-        return True
+        return cur.rowcount > 0
 
     def update_cron_job_status(
         self,

@@ -139,6 +139,11 @@ async def api_cron_update(job_id: int, request: Request) -> JSONResponse:
         store.toggle_cron_job(job_id, bool(enabled))
     # For schedule / name / command: rebuild via upsert using current values
     if any(k in body for k in ("schedule", "name", "command", "description", "params")):
+        if job.get("is_builtin"):
+            return JSONResponse(
+                {"error": "cannot modify builtin job fields (use toggle to enable/disable)"},
+                status_code=403,
+            )
         store.upsert_cron_job(
             name=body.get("name", job.get("name", "")),
             description=body.get("description", job.get("description", "") or ""),
@@ -171,14 +176,8 @@ def api_cron_run_now(job_id: int, request: Request) -> JSONResponse:
     row = store.get_cron_job(job_id)
     if row is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    # Reset last_run_at so the scheduler will fire it on the next tick.
-    store.update_cron_job_status(job_id, "pending")
-    # Also reset last_run_at to epoch so croniter considers it overdue
-    store._conn.execute(
-        "UPDATE cron_jobs SET last_run_at='2000-01-01T00:00:00' WHERE id=?",
-        (job_id,),
-    )
-    store._conn.commit()
+    # Reset last_run_at to epoch so croniter considers it overdue on next tick.
+    store.reset_cron_job_for_run(job_id)
     row = store.get_cron_job(job_id)
     return JSONResponse(_enrich(_row_to_dict(row)) if row else {})
 
