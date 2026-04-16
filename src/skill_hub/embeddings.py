@@ -91,7 +91,7 @@ def quantize_binary(vector: list[float]) -> bytes:
     return bytes(out)
 
 
-def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
+def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[float]:
     """Return embedding vector using the configured backend cascade.
 
     Tries backends in order from config `embedding_backend_priority`:
@@ -101,6 +101,8 @@ def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[fl
 
     Raises RuntimeError if all backends fail.
     """
+    if model is None:
+        model = str(_cfg.get("embed_model") or "nomic-embed-text")
     priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
     errors: list[str] = []
 
@@ -114,8 +116,10 @@ def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[fl
                 vec = _embed_sentence_transformers(text)
             else:
                 continue
-            if vec:
+            if vec is not None and len(vec) > 0:
                 return vec
+            # If we reach here, backend returned empty/None — record it and try next
+            errors.append(f"{backend}: returned empty vector")
         except Exception as exc:
             errors.append(f"{backend}: {exc}")
             continue
@@ -164,8 +168,8 @@ def _embed_sentence_transformers(text: str) -> list[float]:
     except ImportError:
         raise RuntimeError("sentence_transformers not installed; run: pip install sentence-transformers")
     st_model = str(_cfg.get("sentence_transformers_model") or "all-MiniLM-L6-v2")
-    _st_model_cache = _get_st_model(st_model)
-    vec = _st_model_cache.encode(text, convert_to_numpy=True)
+    model_instance = _get_st_model(st_model)
+    vec = model_instance.encode(text, convert_to_numpy=True)
     return vec.tolist()
 
 
