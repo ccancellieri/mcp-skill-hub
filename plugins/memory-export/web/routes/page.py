@@ -36,6 +36,7 @@ def index(request: Request):
         request,
         "page.html",
         {
+            "active_tab": "memory-export",
             "projects": projects,
             "tables": tables,
             "llm_tiers": llm_tiers,

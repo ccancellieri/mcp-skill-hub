@@ -182,6 +182,7 @@ def create_app(store: Any) -> FastAPI:
     # Plugin extension-point: A1 — mount plugin web sub-apps.
     # See docs/plugin-extension-points.md for plugin.json "web_mount" + the
     # optional "extra_web_mounts" config override.
+    _mounted_sub_apps: list[FastAPI] = []
     try:
         from ..plugin_registry import load_web_mounts
         for cfg in load_web_mounts():
@@ -197,6 +198,7 @@ def create_app(store: Any) -> FastAPI:
             except Exception as exc:  # noqa: BLE001
                 _log.warning("mount %s failed: %s", cfg["mount"], exc)
                 continue
+            _mounted_sub_apps.append(sub_app)
             if cfg.get("nav"):
                 app.state.plugin_nav.append({
                     "key": cfg["plugin_name"],
@@ -206,5 +208,12 @@ def create_app(store: Any) -> FastAPI:
                 })
     except Exception as exc:  # noqa: BLE001
         _log.warning("plugin mount discovery failed: %s", exc)
+
+    # Propagate the fully-built nav to every sub-app so that base.html
+    # (which reads request.app.state.core_nav / plugin_nav) renders the
+    # topbar correctly inside plugin pages.
+    for _sub in _mounted_sub_apps:
+        _sub.state.core_nav = app.state.core_nav
+        _sub.state.plugin_nav = app.state.plugin_nav
 
     return app
