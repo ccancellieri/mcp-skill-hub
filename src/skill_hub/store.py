@@ -128,6 +128,7 @@ class SkillStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
         # Load sqlite-vec extension if available; falls back to legacy path.
         self._vec_engine: str = "legacy"
         if sqlite_vec is not None:
@@ -1691,10 +1692,14 @@ class SkillStore:
         FTS5 special characters that must be escaped or stripped: " * ( ) - ^
         Strategy: strip characters that have no safe literal equivalent, then
         wrap remaining terms to avoid accidental prefix/phrase operators.
+        Boolean operators (AND, OR, NOT) are also stripped so SQLite FTS5 does
+        not interpret them as query syntax.
         """
         import re
         # Remove characters that are FTS5 operators or cause parse errors
         cleaned = re.sub(r'["\*\(\)\-\^]', ' ', query)
+        # Strip FTS5 boolean operators so they are not interpreted as syntax
+        cleaned = re.sub(r'\b(AND|OR|NOT)\b', ' ', cleaned)
         # Collapse whitespace
         cleaned = ' '.join(cleaned.split())
         return cleaned if cleaned else '""'
@@ -1762,7 +1767,10 @@ class SkillStore:
                         "status": row["status"],
                     })
             except sqlite3.OperationalError as exc:
-                _log.debug("FTS5 tasks search failed: %s", exc)
+                if "no such table" in str(exc).lower():
+                    _log.debug("FTS5 tasks table not yet created: %s", exc)
+                else:
+                    raise
 
         # --- teachings ---
         if "teachings" in search_tables:
@@ -1789,7 +1797,10 @@ class SkillStore:
                         "status": None,
                     })
             except sqlite3.OperationalError as exc:
-                _log.debug("FTS5 teachings search failed: %s", exc)
+                if "no such table" in str(exc).lower():
+                    _log.debug("FTS5 teachings table not yet created: %s", exc)
+                else:
+                    raise
 
         # BM25 rank is negative in SQLite FTS5 — lower (more negative) = better match.
         # Sort so best matches come first (ascending by score = most negative first).
