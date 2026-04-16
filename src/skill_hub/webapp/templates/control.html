@@ -17,6 +17,7 @@
       <button class="tab-btn" :class="{active: tab==='services'}" @click="tab='services'">Services</button>
       <button class="tab-btn" :class="{active: tab==='plugins'}" @click="tab='plugins'">Plugins</button>
       <button class="tab-btn" :class="{active: tab==='models'}" @click="tab='models'">Models</button>
+      <button class="tab-btn" :class="{active: tab==='pipeline'}" @click="tab='pipeline'; loadPipelinePanel()">Pipeline &amp; Backend</button>
     </div>
 
     <div x-show="tab==='services'" class="tab-panel">
@@ -51,8 +52,183 @@
          hx-swap="innerHTML">
       <p class="muted">Loading models…</p>
     </div>
+
+    <div x-show="tab==='pipeline'" class="tab-panel" id="pipeline-panel">
+      <p class="muted" id="pipeline-loading">Loading pipeline &amp; backend info…</p>
+    </div>
   </div>
 </section>
+
+<script>
+(function () {
+  var _loaded = false;
+
+  function cell(text, extra) {
+    var td = document.createElement('td');
+    td.textContent = text;
+    if (extra) { Object.assign(td.style, extra); }
+    return td;
+  }
+
+  function statusBadge(ok) {
+    var span = document.createElement('span');
+    span.textContent = ok ? '\u2713 reachable' : '\u2717 unreachable';
+    span.style.color = ok ? 'var(--color-success, #22c55e)' : 'var(--color-error, #ef4444)';
+    span.style.fontWeight = '600';
+    return span;
+  }
+
+  function sectionTitle(text) {
+    var h3 = document.createElement('h3');
+    h3.textContent = text;
+    h3.style.cssText = 'font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:16px 0 8px';
+    return h3;
+  }
+
+  function kv(label, value) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;margin:4px 0;font-size:13px';
+    var lbl = document.createElement('span');
+    lbl.style.cssText = 'color:var(--color-muted);min-width:220px';
+    lbl.textContent = label + ':';
+    var val = document.createElement('span');
+    val.style.fontWeight = '500';
+    if (typeof value === 'object' && value !== null) {
+      row.appendChild(lbl);
+      row.appendChild(value);
+    } else {
+      val.textContent = String(value !== null && value !== undefined ? value : '—');
+      row.appendChild(lbl);
+      row.appendChild(val);
+    }
+    return row;
+  }
+
+  function buildTable(headers, rowsData) {
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px';
+    var thead = document.createElement('thead');
+    var tr = document.createElement('tr');
+    headers.forEach(function(h) {
+      var th = document.createElement('th');
+      th.textContent = h;
+      th.style.cssText = 'text-align:left;padding:4px 8px;border-bottom:1px solid var(--color-border);color:var(--color-muted);font-weight:600;font-size:11px;text-transform:uppercase';
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+    tbl.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    rowsData.forEach(function(cells) {
+      var row = document.createElement('tr');
+      cells.forEach(function(c) {
+        var td = document.createElement('td');
+        td.style.cssText = 'padding:4px 8px;border-bottom:1px solid var(--color-border,#e5e7eb)';
+        if (typeof c === 'object' && c !== null && c.nodeType) {
+          td.appendChild(c);
+        } else {
+          td.textContent = String(c !== null && c !== undefined ? c : '—');
+        }
+        row.appendChild(td);
+      });
+      tbody.appendChild(row);
+    });
+    tbl.appendChild(tbody);
+    return tbl;
+  }
+
+  function renderHealth(panel, data) {
+    panel.appendChild(sectionTitle('Backend Health'));
+
+    var backends = [
+      { label: 'Embedding', info: data.embedding },
+      { label: 'Classify',  info: data.classify },
+      { label: 'Synthesis', info: data.synthesis },
+    ];
+
+    var rows = backends.filter(function(b) { return b.info; }).map(function(b) {
+      var latency = (b.info.latency_ms != null) ? (b.info.latency_ms + ' ms') : '—';
+      return [b.label, b.info.backend || '—', statusBadge(b.info.reachable), latency];
+    });
+    panel.appendChild(buildTable(['Backend', 'Provider', 'Status', 'Latency'], rows));
+
+    var mode = data.search_mode === 'hybrid' ? 'Hybrid (vector + FTS5)' : 'FTS5 only';
+    panel.appendChild(kv('Search mode', mode));
+
+    var ts = document.createElement('span');
+    ts.style.cssText = 'font-size:11px;color:var(--color-muted)';
+    ts.textContent = 'Checked at: ' + (data.checked_at || '—');
+    panel.appendChild(ts);
+  }
+
+  function renderPipelineConfig(panel, data) {
+    panel.appendChild(sectionTitle('Pipeline Config'));
+    panel.appendChild(kv('Pipeline enabled', data.enabled ? 'Yes' : 'No'));
+    panel.appendChild(kv('Task similarity threshold', data.task_similarity_threshold));
+    panel.appendChild(kv('Synthesis max sentences', data.synthesis_max_sentences));
+
+    var tiers = data.tiers || {};
+    var tierRows = [
+      ['Tier 1 (heuristics)', tiers.tier1_timeout_ms != null ? tiers.tier1_timeout_ms + ' ms' : '—'],
+      ['Tier 2 (embed+tasks)', tiers.tier2_timeout_ms != null ? tiers.tier2_timeout_ms + ' ms' : '—'],
+      ['Tier 3 (LLM classify)', tiers.tier3_timeout_ms != null ? tiers.tier3_timeout_ms + ' ms' : '—'],
+      ['Tier 4 (synthesis)', tiers.tier4_timeout_ms != null ? tiers.tier4_timeout_ms + ' ms' : '—'],
+    ];
+    if (tiers.tier4_min_complexity) {
+      tierRows.push(['Tier 4 min complexity', tiers.tier4_min_complexity]);
+    }
+    panel.appendChild(buildTable(['Tier', 'Timeout'], tierRows));
+  }
+
+  function renderTelemetry(panel, data) {
+    if (!data || data.total_runs === 0) { return; }
+    panel.appendChild(sectionTitle('Pipeline Telemetry (last ' + data.days + ' days)'));
+    panel.appendChild(kv('Total runs', data.total_runs));
+
+    var lat = data.avg_latencies || {};
+    var latRows = [
+      ['Tier 1', lat.tier1_ms != null ? lat.tier1_ms + ' ms' : '—'],
+      ['Tier 2', lat.tier2_ms != null ? lat.tier2_ms + ' ms' : '—'],
+      ['Tier 3', lat.tier3_ms != null ? lat.tier3_ms + ' ms' : '—'],
+      ['Tier 4', lat.tier4_ms != null ? lat.tier4_ms + ' ms' : '—'],
+      ['Total',  lat.total_ms != null ? lat.total_ms + ' ms' : '—'],
+    ];
+    panel.appendChild(buildTable(['Tier', 'Avg Latency'], latRows));
+
+    var fb = data.fallback_rates || {};
+    var fbKeys = Object.keys(fb);
+    if (fbKeys.length) {
+      var fbRows = fbKeys.map(function(k) { return [k, fb[k] + '%']; });
+      panel.appendChild(buildTable(['Fallback', 'Rate'], fbRows));
+    }
+
+    if (data.total_cost_usd != null && data.total_cost_usd > 0) {
+      panel.appendChild(kv('Total LLM cost (period)', '$' + data.total_cost_usd.toFixed(4)));
+    }
+  }
+
+  window.loadPipelinePanel = function () {
+    if (_loaded) { return; }
+    _loaded = true;
+
+    var panel = document.getElementById('pipeline-panel');
+    if (!panel) { return; }
+    var loading = document.getElementById('pipeline-loading');
+
+    Promise.all([
+      fetch('/api/control/backend-health').then(function(r) { return r.json(); }),
+      fetch('/api/control/pipeline-config').then(function(r) { return r.json(); }),
+      fetch('/api/control/pipeline-telemetry').then(function(r) { return r.json(); }),
+    ]).then(function(results) {
+      if (loading) { loading.remove(); }
+      renderHealth(panel, results[0]);
+      renderPipelineConfig(panel, results[1]);
+      renderTelemetry(panel, results[2]);
+    }).catch(function(err) {
+      if (loading) { loading.textContent = 'Error loading pipeline data: ' + err; }
+    });
+  };
+}());
+</script>
 
 <section class="panel" style="margin-top:16px" x-data="{open: true}">
   <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
