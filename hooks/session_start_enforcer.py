@@ -198,6 +198,49 @@ def _ensure_open_tasks() -> str:
         return ""
 
 
+def _create_conversation_task(message: str, session_id: str) -> None:
+    """Create an open task for the current conversation if none exists yet.
+
+    Zero LLM cost: derives title from the first sentence of the user message.
+    Idempotent: skips creation if this session already has an open task.
+    Opt-out via config ``task_auto_create_enabled`` (default True).
+    """
+    if not message.strip() or not session_id:
+        return
+    try:
+        from skill_hub import config as _cfg
+        if _cfg.get("task_auto_create_enabled") is False:
+            return
+    except Exception:
+        return
+    try:
+        from skill_hub.store import SkillStore
+        import re
+        store = SkillStore()
+        try:
+            if store.get_open_task_for_session(session_id):
+                return  # already tracked
+            # Derive a concise title from the first sentence / 120 chars
+            first_line = message.strip().splitlines()[0][:200]
+            # Trim at sentence boundary if possible
+            sentence_end = re.search(r'[.!?]', first_line)
+            title = first_line[:sentence_end.start()] if sentence_end and sentence_end.start() > 20 else first_line
+            title = title.strip()[:120] or "Conversation"
+            store.save_task(
+                title=title,
+                summary=message[:500],
+                vector=[],
+                context="",
+                tags="",
+                session_id=session_id,
+            )
+            log(f"SESSION-TASK created  title=\"{title[:60]}\"  session={session_id[:8]}")
+        finally:
+            store.close()
+    except Exception as exc:
+        log(f"SESSION-TASK error: {exc}")
+
+
 def _auto_switch_profile() -> str:
     """Score profiles by tag overlap with the last N closed tasks and switch
     to the best match (when it differs from the current active profile).
@@ -333,6 +376,9 @@ def main():
     tasks_msg = _ensure_open_tasks()
     if tasks_msg:
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
+
+    user_message = data.get("message") or data.get("prompt") or ""
+    _create_conversation_task(user_message, session_id)
 
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 

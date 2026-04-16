@@ -418,7 +418,7 @@ const TASK_DATA = {};
 <script>
 function tasksApp() {
   return {
-    filter: 'open',
+    filter: _OPEN_TASKS_INIT.length > 0 ? 'open' : 'closed',
     q: '',
     mode: 'text',
     selectedId: null,
