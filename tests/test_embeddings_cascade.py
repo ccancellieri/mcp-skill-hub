@@ -43,7 +43,6 @@ def test_embed_voyage_first_success(monkeypatch):
 
         cfg_mock.get.side_effect = lambda k: {
             "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-            "embedding_fallback_on_error": True,
             "voyage_api_key": None,
             "voyage_embed_model": "voyage/voyage-3-lite",
         }.get(k)
@@ -81,7 +80,6 @@ def test_embed_falls_back_to_ollama_when_voyage_key_missing(monkeypatch):
 
         cfg_mock.get.side_effect = lambda k: {
             "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-            "embedding_fallback_on_error": True,
             "voyage_api_key": None,
             "voyage_embed_model": "voyage/voyage-3-lite",
             "sentence_transformers_model": "all-MiniLM-L6-v2",
@@ -142,7 +140,6 @@ def test_embed_falls_back_to_sentence_transformers(monkeypatch):
         with patch("skill_hub.embeddings._cfg") as cfg_mock:
             cfg_mock.get.side_effect = lambda k: {
                 "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-                "embedding_fallback_on_error": True,
             }.get(k)
 
             result = emb.embed("hello")
@@ -186,7 +183,6 @@ def test_embed_raises_when_all_backends_fail(monkeypatch):
         with patch("skill_hub.embeddings._cfg") as cfg_mock:
             cfg_mock.get.side_effect = lambda k: {
                 "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-                "embedding_fallback_on_error": True,
             }.get(k)
 
             with pytest.raises(RuntimeError, match="all embedding backends failed"):
