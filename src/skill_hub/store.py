@@ -631,6 +631,26 @@ class SkillStore:
                 "ALTER TABLE tasks ADD COLUMN options TEXT"
             )
             self._conn.commit()
+            task_cols = task_cols | {"options"}
+
+        # Phase B.9 — heartbeat: tracks last activity timestamp per open task.
+        if "last_activity_at" not in task_cols:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN last_activity_at TEXT"
+                )
+                self._conn.commit()
+            except Exception:
+                pass  # column already exists
+        # Index on last_activity_at for open tasks (idempotent).
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_last_activity "
+                "ON tasks(last_activity_at DESC) WHERE status='open'"
+            )
+            self._conn.commit()
+        except Exception:
+            pass  # partial index unsupported on some SQLite builds
 
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
@@ -1500,6 +1520,110 @@ class SkillStore:
             "ORDER BY created_at DESC LIMIT 1",
             (session_id,)
         ).fetchone()
+
+    def get_open_task_id_for_session(self, session_id: str) -> int | None:
+        """Return the id of the most recent open task for this session, or None."""
+        if not session_id:
+            return None
+        row = self._conn.execute(
+            "SELECT id FROM tasks WHERE session_id = ? AND status = 'open' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def touch_task_activity(self, task_id: int) -> None:
+        """Update last_activity_at = now() for a task. Best-effort, never raises."""
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET last_activity_at = datetime('now') WHERE id = ?",
+                (task_id,),
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
+    def get_task_activity_state(self, task_id: int) -> str:
+        """Return 'active'|'idle'|'open'|'closed' based on last_activity_at."""
+        row = self._conn.execute(
+            "SELECT status, last_activity_at FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return "unknown"
+        status = row["status"] if isinstance(row, dict) else row[0]
+        last_at = row["last_activity_at"] if isinstance(row, dict) else row[1]
+        if status == "closed":
+            return "closed"
+        if not last_at:
+            return "open"
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+            # SQLite datetime('now') is UTC but has no tzinfo — normalise to aware UTC.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            diff_sec = (now - dt).total_seconds()
+            if diff_sec <= 60:
+                return "active"
+            if diff_sec <= 3600:
+                return "idle"
+        except Exception:
+            pass
+        return "open"
+
+    def list_tasks_with_activity(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        """Return tasks with computed activity_state column."""
+        from datetime import datetime, timezone
+
+        where = "WHERE status = ?" if status else ""
+        params: tuple = (status,) if status else ()
+        rows = self._conn.execute(
+            f"SELECT id, title, summary, status, tags, session_id, "
+            f"created_at, updated_at, last_activity_at, compact "
+            f"FROM tasks {where} ORDER BY "
+            f"CASE status WHEN 'open' THEN 0 ELSE 1 END, "
+            f"updated_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+
+        def _state(row) -> str:
+            if isinstance(row, dict):
+                st = row.get("status")
+                la = row.get("last_activity_at")
+            else:
+                # sqlite3.Row — access by column name
+                try:
+                    st = row["status"]
+                    la = row["last_activity_at"]
+                except (IndexError, KeyError):
+                    return "open"
+            if st == "closed":
+                return "closed"
+            if not la:
+                return "open"
+            try:
+                dt = datetime.fromisoformat(la.replace("Z", "+00:00"))
+                # SQLite datetime('now') is UTC but has no tzinfo — normalise to aware UTC.
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                diff = (datetime.now(timezone.utc) - dt).total_seconds()
+                if diff <= 60:
+                    return "active"
+                if diff <= 3600:
+                    return "idle"
+            except Exception:
+                pass
+            return "open"
+
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["activity_state"] = _state(row)
+            result.append(d)
+        return result
 
     def set_task_auto_approve(self, task_id: int, enabled: bool | None) -> bool:
         """Set per-task auto_approve flag. None clears (global behavior).

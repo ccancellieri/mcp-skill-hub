@@ -362,6 +362,50 @@ def _run_pipeline(message: str, session_id: str) -> str:
         return ""
 
 
+def _maybe_teach_from_message(message: str, session_id: str) -> str:
+    """If first message contains a teach-directive, auto-teach it. Returns advisory."""
+    if not message.strip():
+        return ""
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("continuous_teaching_enabled"):
+            return ""
+    except Exception:
+        return ""
+
+    import re
+    teach_patterns = [
+        r'^(?:please\s+)?remember[:\s]+(.{10,300})$',
+        r'^never (?:do |again )?(?:this[:\s]+)?(.{10,300})$',
+        r'^always (?:do )?(?:this[:\s]+)?(.{10,300})$',
+        r'(?:please\s+)?remember[:\s]+(.{10,200})(?:going forward|from now on|always)',
+    ]
+    for pat in teach_patterns:
+        m = re.search(pat, message.strip(), re.IGNORECASE | re.DOTALL)
+        if m:
+            rule_text = m.group(1).strip()
+            try:
+                from skill_hub.store import SkillStore as _SK
+                _store = _SK()
+                try:
+                    try:
+                        from skill_hub.embeddings import embed as _embed
+                        vec = _embed(rule_text)
+                    except Exception:
+                        vec = []
+                    _store.add_teaching(
+                        rule=rule_text, rule_vector=vec,
+                        action="Auto-taught from session start message",
+                        target_type="global", target_id="global",
+                    )
+                    return f'AUTO-TAUGHT: "{rule_text[:80]}"'
+                finally:
+                    _store.close()
+            except Exception:
+                pass
+    return ""
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -426,7 +470,25 @@ def main():
     if tasks_msg:
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
 
+    # Heartbeat: update last_activity_at for the session's open task
+    try:
+        from skill_hub.store import SkillStore as _SkillStore
+        _hb_store = _SkillStore()
+        _task_id = _hb_store.get_open_task_id_for_session(session_id)
+        if _task_id:
+            _hb_store.touch_task_activity(_task_id)
+            log(f"HEARTBEAT  task_id={_task_id}")
+        _hb_store.close()
+    except Exception:
+        pass
+
     user_message = data.get("message") or data.get("prompt") or ""
+
+    # Auto-teach from "remember X" / "never do X" / "always do X" in first message
+    teach_advisory = _maybe_teach_from_message(user_message, session_id)
+    if teach_advisory:
+        log(f"AUTO-TEACH  msg=\"{teach_advisory[:100]}\"")
+
     pipeline_msg = _run_pipeline(user_message, session_id)
     if pipeline_msg:
         log(f"PIPELINE  chars={len(pipeline_msg)}")
@@ -458,6 +520,8 @@ def main():
         system_msg = drift_msg + "\n\n" + system_msg
     if tasks_msg:
         system_msg = tasks_msg + "\n\n" + system_msg
+    if teach_advisory:
+        system_msg = teach_advisory + "\n\n" + system_msg
     if housekeeping_msg:
         system_msg = system_msg + "\n\n" + housekeeping_msg
 
