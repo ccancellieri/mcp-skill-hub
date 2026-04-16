@@ -37,6 +37,12 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+embeddings = [
+    "sentence-transformers>=2.7",
+    "voyageai>=0.2",
+]
+
 [project.urls]
 Repository = "https://github.com/ccancellieri/mcp-skill-hub"
 

@@ -2,6 +2,9 @@
 
 import json
 import re
+from typing import Any
+
+import httpx
 
 from . import config as _cfg
 from .activity_log import get_logger, log_llm, llm_timer
@@ -86,14 +89,83 @@ def quantize_binary(vector: list[float]) -> bytes:
 
 
 def embed(text: str, model: str = EMBED_MODEL, timeout: float = 15.0) -> list[float]:
-    """Return embedding vector via the configured LLM provider."""
-    if not _embed_is_enabled():
-        raise RuntimeError("ollama_embed service is disabled")
+    """Return embedding vector using the configured backend cascade.
+
+    Tries backends in order from config `embedding_backend_priority`:
+    - "voyage": via litellm voyage/voyage-3-lite
+    - "ollama": via multi-endpoint OllamaMultiClient
+    - "sentence_transformers": via SentenceTransformers (lazy-loaded, CPU)
+
+    Raises RuntimeError if all backends fail.
+    """
+    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
+    errors: list[str] = []
+
+    for backend in priority:
+        try:
+            if backend == "voyage":
+                vec = _embed_voyage(text, timeout=timeout)
+            elif backend == "ollama":
+                vec = _embed_ollama(text, model=model, timeout=timeout)
+            elif backend == "sentence_transformers":
+                vec = _embed_sentence_transformers(text)
+            else:
+                continue
+            if vec:
+                return vec
+        except Exception as exc:
+            errors.append(f"{backend}: {exc}")
+            continue
+
+    fallback_on_error = bool(_cfg.get("embedding_fallback_on_error") if _cfg.get("embedding_fallback_on_error") is not None else True)
+    if not fallback_on_error or not errors:
+        raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
+    raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
+
+
+def _embed_voyage(text: str, *, timeout: float = 15.0) -> list[float]:
+    """Embed via Voyage AI (voyage-3-lite) using litellm."""
+    import os
+    api_key = os.environ.get("VOYAGE_API_KEY") or str(_cfg.get("voyage_api_key") or "")
+    if not api_key:
+        raise RuntimeError("VOYAGE_API_KEY not set")
+    voyage_model = str(_cfg.get("voyage_embed_model") or "voyage/voyage-3-lite")
+    result = get_provider().embed(text, model=voyage_model, timeout=timeout)
+    return result if isinstance(result, list) and result and isinstance(result[0], float) else result[0]
+
+
+def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:
+    """Embed via Ollama multi-endpoint client."""
+    from .ollama_client import get_ollama_client
+    client = get_ollama_client()
+    api_base = client.get_api_base(model)
+    if not api_base:
+        raise RuntimeError("no healthy Ollama endpoint available")
+    result = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout)
+    return result if isinstance(result, list) and result and isinstance(result[0], float) else result[0]
+
+
+def _embed_sentence_transformers(text: str) -> list[float]:
+    """Embed via SentenceTransformers (lazy-loaded, CPU-only fallback)."""
     try:
-        vec = get_provider().embed(text, model=_wrap_ollama(model), timeout=timeout)
-    except LLMError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return vec if isinstance(vec, list) and (not vec or isinstance(vec[0], float)) else vec[0]
+        from sentence_transformers import SentenceTransformer  # noqa: F401
+    except ImportError:
+        raise RuntimeError("sentence_transformers not installed; run: pip install sentence-transformers")
+    st_model = str(_cfg.get("sentence_transformers_model") or "all-MiniLM-L6-v2")
+    _st_model_cache = _get_st_model(st_model)
+    vec = _st_model_cache.encode(text, convert_to_numpy=True)
+    return vec.tolist()
+
+
+_ST_MODEL_CACHE: dict[str, Any] = {}
+
+
+def _get_st_model(name: str):
+    """Lazy-load and cache a SentenceTransformer model."""
+    if name not in _ST_MODEL_CACHE:
+        from sentence_transformers import SentenceTransformer
+        _ST_MODEL_CACHE[name] = SentenceTransformer(name)
+    return _ST_MODEL_CACHE[name]
 
 
 def rerank(query: str, candidates: list[dict],
@@ -982,11 +1054,14 @@ def generate_auto_skill(canonical: str, count: int,
 
 
 def ollama_available(model: str = EMBED_MODEL) -> bool:
-    """Check whether the required Ollama model is available and services are enabled."""
-    if not _embed_is_enabled():
+    """Check whether any configured Ollama endpoint has the required model."""
+    from .ollama_client import get_ollama_client
+    client = get_ollama_client()
+    api_base = client.get_api_base(model)
+    if not api_base:
         return False
     try:
-        resp = httpx.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
+        resp = httpx.get(f"{api_base}/api/tags", timeout=5.0)
         models = [m["name"] for m in resp.json().get("models", [])]
         return any(model in m for m in models)
     except Exception:

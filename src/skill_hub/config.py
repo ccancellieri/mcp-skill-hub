@@ -25,6 +25,20 @@ _DEFAULTS = {
     # Empty dict = use global endpoint priority for all models.
     "ollama_model_routing": {},
 
+    # Embedding backend cascade
+    "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
+    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+    "embedding_fallback_on_error": True,
+    "voyage_api_key": None,  # set via env VOYAGE_API_KEY or here
+    "voyage_embed_model": "voyage/voyage-3-lite",
+    "sentence_transformers_model": "all-MiniLM-L6-v2",
+
+    # LLM backend config (for pipeline tiers, replacing the old Ollama-only approach)
+    "classify_backend": "haiku_json",    # haiku_json | yake_keywords | ollama_qwen
+    "synthesis_backend": "haiku",        # haiku | sonnet | ollama_local
+    "rewrite_backend": "sonnet",         # sonnet | haiku | none
+    "rerank_backend": "none",            # none | cohere | jina_local | ollama
+
     # Bundled (in-tree) plugins under <repo>/plugins/* are auto-discovered
     # at startup unless this is set to False.
     "bundled_plugins_enabled": True,
