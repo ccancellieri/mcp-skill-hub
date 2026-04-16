@@ -1,11 +1,15 @@
 """Memory console routes — enumerate and manage HOT + COLD memory segments."""
 from __future__ import annotations
 
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+
+from skill_hub.store import DB_PATH
 
 router = APIRouter()
 
@@ -166,3 +170,113 @@ def get_segment(segment_id: str) -> dict[str, Any]:
         if seg.get("id") == segment_id:
             return seg
     raise HTTPException(status_code=404, detail=f"segment {segment_id!r} not found")
+
+
+# ---------------------------------------------------------------------------
+# Compact endpoint
+# ---------------------------------------------------------------------------
+
+@router.post("/api/memory/segments/all/compact")
+def compact_all() -> dict[str, Any]:
+    """Enqueue compact jobs for every segment."""
+    from skill_hub.store import SkillStore
+    store = SkillStore()
+    try:
+        all_segs = list_segments()
+        segs = [s for s in all_segs if not s.get("_meta")]
+        job_ids = []
+        for seg in segs:
+            try:
+                jid = store.enqueue_job(
+                    "compact_segment",
+                    {"segment_id": seg.get("id"), "location": seg.get("location")},
+                )
+                job_ids.append(jid)
+            except Exception as exc:
+                pass  # best-effort
+        return {"queued": True, "job_count": len(job_ids), "job_ids": job_ids}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    finally:
+        store.close()
+
+
+@router.post("/api/memory/segments/{segment_id}/compact")
+def compact_segment(segment_id: str) -> dict[str, Any]:
+    """Enqueue a compact job for the given segment."""
+    from skill_hub.store import SkillStore
+    store = SkillStore()
+    try:
+        # Find the segment to get its location
+        all_segs = list_segments()
+        location = None
+        for seg in all_segs:
+            if seg.get("id") == segment_id:
+                location = seg.get("location")
+                break
+        job_id = store.enqueue_job(
+            "compact_segment",
+            {"segment_id": segment_id, "location": location},
+        )
+        return {"queued": True, "job_id": job_id, "segment_id": segment_id}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# Archive endpoint (file segments only)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/memory/segments/{segment_id}/archive")
+def archive_segment(segment_id: str) -> dict[str, Any]:
+    """Archive a file segment: move to _archive/ sub-directory (best-effort)."""
+    try:
+        all_segs = list_segments()
+        seg = next((s for s in all_segs if s.get("id") == segment_id), None)
+        if seg is None:
+            return JSONResponse(status_code=404, content={"error": f"segment {segment_id!r} not found"})
+
+        kind = seg.get("kind", "")
+        if kind not in ("file", "file-group"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "archive is only supported for file and file-group segments"},
+            )
+
+        location = seg.get("location", "")
+        src = Path(location.replace("*", "")).resolve()
+
+        if kind == "file":
+            if not src.exists():
+                return {"queued": True, "archived": 0, "note": "file not found, nothing to archive"}
+            archive_dir = src.parent / "_archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+            dest = archive_dir / f"{src.stem}_{ts}{src.suffix}"
+            shutil.move(str(src), str(dest))
+            return {"queued": True, "archived": 1, "dest": str(dest)}
+
+        # file-group: archive all matching files
+        parent = src if src.is_dir() else src.parent
+        # Reconstruct the glob pattern from location (e.g. ".../*.md" → glob "*.md")
+        glob_pattern = Path(location).name if "*" in location else "*.md"
+        files = sorted(parent.glob(glob_pattern))
+        if not files:
+            return {"queued": True, "archived": 0, "note": "no files matched"}
+        archive_dir = parent / "_archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        archived = []
+        for f in files:
+            dest = archive_dir / f"{f.stem}_{ts}{f.suffix}"
+            try:
+                shutil.move(str(f), str(dest))
+                archived.append(str(dest))
+            except Exception:
+                pass
+        return {"queued": True, "archived": len(archived), "dests": archived}
+
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
