@@ -2,17 +2,14 @@
 {% block title %}tasks{% endblock %}
 {% block content %}
 
-{# Embed task data as a JS map — avoids JSON-in-attribute escaping bugs. #}
+{# Embed initial task data — Alpine picks these up on init then polls /api/tasks/list. #}
 <script>
-const TASK_DATA = {
-  {% for t in open_tasks %}
-  {{ t.id }}: {{ t|tojson }},
-  {% endfor %}
-  {% for t in closed_tasks %}
-  {{ t.id }}: {{ t|tojson }},
-  {% endfor %}
-};
+const _OPEN_TASKS_INIT  = {{ open_tasks|tojson }};
+const _CLOSED_TASKS_INIT = {{ closed_tasks|tojson }};
 const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
+// Build TASK_DATA from initial arrays; kept in sync by Alpine pollTaskList().
+const TASK_DATA = {};
+[..._OPEN_TASKS_INIT, ..._CLOSED_TASKS_INIT].forEach(t => { TASK_DATA[t.id] = t; });
 </script>
 
 <div class="tasks-layout" x-data="tasksApp()">
@@ -22,8 +19,10 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
 
     <div class="tasks-sidebar-header">
       <h1 class="page-h" style="margin:0">Tasks</h1>
-      <span class="tag open" style="font-size:10px">{{ open_tasks|length }} open</span>
-      <span class="tag closed" style="font-size:10px; margin-left:4px">{{ closed_tasks|length }} closed</span>
+      <span class="tag open" style="font-size:10px" x-text="openTasks.length + ' open'"></span>
+      <span class="tag closed" style="font-size:10px; margin-left:4px" x-text="closedTasks.length + ' closed'"></span>
+      <span x-show="listPollActive" style="font-size:9px; color:var(--color-muted); margin-left:6px"
+            title="Live — refreshes every 15 s">●</span>
       <button class="btn sm" style="margin-left:auto" onclick="openNewTask()">+ new</button>
     </div>
 
@@ -52,74 +51,74 @@ const FIRST_OPEN_ID = {{ open_tasks[0].id if open_tasks else 'null' }};
     {# Filter tabs #}
     <div class="tasks-filter-tabs">
       <button class="tab-btn" :class="{active: filter==='open'}" @click="filter='open'">
-        Open <span class="muted">({{ open_tasks|length }})</span>
+        Open <span class="muted" x-text="'(' + openTasks.length + ')'"></span>
       </button>
       <button class="tab-btn" :class="{active: filter==='closed'}" @click="filter='closed'">
-        Closed <span class="muted">({{ closed_tasks|length }})</span>
+        Closed <span class="muted" x-text="'(' + closedTasks.length + ')'"></span>
       </button>
     </div>
 
-    {# Open tasks list #}
+    {# Open tasks list — x-for driven, polled every 15 s #}
     <div x-show="filter==='open'" class="task-list">
-      {% for t in open_tasks %}
-      <div class="task-item" :class="{selected: selectedId==={{ t.id }}}"
-           @click="selectById({{ t.id }})">
-        <div style="display:flex; align-items:flex-start; gap:6px">
-          <div class="task-item-title" style="flex:1">{{ t.title }}</div>
-          <button class="btn sm danger" style="flex-shrink:0"
-                  @click.stop="selectById({{ t.id }}); openClose()"
-                  title="Close task">close</button>
-        </div>
-        <div class="task-item-meta">
-          {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
-          <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
-          <div class="task-item-skills" style="font-size:10px; margin-top:4px"
-               x-data="{skills:[]}" x-init="fetch('/tasks/{{ t.id }}/stats/skills').then(r => r.json()).then(d => skills = d.top_skills || []).catch(() => skills=[])">
-            <template x-if="skills.length">
-              <span style="color:var(--color-accent); display:inline-block; margin-right:4px" x-text="skills.length + ' skill' + (skills.length !== 1 ? 's' : '')"></span>
+      <template x-for="t in openTasks" :key="t.id">
+        <div class="task-item" :class="{selected: selectedId===t.id}"
+             @click="selectById(t.id)">
+          <div style="display:flex; align-items:flex-start; gap:6px">
+            <div class="task-item-title" style="flex:1" x-text="t.title"></div>
+            <button class="btn sm danger" style="flex-shrink:0"
+                    @click.stop="selectById(t.id); openClose()"
+                    title="Close task">close</button>
+          </div>
+          <div class="task-item-meta">
+            <template x-if="t.tags">
+              <span class="task-tag" x-text="t.tags"></span>
             </template>
+            <span class="muted" style="font-size:10px" x-text="t.created_at"></span>
+            <div class="task-item-skills" style="font-size:10px; margin-top:4px"
+                 x-data="{skills:[]}"
+                 x-init="fetch('/tasks/'+t.id+'/stats/skills').then(r=>r.json()).then(d=>skills=d.top_skills||[]).catch(()=>skills=[])">
+              <template x-if="skills.length">
+                <span style="color:var(--color-accent); display:inline-block; margin-right:4px"
+                      x-text="skills.length+' skill'+(skills.length!==1?'s':'')"></span>
+              </template>
+            </div>
           </div>
         </div>
-      </div>
-      {% else %}
-      <div style="padding:20px 14px; text-align:center">
-        <div style="font-size:11px; color:var(--color-muted)">no open tasks</div>
-        <button class="btn sm" onclick="openNewTask()" style="margin-top:8px; font-size:11px">+ new task</button>
-      </div>
-      {% endfor %}
+      </template>
+      <template x-if="openTasks.length === 0">
+        <div style="padding:20px 14px; text-align:center">
+          <div style="font-size:11px; color:var(--color-muted)">no open tasks</div>
+          <button class="btn sm" onclick="openNewTask()" style="margin-top:8px; font-size:11px">+ new task</button>
+        </div>
+      </template>
     </div>
 
-    {# Closed tasks list #}
+    {# Closed tasks list — x-for driven, polled every 15 s #}
     <div x-show="filter==='closed'" class="task-list">
       <div class="bulk-bar" style="padding:6px 10px">
         <button type="button" class="btn sm" @click="doMerge()"
                 :disabled="selected.length<2">Merge selected</button>
         <span class="muted" x-text="selected.length + ' selected'"></span>
       </div>
-      {% for t in closed_tasks %}
-      <div class="task-item" :class="{selected: selectedId==={{ t.id }}}"
-           @click="selectById({{ t.id }})">
-        <div style="display:flex; align-items:flex-start; gap:6px">
-          <input type="checkbox" @click.stop
-                 @change="toggleSelect({{ t.id }}, $event.target.checked)">
-          <div class="task-item-title" style="flex:1">{{ t.title }}</div>
-        </div>
-        <div class="task-item-meta">
-          {% if t.tags %}<span class="task-tag">{{ t.tags }}</span>{% endif %}
-          <span class="muted" style="font-size:10px">{{ t.created_at }}</span>
-          <div class="task-item-skills" style="font-size:10px; margin-top:4px"
-               x-data="{skills:[]}" x-init="fetch('/tasks/{{ t.id }}/stats/skills').then(r => r.json()).then(d => skills = d.top_skills || []).catch(() => skills=[])">
-            <template x-if="skills.length">
-              <span style="color:var(--color-accent); display:inline-block; margin-right:4px" x-text="skills.length + ' skill' + (skills.length !== 1 ? 's' : '')"></span>
+      <template x-for="t in closedTasks" :key="t.id">
+        <div class="task-item" :class="{selected: selectedId===t.id}"
+             @click="selectById(t.id)">
+          <div style="display:flex; align-items:flex-start; gap:6px">
+            <input type="checkbox" @click.stop
+                   @change="toggleSelect(t.id, $event.target.checked)">
+            <div class="task-item-title" style="flex:1" x-text="t.title"></div>
+          </div>
+          <div class="task-item-meta">
+            <template x-if="t.tags">
+              <span class="task-tag" x-text="t.tags"></span>
             </template>
+            <span class="muted" style="font-size:10px" x-text="t.created_at"></span>
           </div>
         </div>
-      </div>
-      {% else %}
-      <div class="muted" style="padding:14px; text-align:center; font-size:12px">
-        no closed tasks yet.
-      </div>
-      {% endfor %}
+      </template>
+      <template x-if="closedTasks.length === 0">
+        <div class="muted" style="padding:14px; text-align:center; font-size:12px">no closed tasks yet.</div>
+      </template>
     </div>
 
   </div>{# /tasks-sidebar #}
@@ -429,6 +428,10 @@ function tasksApp() {
     logLines: [],
     liveLog: false,
     autoScroll: true,
+    listPollActive: false,
+    _pollTimer: null,
+    openTasks: _OPEN_TASKS_INIT,
+    closedTasks: _CLOSED_TASKS_INIT,
     modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none' },
     sessionStats: { message_count: null, duration_hours: null, log_count: 0, updated_at: null },
     _ws: null,
@@ -452,6 +455,34 @@ function tasksApp() {
         }
         if (e.key === 'Escape') closeRefPicker();
       });
+      // Start live task list polling
+      this._startListPoll();
+    },
+
+    _startListPoll() {
+      this.listPollActive = true;
+      this._pollTimer = setInterval(() => this.pollTaskList(), 15000);
+    },
+
+    async pollTaskList() {
+      try {
+        const r = await fetch('/api/tasks/list');
+        if (!r.ok) return;
+        const data = await r.json();
+        // Merge into TASK_DATA
+        [...(data.open||[]), ...(data.closed||[])].forEach(t => { TASK_DATA[t.id] = t; });
+        this.openTasks = data.open || [];
+        this.closedTasks = data.closed || [];
+        // If a new task arrived while we're looking at open, switch to it
+        const openIds = new Set(this.openTasks.map(t => t.id));
+        if (this.selectedId && !TASK_DATA[this.selectedId]) return; // stale
+        // Refresh selected task data if it changed
+        if (this.selectedId && TASK_DATA[this.selectedId]) {
+          const fresh = TASK_DATA[this.selectedId];
+          this.selectedTask = fresh;
+          this.taskOptions = fresh.options || {};
+        }
+      } catch(_) {}
     },
 
     selectById(id) {

@@ -66,6 +66,18 @@ def _list_for_panel(store, status: str, limit: int | None = None) -> list[dict]:
     return out
 
 
+@router.get("/api/tasks/list")
+def api_tasks_list(request: Request) -> JSONResponse:
+    """Live task list for the sidebar — polled by Alpine.js every 15 s."""
+    store = request.app.state.store
+    open_tasks = _list_for_panel(store, "open")
+    closed_tasks = _list_for_panel(store, "closed")
+    return JSONResponse({
+        "open": open_tasks,
+        "closed": closed_tasks,
+    })
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 def tasks_page(request: Request) -> Any:
     store = request.app.state.store
