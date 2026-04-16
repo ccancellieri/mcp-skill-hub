@@ -2666,19 +2666,25 @@ class SkillStore:
         return cur.lastrowid or 0
 
     def dequeue_job(self) -> sqlite3.Row | None:
-        """Atomically claim the highest-priority pending job. Returns None if queue is empty."""
+        """Atomically claim the highest-priority pending job. Returns None if queue empty."""
+        # Single statement: claim + return in one atomic write
         row = self._conn.execute(
-            "SELECT * FROM background_jobs WHERE status = 'pending'"
-            " ORDER BY priority ASC, created_at ASC LIMIT 1"
+            """
+            UPDATE background_jobs
+            SET status     = 'running',
+                started_at = datetime('now'),
+                attempts   = attempts + 1
+            WHERE id = (
+                SELECT id FROM background_jobs
+                WHERE status = 'pending'
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+            )
+            RETURNING *
+            """
         ).fetchone()
-        if row is None:
-            return None
-        self._conn.execute(
-            "UPDATE background_jobs SET status = 'running', started_at = datetime('now'),"
-            " attempts = attempts + 1 WHERE id = ?",
-            (row["id"],),
-        )
-        self._conn.commit()
+        if row is not None:
+            self._conn.commit()
         return row
 
     def complete_job(self, job_id: int, result: dict | None = None, worker: str = "") -> None:
@@ -2690,15 +2696,16 @@ class SkillStore:
         self._conn.commit()
 
     def fail_job(self, job_id: int, error: str, max_attempts: int = 3) -> None:
-        """Fail a job; defer it if attempts < max_attempts, otherwise mark failed."""
-        row = self._conn.execute(
-            "SELECT attempts FROM background_jobs WHERE id = ?", (job_id,)
-        ).fetchone()
-        attempts = row["attempts"] if row else 1
-        new_status = "deferred" if attempts < max_attempts else "failed"
+        """Fail or defer a job based on attempt count."""
         self._conn.execute(
-            "UPDATE background_jobs SET status = ?, error = ? WHERE id = ?",
-            (new_status, error[:1000], job_id),
+            """
+            UPDATE background_jobs
+            SET attempts = attempts + 1,
+                status   = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'deferred' END,
+                error    = ?
+            WHERE id = ?
+            """,
+            (max_attempts, error[:1000], job_id),
         )
         self._conn.commit()
 
