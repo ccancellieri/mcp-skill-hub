@@ -2857,6 +2857,25 @@ class SkillStore:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def update_cron_job(self, job_id: int, **fields: object) -> bool:
+        """Update one or more fields of a cron job by id.
+
+        Accepted keyword arguments: schedule, command, enabled, description.
+        Unknown keys are silently ignored. Returns True if a row was updated.
+        """
+        allowed = {"schedule", "command", "enabled", "description"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{col}=?" for col in updates)
+        values = list(updates.values()) + [job_id]
+        cur = self._conn.execute(
+            f"UPDATE cron_jobs SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+            values,
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._conn.close()
 

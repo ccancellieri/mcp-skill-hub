@@ -158,18 +158,13 @@ async def api_cron_update(job_id: int, request: Request) -> JSONResponse:
             return JSONResponse(
                 {"error": f"invalid cron expression: {new_schedule!r}"}, status_code=400
             )
-        store._conn.execute(
-            "UPDATE cron_jobs SET schedule=?, command=?, enabled=?, description=?,"
-            " updated_at=datetime('now') WHERE id=?",
-            (
-                new_schedule,
-                body.get("command", job.get("command", "")),
-                int(bool(body.get("enabled", job.get("enabled", 1)))),
-                body.get("description", job.get("description", "") or ""),
-                job_id,
-            ),
+        store.update_cron_job(
+            job_id,
+            schedule=new_schedule,
+            command=body.get("command", job.get("command", "")),
+            enabled=int(bool(body.get("enabled", job.get("enabled", 1)))),
+            description=body.get("description", job.get("description", "") or ""),
         )
-        store._conn.commit()
     row = store.get_cron_job(job_id)
     return JSONResponse(_enrich(_row_to_dict(row)) if row else {})
 
