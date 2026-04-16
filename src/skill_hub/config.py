@@ -19,15 +19,7 @@ _DEFAULTS = {
     # Multi-endpoint Ollama — priority-ordered list of endpoints.
     # Each entry: {name, url, priority, enabled, auth_header (optional)}
     # When empty or absent, ollama_base is used as the single endpoint.
-    "ollama_endpoints": [
-        {
-            "name": "local",
-            "url": "http://localhost:11434",
-            "priority": 1,
-            "enabled": False,  # off by default (user's machine keeps Ollama off)
-            "auth_header": None,
-        }
-    ],
+    "ollama_endpoints": [],
 
     # Per-model endpoint routing: model name → list of endpoint names (priority order).
     # Empty dict = use global endpoint priority for all models.

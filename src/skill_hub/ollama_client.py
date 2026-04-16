@@ -26,7 +26,7 @@ class OllamaEndpoint:
     url: str
     priority: int
     enabled: bool
-    auth_header: Optional[str] = None
+    auth_header: Optional[str] = None  # full header value, e.g. "Bearer sk-..."
 
 
 @dataclass
@@ -105,16 +105,20 @@ class OllamaMultiClient:
             state.failures.append(now)
 
             if len(state.failures) >= _FAILURE_THRESHOLD:
-                state.circuit_open_until = now + _CIRCUIT_OPEN_SECONDS
-                state.priority_penalty += _PRIORITY_DEMOTE_STEP
-                _log.warning(
-                    "ollama_client: circuit opened for %r "
-                    "(failures=%d, open until %s, priority_penalty=%d)",
-                    endpoint_name,
-                    len(state.failures),
-                    time.strftime("%H:%M:%S", time.localtime(state.circuit_open_until)),
-                    state.priority_penalty,
-                )
+                if state.circuit_open_until is None:  # only open once per failure burst
+                    state.circuit_open_until = now + _CIRCUIT_OPEN_SECONDS
+                    state.priority_penalty += _PRIORITY_DEMOTE_STEP
+                    _log.warning(
+                        "ollama_client: circuit opened for %r "
+                        "(failures=%d, open until %s, priority_penalty=%d)",
+                        endpoint_name,
+                        len(state.failures),
+                        time.strftime("%H:%M:%S", time.localtime(state.circuit_open_until)),
+                        state.priority_penalty,
+                    )
+                else:
+                    # Already open — just extend the deadline
+                    state.circuit_open_until = now + _CIRCUIT_OPEN_SECONDS
 
     def record_success(self, endpoint_name: str) -> None:
         """Reset failure count and close the circuit for this endpoint."""
@@ -145,6 +149,10 @@ class OllamaMultiClient:
             ep.name: ep for ep in self._config.endpoints
         }
 
+        # Snapshot penalties under the lock to avoid data races during sort
+        with self._lock:
+            penalties = {name: s.priority_penalty for name, s in self._state.items()}
+
         # Determine candidate order
         if model and model in self._config.model_routing:
             # Per-model list: names in explicit priority order
@@ -154,7 +162,7 @@ class OllamaMultiClient:
             # Global priority order (ascending priority value)
             candidates = sorted(
                 self._config.endpoints,
-                key=self._effective_priority,
+                key=lambda ep: ep.priority + penalties.get(ep.name, 0),
             )
 
         for ep in candidates:
