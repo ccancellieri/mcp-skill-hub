@@ -1509,8 +1509,14 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-embeddings = [
+all = [
     { name = "sentence-transformers" },
+    { name = "voyageai" },
+]
+sentence-transformers = [
+    { name = "sentence-transformers" },
+]
+voyage = [
     { name = "voyageai" },
 ]
 
@@ -1525,13 +1531,15 @@ requires-dist = [
     { name = "psutil", specifier = ">=5.9" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.7" },
+    { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=2.7.0" },
+    { name = "sentence-transformers", marker = "extra == 'sentence-transformers'", specifier = ">=2.7.0" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
-    { name = "voyageai", marker = "extra == 'embeddings'", specifier = ">=0.2" },
+    { name = "voyageai", marker = "extra == 'all'", specifier = ">=0.3.0" },
+    { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.3.0" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["embeddings"]
+provides-extras = ["sentence-transformers", "voyage", "all"]
 
 [[package]]
 name = "mdurl"

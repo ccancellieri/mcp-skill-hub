@@ -38,10 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-embeddings = [
-    "sentence-transformers>=2.7",
-    "voyageai>=0.2",
-]
+sentence_transformers = ["sentence-transformers>=2.7.0"]
+voyage = ["voyageai>=0.3.0"]
+all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0"]
 
 [project.urls]
 Repository = "https://github.com/ccancellieri/mcp-skill-hub"
