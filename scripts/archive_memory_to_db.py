@@ -12,6 +12,7 @@ Default: dry-run mode (prints what would happen, makes no changes).
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import sys
@@ -46,6 +47,11 @@ _ARCHIVE_STATUS_RE = re.compile(
     r"\b(DONE|SHIPPED|DEFERRED|COMPLETE|CLOSED)\b", re.IGNORECASE
 )
 
+# Fix 3: anchor description match to require status word at start of description
+_ARCHIVE_STATUS_LEADING_RE = re.compile(
+    r'^(DONE|SHIPPED|DEFERRED|COMPLETE|ARCHIVED|CLOSED)\b', re.IGNORECASE
+)
+
 _ENTRY_RE = re.compile(
     r"^- \[([^\]]+)\]\(([^\)]+)\)(?:\s+[—–\-]+\s+(.+))?$"
 )
@@ -71,8 +77,8 @@ _SESSION_ID = "archive-migration-script"
 
 
 def _is_archiveable_by_description(description: str) -> bool:
-    """Return True if the inline description in MEMORY.md contains a status marker."""
-    return bool(_ARCHIVE_STATUS_RE.search(description))
+    """Return True if the inline description starts with a status marker (Fix 3: anchored)."""
+    return bool(_ARCHIVE_STATUS_LEADING_RE.match(description.strip()))
 
 
 def _is_archiveable_by_body(body: str) -> bool:
@@ -127,9 +133,12 @@ def _should_archive(entry: dict, memory_dir: Path) -> tuple[bool, str | None]:
     """
     # Fast path: description already has the marker
     if _is_archiveable_by_description(entry["description"]):
-        # Still try to read body for richer task summary
         md_path = memory_dir / entry["filename"]
-        body = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+        # Fix 4: if source file is already gone, skip to avoid duplicate DB entries
+        if not md_path.exists():
+            return False, None
+        # Still read body for richer task summary
+        body = md_path.read_text(encoding="utf-8")
         return True, body
 
     # Slower path: read the .md file
@@ -248,23 +257,28 @@ def run(
         )
         print(f"  Archived task #{task_id}: {title}")
 
-        # Move .md file to _archive/
+        # Fix 2: create parent directories before moving (handles subdirectory entries)
+        # Fix 1: collect successful moves; only then update MEMORY.md
         md_path = memory_dir / entry["filename"]
         if md_path.exists():
             dest = archive_dir / entry["filename"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(md_path), str(dest))
             print(f"    Moved {entry['filename']} → {_ARCHIVE_SUBDIR}/{entry['filename']}")
 
         remove_line_indices.add(entry["line_index"])
         archived_count += 1
 
-    # Rewrite MEMORY.md without archived lines
+    # Fix 1: atomic MEMORY.md rewrite using temp file + os.replace()
     new_lines = [
         line
         for i, line in enumerate(original_lines)
         if i not in remove_line_indices
     ]
-    memory_path.write_text("".join(new_lines), encoding="utf-8")
+    new_content = "".join(new_lines)
+    tmp = memory_path.with_suffix(".tmp")
+    tmp.write_text(new_content, encoding="utf-8")
+    os.replace(str(tmp), str(memory_path))
 
     final_entry_count = len(
         [l for l in new_lines if _ENTRY_RE.match(l.rstrip())]
