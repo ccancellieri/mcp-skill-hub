@@ -166,9 +166,11 @@ def _tier2_retrieve(message: str, session_id: str, store) -> dict:
             _log.debug("L2 embed failed: %s", exc)
 
     # Search for similar tasks (dedup)
+    within_session = False
     existing_task = store.get_open_task_for_session(session_id)
     if existing_task:
         task_id = dict(existing_task)["id"]
+        within_session = True
         # Update the existing task with the new message context
         store.update_task(task_id, summary=message[:1000])
     else:
@@ -223,6 +225,7 @@ def _tier2_retrieve(message: str, session_id: str, store) -> dict:
     return {
         "task_id": task_id,
         "top_similarity": top_similarity,
+        "within_session": within_session,
         "retrieval": retrieval,
     }
 
@@ -334,7 +337,11 @@ class Pipeline:
         from . import config as _cfg
         from .store import SkillStore
 
-        if store is None:
+        if not _cfg.get("pre_conversation_pipeline_enabled"):
+            return PipelineResult(session_id=session_id)
+
+        _local_store = store is None
+        if _local_store:
             store = SkillStore()
 
         result = PipelineResult(session_id=session_id)
@@ -344,90 +351,118 @@ class Pipeline:
         t3_ms = int(_cfg.get("pipeline_tier3_timeout_ms") or 1200)
         t4_ms = int(_cfg.get("pipeline_tier4_timeout_ms") or 1500)
 
-        # --- Tier 1: Classify ---
-        intent_data, ms1, _timed_out = _run_with_timeout(
-            _tier1_classify, t1_ms, message
-        )
-        if intent_data:
-            result.tier1 = TierResult(ran=True, duration_ms=ms1, data=intent_data)
-        else:
-            fallback_intent = _yake_classify(message)
-            result.tier1 = TierResult(
-                ran=True,
-                duration_ms=ms1,
-                fallback_used=True,
-                data=fallback_intent,
+        try:
+            # --- Tier 1: Classify ---
+            intent_data, ms1, _timed_out = _run_with_timeout(
+                _tier1_classify, t1_ms, message
             )
-            intent_data = result.tier1.data
+            if intent_data:
+                result.tier1 = TierResult(ran=True, duration_ms=ms1, data=intent_data)
+            else:
+                fallback_intent = _yake_classify(message)
+                result.tier1 = TierResult(
+                    ran=True,
+                    duration_ms=ms1,
+                    fallback_used=True,
+                    data=fallback_intent,
+                )
+                intent_data = result.tier1.data
 
-        # --- Tier 2: Retrieve + dedup ---
-        t2_data, ms2, _timed_out = _run_with_timeout(
-            _tier2_retrieve, t2_ms, message, session_id, store
-        )
-        if t2_data:
-            result.tier2 = TierResult(ran=True, duration_ms=ms2, data=t2_data)
-            result.task_id = t2_data.get("task_id")
-            retrieval = t2_data.get("retrieval", [])
-        else:
-            result.tier2 = TierResult(
-                ran=True, duration_ms=ms2, fallback_used=True, data={}
+            # --- Tier 2: Retrieve + dedup ---
+            t2_data, ms2, _timed_out = _run_with_timeout(
+                _tier2_retrieve, t2_ms, message, session_id, store
             )
-            retrieval = []
+            if t2_data:
+                result.tier2 = TierResult(ran=True, duration_ms=ms2, data=t2_data)
+                result.task_id = t2_data.get("task_id")
+                retrieval = t2_data.get("retrieval", [])
+                # Fix 3: when an existing session task was found (no vector search),
+                # top_similarity is None; treat same-session match as perfect similarity.
+                if result.tier2.data.get("within_session") and result.tier2.data.get("top_similarity") is None:
+                    result.tier2.data["top_similarity"] = 1.0
+            else:
+                result.tier2 = TierResult(
+                    ran=True, duration_ms=ms2, fallback_used=True, data={}
+                )
+                retrieval = []
 
-        # --- Tier 3: Synthesize ---
-        synthesis, ms3, _ = _run_with_timeout(
-            _tier3_synthesize, t3_ms, message, intent_data, retrieval
-        )
-        if synthesis:
-            result.tier3 = TierResult(
-                ran=True, duration_ms=ms3, data={"synthesis": synthesis}
+            # --- Tier 3: Synthesize ---
+            synthesis, ms3, _ = _run_with_timeout(
+                _tier3_synthesize, t3_ms, message, intent_data, retrieval
             )
-            result.synthesis = synthesis
-        else:
-            result.tier3 = TierResult(
-                ran=True, duration_ms=ms3, fallback_used=True, data={}
+            if synthesis:
+                result.tier3 = TierResult(
+                    ran=True, duration_ms=ms3, data={"synthesis": synthesis}
+                )
+                result.synthesis = synthesis
+            else:
+                result.tier3 = TierResult(
+                    ran=True, duration_ms=ms3, fallback_used=True, data={}
+                )
+                # Fallback: concat top-3 raw retrieval titles/summaries
+                if retrieval:
+                    result.synthesis = " | ".join(
+                        (r.get("title") or r.get("summary", ""))[:100]
+                        for r in retrieval[:3]
+                    )
+
+            # --- Tier 4: Rewrite (optional) ---
+            # Determine upfront whether complexity meets the threshold so we can
+            # distinguish "skipped by design" from "tried and got None".
+            _t4_min_complexity = str(_cfg.get("pipeline_tier4_min_complexity") or "medium")
+            _t4_complexity = intent_data.get("complexity", "low")
+            _complexity_order = ["low", "medium", "high"]
+            _t4_should_run = (
+                _complexity_order.index(_t4_complexity)
+                >= _complexity_order.index(_t4_min_complexity)
             )
-            # Fallback: concat top-3 raw retrieval titles/summaries
-            if retrieval:
-                result.synthesis = " | ".join(
-                    (r.get("title") or r.get("summary", ""))[:100]
-                    for r in retrieval[:3]
+
+            enriched, ms4, _ = _run_with_timeout(
+                _tier4_rewrite, t4_ms, message, result.synthesis, intent_data
+            )
+            if enriched:
+                result.tier4 = TierResult(
+                    ran=True, duration_ms=ms4, data={"enriched": enriched}
+                )
+                result.enriched_prompt = enriched
+            elif _t4_should_run:
+                # Tier 4 was attempted (complexity met threshold) but LLM returned None
+                result.tier4 = TierResult(
+                    ran=True, duration_ms=ms4, fallback_used=True, data={}
+                )
+            else:
+                # Tier 4 was intentionally skipped due to low complexity
+                result.tier4 = TierResult(
+                    ran=False, duration_ms=ms4, fallback_used=False, data={}
                 )
 
-        # --- Tier 4: Rewrite (optional) ---
-        enriched, ms4, _ = _run_with_timeout(
-            _tier4_rewrite, t4_ms, message, result.synthesis, intent_data
-        )
-        if enriched:
-            result.tier4 = TierResult(
-                ran=True, duration_ms=ms4, data={"enriched": enriched}
-            )
-            result.enriched_prompt = enriched
-        else:
-            result.tier4 = TierResult(
-                ran=False, duration_ms=ms4, fallback_used=True, data={}
-            )
+            # --- Record telemetry ---
+            try:
+                store.record_pipeline_run(
+                    session_id=session_id,
+                    task_id=result.task_id,
+                    tier_ms={
+                        "tier1": result.tier1.duration_ms,
+                        "tier2": result.tier2.duration_ms,
+                        "tier3": result.tier3.duration_ms,
+                        "tier4": result.tier4.duration_ms,
+                    },
+                    fallbacks=result.fallbacks,
+                    top_similarity=(
+                        result.tier2.data.get("top_similarity")
+                        if result.tier2.data
+                        else None
+                    ),
+                    token_cost_usd=0.0,  # TODO: track actual cost
+                )
+            except Exception as exc:
+                _log.debug("pipeline telemetry failed: %s", exc)
 
-        # --- Record telemetry ---
-        try:
-            store.record_pipeline_run(
-                session_id=session_id,
-                task_id=result.task_id,
-                tier_ms={
-                    "tier1": result.tier1.duration_ms,
-                    "tier2": result.tier2.duration_ms,
-                    "tier3": result.tier3.duration_ms,
-                    "tier4": result.tier4.duration_ms,
-                },
-                fallbacks=result.fallbacks,
-                top_similarity=(
-                    result.tier2.data.get("top_similarity")
-                    if result.tier2.data
-                    else None
-                ),
-                token_cost_usd=0.0,  # TODO: track actual cost
-            )
-        except Exception as exc:
-            _log.debug("pipeline telemetry failed: %s", exc)
+        finally:
+            if _local_store:
+                try:
+                    store._conn.close()
+                except Exception:
+                    pass
 
         return result

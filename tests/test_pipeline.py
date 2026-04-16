@@ -250,6 +250,7 @@ def test_tier1_timeout_falls_back_gracefully(monkeypatch):
     monkeypatch.setattr(
         "skill_hub.config.get",
         lambda key: {
+            "pre_conversation_pipeline_enabled": True,
             "pipeline_tier1_timeout_ms": 10,  # very short — will time out
             "pipeline_tier2_timeout_ms": 400,
             "pipeline_tier3_timeout_ms": 1200,
@@ -294,6 +295,7 @@ def test_record_pipeline_run_called_with_correct_args(monkeypatch):
     monkeypatch.setattr(
         "skill_hub.config.get",
         lambda key: {
+            "pre_conversation_pipeline_enabled": True,
             "pipeline_tier1_timeout_ms": 500,
             "pipeline_tier2_timeout_ms": 400,
             "pipeline_tier3_timeout_ms": 1200,
