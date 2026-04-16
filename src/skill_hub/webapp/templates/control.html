@@ -24,7 +24,7 @@
         {% for svc in services %}
         <div id="card-wrap-{{ svc.name }}"
              hx-get="/control/{{ svc.name }}/card"
-             hx-trigger="load, every 5s"
+             hx-trigger="load, every 5s [not(:focus-within)]"
              hx-swap="innerHTML">
           <div class="service-card placeholder">
             <div class="service-head">

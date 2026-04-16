@@ -66,11 +66,13 @@
     </label>
     {% endif %}
     <label class="checkbox">
-      <input type="checkbox" name="auto_start" {% if svc_cfg.get("auto_start", True) %}checked{% endif %}>
+      <input type="hidden" name="auto_start" value="off">
+      <input type="checkbox" name="auto_start" value="on" {% if svc_cfg.get("auto_start", True) %}checked{% endif %}>
       <span>auto_start</span>
     </label>
     <label class="checkbox">
-      <input type="checkbox" name="auto_disable_under_pressure" {% if svc_cfg.get("auto_disable_under_pressure", False) %}checked{% endif %}>
+      <input type="hidden" name="auto_disable_under_pressure" value="off">
+      <input type="checkbox" name="auto_disable_under_pressure" value="on" {% if svc_cfg.get("auto_disable_under_pressure", False) %}checked{% endif %}>
       <span>auto-disable under pressure</span>
     </label>
   </form>

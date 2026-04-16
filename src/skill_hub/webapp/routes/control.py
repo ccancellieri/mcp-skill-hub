@@ -170,10 +170,9 @@ async def control_config(request: Request, svc: str) -> Any:
     for field in ("model", "container"):
         if field in form:
             _save_field(svc, field, str(form[field]).strip())
-    if "auto_disable_under_pressure" in form:
-        _save_field(svc, "auto_disable_under_pressure", form["auto_disable_under_pressure"] == "on")
-    if "auto_start" in form:
-        _save_field(svc, "auto_start", form["auto_start"] == "on")
+    _save_field(svc, "auto_disable_under_pressure",
+                "on" in form.getlist("auto_disable_under_pressure"))
+    _save_field(svc, "auto_start", "on" in form.getlist("auto_start"))
     return _render_card(request, svc)
 
 

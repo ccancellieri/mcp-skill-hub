@@ -557,6 +557,154 @@ function getHelpContent(pageId) {
         <p>Useful on laptops or constrained environments to prevent skill-hub from competing with Claude itself.</p>
       `
     },
+    'settings-router_haiku': {
+      title: 'Haiku router',
+      html: `
+        <p>Tier-3 escalation tasks powered by Claude Haiku 4.5 — the highest-accuracy routing tier.</p>
+        <p><strong>Tasks Haiku handles:</strong></p>
+        <ul>
+          <li><strong>Complexity classification</strong> — <code>router_haiku_classify</code>: scores prompt scope, ambiguity, and reasoning depth</li>
+          <li><strong>/compact hints</strong> — <code>router_haiku_compact_hint</code>: recommends context compaction when context is nearly full</li>
+          <li><strong>Subtask decomposition</strong> — <code>router_haiku_subtask_decomp</code>: breaks multi-part requests into ordered steps</li>
+          <li><strong>Config optimization</strong> — <code>router_haiku_settings_opt</code>: suggests config tuning based on session patterns</li>
+        </ul>
+        <p><code>router_haiku_threshold</code>: Tier-2 confidence must fall below this to escalate to Haiku (default 0.55). Lower = fewer Haiku calls.</p>
+      `
+    },
+    'settings-local_persona': {
+      title: 'Local persona',
+      html: `
+        <p>Configures the identity context assembled for local LLM calls (Ollama models).</p>
+        <ul>
+          <li><code>local_system_prompt</code> — static bio seed text prepended to every local LLM call</li>
+          <li><code>local_persona_ttl_seconds</code> — rebuild the persona from the store after this many seconds (default: 3600)</li>
+          <li><code>local_persona_max_chars</code> — hard cap on total assembled persona string length</li>
+        </ul>
+        <p>A good persona seed makes small local models behave more consistently as an assistant for your specific work context.</p>
+      `
+    },
+    'settings-local': {
+      title: 'Local execution',
+      html: `
+        <p>Controls 4 levels of local code execution via Ollama, from simple shell commands to full agent runs.</p>
+        <p><strong>Execution levels:</strong></p>
+        <ul>
+          <li><strong>Level 1:</strong> Whitelisted shell commands only</li>
+          <li><strong>Level 2:</strong> Templated commands with <code>{param}</code> placeholders</li>
+          <li><strong>Level 3:</strong> Local skill runner — executes skill files</li>
+          <li><strong>Level 4:</strong> Full local agent (Ollama-backed) — for offline/fallback mode</li>
+        </ul>
+        <p>Use <code>remote_llm</code> to point any level at a remote endpoint instead of Ollama. <code>offline_auto_fallback</code> activates L4 when Anthropic API is unreachable.</p>
+      `
+    },
+    'settings-search': {
+      title: 'Search & memory',
+      html: `
+        <p>Tunes the semantic retrieval engine used for skill, task, and teaching lookups.</p>
+        <ul>
+          <li><code>search_top_k</code> — default number of results returned</li>
+          <li><code>search_similarity_threshold</code> — minimum cosine similarity (0–1) to include a result</li>
+          <li><code>feedback_boost_max</code> — max multiplier for highly-rated skills (1.0–3.0)</li>
+          <li><code>teaching_min_similarity</code> — teaching rules below this similarity are ignored for a prompt</li>
+        </ul>
+        <p>If you get too many irrelevant results, raise <code>search_similarity_threshold</code> to 0.50–0.60.</p>
+      `
+    },
+    'settings-searxng': {
+      title: 'SearXNG search',
+      html: `
+        <p>Configures the optional SearXNG web search integration used by <code>search_web()</code>.</p>
+        <ul>
+          <li><code>searxng_url</code> — SearXNG server URL (empty = auto-detect localhost:8989)</li>
+          <li><code>searxng_top_k</code> — max results per search query</li>
+          <li><code>searxng_timeout</code> — seconds to probe whether SearXNG is reachable</li>
+          <li><code>searxng_search_timeout</code> — seconds for actual search (search engines need more time)</li>
+        </ul>
+        <p>SearXNG is a self-hosted meta search engine. Run it via Docker: <code>docker run -p 8989:8080 searxng/searxng</code>.</p>
+      `
+    },
+    'settings-context_bridge': {
+      title: 'Context bridge',
+      html: `
+        <p>Captures Claude's tool calls (Read, Bash, Edit…) into the local DB for context enrichment and pattern learning.</p>
+        <ul>
+          <li><code>context_bridge_enabled</code> — master toggle (captures on every Stop hook)</li>
+          <li><code>context_bridge_max_capture_per_hook</code> — max tool calls captured per session</li>
+          <li><code>context_bridge_prune_days</code> — auto-prune examples older than N days</li>
+          <li><code>context_bridge_teaching_extraction</code> — extract teaching rules from tool patterns (off: unreliable with small models)</li>
+          <li><code>context_bridge_repo_context</code> — maintain per-repo context summaries</li>
+        </ul>
+        <p>Captured tool examples power enrichment and improve future routing decisions over time.</p>
+      `
+    },
+    'settings-digest': {
+      title: 'Digest & eviction',
+      html: `
+        <p>Conversation digests compress long session context; eviction tracks stale topics to suggest profile switches.</p>
+        <ul>
+          <li><code>digest_every_n_messages</code> — produce a digest every N messages</li>
+          <li><code>digest_stale_threshold</code> — similarity below this marks a topic as stale (for eviction)</li>
+          <li><code>compact_max_input_chars</code> — max chars fed to the compaction LLM per call</li>
+          <li><code>eviction_enabled</code> — track relevance decay for inactive topics</li>
+          <li><code>eviction_min_stale_count</code> — suggest profile switch after N stale detections</li>
+        </ul>
+        <p>Digests reduce context window pressure in long sessions without losing important history.</p>
+      `
+    },
+    'settings-response_cache': {
+      title: 'Response cache',
+      html: `
+        <p>Semantic response cache reuses answers for near-identical questions, saving tokens and latency.</p>
+        <ul>
+          <li><code>response_cache_enabled</code> — master toggle</li>
+          <li><code>response_cache_min_sim</code> — minimum similarity to serve from cache (typical: 0.88–0.92)</li>
+          <li><code>response_cache_verify</code> — extra verification step before serving cached response (slower but safer)</li>
+        </ul>
+        <p>The cache uses vector similarity: a question at 0.90 similarity to a cached question gets the cached answer. Set <code>response_cache_min_sim</code> high (0.92+) to avoid false positives.</p>
+      `
+    },
+    'settings-pattern': {
+      title: 'Patterns & decomposition',
+      html: `
+        <p>Tracks recurring prompt patterns and can auto-generate skills from them.</p>
+        <ul>
+          <li><code>pattern_tracking_enabled</code> — learn from recurring message patterns</li>
+          <li><code>pattern_auto_skill_threshold</code> — auto-generate a skill after a pattern repeats N times</li>
+          <li><code>task_decomposition_enabled</code> — break multi-part requests into ordered subtasks</li>
+          <li><code>task_decomposition_min_len</code> — only decompose messages longer than this</li>
+        </ul>
+        <p>Pattern auto-skills are written to the <code>local_skills_dir</code> and immediately indexed. Review them before enabling <code>skill_evolution_auto</code>.</p>
+      `
+    },
+    'settings-profiles': {
+      title: 'Profiles',
+      html: `
+        <p>Named plugin sets that let you switch work context instantly. Each profile enables/disables specific plugins.</p>
+        <p><strong>Built-in profiles:</strong> minimal, backend, frontend, mcp-dev, data, full</p>
+        <ul>
+          <li><code>profile_auto_switch_enabled</code> — auto-switch profile when eviction detects a context mismatch</li>
+          <li><code>profile_auto_switch_window</code> — lookback window (messages) for auto-switch decision</li>
+          <li><code>extra_skill_dirs</code> — extra skill directories indexed alongside the plugin cache</li>
+          <li><code>extra_plugin_dirs</code> — extra plugin directories with <code>plugin.json</code> or <code>README.md</code> manifests</li>
+        </ul>
+        <p>Switch profiles via: <code>switch_profile("backend")</code> or the Control Panel.</p>
+      `
+    },
+    'settings-dashboard': {
+      title: 'Dashboard settings',
+      html: `
+        <p>FastAPI webapp configuration — host, port, and feature toggles for the Skill Hub web interface.</p>
+        <p>Changes here require a webapp restart to take effect. The webapp runs at <code>http://127.0.0.1:8765</code> by default.</p>
+        <p>Feature toggles control which sections of the dashboard are visible or active.</p>
+      `
+    },
+    'settings-other': {
+      title: 'Other settings',
+      html: `
+        <p>Uncategorized configuration keys that don't belong to a specific section.</p>
+        <p>These are often plugin-provided settings or keys added by extensions. Check the plugin's documentation for details on each key.</p>
+      `
+    },
   };
 
   return content[pageId] || extra[pageId] || settings[pageId] || {
