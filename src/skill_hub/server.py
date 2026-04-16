@@ -1711,6 +1711,8 @@ def optimize_memory(dry_run: bool = True) -> str:
 
     # Tier-based routing (Phase C.2): use litellm provider instead of bare Ollama
     tier = str(_cfg.get("optimize_memory_tier") or "smart")
+    _TIER_MAP = {"smart": "tier_smart", "mid": "tier_mid", "cheap": "tier_cheap"}
+    tier_key = _TIER_MAP.get(tier, tier)  # passthrough if already "tier_*"
     from .llm.litellm_adapter import get_provider as _get_llm
 
     mem_path = Path.home() / ".claude" / "projects" / \
@@ -1764,7 +1766,7 @@ def optimize_memory(dry_run: bool = True) -> str:
         _provider = _get_llm()
         raw = _provider.complete(
             classification_prompt,
-            tier=tier,
+            tier=tier_key,
             max_tokens=2000,
             temperature=0.0,
             timeout=300.0,
