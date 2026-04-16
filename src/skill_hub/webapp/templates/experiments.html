@@ -1,0 +1,457 @@
+{% extends "base.html" %}
+{% block title %}experiments{% endblock %}
+{% block content %}
+<style>
+  .exp-header { display:flex; align-items:baseline; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .exp-cols { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  @media (max-width:900px) { .exp-cols { grid-template-columns:1fr; } }
+  .exp-section { margin-bottom:24px; }
+  .exp-section-title {
+    font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+    color:var(--color-muted); margin:0 0 10px; font-weight:600;
+  }
+  .exp-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .exp-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .exp-table td {
+    padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .exp-table tr:last-child td { border-bottom:none; }
+  .exp-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .pill {
+    display:inline-block; padding:2px 8px; border-radius:10px;
+    font-size:10px; font-weight:600; white-space:nowrap;
+  }
+  .pill-builtin { background:rgba(58,160,255,0.15); color:#6bbeff; }
+  .pill-custom  { background:rgba(125,136,150,0.1);  color:var(--color-muted); }
+  .pill-active  { background:rgba(74,211,107,0.2);   color:#5fcf7b; }
+  .pill-done    { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .add-form {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:14px 16px;
+  }
+  .add-form h3 { margin:0 0 12px; font-size:13px; font-weight:600; }
+  .form-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }
+  .form-grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; align-items:end; }
+  @media (max-width:700px) {
+    .form-grid-2, .form-grid-3 { grid-template-columns:1fr; }
+  }
+  .form-field { display:flex; flex-direction:column; gap:4px; }
+  .form-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-muted); }
+  .form-actions { display:flex; gap:8px; align-items:center; margin-top:8px; }
+  .collapsible-toggle {
+    background:none; border:1px solid var(--color-border); border-radius:var(--radius-sm);
+    color:var(--color-muted); font-size:11px; cursor:pointer; padding:4px 10px;
+  }
+  .collapsible-toggle:hover { color:var(--color-text); border-color:var(--color-accent); }
+  .collapsible-body { display:none; margin-top:12px; }
+  .collapsible-body.open { display:block; }
+  .vs-wrap { display:inline-flex; align-items:center; gap:6px; font-size:11px; }
+  .tag-a { background:rgba(58,160,255,0.2); color:#6bbeff; padding:2px 8px; border-radius:8px; font-weight:600; }
+  .tag-b { background:rgba(168,85,247,0.2); color:#c084fc; padding:2px 8px; border-radius:8px; font-weight:600; }
+  .vs-sep { color:var(--color-muted); }
+  .stat-pair { display:flex; gap:12px; font-size:11px; color:var(--color-muted); }
+  .stat-item strong { color:var(--color-text); }
+  textarea.config-input {
+    font-family:ui-monospace,monospace; font-size:11px;
+    min-height:80px; resize:vertical;
+  }
+  .msg-ok  { color:#5fcf7b; font-size:11px; margin-top:6px; }
+  .msg-err { color:#e06060; font-size:11px; margin-top:6px; }
+  .muted { color:var(--color-muted); }
+</style>
+
+<div class="exp-header">
+  <h1 class="page-h" style="margin:0">Experiments</h1>
+</div>
+
+<div class="exp-cols">
+
+  {# ─── LEFT: Preset Library ─── #}
+  <div>
+    <div class="exp-section">
+      <p class="exp-section-title">Preset Library</p>
+      <div class="card" style="padding:0; margin-bottom:12px">
+        <table class="exp-table" id="presets-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Type</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="presets-tbody">
+            <tr><td colspan="5" class="muted" style="padding:16px">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <button class="collapsible-toggle" id="preset-form-toggle">+ New Preset</button>
+      <div class="collapsible-body" id="preset-form-body">
+        <div class="add-form" style="margin-top:0">
+          <h3>New Preset</h3>
+          <form id="add-preset-form">
+            <div class="form-grid-2">
+              <div class="form-field">
+                <label class="form-label" for="preset-name">Name</label>
+                <input id="preset-name" name="name" type="text" placeholder="my-preset" required>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="preset-desc">Description</label>
+                <input id="preset-desc" name="description" type="text" placeholder="Brief description">
+              </div>
+            </div>
+            <div class="form-field" style="margin-top:8px">
+              <label class="form-label" for="preset-config">Config JSON</label>
+              <textarea id="preset-config" name="config" class="config-input" placeholder='{}'></textarea>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn">Save</button>
+              <span id="preset-msg"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ─── RIGHT: Experiments ─── #}
+  <div>
+    <div class="exp-section">
+      <p class="exp-section-title">A/B Experiments</p>
+      <div class="card" style="padding:0; margin-bottom:12px">
+        <table class="exp-table" id="experiments-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Presets A vs B</th>
+              <th>Runs</th>
+              <th>Status</th>
+              <th>Stats</th>
+            </tr>
+          </thead>
+          <tbody id="experiments-tbody">
+            <tr><td colspan="6" class="muted" style="padding:16px">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <button class="collapsible-toggle" id="exp-form-toggle">+ New Experiment</button>
+      <div class="collapsible-body" id="exp-form-body">
+        <div class="add-form" style="margin-top:0">
+          <h3>New Experiment</h3>
+          <form id="add-exp-form">
+            <div class="form-field" style="margin-bottom:8px">
+              <label class="form-label" for="exp-name">Name</label>
+              <input id="exp-name" name="name" type="text" placeholder="fast-local vs balanced" required>
+            </div>
+            <div class="form-grid-3">
+              <div class="form-field">
+                <label class="form-label" for="exp-preset-a">Preset A</label>
+                <select id="exp-preset-a" name="preset_a_id" required></select>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="exp-preset-b">Preset B</label>
+                <select id="exp-preset-b" name="preset_b_id" required></select>
+              </div>
+              <div class="form-field">
+                <label class="form-label" for="exp-target">Target Runs</label>
+                <input id="exp-target" name="target_runs" type="number" value="10" min="1">
+              </div>
+            </div>
+            <div class="form-field" style="margin-top:8px">
+              <label class="form-label" for="exp-notes">Notes</label>
+              <input id="exp-notes" name="notes" type="text" placeholder="Optional notes">
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn">Create</button>
+              <span id="exp-msg"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── collapsible toggles ── */
+  document.getElementById('preset-form-toggle').addEventListener('click', function () {
+    var body = document.getElementById('preset-form-body');
+    body.classList.toggle('open');
+    this.textContent = body.classList.contains('open') ? '— Hide' : '+ New Preset';
+  });
+  document.getElementById('exp-form-toggle').addEventListener('click', function () {
+    var body = document.getElementById('exp-form-body');
+    body.classList.toggle('open');
+    this.textContent = body.classList.contains('open') ? '— Hide' : '+ New Experiment';
+  });
+
+  /* ── escape HTML for safe DOM building ── */
+  function esc(s) {
+    var div = document.createElement('div');
+    div.textContent = String(s || '');
+    return div.textContent;
+  }
+
+  /* ── build a table row with safe DOM operations ── */
+  function makePresetRow(p) {
+    var tr = document.createElement('tr');
+
+    var tdId = document.createElement('td');
+    tdId.className = 'muted';
+    tdId.textContent = p.id;
+    tr.appendChild(tdId);
+
+    var tdName = document.createElement('td');
+    var strong = document.createElement('strong');
+    strong.textContent = p.name;
+    tdName.appendChild(strong);
+    tr.appendChild(tdName);
+
+    var tdDesc = document.createElement('td');
+    tdDesc.className = 'muted';
+    tdDesc.style.fontSize = '11px';
+    tdDesc.textContent = p.description || '';
+    tr.appendChild(tdDesc);
+
+    var tdType = document.createElement('td');
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + (p.is_builtin ? 'pill-builtin' : 'pill-custom');
+    pill.textContent = p.is_builtin ? 'built-in' : 'custom';
+    tdType.appendChild(pill);
+    tr.appendChild(tdType);
+
+    var tdAction = document.createElement('td');
+    if (!p.is_builtin) {
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-danger';
+      btn.dataset.deletePreset = p.id;
+      btn.textContent = 'Delete';
+      tdAction.appendChild(btn);
+    } else {
+      tdAction.textContent = '—';
+      tdAction.className = 'muted';
+      tdAction.style.fontSize = '10px';
+    }
+    tr.appendChild(tdAction);
+
+    return tr;
+  }
+
+  function makeExpRow(e) {
+    var tr = document.createElement('tr');
+
+    var tdId = document.createElement('td');
+    tdId.className = 'muted';
+    tdId.textContent = e.id;
+    tr.appendChild(tdId);
+
+    var tdName = document.createElement('td');
+    var strong = document.createElement('strong');
+    strong.textContent = e.name;
+    tdName.appendChild(strong);
+    tr.appendChild(tdName);
+
+    var tdVs = document.createElement('td');
+    var wrap = document.createElement('span');
+    wrap.className = 'vs-wrap';
+    var spanA = document.createElement('span');
+    spanA.className = 'tag-a';
+    spanA.textContent = e.preset_a_name || 'A';
+    var sep = document.createElement('span');
+    sep.className = 'vs-sep';
+    sep.textContent = 'vs';
+    var spanB = document.createElement('span');
+    spanB.className = 'tag-b';
+    spanB.textContent = e.preset_b_name || 'B';
+    wrap.appendChild(spanA);
+    wrap.appendChild(sep);
+    wrap.appendChild(spanB);
+    tdVs.appendChild(wrap);
+    tr.appendChild(tdVs);
+
+    var tdRuns = document.createElement('td');
+    tdRuns.style.fontSize = '11px';
+    tdRuns.textContent = (e.completed_runs || 0) + ' / ' + (e.target_runs || '?');
+    tr.appendChild(tdRuns);
+
+    var tdStatus = document.createElement('td');
+    var statusPill = document.createElement('span');
+    statusPill.className = 'pill ' + (e.status === 'active' ? 'pill-active' : 'pill-done');
+    statusPill.textContent = e.status;
+    tdStatus.appendChild(statusPill);
+    tr.appendChild(tdStatus);
+
+    var tdStats = document.createElement('td');
+    var stats = e.stats || {};
+    var statWrap = document.createElement('div');
+    statWrap.className = 'stat-pair';
+    var sA = document.createElement('span');
+    sA.className = 'stat-item';
+    sA.textContent = 'A: ' + (stats.A ? stats.A.runs : 0);
+    var sB = document.createElement('span');
+    sB.className = 'stat-item';
+    sB.textContent = 'B: ' + (stats.B ? stats.B.runs : 0);
+    statWrap.appendChild(sA);
+    statWrap.appendChild(sB);
+    tdStats.appendChild(statWrap);
+    tr.appendChild(tdStats);
+
+    return tr;
+  }
+
+  /* ── load presets ── */
+  function loadPresets(cb) {
+    fetch('/api/experiments/presets')
+      .then(function (r) { return r.json(); })
+      .then(function (presets) {
+        renderPresets(presets);
+        populatePresetSelects(presets);
+        if (cb) cb(presets);
+      });
+  }
+
+  function renderPresets(presets) {
+    var tbody = document.getElementById('presets-tbody');
+    tbody.textContent = '';
+    if (!presets.length) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 5;
+      td.className = 'muted';
+      td.style.padding = '16px';
+      td.textContent = 'No presets.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    presets.forEach(function (p) { tbody.appendChild(makePresetRow(p)); });
+  }
+
+  function populatePresetSelects(presets) {
+    ['exp-preset-a', 'exp-preset-b'].forEach(function (id) {
+      var sel = document.getElementById(id);
+      var cur = sel.value;
+      sel.textContent = '';
+      presets.forEach(function (p) {
+        var opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        if (String(p.id) === cur) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    });
+  }
+
+  /* ── load experiments ── */
+  function loadExperiments() {
+    fetch('/api/experiments')
+      .then(function (r) { return r.json(); })
+      .then(renderExperiments);
+  }
+
+  function renderExperiments(exps) {
+    var tbody = document.getElementById('experiments-tbody');
+    tbody.textContent = '';
+    if (!exps.length) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 6;
+      td.className = 'muted';
+      td.style.padding = '16px';
+      td.textContent = 'No experiments yet.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    exps.forEach(function (e) { tbody.appendChild(makeExpRow(e)); });
+  }
+
+  /* ── delete preset ── */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-delete-preset]');
+    if (!btn) return;
+    var pid = btn.dataset.deletePreset;
+    if (!confirm('Delete preset #' + pid + '?')) return;
+    fetch('/api/experiments/presets/' + pid, { method: 'DELETE' })
+      .then(function (r) {
+        if (r.ok) { loadPresets(); }
+        else { r.json().then(function (j) { alert(j.detail || 'Error deleting preset'); }); }
+      });
+  });
+
+  /* ── add preset form ── */
+  document.getElementById('add-preset-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var msg = document.getElementById('preset-msg');
+    msg.textContent = '';
+    msg.className = '';
+    var configRaw = document.getElementById('preset-config').value.trim() || '{}';
+    var config;
+    try { config = JSON.parse(configRaw); } catch (_) {
+      msg.className = 'msg-err'; msg.textContent = 'Invalid JSON in config.'; return;
+    }
+    fetch('/api/experiments/presets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('preset-name').value.trim(),
+        description: document.getElementById('preset-desc').value.trim(),
+        config: config
+      })
+    }).then(function (r) {
+      if (r.ok) {
+        e.target.reset();
+        msg.className = 'msg-ok'; msg.textContent = 'Preset saved.';
+        loadPresets();
+      } else {
+        r.json().then(function (j) { msg.className = 'msg-err'; msg.textContent = j.detail || 'Error'; });
+      }
+    });
+  });
+
+  /* ── add experiment form ── */
+  document.getElementById('add-exp-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var msg = document.getElementById('exp-msg');
+    msg.textContent = '';
+    msg.className = '';
+    fetch('/api/experiments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('exp-name').value.trim(),
+        preset_a_id: parseInt(document.getElementById('exp-preset-a').value, 10),
+        preset_b_id: parseInt(document.getElementById('exp-preset-b').value, 10),
+        target_runs: parseInt(document.getElementById('exp-target').value, 10) || 10,
+        notes: document.getElementById('exp-notes').value.trim()
+      })
+    }).then(function (r) {
+      if (r.ok) {
+        e.target.reset();
+        msg.className = 'msg-ok'; msg.textContent = 'Experiment created.';
+        loadExperiments();
+      } else {
+        r.json().then(function (j) { msg.className = 'msg-err'; msg.textContent = j.detail || 'Error'; });
+      }
+    });
+  });
+
+  /* ── init ── */
+  loadPresets();
+  loadExperiments();
+}());
+</script>
+{% endblock %}
