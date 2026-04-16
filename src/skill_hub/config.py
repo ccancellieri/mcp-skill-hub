@@ -390,6 +390,10 @@ _DEFAULTS = {
     # Default tier when code doesn't specify one.
     "llm_default_tier": "tier_cheap",
 
+    # Tier used by optimize_memory for LLM file classification.
+    # cheap | mid | smart  (maps to llm_providers.tier_*)
+    "optimize_memory_tier": "smart",
+
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
     "extra_skill_dirs": [
