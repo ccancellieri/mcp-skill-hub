@@ -113,6 +113,8 @@ async def api_tasks_activity_stream(request: Request) -> StreamingResponse:
                 data = []
             yield f"data: {json.dumps(data)}\n\n"
             await asyncio.sleep(5)
+            if await request.is_disconnected():
+                break
 
     return StreamingResponse(
         event_generator(),

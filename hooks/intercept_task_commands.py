@@ -34,7 +34,7 @@ _CLOSE_TASK_RE = _re.compile(
 )
 
 _FALSE_POSITIVE_RE = _re.compile(
-    r'\b(close\s+task\s+\w+\s+in\s+the|close\s+the\s+file|close\s+connection)\b',
+    r'\btask\b.*\bin\s+the\s+\w+|close\s+the\s+file|close\s+connection',
     _re.IGNORECASE
 )
 
@@ -70,8 +70,10 @@ def _maybe_close_task(message: str, session_id: str) -> str:
             task_row = store.get_open_task_for_session(session_id)
             if not task_row:
                 return ""
-            task_id = int(task_row["id"] if isinstance(task_row, dict) else task_row[0])
-            compact_text = message[:200]
+            task = dict(task_row)
+            task_id = int(task["id"])
+            # Use stored task title + summary as compact, not the raw close message
+            compact_text = f"Closed via intent. Summary: {task.get('title', '')} — {task.get('summary', '')[:150]}"
             closed = store.close_task(task_id, compact=compact_text)
             if closed:
                 info = f"Task #{task_id} closed."
