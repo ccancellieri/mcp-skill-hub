@@ -489,6 +489,25 @@ class SkillStore:
                 PRIMARY KEY (task_class, domain, tier)
             );
 
+            -- Async background job queue (memory optimisation, classify, rerank)
+            CREATE TABLE IF NOT EXISTS background_jobs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind         TEXT NOT NULL,
+                payload      TEXT NOT NULL DEFAULT '{}',
+                priority     INTEGER NOT NULL DEFAULT 5,
+                status       TEXT NOT NULL DEFAULT 'pending'
+                                 CHECK(status IN ('pending','running','done','failed','deferred')),
+                worker_used  TEXT,
+                result       TEXT,
+                error        TEXT,
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at   TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_background_jobs_status_priority
+                ON background_jobs(status, priority, created_at);
+
             -- FTS5 full-text search for tasks (BM25 fallback when embeddings unavailable)
             CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
                 title, summary, compact, tags,
@@ -2633,6 +2652,69 @@ class SkillStore:
             "triage_pairs": triage_pairs,
             "compact_pairs": compact_pairs,
         }
+
+    # ------------------------------------------------------------------
+    # Background job queue — Phase A.2
+
+    def enqueue_job(self, kind: str, payload: dict, priority: int = 5) -> int:
+        """Enqueue a background job. Returns the job id."""
+        cur = self._conn.execute(
+            "INSERT INTO background_jobs (kind, payload, priority) VALUES (?, ?, ?)",
+            (kind, json.dumps(payload), priority),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def dequeue_job(self) -> sqlite3.Row | None:
+        """Atomically claim the highest-priority pending job. Returns None if queue is empty."""
+        row = self._conn.execute(
+            "SELECT * FROM background_jobs WHERE status = 'pending'"
+            " ORDER BY priority ASC, created_at ASC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        self._conn.execute(
+            "UPDATE background_jobs SET status = 'running', started_at = datetime('now'),"
+            " attempts = attempts + 1 WHERE id = ?",
+            (row["id"],),
+        )
+        self._conn.commit()
+        return row
+
+    def complete_job(self, job_id: int, result: dict | None = None, worker: str = "") -> None:
+        self._conn.execute(
+            "UPDATE background_jobs SET status = 'done', completed_at = datetime('now'),"
+            " result = ?, worker_used = ? WHERE id = ?",
+            (json.dumps(result or {}), worker, job_id),
+        )
+        self._conn.commit()
+
+    def fail_job(self, job_id: int, error: str, max_attempts: int = 3) -> None:
+        """Fail a job; defer it if attempts < max_attempts, otherwise mark failed."""
+        row = self._conn.execute(
+            "SELECT attempts FROM background_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        attempts = row["attempts"] if row else 1
+        new_status = "deferred" if attempts < max_attempts else "failed"
+        self._conn.execute(
+            "UPDATE background_jobs SET status = ?, error = ? WHERE id = ?",
+            (new_status, error[:1000], job_id),
+        )
+        self._conn.commit()
+
+    def pending_job_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM background_jobs WHERE status IN ('pending','deferred')"
+        ).fetchone()
+        return row[0] if row else 0
+
+    def reset_deferred_jobs(self) -> int:
+        """Move deferred jobs back to pending so they can be retried."""
+        cur = self._conn.execute(
+            "UPDATE background_jobs SET status = 'pending' WHERE status = 'deferred'"
+        )
+        self._conn.commit()
+        return cur.rowcount
 
     def close(self) -> None:
         self._conn.close()

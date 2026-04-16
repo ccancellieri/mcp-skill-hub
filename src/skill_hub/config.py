@@ -339,6 +339,13 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
+    # Background job queue — deferred work via subagent / litellm / Ollama
+    "background_via_subagent_enabled": False,       # opt-in
+    "background_worker_priority": ["subagent", "litellm", "ollama", "defer"],
+    "background_subagent_idle_threshold_ms": 3000,
+    "background_max_jobs_per_prompt": 1,
+    "background_job_retry_max": 3,
+
     # Vector engine — "sqlite-vec" uses the native ANN extension with binary
     # quantization + float32 rerank; any other value falls back to the legacy
     # in-Python cosine path.

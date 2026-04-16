@@ -259,6 +259,60 @@ def _auto_switch_profile() -> str:
         return ""
 
 
+def _dispatch_background_jobs(session_id: str, ts: float) -> str:
+    """Return a housekeeping block if background jobs are pending and user is idle.
+
+    Returns empty string when disabled, no jobs, or user not yet idle enough.
+    Never raises.
+    """
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("background_via_subagent_enabled"):
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        from skill_hub import background_jobs as _bj
+        from skill_hub.store import SkillStore
+
+        db_path = SkillStore().db_path  # type: ignore[attr-defined]
+    except Exception:
+        # Fallback: derive db_path the same way SkillStore does
+        try:
+            db_path = str(
+                Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
+            )
+        except Exception:
+            return ""
+
+    try:
+        if _bj.get_pending_count(db_path) == 0:
+            return ""
+
+        try:
+            idle_ms = int(
+                _cfg.get("background_subagent_idle_threshold_ms") or 3000
+            )
+        except Exception:
+            idle_ms = 3000
+
+        if not _bj.should_dispatch(ts, idle_threshold_ms=idle_ms):
+            return ""
+
+        try:
+            max_jobs = int(_cfg.get("background_max_jobs_per_prompt") or 1)
+        except Exception:
+            max_jobs = 1
+
+        jobs = _bj.list_pending_jobs(db_path, max_jobs=max_jobs)
+        if not jobs:
+            return ""
+        return _bj.build_housekeeping_block(jobs)
+    except Exception:
+        return ""
+
+
 def log(msg: str):
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -334,6 +388,11 @@ def main():
     if tasks_msg:
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
 
+    import time as _time
+    housekeeping_msg = _dispatch_background_jobs(session_id, _time.time())
+    if housekeeping_msg:
+        log(f"HOUSEKEEPING  chars={len(housekeeping_msg)}")
+
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 
     system_msg = (
@@ -354,6 +413,8 @@ def main():
         system_msg = drift_msg + "\n\n" + system_msg
     if tasks_msg:
         system_msg = tasks_msg + "\n\n" + system_msg
+    if housekeeping_msg:
+        system_msg = system_msg + "\n\n" + housekeeping_msg
 
     print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 
