@@ -64,6 +64,7 @@ class LLMProvider(Protocol):
         *,
         model: str | None = None,
         timeout: float = 30.0,
+        api_base: str | None = None,
     ) -> list[float] | list[list[float]]:
         """Embedding vector(s). Returns a single vector if ``text`` is a string,
         else a list of vectors in the same order as the input."""

@@ -48,7 +48,9 @@ class LitellmProvider:
 
     def _api_base(self, model: str) -> str | None:
         if model.startswith("ollama/"):
-            return str(_cfg.get("ollama_base") or "http://localhost:11434")
+            # Import inside function to avoid circular imports.
+            from skill_hub.ollama_client import get_ollama_client
+            return get_ollama_client().get_api_base(model)
         return None
 
     def _normalize_messages(
@@ -168,19 +170,20 @@ class LitellmProvider:
         *,
         model: str | None = None,
         timeout: float = 30.0,
+        api_base: str | None = None,
     ) -> list[float] | list[list[float]]:
         providers = _cfg.get("llm_providers") or {}
         resolved = model or (providers.get("embed") if isinstance(providers, dict) else None)
         if not resolved:
             resolved = f"ollama/{_cfg.get('embed_model') or 'nomic-embed-text'}"
-        api_base = self._api_base(resolved)
+        resolved_api_base = api_base or self._api_base(resolved)  # explicit override wins
         kwargs: dict[str, Any] = {
             "model": resolved,
             "input": text if isinstance(text, list) else [text],
             "timeout": timeout,
         }
-        if api_base:
-            kwargs["api_base"] = api_base
+        if resolved_api_base:
+            kwargs["api_base"] = resolved_api_base
         try:
             resp = self._litellm.embedding(**kwargs)
         except Exception as exc:  # noqa: BLE001

@@ -302,6 +302,81 @@ def _auto_switch_profile() -> str:
         return ""
 
 
+def _update_task_activity(session_id: str) -> None:
+    """Update last_activity_at for the session's open task. Never raises."""
+    if not session_id:
+        return
+    try:
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            task_id = store.get_open_task_id_for_session(session_id)
+            if task_id:
+                store.touch_task_activity(task_id)
+                log(f"HEARTBEAT  task_id={task_id}")
+        finally:
+            store.close()
+    except Exception as exc:
+        try:
+            log(f"heartbeat  error={exc}")
+        except Exception:
+            pass
+
+
+def _dispatch_background_jobs(session_id: str, ts: float) -> str:
+    """Return a housekeeping block if background jobs are pending and user is idle.
+
+    Returns empty string when disabled, no jobs, or user not yet idle enough.
+    Never raises.
+    """
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("background_via_subagent_enabled"):
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        from skill_hub import background_jobs as _bj
+        from skill_hub.store import SkillStore
+
+        db_path = SkillStore().db_path  # type: ignore[attr-defined]
+    except Exception:
+        # Fallback: derive db_path the same way SkillStore does
+        try:
+            db_path = str(
+                Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
+            )
+        except Exception:
+            return ""
+
+    try:
+        if _bj.get_pending_count(db_path) == 0:
+            return ""
+
+        try:
+            idle_ms = int(
+                _cfg.get("background_subagent_idle_threshold_ms") or 3000
+            )
+        except Exception:
+            idle_ms = 3000
+
+        if not _bj.should_dispatch(ts, idle_threshold_ms=idle_ms):
+            return ""
+
+        try:
+            max_jobs = int(_cfg.get("background_max_jobs_per_prompt") or 1)
+        except Exception:
+            max_jobs = 1
+
+        jobs = _bj.list_pending_jobs(db_path, max_jobs=max_jobs)
+        if not jobs:
+            return ""
+        return _bj.build_housekeeping_block(jobs)
+    except Exception:
+        return ""
+
+
 def log(msg: str):
     try:
         DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -311,6 +386,88 @@ def log(msg: str):
             f.write(f"[{ts}] [  0.0s] ENFORCER   {tag}{msg}\n")
     except OSError:
         pass
+
+
+def _run_pipeline(message: str, session_id: str) -> str:
+    """Run the 4-tier pre-conversation pipeline if enabled.
+
+    Returns a systemMessage block with synthesis + task_id, or empty string.
+    Never raises.
+    """
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("pre_conversation_pipeline_enabled"):
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        from skill_hub.pipeline import Pipeline
+        pipe = Pipeline()
+        result = pipe.run(message=message, session_id=session_id)
+
+        parts = []
+        if result.task_id:
+            parts.append(f"[task #{result.task_id} tracking this session]")
+        if result.synthesis:
+            parts.append(f"Context from prior work: {result.synthesis}")
+        if result.enriched_prompt:
+            parts.append(f"Suggested refined prompt: {result.enriched_prompt}")
+
+        if not parts:
+            return ""
+
+        return "PIPELINE CONTEXT:\n" + "\n".join(parts)
+    except Exception as exc:
+        try:
+            log(f"pipeline error: {exc}")
+        except Exception:
+            pass
+        return ""
+
+
+def _maybe_teach_from_message(message: str, session_id: str) -> str:
+    """If first message contains a teach-directive, auto-teach it. Returns advisory."""
+    if not message.strip():
+        return ""
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("continuous_teaching_enabled"):
+            return ""
+    except Exception:
+        return ""
+
+    import re
+    teach_patterns = [
+        r'^(?:please\s+)?remember[:\s]+(.{10,300})$',
+        r'^never (?:do |again )?(?:this[:\s]+)?(.{10,300})$',
+        r'^always (?:do )?(?:this[:\s]+)?(.{10,300})$',
+        r'(?:please\s+)?remember[:\s]+(.{10,200})(?:going forward|from now on|always)',
+    ]
+    for pat in teach_patterns:
+        m = re.search(pat, message.strip(), re.IGNORECASE | re.DOTALL)
+        if m:
+            rule_text = m.group(1).strip()
+            try:
+                from skill_hub.store import SkillStore as _SK
+                _store = _SK()
+                try:
+                    try:
+                        from skill_hub.embeddings import embed as _embed
+                        vec = _embed(rule_text)
+                    except Exception:
+                        vec = []
+                    _store.add_teaching(
+                        rule=rule_text, rule_vector=vec,
+                        action="Auto-taught from session start message",
+                        target_type="global", target_id="global",
+                    )
+                    return f'AUTO-TAUGHT: "{rule_text[:80]}"'
+                finally:
+                    _store.close()
+            except Exception:
+                pass
+    return ""
 
 
 def main():
@@ -377,8 +534,25 @@ def main():
     if tasks_msg:
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
 
+    # Heartbeat: update last_activity_at for the session's open task
+    _update_task_activity(session_id)
+
     user_message = data.get("message") or data.get("prompt") or ""
     _create_conversation_task(user_message, session_id)
+
+    # Auto-teach from "remember X" / "never do X" / "always do X" in first message
+    teach_advisory = _maybe_teach_from_message(user_message, session_id)
+    if teach_advisory:
+        log(f"AUTO-TEACH  msg=\"{teach_advisory[:100]}\"")
+
+    pipeline_msg = _run_pipeline(user_message, session_id)
+    if pipeline_msg:
+        log(f"PIPELINE  chars={len(pipeline_msg)}")
+
+    import time as _time
+    housekeeping_msg = _dispatch_background_jobs(session_id, _time.time())
+    if housekeeping_msg:
+        log(f"HOUSEKEEPING  chars={len(housekeeping_msg)}")
 
     log(f"injecting session-start reminder  log_cmd=\"{log_cmd}\"")
 
@@ -390,6 +564,8 @@ def main():
         f"Hook activity log: {log_cmd}\n"
         "Mention the log command to the user so they can follow local LLM activity."
     )
+    if pipeline_msg:
+        system_msg = pipeline_msg + "\n\n" + system_msg
     if memory_msg:
         system_msg = memory_msg + "\n\n" + system_msg
     if resume_msg:
@@ -400,6 +576,10 @@ def main():
         system_msg = drift_msg + "\n\n" + system_msg
     if tasks_msg:
         system_msg = tasks_msg + "\n\n" + system_msg
+    if teach_advisory:
+        system_msg = teach_advisory + "\n\n" + system_msg
+    if housekeeping_msg:
+        system_msg = system_msg + "\n\n" + housekeeping_msg
 
     print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 

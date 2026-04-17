@@ -53,18 +53,30 @@ const TASK_DATA = {};
       <button class="tab-btn" :class="{active: filter==='open'}" @click="filter='open'">
         Open <span class="muted" x-text="'(' + openTasks.length + ')'"></span>
       </button>
+      <button class="tab-btn" :class="{active: filter==='active'}"
+              @click="filter='active'"
+              x-show="activeCount > 0"
+              title="Show only currently active tasks">
+        <span class="status-pill pill-active" style="vertical-align:middle; margin-right:2px"></span>
+        Active <span class="muted" x-text="'(' + activeCount + ')'"></span>
+      </button>
       <button class="tab-btn" :class="{active: filter==='closed'}" @click="filter='closed'">
         Closed <span class="muted" x-text="'(' + closedTasks.length + ')'"></span>
       </button>
     </div>
 
     {# Open tasks list — x-for driven, polled every 15 s #}
-    <div x-show="filter==='open'" class="task-list">
-      <template x-for="t in openTasks" :key="t.id">
+    <div x-show="filter==='open' || filter==='active'" class="task-list">
+      <template x-for="t in (filter==='active' ? activeTasks : openTasks)" :key="t.id">
         <div class="task-item" :class="{selected: selectedId===t.id}"
+             :data-task-id="t.id"
              @click="selectById(t.id)">
           <div style="display:flex; align-items:flex-start; gap:6px">
             <div class="task-item-title" style="flex:1" x-text="t.title"></div>
+            <span class="status-pill"
+                  :class="'pill-' + (activityStates[t.id] || 'open')"
+                  x-text="activityStates[t.id] || 'open'"
+                  style="flex-shrink:0; margin-top:1px"></span>
             <button class="btn sm danger" style="flex-shrink:0"
                     @click.stop="selectById(t.id); openClose()"
                     title="Close task">close</button>
@@ -85,9 +97,10 @@ const TASK_DATA = {};
           </div>
         </div>
       </template>
-      <template x-if="openTasks.length === 0">
+      <template x-if="(filter==='open' ? openTasks : activeTasks).length === 0">
         <div style="padding:20px 14px; text-align:center">
-          <div style="font-size:11px; color:var(--color-muted)">no open tasks</div>
+          <div style="font-size:11px; color:var(--color-muted)"
+               x-text="filter==='active' ? 'no active tasks right now' : 'no open tasks'"></div>
           <button class="btn sm" onclick="openNewTask()" style="margin-top:8px; font-size:11px">+ new task</button>
         </div>
       </template>
@@ -432,9 +445,19 @@ function tasksApp() {
     _pollTimer: null,
     openTasks: _OPEN_TASKS_INIT,
     closedTasks: _CLOSED_TASKS_INIT,
+    activityStates: {},  // task_id -> "active"|"idle"|"open"|"closed"
+    _activityEs: null,   // EventSource for SSE
     modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none' },
     sessionStats: { message_count: null, duration_hours: null, log_count: 0, updated_at: null },
     _ws: null,
+
+    get activeCount() {
+      return Object.values(this.activityStates).filter(s => s === 'active').length;
+    },
+
+    get activeTasks() {
+      return this.openTasks.filter(t => this.activityStates[t.id] === 'active');
+    },
 
     init() {
       const params = new URLSearchParams(window.location.search);
@@ -457,10 +480,38 @@ function tasksApp() {
       });
       // Start live task list polling
       this._startListPoll();
+      // Start SSE activity stream
+      this._startActivityStream();
+    },
+
+    _startActivityStream() {
+      try {
+        this._activityEs = new EventSource('/api/tasks/activity/stream');
+        this._activityEs.onmessage = (e) => {
+          try {
+            const updates = JSON.parse(e.data);
+            const next = {...this.activityStates};
+            updates.forEach(u => { next[u.id] = u.state; });
+            this.activityStates = next;
+          } catch(_) {}
+        };
+        this._activityEs.onerror = () => {
+          // SSE auto-reconnects; close and retry after 10s on persistent failure
+          if (this._activityEs && this._activityEs.readyState === EventSource.CLOSED) {
+            setTimeout(() => this._startActivityStream(), 10000);
+          }
+        };
+      } catch(_) {}
     },
 
     _startListPoll() {
       this.listPollActive = true;
+      // Fetch initial activity states before first SSE event arrives.
+      fetch('/api/tasks/activity?status=open').then(r => r.ok ? r.json() : []).then(rows => {
+        const next = {};
+        (rows || []).forEach(t => { next[t.id] = t.activity_state || 'open'; });
+        this.activityStates = next;
+      }).catch(() => {});
       this._pollTimer = setInterval(() => this.pollTaskList(), 15000);
     },
 

@@ -47,7 +47,7 @@ from fastmcp import FastMCP
 from . import config as _cfg
 from .embeddings import (
     embed, rerank, compact, rewrite_query, optimize_context,
-    EMBED_MODEL, RERANK_MODEL, ollama_available,
+    EMBED_MODEL, RERANK_MODEL, ollama_available, embed_available,
     _generate,
 )
 from .indexer import index_all
@@ -242,10 +242,10 @@ def search_skills(
     from .activity_log import LOG_FILE
 
     log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
-    if not ollama_available(EMBED_MODEL):
+    if not embed_available():
         return (
-            f"Ollama model '{EMBED_MODEL}' not found. "
-            f"Run: ollama pull {EMBED_MODEL}"
+            f"No embedding backend available. "
+            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
         )
 
     query_vector = embed(query)
@@ -321,8 +321,8 @@ def search_skills(
 def suggest_plugins(query: str = "") -> str:
     """Suggest disabled plugins matching the current task."""
     log_tool("suggest_plugins", query=query)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     used_query = query or _last_search_state.get("query", "")
     if not used_query:
@@ -392,8 +392,8 @@ def record_feedback(
 def teach(rule: str, suggest: str) -> str:
     """Add a persistent rule mapping task patterns to plugins or skills."""
     log_tool("teach", rule=rule, suggest=suggest)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     rule_vector = embed(rule)
 
@@ -923,8 +923,8 @@ def search_context(
     namespaces) into the output.
     """
     log_tool("search_context", query=query, top_k=top_k, categories=categories)
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found."
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     query_vector = embed(query)
 
@@ -1049,10 +1049,10 @@ def search_context(
 def index_skills() -> str:
     """Rebuild the skill index from all plugin directories."""
     log_tool("index_skills")
-    if not ollama_available(EMBED_MODEL):
+    if not embed_available():
         return (
-            f"Ollama model '{EMBED_MODEL}' not found. "
-            f"Run: ollama pull {EMBED_MODEL}"
+            f"No embedding backend available. "
+            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
         )
 
     count, errors = index_all(_store)
@@ -1066,8 +1066,8 @@ def index_skills() -> str:
 def index_plugins() -> str:
     """Index plugin descriptions for suggest_plugins()."""
     log_tool("index_plugins")
-    if not ollama_available(EMBED_MODEL):
-        return f"Ollama model '{EMBED_MODEL}' not found. Run: ollama pull {EMBED_MODEL}"
+    if not embed_available():
+        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     if not SETTINGS_PATH.exists():
         return "Settings file not found."
@@ -1357,8 +1357,8 @@ def update_marketplace(name: str = "anthropic-agent-skills",
             lines.append(f"  ... and {commit_count - 10} more")
 
     if reindex:
-        if not ollama_available(EMBED_MODEL):
-            lines.append(f"reindex skipped: Ollama model '{EMBED_MODEL}' unavailable.")
+        if not embed_available():
+            lines.append("reindex skipped: no embedding backend available.")
         else:
             idx_count, idx_errors = index_all(_store)
             lines.append(f"reindexed {idx_count} skills"
@@ -1695,7 +1695,7 @@ def configure(key: str = "", value: str = "") -> str:
 
 @mcp.tool()
 def optimize_memory(dry_run: bool = True) -> str:
-    """Analyze memory files with local LLM. Recommends KEEP/PRUNE/COMPACT/MERGE. dry_run=True for report only.
+    """Analyze memory files with tier-smart LLM routing. Recommends KEEP/PRUNE/COMPACT/MERGE. dry_run=True for report only.
     """
     log_tool("optimize_memory", dry_run=dry_run)
 
@@ -1709,12 +1709,11 @@ def optimize_memory(dry_run: bool = True) -> str:
             f"SKILL_HUB_FORCE_LLM=1 optimize_memory"
         )
 
-    reason_model = str(_cfg.get("reason_model"))
-    if not ollama_available(reason_model):
-        return (
-            f"Reason model '{reason_model}' not available.\n"
-            f"Run: ollama pull {reason_model}"
-        )
+    # Tier-based routing (Phase C.2): use litellm provider instead of bare Ollama
+    tier = str(_cfg.get("optimize_memory_tier") or "smart")
+    _TIER_MAP = {"smart": "tier_smart", "mid": "tier_mid", "cheap": "tier_cheap"}
+    tier_key = _TIER_MAP.get(tier, tier)  # passthrough if already "tier_*"
+    from .llm.litellm_adapter import get_provider as _get_llm
 
     mem_path = Path.home() / ".claude" / "projects" / \
                "-Users-ccancellieri-work-code" / "memory"
@@ -1745,11 +1744,52 @@ def optimize_memory(dry_run: bool = True) -> str:
     lines = [
         f"=== Memory Optimization Report ===\n",
         f"Analyzing {len(entries)} files (~{total_tokens:,} tokens total) "
-        f"with {reason_model}...\n",
+        f"via tier={tier}...\n",
     ]
 
-    # Call local LLM
-    results = optimize_context(entries, model=reason_model)
+    # Call LLM via tier-based routing
+    from .embeddings import _OPTIMIZE_CONTEXT_PROMPT
+    formatted = []
+    for e in entries:
+        formatted.append(
+            f"--- {e['file']} ({e['category']}, ~{e['tokens']} tokens) ---\n"
+            f"{e['content'][:2000]}"
+        )
+    content_str = "\n\n".join(formatted)
+    max_chars = int(_cfg.get("compact_max_input_chars")) * 4  # 16k chars
+    classification_prompt = _OPTIMIZE_CONTEXT_PROMPT.format(
+        content=content_str[:max_chars]
+    )
+
+    results: list[dict] = []
+    try:
+        _provider = _get_llm()
+        raw = _provider.complete(
+            classification_prompt,
+            tier=tier_key,
+            max_tokens=2000,
+            temperature=0.0,
+            timeout=300.0,
+        )
+        import re as _re
+        raw = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
+        for match in _re.finditer(r"\{[^{}]+\}", raw):
+            try:
+                obj = json.loads(match.group())
+                results.append(obj)
+            except json.JSONDecodeError:
+                continue
+    except Exception as exc:
+        results.append({
+            "error": str(exc),
+            "summary": True,
+            "total": len(entries),
+            "keep": len(entries),
+            "prune": 0,
+            "compact": 0,
+            "merge": 0,
+            "est_tokens_saved": 0,
+        })
 
     # Separate recommendations from summary
     recs = [r for r in results if not r.get("summary")]

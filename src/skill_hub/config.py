@@ -16,6 +16,29 @@ _DEFAULTS = {
     # Ollama connection
     "ollama_base": "http://localhost:11434",
 
+    # Multi-endpoint Ollama — priority-ordered list of endpoints.
+    # Each entry: {name, url, priority, enabled, auth_header (optional)}
+    # When empty or absent, ollama_base is used as the single endpoint.
+    "ollama_endpoints": [],
+
+    # Per-model endpoint routing: model name → list of endpoint names (priority order).
+    # Empty dict = use global endpoint priority for all models.
+    "ollama_model_routing": {},
+
+    # Embedding backend cascade
+    "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
+    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+    # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
+    "voyage_api_key": None,  # set via env VOYAGE_API_KEY or here
+    "voyage_embed_model": "voyage/voyage-3-lite",
+    "sentence_transformers_model": "all-MiniLM-L6-v2",
+
+    # LLM backend config (for pipeline tiers, replacing the old Ollama-only approach)
+    "classify_backend": "haiku_json",    # haiku_json | yake_keywords | ollama_qwen
+    "synthesis_backend": "haiku",        # haiku | sonnet | ollama_local
+    "rewrite_backend": "sonnet",         # sonnet | haiku | none
+    "rerank_backend": "none",            # none | cohere | jina_local | ollama
+
     # Bundled (in-tree) plugins under <repo>/plugins/* are auto-discovered
     # at startup unless this is set to False.
     "bundled_plugins_enabled": True,
@@ -111,6 +134,11 @@ _DEFAULTS = {
     # Silently skips if the local LLM judges the digest too thin to be worth saving
     "auto_memory_on_close_task": True,
 
+    # Continuous teaching — Phase G.2
+    # When enabled: feedback_*.md file writes auto-teach rules, and session-start
+    # messages matching "remember X" / "never do X" / "always do X" are auto-taught.
+    "continuous_teaching_enabled": False,
+
     # Semantic response cache — reuse cached answers for near-identical questions
     "response_cache_enabled": True,
     "response_cache_min_sim": 0.88,   # min similarity to serve from cache
@@ -147,6 +175,17 @@ _DEFAULTS = {
     "skill_evolution_feed_memory": True,        # include project memory in evolution context
     "skill_evolution_cross_pollinate": True,    # reference official Claude skills during evolution
     "skill_sync_on_index": True,               # check for plugin updates when indexing
+
+    # Pre-conversation pipeline — 4-tier enrichment (L1-L4)
+    "pre_conversation_pipeline_enabled": False,  # opt-in
+    "pipeline_tier1_timeout_ms": 500,
+    "pipeline_tier2_timeout_ms": 400,
+    "pipeline_tier3_timeout_ms": 1200,
+    "pipeline_tier4_timeout_ms": 1500,
+    "pipeline_tier4_min_complexity": "medium",   # low | medium | high
+    "task_similarity_threshold": 0.75,
+    "task_auto_create_min_chars": 0,             # every conversation
+    "pipeline_synthesis_max_sentences": 5,
 
     # Model/effort recommendation — inject hints based on task complexity
     "model_recommendation_enabled": True,       # inject model/effort hints in systemMessage
@@ -316,6 +355,20 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
+    # Cron scheduler — background jobs driven by cron_jobs table
+    "cron_jobs_enabled": True,
+
+    # Background job queue — deferred work via subagent / litellm / Ollama
+    "background_via_subagent_enabled": False,       # opt-in
+    "background_worker_priority": ["subagent", "litellm", "ollama", "defer"],
+    "background_subagent_idle_threshold_ms": 3000,
+    "background_max_jobs_per_prompt": 1,
+    "background_job_retry_max": 3,
+
+    # Task activity state thresholds — used by get_task_activity_state()
+    "task_activity_active_seconds": 60,    # last_activity_at within 60s → "active"
+    "task_activity_idle_seconds": 3600,    # within 60min → "idle", else "open"
+
     # Vector engine — "sqlite-vec" uses the native ANN extension with binary
     # quantization + float32 rerank; any other value falls back to the legacy
     # in-Python cosine path.
@@ -340,6 +393,10 @@ _DEFAULTS = {
     },
     # Default tier when code doesn't specify one.
     "llm_default_tier": "tier_cheap",
+
+    # Tier used by optimize_memory for LLM file classification.
+    # cheap | mid | smart  (maps to llm_providers.tier_*)
+    "optimize_memory_tier": "smart",
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
@@ -520,6 +577,13 @@ def save_config(config: dict) -> None:
 def get(key: str) -> str | int | float | bool:
     """Get a single config value."""
     return load_config().get(key, _DEFAULTS.get(key))
+
+
+def set(key: str, value) -> None:  # noqa: A001
+    """Persist a single top-level config key."""
+    cfg = load_config()
+    cfg[key] = value
+    save_config(cfg)
 
 
 def service_field(service_name: str, field: str, default=None):

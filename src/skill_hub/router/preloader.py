@@ -46,12 +46,12 @@ def load_skills(
         return [], []
 
     try:
-        from ..embeddings import embed, ollama_available, EMBED_MODEL
+        from ..embeddings import embed, embed_available, EMBED_MODEL
         from ..store import SkillStore
     except ImportError:
         return [], []
 
-    if not ollama_available(EMBED_MODEL):
+    if not embed_available():
         return [], []
 
     query = " ".join(domain_hints)
@@ -173,8 +173,8 @@ def _gather_context(
         # cosine similarity. Works even when session context hasn't been
         # written yet (e.g. first turn after a compaction).
         try:
-            from ..embeddings import embed, ollama_available, EMBED_MODEL
-            if ollama_available(EMBED_MODEL):
+            from ..embeddings import embed, embed_available, EMBED_MODEL
+            if embed_available():
                 vec = embed(prompt)
                 # search() searches skills table; task search needs direct query
                 tasks = _search_tasks_by_vector(store, vec, top_k=1)

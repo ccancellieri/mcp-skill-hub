@@ -1,0 +1,373 @@
+{% extends "base.html" %}
+{% block title %}memory console{% endblock %}
+{% block content %}
+<style>
+  .mem-header { display:flex; align-items:baseline; gap:12px; margin-bottom:4px; flex-wrap:wrap; }
+  .mem-subtitle { font-size:12px; color:var(--color-muted); margin-bottom:14px; }
+  .mem-summary {
+    display:flex; gap:16px; flex-wrap:wrap;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:10px 14px; margin-bottom:16px;
+  }
+  .mem-stat { display:flex; flex-direction:column; gap:2px; }
+  .mem-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .mem-stat-value { font-size:16px; font-weight:600; color:var(--color-fg); font-variant-numeric:tabular-nums; }
+  .mem-table-wrap { overflow-x:auto; }
+  .mem-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .mem-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .mem-table td {
+    padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .mem-table tr:last-child td { border-bottom:none; }
+  .mem-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .kind-badge {
+    display:inline-block; padding:2px 7px; border-radius:10px;
+    font-size:10px; font-weight:600; white-space:nowrap; font-family:ui-monospace,monospace;
+  }
+  .kind-file       { background:rgba(58,160,255,0.15);  color:#6bbeff; }
+  .kind-file-group { background:rgba(74,211,107,0.15);  color:#5fcf7b; }
+  .kind-db         { background:rgba(232,166,75,0.2);   color:var(--color-warn); }
+  .loc-cell { font-family:ui-monospace,monospace; font-size:10px; color:var(--color-muted); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .vec-yes { color:#5fcf7b; font-weight:600; }
+  .vec-no  { color:rgba(125,136,150,0.4); }
+  .missing-tag { color:var(--color-bad); font-style:italic; font-size:10px; margin-left:4px; }
+  .err-tag { color:var(--color-bad); font-size:10px; font-style:italic; margin-left:4px; }
+  .action-bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+  .ts-cell { font-family:ui-monospace,monospace; font-size:10px; color:var(--color-muted); white-space:nowrap; }
+  #mem-loading { color:var(--color-muted); font-size:12px; padding:24px 0; text-align:center; }
+  #mem-error   { color:var(--color-bad);   font-size:12px; padding:24px 0; text-align:center; }
+  .seg-actions { display:flex; gap:4px; }
+  .btn-compact, .btn-archive, .btn-export {
+    font-size:10px; padding:2px 8px; border-radius:4px; border:1px solid var(--color-border);
+    cursor:pointer; white-space:nowrap;
+    background:transparent; transition:background .15s;
+  }
+  .btn-compact { color:#6bbeff; border-color:rgba(58,160,255,0.25); }
+  .btn-compact:hover { background:rgba(58,160,255,0.1); }
+  .btn-archive { color:var(--color-warn); border-color:rgba(232,166,75,0.25); }
+  .btn-archive:hover { background:rgba(232,166,75,0.08); }
+  .btn-export  { color:#5fcf7b; border-color:rgba(74,211,107,0.25); }
+  .btn-export:hover { background:rgba(74,211,107,0.08); }
+  .toast {
+    position:fixed; bottom:18px; right:18px; z-index:999;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:10px 16px;
+    font-size:12px; color:var(--color-fg); box-shadow:0 4px 16px rgba(0,0,0,0.4);
+    opacity:0; transform:translateY(8px); transition:opacity .25s, transform .25s;
+    pointer-events:none;
+  }
+  .toast.show { opacity:1; transform:translateY(0); pointer-events:auto; }
+  .toast.toast-ok  { border-left:3px solid #5fcf7b; }
+  .toast.toast-err { border-left:3px solid var(--color-bad); }
+</style>
+
+<div class="mem-header">
+  <h1 class="page-h" style="margin:0">Memory Console</h1>
+  <span id="seg-count-badge" style="font-size:11px;color:var(--color-muted)"></span>
+</div>
+<p class="mem-subtitle">
+  HOT = markdown files loaded directly into Claude context (CLAUDE.md, MEMORY.md, auto-memory).
+  COLD = SQLite-backed segments (skills, tasks, teachings, vectors) retrieved on-demand.
+</p>
+
+<div class="action-bar">
+  <button class="btn" id="refresh-btn" onclick="loadSegments()">Refresh</button>
+  <button class="btn" id="compact-all-btn" onclick="compactAll()" style="margin-left:8px">Compact All</button>
+  <span id="last-refresh" style="font-size:10px;color:var(--color-muted)"></span>
+</div>
+<div class="toast" id="mem-toast"></div>
+
+<div class="mem-summary" id="mem-summary" style="display:none">
+  <div class="mem-stat">
+    <span class="mem-stat-label">HOT total</span>
+    <span class="mem-stat-value" id="hot-bytes">—</span>
+  </div>
+  <div class="mem-stat">
+    <span class="mem-stat-label">COLD total</span>
+    <span class="mem-stat-value" id="cold-bytes">—</span>
+  </div>
+  <div class="mem-stat">
+    <span class="mem-stat-label">Segments</span>
+    <span class="mem-stat-value" id="total-segs">—</span>
+  </div>
+</div>
+
+<div id="mem-loading">Loading segments…</div>
+<div id="mem-error" style="display:none"></div>
+
+<div class="card" style="padding:0; display:none" id="mem-card">
+  <div class="mem-table-wrap">
+    <table class="mem-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Name</th>
+          <th>Location</th>
+          <th>Size</th>
+          <th>Lines / Rows</th>
+          <th>Last Modified</th>
+          <th>Vectorized</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="mem-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  function fmtBytes(n) {
+    if (n == null || n === 0) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  function fmtTs(ts) {
+    if (!ts) return '—';
+    try {
+      var d = new Date(ts * 1000);
+      return d.toISOString().replace('T', ' ').slice(0, 19);
+    } catch (e) { return '—'; }
+  }
+
+  function mkEl(tag, cls) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    return el;
+  }
+
+  function mkTd(content) {
+    var td = document.createElement('td');
+    if (typeof content === 'string' || typeof content === 'number') {
+      td.textContent = content;
+    } else if (content instanceof Node) {
+      td.appendChild(content);
+    }
+    return td;
+  }
+
+  function kindBadge(kind) {
+    var span = mkEl('span', 'kind-badge kind-' + kind);
+    span.textContent = kind === 'file-group' ? 'file-group' : kind;
+    return span;
+  }
+
+  function mkRow(seg) {
+    var tr = document.createElement('tr');
+
+    // Type
+    tr.appendChild(mkTd(kindBadge(seg.kind || '')));
+
+    // Name
+    var tdName = document.createElement('td');
+    tdName.textContent = seg.name || '';
+    if (seg.exists === false) {
+      var mis = mkEl('span', 'missing-tag');
+      mis.textContent = '(missing)';
+      tdName.appendChild(mis);
+    } else if (seg.error) {
+      var err = mkEl('span', 'err-tag');
+      err.textContent = seg.error;
+      tdName.appendChild(err);
+    }
+    tr.appendChild(tdName);
+
+    // Location
+    var tdLoc = mkEl('td', 'loc-cell');
+    tdLoc.title = seg.location || '';
+    tdLoc.textContent = seg.location || '—';
+    tr.appendChild(tdLoc);
+
+    // Size
+    var tdSize = document.createElement('td');
+    tdSize.style.fontVariantNumeric = 'tabular-nums';
+    tdSize.textContent = fmtBytes(seg.size_bytes);
+    tr.appendChild(tdSize);
+
+    // Lines / Rows
+    var tdCount = document.createElement('td');
+    tdCount.style.fontVariantNumeric = 'tabular-nums';
+    if (seg.line_count != null) {
+      tdCount.textContent = seg.line_count + ' lines';
+    } else if (seg.row_count != null) {
+      tdCount.textContent = seg.row_count + ' rows';
+    } else {
+      tdCount.textContent = '—';
+    }
+    tr.appendChild(tdCount);
+
+    // Last Modified
+    var tdTs = mkEl('td', 'ts-cell');
+    tdTs.textContent = fmtTs(seg.last_modified);
+    tr.appendChild(tdTs);
+
+    // Vectorized
+    var tdVec = document.createElement('td');
+    var vecSpan = mkEl('span', seg.vectorized ? 'vec-yes' : 'vec-no');
+    vecSpan.textContent = seg.vectorized ? 'yes' : '—';
+    tdVec.appendChild(vecSpan);
+    tr.appendChild(tdVec);
+
+    // Actions
+    var tdAct = document.createElement('td');
+    var actDiv = mkEl('div', 'seg-actions');
+    var segId = seg.id || '';
+
+    // Compact button (all segments)
+    var btnCompact = mkEl('button', 'btn-compact');
+    btnCompact.textContent = 'Compact';
+    btnCompact.onclick = function () { segmentAction(segId, 'compact', btnCompact); };
+    actDiv.appendChild(btnCompact);
+
+    // Archive button (file / file-group only)
+    if (seg.kind === 'file' || seg.kind === 'file-group') {
+      var btnArchive = mkEl('button', 'btn-archive');
+      btnArchive.textContent = 'Archive';
+      btnArchive.onclick = function () {
+        if (confirm('Archive "' + (seg.name || segId) + '"?\nThis will move the file(s) to _archive/.')) {
+          segmentAction(segId, 'archive', btnArchive);
+        }
+      };
+      actDiv.appendChild(btnArchive);
+    }
+
+    // Export placeholder (db only)
+    if (seg.kind === 'db') {
+      var btnExport = mkEl('a', 'btn-export');
+      btnExport.textContent = 'Export';
+      btnExport.href = '/api/memory/segments/' + encodeURIComponent(segId) + '/export';
+      btnExport.title = 'Export not yet implemented';
+      btnExport.onclick = function (e) { e.preventDefault(); showToast('Export endpoint not yet implemented.', false); };
+      actDiv.appendChild(btnExport);
+    }
+
+    tdAct.appendChild(actDiv);
+    tr.appendChild(tdAct);
+
+    return tr;
+  }
+
+  var _toastTimer = null;
+  function showToast(msg, ok) {
+    var el = document.getElementById('mem-toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'toast show ' + (ok ? 'toast-ok' : 'toast-err');
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () {
+      el.className = 'toast';
+    }, 3500);
+  }
+
+  function segmentAction(segId, action, btn) {
+    var orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    fetch('/api/memory/segments/' + encodeURIComponent(segId) + '/' + action, {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showToast(action + ' failed: ' + data.error, false);
+        } else {
+          var archived = data.archived != null ? ' (' + data.archived + ' files archived)' : '';
+          showToast(action + ' queued for "' + segId + '"' + archived, true);
+          if (action === 'archive') {
+            // Reload to reflect missing files
+            setTimeout(loadSegments, 800);
+          }
+        }
+      })
+      .catch(function (err) { showToast(action + ' error: ' + String(err), false); })
+      .finally(function () { if (btn) { btn.disabled = false; btn.textContent = orig; } });
+  }
+
+  window.compactAll = function () {
+    var btn = document.getElementById('compact-all-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    fetch('/api/memory/segments/all/compact', {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showToast('Compact All failed: ' + data.error, false);
+        } else {
+          showToast('Compact All queued (' + (data.job_count || 0) + ' jobs)', true);
+        }
+      })
+      .catch(function (err) { showToast('Compact All error: ' + String(err), false); })
+      .finally(function () { if (btn) { btn.disabled = false; btn.textContent = 'Compact All'; } });
+  };
+
+  window.loadSegments = function () {
+    var loading = document.getElementById('mem-loading');
+    var errEl   = document.getElementById('mem-error');
+    var card    = document.getElementById('mem-card');
+    var tbody   = document.getElementById('mem-tbody');
+    var summary = document.getElementById('mem-summary');
+    var btn     = document.getElementById('refresh-btn');
+
+    loading.style.display = '';
+    errEl.style.display   = 'none';
+    card.style.display    = 'none';
+    summary.style.display = 'none';
+    btn.disabled          = true;
+    btn.textContent       = '…';
+
+    fetch('/api/memory/segments')
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        loading.style.display = 'none';
+        if (!Array.isArray(data) || data.length === 0) {
+          errEl.textContent = 'No segments returned.';
+          errEl.style.display = '';
+          return;
+        }
+
+        // First element is _meta
+        var meta = data[0]._meta || {};
+        var segs = data.slice(1);
+
+        document.getElementById('hot-bytes').textContent  = fmtBytes(meta.hot_bytes);
+        document.getElementById('cold-bytes').textContent = fmtBytes(meta.cold_bytes);
+        document.getElementById('total-segs').textContent = meta.total_segments || segs.length;
+        document.getElementById('seg-count-badge').textContent =
+          segs.length + ' segment' + (segs.length !== 1 ? 's' : '');
+
+        summary.style.display = '';
+
+        // Rebuild table
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+        segs.forEach(function (seg) {
+          tbody.appendChild(mkRow(seg));
+        });
+
+        card.style.display = '';
+        document.getElementById('last-refresh').textContent =
+          'Refreshed ' + new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        loading.style.display = 'none';
+        errEl.textContent = 'Failed to load segments: ' + String(err);
+        errEl.style.display = '';
+      })
+      .finally(function () {
+        btn.disabled    = false;
+        btn.textContent = 'Refresh';
+      });
+  };
+
+  // Load on page init
+  loadSegments();
+}());
+</script>
+{% endblock %}

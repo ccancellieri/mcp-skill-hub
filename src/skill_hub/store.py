@@ -14,6 +14,7 @@ tasks        — saved/closed conversation digests for cross-session context
 import json
 import logging
 import math
+import re
 import sqlite3
 import struct
 from dataclasses import dataclass
@@ -123,11 +124,46 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
 
 
+def compute_activity_state(last_activity_at: str | None, status: str) -> str:
+    """Compute activity state: active|idle|open|closed.
+
+    Module-level helper so it can be imported and unit-tested independently
+    of SkillStore.  Thresholds are read from config at call time.
+    """
+    if status == "closed":
+        return "closed"
+    if not last_activity_at:
+        return "open"
+    import datetime
+    try:
+        last = datetime.datetime.fromisoformat(
+            last_activity_at.replace("Z", "+00:00")
+        )
+        # SQLite datetime('now') stores UTC without tzinfo — normalise.
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        age_seconds = (now - last).total_seconds()
+    except Exception:
+        return "open"
+    from . import config as _cfg
+    active_threshold = int(_cfg.get("task_activity_active_seconds") or 60)
+    idle_threshold = int(_cfg.get("task_activity_idle_seconds") or 3600)
+    if age_seconds <= active_threshold:
+        return "active"
+    if age_seconds <= idle_threshold:
+        return "idle"
+    return "open"
+
+
 class SkillStore:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        result = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        if result and result[0].lower() != "wal":
+            _log.warning("WAL mode unavailable (filesystem may not support it); using %s", result[0])
         # Load sqlite-vec extension if available; falls back to legacy path.
         self._vec_engine: str = "legacy"
         if sqlite_vec is not None:
@@ -484,6 +520,141 @@ class SkillStore:
                 updated_at   TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (task_class, domain, tier)
             );
+
+            -- Async background job queue (memory optimisation, classify, rerank)
+            CREATE TABLE IF NOT EXISTS background_jobs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind         TEXT NOT NULL,
+                payload      TEXT NOT NULL DEFAULT '{}',
+                priority     INTEGER NOT NULL DEFAULT 5,
+                status       TEXT NOT NULL DEFAULT 'pending'
+                                 CHECK(status IN ('pending','running','done','failed','deferred')),
+                worker_used  TEXT,
+                result       TEXT,
+                error        TEXT,
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at   TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_background_jobs_status_priority
+                ON background_jobs(status, priority, created_at);
+
+            -- FTS5 full-text search for tasks (BM25 fallback when embeddings unavailable)
+            CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+                title, summary, compact, tags,
+                content='tasks', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            -- FTS5 full-text search for teachings
+            CREATE VIRTUAL TABLE IF NOT EXISTS teachings_fts USING fts5(
+                rule, action,
+                content='teachings', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            -- Keep tasks_fts in sync with triggers
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_insert AFTER INSERT ON tasks BEGIN
+                INSERT INTO tasks_fts(rowid, title, summary, compact, tags)
+                VALUES (new.id, new.title, new.summary, new.compact, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_delete AFTER DELETE ON tasks BEGIN
+                INSERT INTO tasks_fts(tasks_fts, rowid, title, summary, compact, tags)
+                VALUES('delete', old.id, old.title, old.summary, old.compact, old.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS tasks_fts_update AFTER UPDATE ON tasks BEGIN
+                INSERT INTO tasks_fts(tasks_fts, rowid, title, summary, compact, tags)
+                VALUES('delete', old.id, old.title, old.summary, old.compact, old.tags);
+                INSERT INTO tasks_fts(rowid, title, summary, compact, tags)
+                VALUES (new.id, new.title, new.summary, new.compact, new.tags);
+            END;
+
+            -- Keep teachings_fts in sync with triggers
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_insert AFTER INSERT ON teachings BEGIN
+                INSERT INTO teachings_fts(rowid, rule, action)
+                VALUES (new.id, new.rule, new.action);
+            END;
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_delete AFTER DELETE ON teachings BEGIN
+                INSERT INTO teachings_fts(teachings_fts, rowid, rule, action)
+                VALUES('delete', old.id, old.rule, old.action);
+            END;
+            CREATE TRIGGER IF NOT EXISTS teachings_fts_update AFTER UPDATE ON teachings BEGIN
+                INSERT INTO teachings_fts(teachings_fts, rowid, rule, action)
+                VALUES('delete', old.id, old.rule, old.action);
+                INSERT INTO teachings_fts(rowid, rule, action)
+                VALUES (new.id, new.rule, new.action);
+            END;
+
+            -- Cron scheduler: job definitions with execution history.
+            CREATE TABLE IF NOT EXISTS cron_jobs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                TEXT NOT NULL UNIQUE,
+                schedule            TEXT NOT NULL,
+                command             TEXT NOT NULL,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                last_run_at         TEXT,
+                last_status         TEXT,
+                last_error          TEXT,
+                last_duration_ms    INTEGER,
+                run_count           INTEGER NOT NULL DEFAULT 0,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Pre-conversation 4-tier pipeline telemetry.
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id       TEXT,
+                task_id          INTEGER,
+                tier1_ms         INTEGER,
+                tier2_ms         INTEGER,
+                tier3_ms         INTEGER,
+                tier4_ms         INTEGER,
+                fallbacks_used   TEXT,           -- JSON list of tier names that fell back
+                top_similarity   REAL,           -- L2: best task similarity score
+                token_cost_usd   REAL,
+                created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Phase B.10: Experimentation framework — named pipeline presets.
+            CREATE TABLE IF NOT EXISTS pipeline_presets (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                description TEXT,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                is_builtin  INTEGER DEFAULT 0,
+                created_at  TEXT DEFAULT (datetime('now')),
+                updated_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Phase B.10: A/B experiment definitions.
+            CREATE TABLE IF NOT EXISTS experiments (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT NOT NULL,
+                preset_a_id    INTEGER,
+                preset_b_id    INTEGER,
+                target_runs    INTEGER DEFAULT 10,
+                completed_runs INTEGER DEFAULT 0,
+                status         TEXT DEFAULT 'active',
+                notes          TEXT,
+                started_at     TEXT DEFAULT (datetime('now')),
+                ended_at       TEXT,
+                FOREIGN KEY (preset_a_id) REFERENCES pipeline_presets(id),
+                FOREIGN KEY (preset_b_id) REFERENCES pipeline_presets(id)
+            );
+
+            -- Phase B.10: Individual runs belonging to an experiment.
+            CREATE TABLE IF NOT EXISTS experiment_runs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                experiment_id       INTEGER NOT NULL,
+                session_id          TEXT,
+                preset_tag          TEXT CHECK(preset_tag IN ('A','B')),
+                tier_durations_json TEXT,
+                token_cost_usd      REAL,
+                user_rating         INTEGER,
+                ran_at              TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (experiment_id) REFERENCES experiments(id)
+            );
         """)
         self._conn.commit()
 
@@ -532,6 +703,26 @@ class SkillStore:
                 "ALTER TABLE tasks ADD COLUMN options TEXT"
             )
             self._conn.commit()
+            task_cols = task_cols | {"options"}
+
+        # Phase B.9 — heartbeat: tracks last activity timestamp per open task.
+        if "last_activity_at" not in task_cols:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN last_activity_at TEXT"
+                )
+                self._conn.commit()
+            except Exception:
+                pass  # column already exists
+        # Index on last_activity_at for open tasks (idempotent).
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_last_activity "
+                "ON tasks(last_activity_at DESC) WHERE status='open'"
+            )
+            self._conn.commit()
+        except Exception:
+            pass  # partial index unsupported on some SQLite builds
 
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
@@ -644,6 +835,275 @@ class SkillStore:
                  cfg.get("max_docs", 0)),
             )
         self._conn.commit()
+
+        # Incremental migrations for cron_jobs table (new columns added in H.1)
+        cron_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(cron_jobs)")}
+        _cron_additions = [
+            ("description",      "TEXT"),
+            ("params",           "TEXT NOT NULL DEFAULT '{}'"),
+            ("is_builtin",       "INTEGER NOT NULL DEFAULT 0"),
+            ("is_dangerous",     "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at",       "TEXT NOT NULL DEFAULT (datetime('now'))"),
+        ]
+        for col, ddl in _cron_additions:
+            if col not in cron_cols:
+                self._conn.execute(f"ALTER TABLE cron_jobs ADD COLUMN {col} {ddl}")
+        self._conn.commit()
+
+        # Seed built-in cron jobs (idempotent — ON CONFLICT DO UPDATE).
+        self._seed_builtin_cron_jobs()
+
+        # Phase B.10 — seed built-in pipeline presets (idempotent).
+        self._seed_builtin_presets()
+
+        # Phase B.11 — memory-export history log.
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS export_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind          TEXT NOT NULL CHECK(kind IN ('export','import')),
+                path          TEXT,
+                tables_json   TEXT,
+                row_count     INTEGER,
+                size_bytes    INTEGER,
+                conflict_mode TEXT,
+                status        TEXT DEFAULT 'completed',
+                notes         TEXT,
+                created_at    TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self._conn.commit()
+
+        # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
+        self._rebuild_fts_index(self._conn)
+
+    def _rebuild_fts_index(self, conn: sqlite3.Connection) -> None:
+        """Rebuild FTS5 indexes from existing table content (run after migration).
+
+        FTS5 'rebuild' is idempotent — calling it twice does not corrupt data.
+        This populates the FTS tables for rows that existed before the triggers
+        were created (i.e., on first upgrade of an existing DB).
+        """
+        try:
+            conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
+            conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
+            conn.commit()
+        except sqlite3.OperationalError as exc:
+            _log.warning("FTS5 rebuild failed (FTS5 may be unavailable): %s", exc)
+
+    def _seed_builtin_presets(self) -> None:
+        """Seed built-in pipeline presets (skip if already exist)."""
+        presets = [
+            {
+                "name": "fast-local",
+                "description": "All Ollama, fastest on a warm local machine",
+                "config_json": {
+                    "classify_backend": "ollama_qwen",
+                    "embedding_backend_priority": ["ollama", "voyage", "sentence_transformers"],
+                    "synthesis_backend": "ollama",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 300,
+                    "pipeline_tier2_timeout_ms": 200,
+                    "pipeline_tier3_timeout_ms": 600,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "cheap-cloud",
+                "description": "Haiku + Voyage, no Ollama needed (~$0.005/conv)",
+                "config_json": {
+                    "classify_backend": "haiku_json_then_yake",
+                    "embedding_backend_priority": ["voyage", "sentence_transformers"],
+                    "synthesis_backend": "haiku",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 500,
+                    "pipeline_tier2_timeout_ms": 400,
+                    "pipeline_tier3_timeout_ms": 1200,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "quality-cloud",
+                "description": "Sonnet everywhere (~$0.02/conv)",
+                "config_json": {
+                    "classify_backend": "haiku_json",
+                    "embedding_backend_priority": ["voyage"],
+                    "synthesis_backend": "sonnet",
+                    "rewrite_backend": "sonnet",
+                    "pipeline_tier1_timeout_ms": 1000,
+                    "pipeline_tier2_timeout_ms": 800,
+                    "pipeline_tier3_timeout_ms": 3000,
+                    "pipeline_tier4_timeout_ms": 3000,
+                    "pipeline_tier4_min_complexity": "low",
+                },
+            },
+            {
+                "name": "offline-only",
+                "description": "YAKE + FTS5 + SentenceTransformers, zero API cost",
+                "config_json": {
+                    "classify_backend": "yake_keywords",
+                    "embedding_backend_priority": ["sentence_transformers"],
+                    "synthesis_backend": "concat",
+                    "rewrite_backend": "none",
+                    "pipeline_tier1_timeout_ms": 100,
+                    "pipeline_tier2_timeout_ms": 200,
+                    "pipeline_tier3_timeout_ms": 0,
+                    "pipeline_tier4_timeout_ms": 0,
+                },
+            },
+            {
+                "name": "balanced",
+                "description": "Haiku L1+L3, Voyage L2, Sonnet L4 only when complex — recommended default",
+                "config_json": {
+                    "classify_backend": "haiku_json_then_yake",
+                    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+                    "synthesis_backend": "haiku",
+                    "rewrite_backend": "sonnet",
+                    "pipeline_tier1_timeout_ms": 500,
+                    "pipeline_tier2_timeout_ms": 400,
+                    "pipeline_tier3_timeout_ms": 1200,
+                    "pipeline_tier4_timeout_ms": 1500,
+                    "pipeline_tier4_min_complexity": "medium",
+                },
+            },
+        ]
+        for p in presets:
+            try:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO pipeline_presets (name, description, config_json, is_builtin) "
+                    "VALUES (?, ?, ?, 1)",
+                    (p["name"], p["description"], json.dumps(p["config_json"])),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Experiments: preset CRUD + A/B runner
+
+    def list_presets(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, name, description, config_json, is_builtin, created_at "
+            "FROM pipeline_presets ORDER BY is_builtin DESC, name"
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["config"] = json.loads(d.pop("config_json") or "{}")
+            except Exception:  # noqa: BLE001
+                d["config"] = {}
+            result.append(d)
+        return result
+
+    def get_preset(self, preset_id: int) -> dict | None:
+        r = self._conn.execute(
+            "SELECT * FROM pipeline_presets WHERE id = ?", (preset_id,)
+        ).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            d["config"] = json.loads(d.pop("config_json") or "{}")
+        except Exception:  # noqa: BLE001
+            d["config"] = {}
+        return d
+
+    def save_preset(self, name: str, description: str, config: dict) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO pipeline_presets (name, description, config_json) VALUES (?, ?, ?)",
+            (name, description, json.dumps(config)),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def delete_preset(self, preset_id: int) -> bool:
+        """Delete a non-builtin preset. Returns True if deleted."""
+        cur = self._conn.execute(
+            "DELETE FROM pipeline_presets WHERE id = ? AND is_builtin = 0", (preset_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_experiments(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT e.*, pa.name AS preset_a_name, pb.name AS preset_b_name "
+            "FROM experiments e "
+            "LEFT JOIN pipeline_presets pa ON e.preset_a_id = pa.id "
+            "LEFT JOIN pipeline_presets pb ON e.preset_b_id = pb.id "
+            "ORDER BY e.started_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def create_experiment(
+        self,
+        name: str,
+        preset_a_id: int,
+        preset_b_id: int,
+        target_runs: int = 10,
+        notes: str = "",
+    ) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO experiments (name, preset_a_id, preset_b_id, target_runs, notes) "
+            "VALUES (?,?,?,?,?)",
+            (name, preset_a_id, preset_b_id, target_runs, notes),
+        )
+        self._conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def get_experiment_stats(self, experiment_id: int) -> dict:
+        """Return A/B comparison stats for an experiment."""
+        rows = self._conn.execute(
+            "SELECT preset_tag, tier_durations_json, token_cost_usd, user_rating "
+            "FROM experiment_runs WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchall()
+        stats: dict = {
+            "A": {"runs": 0, "avg_cost": None, "ratings": []},
+            "B": {"runs": 0, "avg_cost": None, "ratings": []},
+        }
+        for r in rows:
+            tag = r["preset_tag"] or "A"
+            if tag not in stats:
+                continue
+            stats[tag]["runs"] += 1
+            cost = r["token_cost_usd"]
+            if cost is not None:
+                stats[tag].setdefault("_costs", []).append(cost)
+            rating = r["user_rating"]
+            if rating is not None:
+                stats[tag]["ratings"].append(rating)
+        for tag in ("A", "B"):
+            costs = stats[tag].pop("_costs", [])
+            if costs:
+                stats[tag]["avg_cost"] = round(sum(costs) / len(costs), 6)
+            ratings = stats[tag]["ratings"]
+            if ratings:
+                stats[tag]["avg_rating"] = round(sum(ratings) / len(ratings), 2)
+        return stats
+
+    def cancel_experiment(self, experiment_id: int) -> bool:
+        """Mark an experiment as cancelled. Returns True if the row was updated."""
+        try:
+            cur = self._conn.execute(
+                "UPDATE experiments SET status='cancelled', ended_at=datetime('now') "
+                "WHERE id=? AND status='active'",
+                (experiment_id,),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+        except Exception:  # noqa: BLE001
+            return False
+
+    def rate_experiment_run(self, run_id: int, rating: int) -> None:
+        """Set user_rating on an experiment run. Rating must be 1 or -1."""
+        try:
+            self._conn.execute(
+                "UPDATE experiment_runs SET user_rating=? WHERE id=?",
+                (rating, run_id),
+            )
+            self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
     # Write
@@ -1368,6 +1828,110 @@ class SkillStore:
             (session_id,)
         ).fetchone()
 
+    def get_open_task_id_for_session(self, session_id: str) -> int | None:
+        """Return the id of the most recent open task for this session, or None."""
+        if not session_id:
+            return None
+        row = self._conn.execute(
+            "SELECT id FROM tasks WHERE session_id = ? AND status = 'open' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def touch_task_activity(self, task_id: int) -> None:
+        """Update last_activity_at = now() for a task. Best-effort, never raises."""
+        try:
+            self._conn.execute(
+                "UPDATE tasks SET last_activity_at = datetime('now') WHERE id = ?",
+                (task_id,),
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
+    def get_task_activity_state(self, task_id: int) -> str:
+        """Return 'active'|'idle'|'open'|'closed' based on last_activity_at."""
+        row = self._conn.execute(
+            "SELECT status, last_activity_at FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return "unknown"
+        status = row["status"] if isinstance(row, dict) else row[0]
+        last_at = row["last_activity_at"] if isinstance(row, dict) else row[1]
+        if status == "closed":
+            return "closed"
+        if not last_at:
+            return "open"
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+            # SQLite datetime('now') is UTC but has no tzinfo — normalise to aware UTC.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            diff_sec = (now - dt).total_seconds()
+            if diff_sec <= 60:
+                return "active"
+            if diff_sec <= 3600:
+                return "idle"
+        except Exception:
+            pass
+        return "open"
+
+    def list_tasks_with_activity(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        """Return tasks with computed activity_state column."""
+        from datetime import datetime, timezone
+
+        where = "WHERE status = ?" if status else ""
+        params: tuple = (status,) if status else ()
+        rows = self._conn.execute(
+            f"SELECT id, title, summary, status, tags, session_id, "
+            f"created_at, updated_at, last_activity_at, compact "
+            f"FROM tasks {where} ORDER BY "
+            f"CASE status WHEN 'open' THEN 0 ELSE 1 END, "
+            f"updated_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+
+        def _state(row) -> str:
+            if isinstance(row, dict):
+                st = row.get("status")
+                la = row.get("last_activity_at")
+            else:
+                # sqlite3.Row — access by column name
+                try:
+                    st = row["status"]
+                    la = row["last_activity_at"]
+                except (IndexError, KeyError):
+                    return "open"
+            if st == "closed":
+                return "closed"
+            if not la:
+                return "open"
+            try:
+                dt = datetime.fromisoformat(la.replace("Z", "+00:00"))
+                # SQLite datetime('now') is UTC but has no tzinfo — normalise to aware UTC.
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                diff = (datetime.now(timezone.utc) - dt).total_seconds()
+                if diff <= 60:
+                    return "active"
+                if diff <= 3600:
+                    return "idle"
+            except Exception:
+                pass
+            return "open"
+
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["activity_state"] = _state(row)
+            result.append(d)
+        return result
+
     def set_task_auto_approve(self, task_id: int, enabled: bool | None) -> bool:
         """Set per-task auto_approve flag. None clears (global behavior).
 
@@ -1439,13 +2003,26 @@ class SkillStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def search_tasks(self, query_vector: list[float], top_k: int = 3,
-                     status: str = "all", min_sim: float = 0.4) -> list[dict]:
-        """Search tasks by semantic similarity.
+    def search_tasks(self, query_vector: list[float] | None = None, top_k: int = 3,
+                     status: str = "all", min_sim: float = 0.4,
+                     text_query: str | None = None) -> list[dict]:
+        """Search tasks by semantic similarity or BM25 full-text search.
+
+        When ``query_vector`` is None or empty and ``text_query`` is provided,
+        falls back to FTS5 BM25 search (zero ML deps required).
 
         Uses the vec0 binary-KNN + float32 rerank path when available (S6);
         falls back to the in-Python cosine loop for legacy/short vectors.
         """
+        # FTS5 fallback: no vector provided but text query given
+        if not query_vector and text_query:
+            fts_status = None if status == "all" else status
+            return self.search_text(text_query, tables=["tasks"],
+                                    top_k=top_k, status=fts_status)
+
+        if query_vector is None:
+            return []
+
         if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
             vec_results = self._search_tasks_vec(query_vector, top_k, status, min_sim)
             if vec_results is not None:
@@ -1607,6 +2184,163 @@ class SkillStore:
             f"ORDER BY updated_at DESC LIMIT 100",
             params,
         ).fetchall()
+
+    # ------------------------------------------------------------------
+    # Pipeline telemetry
+
+    def record_pipeline_run(
+        self,
+        session_id: str,
+        task_id: int | None,
+        tier_ms: dict[str, int | None],
+        fallbacks: list[str],
+        top_similarity: float | None = None,
+        token_cost_usd: float = 0.0,
+    ) -> int:
+        """Insert one telemetry row for a completed pipeline run.
+
+        Returns the rowid of the inserted record.
+        """
+        cur = self._conn.execute(
+            """INSERT INTO pipeline_runs
+               (session_id, task_id, tier1_ms, tier2_ms, tier3_ms, tier4_ms,
+                fallbacks_used, top_similarity, token_cost_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                task_id,
+                tier_ms.get("tier1"),
+                tier_ms.get("tier2"),
+                tier_ms.get("tier3"),
+                tier_ms.get("tier4"),
+                json.dumps(fallbacks),
+                top_similarity,
+                token_cost_usd,
+            ),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """Sanitize a user query string for safe use in FTS5 MATCH expressions.
+
+        FTS5 special characters that must be escaped or stripped: " * ( ) - ^
+        Strategy: strip characters that have no safe literal equivalent, then
+        wrap remaining terms to avoid accidental prefix/phrase operators.
+        Boolean operators (AND, OR, NOT) are also stripped so SQLite FTS5 does
+        not interpret them as query syntax.
+        """
+        # Remove characters that are FTS5 operators or cause parse errors
+        cleaned = re.sub(r'["\*\(\)\-\^]', ' ', query)
+        # Strip FTS5 boolean operators so they are not interpreted as syntax
+        cleaned = re.sub(r'\b(AND|OR|NOT)\b', ' ', cleaned)
+        # Collapse whitespace
+        cleaned = ' '.join(cleaned.split())
+        return cleaned if cleaned else '""'
+
+    def search_text(
+        self,
+        query: str,
+        tables: list[str] | None = None,
+        top_k: int = 10,
+        status: str | None = None,
+    ) -> list[dict]:
+        """BM25 full-text search via SQLite FTS5. Always available, zero ML deps.
+
+        Returns list of dicts with keys: id, type (tasks/teachings),
+        title_or_rule, summary_or_why, score, status (for tasks only).
+
+        Falls back to an empty list gracefully if FTS5 tables are unavailable.
+        """
+        if not query or not query.strip():
+            return []
+
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query or safe_query == '""':
+            return []
+
+        search_tables = tables if tables is not None else ["tasks", "teachings"]
+        results: list[dict] = []
+
+        # --- tasks ---
+        if "tasks" in search_tables:
+            try:
+                if status is not None:
+                    rows = self._conn.execute(
+                        """
+                        SELECT f.rowid AS id, f.rank AS score,
+                               t.title, t.summary, t.status
+                        FROM tasks_fts f
+                        JOIN tasks t ON t.id = f.rowid
+                        WHERE tasks_fts MATCH ? AND t.status = ?
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        (safe_query, status, top_k),
+                    ).fetchall()
+                else:
+                    rows = self._conn.execute(
+                        """
+                        SELECT f.rowid AS id, f.rank AS score,
+                               t.title, t.summary, t.status
+                        FROM tasks_fts f
+                        JOIN tasks t ON t.id = f.rowid
+                        WHERE tasks_fts MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        (safe_query, top_k),
+                    ).fetchall()
+                for row in rows:
+                    results.append({
+                        "id": row["id"],
+                        "type": "tasks",
+                        "title_or_rule": row["title"],
+                        "summary_or_why": row["summary"],
+                        "score": float(row["score"]),
+                        "status": row["status"],
+                    })
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    _log.debug("FTS5 tasks table not yet created: %s", exc)
+                else:
+                    raise
+
+        # --- teachings ---
+        if "teachings" in search_tables:
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT f.rowid AS id, f.rank AS score,
+                           t.rule, t.action
+                    FROM teachings_fts f
+                    JOIN teachings t ON t.id = f.rowid
+                    WHERE teachings_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (safe_query, top_k),
+                ).fetchall()
+                for row in rows:
+                    results.append({
+                        "id": row["id"],
+                        "type": "teachings",
+                        "title_or_rule": row["rule"],
+                        "summary_or_why": row["action"],
+                        "score": float(row["score"]),
+                        "status": None,
+                    })
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc).lower():
+                    _log.debug("FTS5 teachings table not yet created: %s", exc)
+                else:
+                    raise
+
+        # BM25 rank is negative in SQLite FTS5 — lower (more negative) = better match.
+        # Sort so best matches come first (ascending by score = most negative first).
+        results.sort(key=lambda x: x["score"])
+        return results[:top_k]
 
     def get_skill_usage_stats(self) -> list[dict]:
         """Aggregate skill usage.
@@ -2433,6 +3167,197 @@ class SkillStore:
             "compact_pairs": compact_pairs,
         }
 
+    # ------------------------------------------------------------------
+    # Background job queue — Phase A.2
+
+    def enqueue_job(self, kind: str, payload: dict, priority: int = 5) -> int:
+        """Enqueue a background job. Returns the job id."""
+        cur = self._conn.execute(
+            "INSERT INTO background_jobs (kind, payload, priority) VALUES (?, ?, ?)",
+            (kind, json.dumps(payload), priority),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def dequeue_job(self) -> sqlite3.Row | None:
+        """Atomically claim the highest-priority pending job. Returns None if queue empty."""
+        # Single statement: claim + return in one atomic write
+        row = self._conn.execute(
+            """
+            UPDATE background_jobs
+            SET status     = 'running',
+                started_at = datetime('now'),
+                attempts   = attempts + 1
+            WHERE id = (
+                SELECT id FROM background_jobs
+                WHERE status = 'pending'
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+            )
+            RETURNING *
+            """
+        ).fetchone()
+        if row is not None:
+            self._conn.commit()
+        return row
+
+    def complete_job(self, job_id: int, result: dict | None = None, worker: str = "") -> None:
+        self._conn.execute(
+            "UPDATE background_jobs SET status = 'done', completed_at = datetime('now'),"
+            " result = ?, worker_used = ? WHERE id = ?",
+            (json.dumps(result or {}), worker, job_id),
+        )
+        self._conn.commit()
+
+    def fail_job(self, job_id: int, error: str, max_attempts: int = 3) -> None:
+        """Fail or defer a job based on attempt count."""
+        self._conn.execute(
+            """
+            UPDATE background_jobs
+            SET attempts = attempts + 1,
+                status   = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'deferred' END,
+                error    = ?
+            WHERE id = ?
+            """,
+            (max_attempts, error[:1000], job_id),
+        )
+        self._conn.commit()
+
+    def pending_job_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM background_jobs WHERE status IN ('pending','deferred')"
+        ).fetchone()
+        return row[0] if row else 0
+
+    def reset_deferred_jobs(self) -> int:
+        """Move deferred jobs back to pending so they can be retried."""
+        cur = self._conn.execute(
+            "UPDATE background_jobs SET status = 'pending' WHERE status = 'deferred'"
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    # ------------------------------------------------------------------
+    # Cron jobs — Phase H.1
+
+    def _seed_builtin_cron_jobs(self) -> None:
+        """Seed built-in cron jobs on first run (idempotent due to ON CONFLICT)."""
+        defaults = [
+            ("memory-optimize-preview", "Memory optimize (dry-run preview)", "0 2 * * *",
+             "optimize_memory_dry_run", {}, True, False),
+            ("teachings-sync", "Teachings sync from feedback files", "0 3 * * *",
+             "feedback_to_teachings", {}, True, False),
+            ("archive-closed-tasks", "Archive DONE/SHIPPED entries to DB", "0 4 * * *",
+             "archive_memory_to_db_dry_run", {}, True, True),
+            ("memory-export-snapshot", "Weekly memory export snapshot", "0 0 * * 0",
+             "memexp_snapshot_create", {}, False, False),
+            ("pipeline-health-check", "Pipeline backend health check", "*/15 * * * *",
+             "check_embedding_backends", {}, True, False),
+        ]
+        for name, desc, sched, cmd, params, enabled, is_dangerous in defaults:
+            self._conn.execute(
+                """INSERT INTO cron_jobs (name, description, schedule, command, params,
+                       enabled, is_builtin, is_dangerous)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                       description=excluded.description,
+                       schedule=excluded.schedule,
+                       command=excluded.command,
+                       is_builtin=1,
+                       updated_at=datetime('now')""",
+                (name, desc, sched, cmd, json.dumps(params),
+                 1 if enabled else 0, 1 if is_dangerous else 0),
+            )
+        self._conn.commit()
+
+    def list_cron_jobs(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs ORDER BY is_builtin DESC, name ASC"
+        ).fetchall()
+
+    def get_cron_job(self, job_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+
+    def upsert_cron_job(self, name: str, description: str, schedule: str,
+                        command: str, params: dict, enabled: bool = True,
+                        is_builtin: bool = False, is_dangerous: bool = False) -> int:
+        cur = self._conn.execute(
+            """INSERT INTO cron_jobs (name, description, schedule, command, params,
+                   enabled, is_builtin, is_dangerous)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   description=excluded.description,
+                   schedule=excluded.schedule,
+                   command=excluded.command,
+                   params=excluded.params,
+                   enabled=excluded.enabled,
+                   is_dangerous=excluded.is_dangerous,
+                   updated_at=datetime('now')""",
+            (name, description, schedule, command, json.dumps(params),
+             1 if enabled else 0, 1 if is_builtin else 0, 1 if is_dangerous else 0),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
+    def delete_cron_job(self, job_id: int) -> bool:
+        """Delete non-builtin cron job."""
+        cur = self._conn.execute(
+            "DELETE FROM cron_jobs WHERE id = ? AND is_builtin = 0", (job_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def update_cron_job_status(self, job_id: int, status: str,
+                               duration_ms: int | None = None,
+                               error: str | None = None) -> None:
+        self._conn.execute(
+            """UPDATE cron_jobs SET last_run_at=datetime('now'), last_status=?,
+                   last_duration_ms=?, last_error=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (status, duration_ms, error, job_id),
+        )
+        self._conn.commit()
+
+    def reset_cron_job_for_run(self, job_id: int) -> None:
+        """Mark a cron job as pending for immediate run (resets last_run_at)."""
+        self._conn.execute(
+            """UPDATE cron_jobs
+               SET last_run_at='2000-01-01T00:00:00', last_status='pending',
+                   updated_at=datetime('now')
+               WHERE id=?""",
+            (job_id,),
+        )
+        self._conn.commit()
+
+    def toggle_cron_job(self, job_id: int, enabled: bool) -> bool:
+        cur = self._conn.execute(
+            "UPDATE cron_jobs SET enabled=?, updated_at=datetime('now') WHERE id=?",
+            (1 if enabled else 0, job_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def update_cron_job(self, job_id: int, **fields: object) -> bool:
+        """Update one or more fields of a cron job by id.
+
+        Accepted keyword arguments: schedule, command, enabled, description.
+        Unknown keys are silently ignored. Returns True if a row was updated.
+        """
+        allowed = {"schedule", "command", "enabled", "description"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{col}=?" for col in updates)
+        values = list(updates.values()) + [job_id]
+        cur = self._conn.execute(
+            f"UPDATE cron_jobs SET {set_clause}, updated_at=datetime('now') WHERE id=?",
+            values,
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._conn.close()
 
@@ -2741,3 +3666,78 @@ def _maybe_apply_plugin_schema(conn: sqlite3.Connection, namespace: str) -> None
                 "plugin %s: schema apply failed: %s", namespace, exc,
             )
         return
+
+    # ------------------------------------------------------------------
+    # Cron jobs CRUD
+    # ------------------------------------------------------------------
+
+    def list_cron_jobs(self) -> list[sqlite3.Row]:
+        self._conn.row_factory = sqlite3.Row
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs ORDER BY id"
+        ).fetchall()
+
+    def get_cron_job(self, job_id: int) -> sqlite3.Row | None:
+        self._conn.row_factory = sqlite3.Row
+        return self._conn.execute(
+            "SELECT * FROM cron_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+
+    def upsert_cron_job(
+        self,
+        name: str,
+        schedule: str,
+        command: str,
+        enabled: bool = True,
+        description: str = "",
+        params: dict | None = None,
+        is_builtin: bool = False,
+        is_dangerous: bool = False,
+    ) -> int:
+        """Insert or replace a cron job; returns the row id."""
+        cur = self._conn.execute(
+            "INSERT INTO cron_jobs(name, schedule, command, enabled)"
+            " VALUES(?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET"
+            " schedule=excluded.schedule, command=excluded.command,"
+            " enabled=excluded.enabled",
+            (name, schedule, command, int(enabled)),
+        )
+        self._conn.commit()
+        if cur.lastrowid:
+            return cur.lastrowid
+        row = self._conn.execute(
+            "SELECT id FROM cron_jobs WHERE name=?", (name,)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def toggle_cron_job(self, job_id: int, enabled: bool) -> None:
+        self._conn.execute(
+            "UPDATE cron_jobs SET enabled=? WHERE id=?",
+            (int(enabled), job_id),
+        )
+        self._conn.commit()
+
+    def delete_cron_job(self, job_id: int) -> bool:
+        """Delete a non-builtin cron job. Returns True if deleted."""
+        cur = self._conn.execute(
+            "DELETE FROM cron_jobs WHERE id=? AND is_builtin=0", (job_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def update_cron_job_status(
+        self,
+        job_id: int,
+        status: str,
+        error: str | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        self._conn.execute(
+            "UPDATE cron_jobs"
+            " SET last_run_at=datetime('now'), last_status=?,"
+            " last_error=?, last_duration_ms=?, run_count=run_count+1"
+            " WHERE id=?",
+            (status, error, duration_ms, job_id),
+        )
+        self._conn.commit()

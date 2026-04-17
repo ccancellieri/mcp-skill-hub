@@ -145,13 +145,13 @@ def searxng_context(query: str) -> str | None:
     - Search or summarization fails
     """
     from . import config as _cfg
-    from .embeddings import ollama_available, EMBED_MODEL
+    from .embeddings import embed_available, EMBED_MODEL
 
     if not _cfg.is_service_enabled("searxng"):
         return None
 
-    # Skip if Ollama is unavailable — no point fetching without summarization
-    if not ollama_available(EMBED_MODEL):
+    # Skip if embedding is unavailable — no point fetching without summarization
+    if not embed_available():
         return None
 
     probe_timeout = float(_cfg.get("searxng_timeout") or 5)

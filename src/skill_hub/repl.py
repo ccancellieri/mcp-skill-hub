@@ -103,10 +103,10 @@ def _run_command(message: str) -> str | None:
 def _repl_loop() -> None:
     """Interactive REPL loop."""
     from . import config as _cfg
-    from .embeddings import ollama_available, EMBED_MODEL, RERANK_MODEL
+    from .embeddings import embed_available, ollama_available, EMBED_MODEL, RERANK_MODEL
 
     # Status check
-    embed_ok = ollama_available(EMBED_MODEL)
+    embed_ok = embed_available()
     reason_ok = ollama_available(RERANK_MODEL)
     models = _cfg.get("local_models") or {}
 

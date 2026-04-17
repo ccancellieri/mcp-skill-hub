@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}cron jobs{% endblock %}
+{% block content %}
+<style>
+  .cron-header { display:flex; align-items:baseline; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .cron-table-wrap { overflow-x:auto; margin-bottom:20px; }
+  .cron-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .cron-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .cron-table td {
+    padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .cron-table tr:last-child td { border-bottom:none; }
+  .cron-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .pill {
+    display:inline-block; padding:2px 8px; border-radius:10px;
+    font-size:10px; font-weight:600; white-space:nowrap;
+  }
+  .pill-ok     { background:rgba(74,211,107,0.2);  color:#5fcf7b; }
+  .pill-error  { background:rgba(192,57,43,0.2);   color:#e06060; }
+  .pill-none   { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .pill-on     { background:rgba(58,160,255,0.15);  color:#6bbeff; }
+  .pill-off    { background:rgba(125,136,150,0.1);  color:var(--color-muted); }
+  code.sched   { font-family:ui-monospace,monospace; font-size:11px; color:var(--color-accent); }
+  .action-row  { display:flex; gap:6px; align-items:center; }
+  .add-form    { background:var(--color-surface); border:1px solid var(--color-border);
+                 border-radius:var(--radius-md); padding:14px 16px; }
+  .add-form h3 { margin:0 0 12px; font-size:13px; font-weight:600; }
+  .form-grid   { display:grid; grid-template-columns:1fr 1fr 1fr auto auto; gap:8px; align-items:end; }
+  @media (max-width:800px) { .form-grid { grid-template-columns:1fr 1fr; } }
+  .form-field  { display:flex; flex-direction:column; gap:4px; }
+  .form-label  { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-muted); }
+  .muted-ts    { font-size:10px; color:var(--color-muted); font-family:ui-monospace,monospace; }
+</style>
+
+<div class="cron-header">
+  <h1 class="page-h" style="margin:0">Cron Jobs</h1>
+  <span class="pill pill-none">{{ total }} job{{ 's' if total != 1 else '' }}</span>
+</div>
+
+<div class="card" style="padding:0; margin-bottom:20px">
+  <div class="cron-table-wrap">
+    <table class="cron-table" id="cron-jobs-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Schedule</th>
+          <th>Command</th>
+          <th>Status</th>
+          <th>Last Run</th>
+          <th>Next Run</th>
+          <th>Duration</th>
+          <th>Runs</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="cron-tbody">
+        {% include "_cron_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ── Add Job form ── #}
+<div class="add-form">
+  <h3>Add Job</h3>
+  <form id="add-cron-form">
+    <div class="form-grid">
+      <div class="form-field">
+        <label class="form-label" for="cron-name">Name</label>
+        <input id="cron-name" name="name" type="text" placeholder="my-job" required>
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="cron-schedule">Schedule (cron)</label>
+        <input id="cron-schedule" name="schedule" type="text" placeholder="0 2 * * *" required>
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="cron-command">Command</label>
+        <input id="cron-command" name="command" type="text" placeholder="my_handler" required>
+      </div>
+      <div class="form-field">
+        <label class="form-label" for="cron-enabled">Enabled</label>
+        <select id="cron-enabled" name="enabled">
+          <option value="1">Yes</option>
+          <option value="0">No</option>
+        </select>
+      </div>
+      <div class="form-field" style="justify-content:flex-end">
+        <button type="submit" class="btn">Add</button>
+      </div>
+    </div>
+    <div id="add-cron-msg" style="margin-top:8px;font-size:11px"></div>
+  </form>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── toggle enabled ── */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-toggle-job]');
+    if (!btn) return;
+    var jobId = btn.dataset.toggleJob;
+    var nowEnabled = btn.dataset.enabled === '1';
+    fetch('/api/cron/' + jobId, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: nowEnabled ? 0 : 1})
+    }).then(function () { reloadTable(); });
+  });
+
+  /* ── run now ── */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-run-job]');
+    if (!btn) return;
+    var jobId = btn.dataset.runJob;
+    btn.disabled = true;
+    btn.textContent = '...';
+    fetch('/api/cron/' + jobId + '/run-now', {method: 'POST'})
+      .then(function () { reloadTable(); })
+      .finally(function () { btn.disabled = false; btn.textContent = 'Run'; });
+  });
+
+  /* ── delete ── */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-delete-job]');
+    if (!btn) return;
+    var jobId = btn.dataset.deleteJob;
+    if (!confirm('Delete cron job #' + jobId + '?')) return;
+    fetch('/api/cron/' + jobId, {method: 'DELETE'})
+      .then(function () { reloadTable(); });
+  });
+
+  /* ── reload table rows from server (server-rendered HTML, safe to swap) ── */
+  function reloadTable() {
+    fetch('/cron/jobs-table')
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var tbody = document.getElementById('cron-tbody');
+        if (tbody) { tbody.textContent = ''; tbody.insertAdjacentHTML('afterbegin', html); }
+      });
+  }
+
+  /* ── add form ── */
+  document.getElementById('add-cron-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var msg = document.getElementById('add-cron-msg');
+    msg.textContent = '';
+    var data = {
+      name:     document.getElementById('cron-name').value.trim(),
+      schedule: document.getElementById('cron-schedule').value.trim(),
+      command:  document.getElementById('cron-command').value.trim(),
+      enabled:  parseInt(document.getElementById('cron-enabled').value, 10)
+    };
+    fetch('/api/cron', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    }).then(function (r) {
+      if (r.ok) {
+        e.target.reset();
+        msg.style.color = '#5fcf7b';
+        msg.textContent = 'Job added.';
+        reloadTable();
+      } else {
+        return r.json().then(function (j) {
+          msg.style.color = '#e06060';
+          msg.textContent = j.error || 'Error';
+        });
+      }
+    });
+  });
+}());
+</script>
+{% endblock %}

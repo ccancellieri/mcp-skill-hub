@@ -54,6 +54,7 @@ def env(tmp_path, monkeypatch):
     _seed_plugin_dir(tmp_path, "beta-plugin", description="the beta")
 
     cfg_path.write_text(json.dumps({
+        "bundled_plugins_enabled": False,
         "extra_plugin_dirs": [{
             "path": str(tmp_path / "plugins"),
             "source": "local",

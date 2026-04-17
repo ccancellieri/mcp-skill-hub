@@ -450,6 +450,28 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
 .tag.allow, .tag.open { background: var(--good); color: #fff; }
 .tag.deny, .tag.closed { background: var(--bad); color: #fff; }
 
+/* activity state pills */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px; border-radius: 3px; font-size: 9px;
+  text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+}
+.status-pill::before {
+  content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+}
+.pill-active { background: rgba(166,227,161,0.15); color: var(--color-good, #a6e3a1); }
+.pill-active::before { background: var(--color-good, #a6e3a1); animation: pulse-dot 1.2s ease-in-out infinite; }
+.pill-idle   { background: rgba(249,226,175,0.12); color: var(--color-warn, #f9e2af); }
+.pill-idle::before { background: var(--color-warn, #f9e2af); }
+.pill-open   { background: rgba(166,173,200,0.10); color: var(--color-muted, #a6adc8); }
+.pill-open::before { background: var(--color-muted, #a6adc8); }
+.pill-closed { background: rgba(180,180,180,0.08); color: var(--color-muted, #6c7086); }
+.pill-closed::before { background: #6c7086; }
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: .4; transform: scale(0.8); }
+}
+
 /* tasks */
 .task-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media (max-width: 900px) { .task-panels { grid-template-columns: 1fr; } }

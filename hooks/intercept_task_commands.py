@@ -14,6 +14,7 @@ Flow:
 
 import json
 import os
+import re as _re
 import subprocess
 import sys
 import time
@@ -24,6 +25,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent
 IS_WINDOWS = sys.platform == "win32"
 CLI = SCRIPT_DIR / ".venv" / ("Scripts" if IS_WINDOWS else "bin") / ("skill-hub-cli.exe" if IS_WINDOWS else "skill-hub-cli")
 DEBUG_LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
+
+# Close-task intent detection
+_CLOSE_TASK_RE = _re.compile(
+    r'\b(close|done with|finish(?:ed)?|wrap(?:ping)? up|mark.*done|complete(?:d)?)\b'
+    r'.*\b(this\s+)?task\b',
+    _re.IGNORECASE
+)
+
+_FALSE_POSITIVE_RE = _re.compile(
+    r'\btask\b.*\bin\s+the\s+\w+|close\s+the\s+file|close\s+connection',
+    _re.IGNORECASE
+)
 
 _t0 = time.monotonic()
 
@@ -37,6 +50,41 @@ def log(msg: str):
             f.write(f"[{ts}] [{elapsed:6.1f}s] INTERCEPT  {msg}\n")
     except OSError:
         pass
+
+
+def _maybe_close_task(message: str, session_id: str) -> str:
+    """Check if the user intends to close the current task.
+
+    Returns an informational string if a task was closed, or "" if not.
+    Never raises.
+    """
+    if not _CLOSE_TASK_RE.search(message):
+        return ""
+    if _FALSE_POSITIVE_RE.search(message):
+        return ""
+    try:
+        sys.path.insert(0, str(SCRIPT_DIR / "src"))
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            task_row = store.get_open_task_for_session(session_id)
+            if not task_row:
+                return ""
+            task = dict(task_row)
+            task_id = int(task["id"])
+            # Use stored task title + summary as compact, not the raw close message
+            compact_text = f"Closed via intent. Summary: {task.get('title', '')} — {task.get('summary', '')[:150]}"
+            closed = store.close_task(task_id, compact=compact_text)
+            if closed:
+                info = f"Task #{task_id} closed."
+                log(f"CLOSE_TASK  task_id={task_id}  compact_len={len(compact_text)}")
+                return info
+            return ""
+        finally:
+            store.close()
+    except Exception as exc:
+        log(f"close_task_intent  error={exc}")
+        return ""
 
 
 def warmup_ollama():
@@ -77,6 +125,11 @@ def main():
     if not message:
         log("skip  reason=empty_message")
         return
+
+    # Close-task intent — handle before LLM classification (0 tokens)
+    close_info = _maybe_close_task(message, session_id)
+    if close_info:
+        print(close_info)
 
     warmup_ollama()
 

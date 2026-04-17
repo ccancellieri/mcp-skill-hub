@@ -167,7 +167,20 @@ def _dump_table_to_jsonl(conn: sqlite3.Connection, table: str, dest: Path) -> in
 
 
 def build_snapshot(opts: ExportOptions) -> Path:
-    """Build a snapshot tar.gz and return its path."""
+    """Build a snapshot tar.gz and return its path.
+
+    FTS5 virtual tables (e.g. ``tasks_fts``, ``teachings_fts``) are
+    automatically excluded by :func:`scope.list_exportable_tables` because
+    they are detected as ``CREATE VIRTUAL TABLE`` entries.  They do not need
+    to be listed in :data:`scope.EPHEMERAL_TABLES`.  On restore the FTS indexes
+    are rebuilt from scratch by the hub's DDL initialisation; importing their
+    internal shadow tables would not be safe or meaningful.
+
+    New tables added to the hub DB (e.g. ``pipeline_presets``,
+    ``experiments``, ``experiment_runs``, ``background_jobs``, ``cron_jobs``,
+    ``memory_segments``) are picked up automatically because
+    ``list_exportable_tables`` queries ``sqlite_master`` at runtime.
+    """
     opts.output_dir.mkdir(parents=True, exist_ok=True)
     out_path = opts.output_dir / f"snapshot-{_timestamp()}.tar.gz"
 
