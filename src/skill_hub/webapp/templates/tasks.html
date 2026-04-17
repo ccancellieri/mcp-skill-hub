@@ -87,11 +87,18 @@ const TASK_DATA = {};
             </template>
             <span class="muted" style="font-size:10px" x-text="t.created_at"></span>
             <div class="task-item-skills" style="font-size:10px; margin-top:4px"
-                 x-data="{skills:[]}"
-                 x-init="fetch('/tasks/'+t.id+'/stats/skills').then(r=>r.json()).then(d=>skills=d.top_skills||[]).catch(()=>skills=[])">
+                 x-data="{skills:[], ctxAvg:0, ctxPeak:0}"
+                 x-init="fetch('/tasks/'+t.id+'/stats/skills').then(r=>r.json()).then(d=>skills=d.top_skills||[]).catch(()=>skills=[]);
+                         fetch('/tasks/'+t.id+'/stats/models').then(r=>r.json()).then(d=>{ctxAvg=d.prompt_tokens_avg||0; ctxPeak=d.prompt_tokens_peak||0}).catch(()=>{})">
               <template x-if="skills.length">
-                <span style="color:var(--color-accent); display:inline-block; margin-right:4px"
+                <span style="color:var(--color-accent); display:inline-block; margin-right:6px"
                       x-text="skills.length+' skill'+(skills.length!==1?'s':'')"></span>
+              </template>
+              <template x-if="ctxAvg > 0">
+                <span style="color:var(--color-muted); display:inline-block"
+                      :title="'avg '+ctxAvg+' tok, peak '+ctxPeak+' tok per turn'">
+                  ctx ~<span x-text="ctxAvg >= 1000 ? (ctxAvg/1000).toFixed(1)+'k' : ctxAvg"></span> tok
+                </span>
               </template>
             </div>
           </div>
@@ -238,6 +245,20 @@ const TASK_DATA = {};
                       title="Number of context compaction suggestions"></span>
               </div>
             </template>
+            <template x-if="modelStats.prompt_tokens_avg > 0">
+              <div class="stat-box">
+                <span class="stat-label">Ctx avg</span>
+                <span class="stat-value" x-text="fmtTokens(modelStats.prompt_tokens_avg)"
+                      title="Average prompt size per turn (tokens, chars÷4) — stays low thanks to MCP compaction"></span>
+              </div>
+            </template>
+            <template x-if="modelStats.prompt_tokens_peak > 0">
+              <div class="stat-box">
+                <span class="stat-label">Ctx peak</span>
+                <span class="stat-value" x-text="fmtTokens(modelStats.prompt_tokens_peak)"
+                      title="Largest single-turn prompt in tokens — indicator of maximum context load"></span>
+              </div>
+            </template>
             <template x-if="modelStats.plan_mode_count > 0">
               <div class="stat-box">
                 <span class="stat-label">Plan mode</span>
@@ -294,6 +315,39 @@ const TASK_DATA = {};
                   </div>
                 </div>
               </template>
+            </div>
+          </template>
+
+          {# Context-size chart — turn-by-turn prompt tokens (sparkline) #}
+          <template x-if="modelStats.turns && modelStats.turns.length > 1">
+            <div style="padding: 10px 18px 12px; border-bottom: 1px solid var(--color-border)">
+              <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom: 6px">
+                <span class="task-detail-section-label">Context per turn
+                  <span style="font-size:9px; color:var(--color-muted); text-transform:none; letter-spacing:0"
+                        x-text="'· ' + modelStats.turns.length + ' turns · total ~' + fmtTokens(modelStats.prompt_tokens_total) + ' tok'"></span>
+                </span>
+                <span style="font-size:10px; color:var(--color-muted)">peak <span x-text="fmtTokens(modelStats.prompt_tokens_peak)"></span></span>
+              </div>
+              <svg :viewBox="'0 0 ' + chart.w + ' ' + chart.h" preserveAspectRatio="none"
+                   style="width:100%; height:64px; display:block">
+                <rect x="0" y="0" :width="chart.w" :height="chart.h"
+                      fill="rgba(255,255,255,0.02)" rx="3"></rect>
+                <template x-for="(bar, i) in chartBars" :key="i">
+                  <rect :x="bar.x" :y="bar.y" :width="bar.w" :height="bar.h"
+                        :fill="bar.color" rx="1"
+                        :title="bar.model + ' · ' + bar.tokens + ' tok'">
+                    <title x-text="bar.model + ' · ' + bar.tokens + ' tok' + (bar.compacted ? ' · compacted' : '')"></title>
+                  </rect>
+                </template>
+                <line x1="0" :x2="chart.w" :y1="chart.h * 0.5" :y2="chart.h * 0.5"
+                      stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 3"></line>
+              </svg>
+              <div style="display:flex; gap:10px; margin-top:6px; font-size:9px; color:var(--color-muted)">
+                <span><span style="display:inline-block; width:8px; height:8px; background:var(--color-accent); border-radius:1px; vertical-align:middle; margin-right:3px"></span>opus</span>
+                <span><span style="display:inline-block; width:8px; height:8px; background:var(--color-good); border-radius:1px; vertical-align:middle; margin-right:3px"></span>sonnet</span>
+                <span><span style="display:inline-block; width:8px; height:8px; background:#6b7280; border-radius:1px; vertical-align:middle; margin-right:3px"></span>haiku</span>
+                <span style="margin-left:auto">avg ~<span x-text="fmtTokens(modelStats.prompt_tokens_avg)"></span> tok/turn</span>
+              </div>
             </div>
           </template>
 
@@ -447,7 +501,8 @@ function tasksApp() {
     closedTasks: _CLOSED_TASKS_INIT,
     activityStates: {},  // task_id -> "active"|"idle"|"open"|"closed"
     _activityEs: null,   // EventSource for SSE
-    modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none' },
+    modelStats: { models: [], total_prompts: 0, plan_mode_count: 0, top_skills: [], matched_by: 'none',
+                  turns: [], prompt_tokens_total: 0, prompt_tokens_avg: 0, prompt_tokens_peak: 0 },
     sessionStats: { message_count: null, duration_hours: null, log_count: 0, updated_at: null },
     _ws: null,
 
@@ -605,6 +660,41 @@ function tasksApp() {
       if (!n) return '0';
       if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
       return String(n);
+    },
+
+    get chart() {
+      return { w: 400, h: 48 };
+    },
+
+    get chartBars() {
+      const turns = this.modelStats.turns || [];
+      if (!turns.length) return [];
+      const { w, h } = this.chart;
+      const peak = Math.max(1, ...turns.map(t => t.prompt_tokens || 0));
+      const gap = turns.length > 80 ? 0 : 1;
+      const barW = Math.max(1, (w - gap * (turns.length - 1)) / turns.length);
+      const palette = {
+        opus: 'var(--color-accent, #89b4fa)',
+        sonnet: 'var(--color-good, #a6e3a1)',
+        haiku: '#6b7280',
+      };
+      return turns.map((t, i) => {
+        const tokens = t.prompt_tokens || 0;
+        const ratio = tokens / peak;
+        const barH = Math.max(1.5, ratio * (h - 4));
+        const model = (t.model || '').toLowerCase();
+        const color = palette[Object.keys(palette).find(k => model.includes(k))] || '#a6a6a6';
+        return {
+          x: i * (barW + gap),
+          y: h - barH,
+          w: barW,
+          h: barH,
+          color,
+          model: t.model || '?',
+          tokens,
+          compacted: !!t.compacted,
+        };
+      });
     },
 
     estCost(models) {

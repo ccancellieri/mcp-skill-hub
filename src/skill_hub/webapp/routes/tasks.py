@@ -396,7 +396,9 @@ def _parse_router_log(
 
     _EMPTY: dict = {"models": [], "plan_mode_count": 0, "tier_counts": {},
                     "total_prompts": 0, "top_skills": [], "matched_by": "none",
-                    "tokens_saved": 0, "compact_count": 0}
+                    "tokens_saved": 0, "compact_count": 0,
+                    "turns": [], "prompt_tokens_total": 0,
+                    "prompt_tokens_avg": 0, "prompt_tokens_peak": 0}
 
     router_log = Path.home() / ".claude" / "mcp-skill-hub" / "router.jsonl"
     if not router_log.exists():
@@ -448,10 +450,12 @@ def _parse_router_log(
     skills_counter: Counter = Counter()
     tokens_saved = 0
     compact_count = 0
+    turns: list[dict] = []
 
     for entry in entries:
         verdict = entry.get("verdict") or {}
-        model_counter[verdict.get("model", "unknown")] += 1
+        model = verdict.get("model", "unknown")
+        model_counter[model] += 1
         # Support both old format (tier_used) and new format (tier)
         tier = verdict.get("tier_used") or verdict.get("tier") or 1
         tier_counter[str(tier)] += 1
@@ -462,9 +466,24 @@ def _parse_router_log(
         for sk in (skills_obj.get("preloaded") or entry.get("preload_skills") or []):
             if sk:
                 skills_counter[sk] += 1
-        tokens_saved += (entry.get("savings") or {}).get("tokens_estimated", 0) or 0
+        entry_saved = (entry.get("savings") or {}).get("tokens_estimated", 0) or 0
+        tokens_saved += entry_saved
         if (entry.get("compact") or {}).get("suggested"):
             compact_count += 1
+        # Turn-level series — prompt_len chars → rough token estimate (chars/4).
+        prompt_text = entry.get("prompt") or ""
+        prompt_len = len(prompt_text)
+        turns.append({
+            "ts": entry.get("ts", ""),
+            "prompt_tokens": prompt_len // 4,
+            "model": model,
+            "tokens_saved": entry_saved,
+            "compacted": bool((entry.get("compact") or {}).get("suggested")),
+        })
+
+    prompt_tokens_total = sum(t["prompt_tokens"] for t in turns)
+    prompt_tokens_peak = max((t["prompt_tokens"] for t in turns), default=0)
+    prompt_tokens_avg = (prompt_tokens_total // len(turns)) if turns else 0
 
     total = sum(model_counter.values())
     models = [
@@ -484,6 +503,10 @@ def _parse_router_log(
         "matched_by": matched_by,
         "tokens_saved": tokens_saved,
         "compact_count": compact_count,
+        "turns": turns,
+        "prompt_tokens_total": prompt_tokens_total,
+        "prompt_tokens_avg": prompt_tokens_avg,
+        "prompt_tokens_peak": prompt_tokens_peak,
     }
 
 
