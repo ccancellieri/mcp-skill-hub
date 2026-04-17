@@ -634,6 +634,7 @@
             <button class="preset-btn" data-preset="Prune">Prune</button>
             <button class="preset-btn" data-preset="Synthesize">Synthesize</button>
             <button class="preset-btn" data-preset="Cluster">Cluster</button>
+            <button id="merge-btn" class="preset-btn" style="display:none;border-color:var(--color-accent);color:var(--color-accent)">Merge</button>
           </div>
 
           <textarea id="analyze-instruction" rows="3"
@@ -822,6 +823,7 @@
   var analyzeResult = document.getElementById('analyze-result');
   var analyzeInstr = document.getElementById('analyze-instruction');
   var modelPick = document.getElementById('model-pick');
+  var mergeBtn = document.getElementById('merge-btn');
 
   var mode = 'explore';
   var selected = new Set();
@@ -991,6 +993,11 @@
     selPanel.style.display = '';
     selPanelCount.textContent = count;
 
+    // Show merge button only for tasks with 2+ selections
+    var params = new URLSearchParams(window.location.search);
+    var source = params.get('source') || 'skills';
+    mergeBtn.style.display = (source === 'tasks' && count >= 2) ? '' : 'none';
+
     clearEl(selItemsList);
     var matchedCircles = [];
     var allCircles = svg.querySelectorAll('circle');
@@ -1138,6 +1145,43 @@
       }
     }
   }());
+
+  /* ── merge ── */
+  mergeBtn.addEventListener('click', function () {
+    if (selected.size < 2) return;
+    if (!confirm('Merge ' + selected.size + ' selected tasks? This cannot be undone.')) return;
+
+    mergeBtn.disabled = true;
+    mergeBtn.textContent = 'Merging\u2026';
+
+    var params = new URLSearchParams(window.location.search);
+    var source = params.get('source') || 'tasks';
+
+    fetch('/vector/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ids: Array.from(selected),
+        source: source
+      })
+    })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        if (data.error) {
+          alert('Merge failed: ' + data.error);
+          mergeBtn.disabled = false;
+          mergeBtn.textContent = 'Merge';
+        } else {
+          // Reload to show merged result
+          window.location.reload();
+        }
+      })
+      .catch(function (ex) {
+        alert('Merge error: ' + String(ex));
+        mergeBtn.disabled = false;
+        mergeBtn.textContent = 'Merge';
+      });
+  });
 
   /* ── analyze ── */
   analyzeBtn.addEventListener('click', function () {

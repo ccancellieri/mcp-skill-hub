@@ -490,6 +490,41 @@ def vector_points(
     return {"points": points, "color_map": color_map, "count": len(points)}
 
 
+@router.post("/vector/merge", response_class=JSONResponse)
+async def vector_merge(request: Request) -> Any:
+    """Merge selected vectors. Currently only supports task vectors.
+
+    For task vectors, delegates to the tasks merge API.
+    For other sources, returns error.
+    """
+    body = await request.json()
+    ids: list[str] = body.get("ids", [])
+    source: str = body.get("source", "tasks")
+
+    if not ids or len(ids) < 2:
+        return JSONResponse(
+            {"error": "merge requires at least 2 items"},
+            status_code=400
+        )
+
+    if source != "tasks":
+        return JSONResponse(
+            {"error": f"merge not supported for source={source}"},
+            status_code=400
+        )
+
+    store = request.app.state.store
+    try:
+        # Convert IDs to integers for task merge
+        task_ids = [int(id_) for id_ in ids]
+        new_id = store.merge_tasks(task_ids)
+        return {"merged_into_id": new_id}
+    except (ValueError, TypeError) as e:
+        return JSONResponse({"error": f"invalid task ids: {e}"}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.post("/vector/analyze", response_class=JSONResponse)
 async def vector_analyze(request: Request) -> Any:
     body = await request.json()
