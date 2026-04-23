@@ -32,6 +32,14 @@ msg = (
     'Hook activity log: $LOG_CMD\n'
     'Mention the log command to the user so they can follow local LLM activity.'
 )
-print(json.dumps({'decision': 'allow', 'systemMessage': msg}))
+# UserPromptSubmit: omit decision ('allow' is invalid); inject via
+# hookSpecificOutput.additionalContext so the checklist reaches Claude.
+print(json.dumps({
+    'systemMessage': msg,
+    'hookSpecificOutput': {
+        'hookEventName': 'UserPromptSubmit',
+        'additionalContext': msg,
+    },
+}))
 "
 fi

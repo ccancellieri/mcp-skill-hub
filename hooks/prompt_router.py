@@ -114,14 +114,20 @@ def main() -> None:
         log("allow  reason=no_verdict")
         return
 
-    output: dict = {"decision": "allow"}
-    if "systemMessage" in cli_data:
+    # Translate CLI's internal shape (decision/userMessage) into Claude Code's
+    # hook-output schema: top-level systemMessage + hookSpecificOutput.additionalContext.
+    # `decision: "allow"` and top-level `userMessage` are NOT valid fields.
+    output: dict = {}
+    if cli_data.get("systemMessage"):
         output["systemMessage"] = cli_data["systemMessage"]
-    if "userMessage" in cli_data:
-        output["userMessage"] = cli_data["userMessage"]
+    if cli_data.get("userMessage"):
+        output["hookSpecificOutput"] = {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": cli_data["userMessage"],
+        }
 
-    if len(output) > 1:
-        log(f"VERDICT  sys={bool(output.get('systemMessage'))}  user={bool(output.get('userMessage'))}  cli_time={cli_ms}ms")
+    if output:
+        log(f"VERDICT  sys={bool(output.get('systemMessage'))}  user={bool(output.get('hookSpecificOutput'))}  cli_time={cli_ms}ms")
         print(json.dumps(output))
     else:
         log("allow  reason=empty_verdict")

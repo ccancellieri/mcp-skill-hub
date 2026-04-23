@@ -155,9 +155,18 @@ def main():
     has_system = bool(cli_data.get("systemMessage"))
     log(f"done  has_systemMessage={has_system}  cli_time={cli_ms}ms")
 
-    # Forward systemMessage to Claude if present
+    # Forward systemMessage to Claude if present, but strip CLI's internal
+    # `decision: "allow"` — Stop hook only accepts `decision: "block"` and
+    # `(root): Invalid input` is raised otherwise.
     if has_system:
-        print(result.stdout)
+        out: dict = {"systemMessage": cli_data["systemMessage"]}
+        hso = cli_data.get("hookSpecificOutput")
+        if hso:
+            out["hookSpecificOutput"] = hso
+        if cli_data.get("decision") == "block" and cli_data.get("reason"):
+            out["decision"] = "block"
+            out["reason"] = cli_data["reason"]
+        print(json.dumps(out))
 
     total_ms = int((time.monotonic() - _t0) * 1000)
     log(f"total_time={total_ms}ms")

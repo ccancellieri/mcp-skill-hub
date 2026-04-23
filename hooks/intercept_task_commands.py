@@ -174,9 +174,10 @@ def main():
     if decision == "block":
         blocked_msg = cli_data.get("message", "")[:100]
         log(f"BLOCK  msg=\"{blocked_msg}\"  cli_time={cli_ms}ms")
+        # UserPromptSubmit block: `reason` (not `message`) is the documented field.
         output = {
             "decision": "block",
-            "message": cli_data.get("message", "Command handled locally."),
+            "reason": cli_data.get("message") or cli_data.get("reason") or "Command handled locally.",
         }
         print(json.dumps(output))
     elif decision == "allow":
@@ -184,12 +185,17 @@ def main():
         has_user = bool(cli_data.get("userMessage"))
         sys_len = len(cli_data.get("systemMessage", ""))
         log(f"ALLOW  enriched={'yes' if has_system else 'no'}  systemMsg={sys_len}chars  cli_time={cli_ms}ms")
-        output = {"decision": "allow"}
+        # Translate CLI's internal shape into Claude Code's hook-output schema.
+        # `decision: "allow"` and top-level `userMessage` are NOT valid fields.
+        output: dict = {}
         if has_system:
             output["systemMessage"] = cli_data["systemMessage"]
         if has_user:
-            output["userMessage"] = cli_data["userMessage"]
-        if len(output) > 1:
+            output["hookSpecificOutput"] = {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": cli_data["userMessage"],
+            }
+        if output:
             print(json.dumps(output))
     else:
         log(f"UNKNOWN decision={decision}  cli_time={cli_ms}ms")

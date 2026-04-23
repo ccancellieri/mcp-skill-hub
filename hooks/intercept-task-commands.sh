@@ -70,20 +70,24 @@ reason = data.get('reason') or data.get('message', 'Command handled locally.')
 print(json.dumps({'decision': 'block', 'reason': reason}, indent=2, ensure_ascii=False))
 "
 elif [ "$DECISION" = "allow" ]; then
-    # Forward the full result — may contain systemMessage, userMessage,
-    # or hookSpecificOutput.additionalContext for Claude's context.
+    # Translate CLI's internal shape into Claude Code's hook-output schema.
+    # `decision: "allow"` and top-level `userMessage` are NOT valid fields;
+    # context-injection goes under hookSpecificOutput.additionalContext.
     printf '%s' "$RESULT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-out = {'decision': 'allow'}
+out = {}
 if data.get('systemMessage'):
     out['systemMessage'] = data['systemMessage']
-if data.get('userMessage'):
-    out['userMessage'] = data['userMessage']
 hso = data.get('hookSpecificOutput')
 if hso:
     out['hookSpecificOutput'] = hso
-if len(out) > 1:
+elif data.get('userMessage'):
+    out['hookSpecificOutput'] = {
+        'hookEventName': 'UserPromptSubmit',
+        'additionalContext': data['userMessage'],
+    }
+if out:
     print(json.dumps(out))
 " 2>/dev/null
 fi

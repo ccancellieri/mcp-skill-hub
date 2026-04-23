@@ -66,7 +66,24 @@ print('yes' if d.get('systemMessage') else 'no')
 " 2>/dev/null)
 
 if [ "$HAS_SYSTEM" = "yes" ]; then
-    echo "$RESULT"
+    # Stop hook schema: only `decision: "block"` is valid (with `reason`);
+    # `decision: "allow"` causes "(root): Invalid input". Strip the CLI's
+    # internal `decision: "allow"` and forward only schema-valid fields.
+    printf '%s' "$RESULT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+out = {}
+if data.get('systemMessage'):
+    out['systemMessage'] = data['systemMessage']
+hso = data.get('hookSpecificOutput')
+if hso:
+    out['hookSpecificOutput'] = hso
+if data.get('decision') == 'block' and data.get('reason'):
+    out['decision'] = 'block'
+    out['reason'] = data['reason']
+if out:
+    print(json.dumps(out))
+" 2>/dev/null
 fi
 
 exit 0

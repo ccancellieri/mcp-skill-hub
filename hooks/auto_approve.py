@@ -156,7 +156,17 @@ def load_allow_list(cwd: Path) -> dict:
                  cwd / ".claude" / "skill-hub-allow.yml"):
         data = load_yaml(path)
         for k in merged:
-            merged[k].extend(data.get(k, []) or [])
+            for item in (data.get(k, []) or []):
+                # Defensive: YAML can silently parse `pattern:` as a mapping
+                # (e.g. fork-bomb regex ending in ':'). Coerce dict→key, drop
+                # anything else. Prevents `re.search(dict, ...)` crashes downstream.
+                if isinstance(item, str):
+                    merged[k].append(item)
+                elif isinstance(item, dict) and item:
+                    key = next(iter(item))
+                    if isinstance(key, str):
+                        merged[k].append(key)
+                        log(f"yaml_coerce  path={path}  key={k}  dict→str: {key!r}")
     return merged
 
 
