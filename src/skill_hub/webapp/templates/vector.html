@@ -659,64 +659,38 @@
   {# ════════════════════════════════════════════════════════ INDEXES TAB #}
   <div x-show="tab === 'indexes'" {% if tab != 'indexes' %}style="display:none"{% endif %}>
 
+    <h2 style="margin:0 0 12px">Vector indexes</h2>
+
     {% if catalog %}
-    <div class="card" style="margin-bottom:16px; padding:14px 16px">
-      <div class="idx-table-wrap">
-        <table class="idx-table">
-          <thead>
-            <tr>
-              <th>Namespace</th>
-              <th>Default level</th>
-              <th>Docs</th>
-              <th>Level breakdown</th>
-              <th>Half-life</th>
-              <th>Chunk</th>
-              <th>Max docs</th>
-              <th>Avg age (d)</th>
-              <th>Total accesses</th>
-              <th>Last indexed</th>
-              <th>Config updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for idx in catalog %}
-            <tr>
-              <td>
-                <span class="ns-name">{{ idx.name }}</span>
-                <a class="ns-link"
-                   href="/vector?source=namespaces&namespace={{ idx.name }}&tab=scatter"
-                   title="View in scatter">↗</a>
-              </td>
-              <td>
-                <span class="level-badge level-{{ idx.default_level }}">{{ idx.default_level }}</span>
-              </td>
-              <td>
-                {% if idx.doc_count %}
-                  <strong>{{ idx.doc_count }}</strong>
-                {% else %}
-                  <span class="zero">0</span>
-                {% endif %}
-              </td>
-              <td><span class="level-breakdown">{{ idx.level_breakdown }}</span></td>
-              <td class="muted">{{ idx.half_life_days }}d</td>
-              <td class="muted">
-                {% if idx.chunk_size %}{{ idx.chunk_size }}{% if idx.chunk_overlap %}/{{ idx.chunk_overlap }}{% endif %}{% else %}—{% endif %}
-              </td>
-              <td class="muted">{% if idx.max_docs %}{{ idx.max_docs }}{% else %}—{% endif %}</td>
-              <td class="muted">{{ idx.avg_age_days }}</td>
-              <td class="muted">{{ idx.total_access }}</td>
-              <td class="muted">{{ idx.last_indexed or '—' }}</td>
-              <td class="muted">{{ idx.updated_at or '—' }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      {% for idx in catalog %}
+        <div class="card" style="padding:14px 18px;margin-bottom:12px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px">
+            <h3 style="margin:0">
+              {{ idx.name }}
+              <span class="muted" style="font-weight:normal;font-size:0.85em">
+                ({{ idx.source_type }})
+              </span>
+            </h3>
+            <a class="preset-btn" href="{{ idx.scatter_url }}">view in scatter →</a>
+          </div>
+          <div class="muted" style="margin-top:6px;font-size:0.9em">
+            <strong>{{ idx.doc_count }}</strong> docs ·
+            <strong>{{ idx.embedded_count }}</strong> embedded ·
+            model: <code>{{ idx.embedding_model }}</code> ·
+            last indexed: {{ idx.last_indexed }}
+            {% if idx.level_breakdown != '—' %}
+              · levels: {{ idx.level_breakdown }}
+            {% endif %}
+            {% if not idx.supports_merge %}
+              · <span>merge disabled</span>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
     {% else %}
-    <div class="card" style="padding:24px; text-align:center; color:var(--color-muted)">
-      No vector indexes configured yet. Run <code>index_skills()</code> or <code>index_plugins()</code> to seed them.
-    </div>
+      <div class="card" style="padding:24px; text-align:center; color:var(--color-muted)">
+        No vector sources registered.
+      </div>
     {% endif %}
 
     {# ── Memory levels reference ── #}
