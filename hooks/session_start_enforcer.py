@@ -198,47 +198,53 @@ def _ensure_open_tasks() -> str:
         return ""
 
 
-def _create_conversation_task(message: str, session_id: str) -> None:
-    """Create an open task for the current conversation if none exists yet.
-
-    Zero LLM cost: derives title from the first sentence of the user message.
-    Idempotent: skips creation if this session already has an open task.
-    Opt-out via config ``task_auto_create_enabled`` (default True).
-    """
-    if not message.strip() or not session_id:
-        return
+def _bind_session(message: str, session_id: str, cwd: str) -> str:
+    """Resume-or-create task for this session. Returns one-line advisory (or "")."""
+    if not session_id:
+        return ""
     try:
         from skill_hub import config as _cfg
         if _cfg.get("task_auto_create_enabled") is False:
-            return
+            return ""
     except Exception:
-        return
+        return ""
     try:
+        import subprocess
         from skill_hub.store import SkillStore
-        import re
+        from skill_hub import session_binding
+
+        branch = ""
+        if cwd:
+            try:
+                branch = subprocess.run(
+                    ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, timeout=2,
+                ).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
         store = SkillStore()
         try:
-            if store.get_open_task_for_session(session_id):
-                return  # already tracked
-            # Derive a concise title from the first sentence / 120 chars
-            first_line = message.strip().splitlines()[0][:200]
-            # Trim at sentence boundary if possible
-            sentence_end = re.search(r'[.!?]', first_line)
-            title = first_line[:sentence_end.start()] if sentence_end and sentence_end.start() > 20 else first_line
-            title = title.strip()[:120] or "Conversation"
-            store.save_task(
-                title=title,
-                summary=message[:500],
-                vector=[],
-                context="",
-                tags="",
-                session_id=session_id,
+            action, tid, title, reason = session_binding.bind_session_to_task(
+                session_id=session_id, message=message or "",
+                cwd=cwd or "", branch=branch, store=store,
             )
-            log(f"SESSION-TASK created  title=\"{title[:60]}\"  session={session_id[:8]}")
         finally:
             store.close()
+
+        if action == "resumed":
+            log(f"TASK RESUMED #{tid}  reason={reason}  title={title[:60]!r}")
+            return f'TASK RESUMED: #{tid} "{title[:80]}" (matched by {reason})'
+        if action == "created":
+            log(f"TASK CREATED #{tid}  title={title[:60]!r}  cwd={cwd}  branch={branch!r}")
+            return f'TASK CREATED: #{tid} "{title[:80]}" (cwd={cwd or "?"}, branch={branch or "-"})'
+        return ""
     except Exception as exc:
-        log(f"SESSION-TASK error: {exc}")
+        try:
+            log(f"bind_session error: {exc}")
+        except Exception:
+            pass
+        return ""
 
 
 def _auto_switch_profile() -> str:
@@ -538,7 +544,10 @@ def main():
     _update_task_activity(session_id)
 
     user_message = data.get("message") or data.get("prompt") or ""
-    _create_conversation_task(user_message, session_id)
+    cwd = data.get("cwd") or os.getcwd()
+    bind_advisory = _bind_session(user_message, session_id, cwd)
+    if bind_advisory:
+        log(f"SESSION-BIND  {bind_advisory[:120]}")
 
     # Auto-teach from "remember X" / "never do X" / "always do X" in first message
     teach_advisory = _maybe_teach_from_message(user_message, session_id)
@@ -580,6 +589,8 @@ def main():
         system_msg = teach_advisory + "\n\n" + system_msg
     if housekeeping_msg:
         system_msg = system_msg + "\n\n" + housekeeping_msg
+    if bind_advisory:
+        system_msg = bind_advisory + "\n\n" + system_msg
 
     print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
 
