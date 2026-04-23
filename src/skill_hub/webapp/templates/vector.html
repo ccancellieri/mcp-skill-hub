@@ -634,7 +634,40 @@
             <button class="preset-btn" data-preset="Prune">Prune</button>
             <button class="preset-btn" data-preset="Synthesize">Synthesize</button>
             <button class="preset-btn" data-preset="Cluster">Cluster</button>
-            <button id="merge-btn" class="preset-btn" style="display:none;border-color:var(--color-accent);color:var(--color-accent)">Merge</button>
+          </div>
+
+          <div id="merge-toolbar" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            <button id="merge-mechanical-btn" class="preset-btn"
+                    style="border-color:var(--color-accent);color:var(--color-accent)">
+              Quick merge
+            </button>
+            <span class="muted">or draft with</span>
+            <select id="merge-tier" class="preset-btn" style="padding:4px 8px">
+              <option value="local">local</option>
+              <option value="mid">mid</option>
+              <option value="claude">claude</option>
+            </select>
+            <input id="merge-instruction" class="preset-btn"
+                   style="padding:4px 8px;min-width:200px"
+                   placeholder="optional instruction">
+            <button id="merge-draft-btn" class="preset-btn">Draft merge</button>
+          </div>
+
+          <div id="merge-preview" style="display:none;margin-top:12px;padding:12px;
+               border:1px solid var(--color-accent);border-radius:8px">
+            <div class="label" style="margin-bottom:8px">Proposed merge</div>
+            <input id="merge-preview-label" class="mock-input"
+                   style="width:100%;margin-bottom:8px">
+            <textarea id="merge-preview-body" class="mock-input"
+                      style="width:100%;min-height:160px;font-family:monospace"></textarea>
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button id="merge-commit-btn" class="preset-btn"
+                      style="border-color:var(--color-accent);color:var(--color-accent)">
+                Commit merge
+              </button>
+              <button id="merge-cancel-btn" class="preset-btn">Cancel</button>
+              <span id="merge-status" class="muted" style="margin-left:auto"></span>
+            </div>
           </div>
 
           <textarea id="analyze-instruction" rows="3"
@@ -797,7 +830,28 @@
   var analyzeResult = document.getElementById('analyze-result');
   var analyzeInstr = document.getElementById('analyze-instruction');
   var modelPick = document.getElementById('model-pick');
-  var mergeBtn = document.getElementById('merge-btn');
+  var mergeToolbar = document.getElementById('merge-toolbar');
+  var mechanicalBtn = document.getElementById('merge-mechanical-btn');
+  var draftBtn = document.getElementById('merge-draft-btn');
+  var tierSel = document.getElementById('merge-tier');
+  var instrInput = document.getElementById('merge-instruction');
+  var mergePreview = document.getElementById('merge-preview');
+  var mergePreviewLabel = document.getElementById('merge-preview-label');
+  var mergePreviewBody = document.getElementById('merge-preview-body');
+  var mergeCommitBtn = document.getElementById('merge-commit-btn');
+  var mergeCancelBtn = document.getElementById('merge-cancel-btn');
+  var mergeStatusEl = document.getElementById('merge-status');
+
+  var MERGE_CAPABLE = { tasks: true, namespaces: true };
+  var MECHANICAL_CAPABLE = { tasks: true };
+
+  function updateMergeToolbar() {
+    var count = selected.size;
+    var capable = MERGE_CAPABLE[source] && count >= 2;
+    mergeToolbar.style.display = capable ? 'flex' : 'none';
+    if (!capable) mergePreview.style.display = 'none';
+    mechanicalBtn.style.display = MECHANICAL_CAPABLE[source] ? '' : 'none';
+  }
 
   var mode = 'explore';
   var selected = new Set();
@@ -970,7 +1024,7 @@
     // Show merge button only for tasks with 2+ selections
     var params = new URLSearchParams(window.location.search);
     var source = params.get('source') || 'skills';
-    mergeBtn.style.display = (source === 'tasks' && count >= 2) ? '' : 'none';
+    updateMergeToolbar();
 
     clearEl(selItemsList);
     var matchedCircles = [];
@@ -1120,41 +1174,90 @@
     }
   }());
 
-  /* ── merge ── */
-  mergeBtn.addEventListener('click', function () {
-    if (selected.size < 2) return;
-    if (!confirm('Merge ' + selected.size + ' selected tasks? This cannot be undone.')) return;
-
-    mergeBtn.disabled = true;
-    mergeBtn.textContent = 'Merging\u2026';
-
-    var params = new URLSearchParams(window.location.search);
-    var source = params.get('source') || 'tasks';
-
-    fetch('/vector/merge', {
+  /* ── merge toolbar ── */
+  function postJSON(url, payload) {
+    return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ids: Array.from(selected),
-        source: source
-      })
-    })
-      .then(function (resp) { return resp.json(); })
-      .then(function (data) {
-        if (data.error) {
-          alert('Merge failed: ' + data.error);
-          mergeBtn.disabled = false;
-          mergeBtn.textContent = 'Merge';
+      body: JSON.stringify(payload),
+    }).then(function (r) {
+      return r.json().then(function (j) { return { status: r.status, body: j }; });
+    });
+  }
+  function currentIds() { return Array.from(selected); }
+
+  mechanicalBtn.addEventListener('click', function () {
+    if (selected.size < 2) return;
+    if (!confirm('Merge ' + selected.size + ' tasks (quick concat)? Cannot be undone.')) return;
+    mechanicalBtn.disabled = true;
+    mergeStatusEl.textContent = 'Merging\u2026';
+    postJSON('/vector/merge', { source: source, ids: currentIds() })
+      .then(function (resp) {
+        if (resp.status !== 200) {
+          mergeStatusEl.textContent = 'Error: ' + (resp.body.error || resp.status);
         } else {
-          // Reload to show merged result
           window.location.reload();
         }
       })
-      .catch(function (ex) {
-        alert('Merge error: ' + String(ex));
-        mergeBtn.disabled = false;
-        mergeBtn.textContent = 'Merge';
-      });
+      .catch(function (ex) { mergeStatusEl.textContent = String(ex); })
+      .finally(function () { mechanicalBtn.disabled = false; });
+  });
+
+  draftBtn.addEventListener('click', function () {
+    if (selected.size < 2) return;
+    draftBtn.disabled = true;
+    mergeStatusEl.textContent = 'Drafting\u2026';
+    postJSON('/vector/merge/draft', {
+      source: source, ids: currentIds(),
+      tier: tierSel.value, instruction: instrInput.value,
+    }).then(function (resp) {
+      draftBtn.disabled = false;
+      if (resp.status !== 200) {
+        mergeStatusEl.textContent = 'Error: ' + (resp.body.error || resp.status);
+        return;
+      }
+      mergePreviewLabel.value = resp.body.proposed_label || '';
+      mergePreviewBody.value = resp.body.proposed_body || '';
+      mergePreview.dataset.raw = JSON.stringify(resp.body.proposed_raw || {});
+      mergePreview.dataset.tier = resp.body.tier_used || tierSel.value;
+      mergePreview.dataset.ids = JSON.stringify(currentIds());
+      mergePreview.style.display = '';
+      mergeStatusEl.textContent = 'Drafted (' + (resp.body.tier_used || tierSel.value) + ')';
+    }).catch(function (ex) {
+      draftBtn.disabled = false;
+      mergeStatusEl.textContent = String(ex);
+    });
+  });
+
+  mergeCancelBtn.addEventListener('click', function () {
+    mergePreview.style.display = 'none';
+    mergeStatusEl.textContent = '';
+  });
+
+  mergeCommitBtn.addEventListener('click', function () {
+    mergeCommitBtn.disabled = true;
+    mergeStatusEl.textContent = 'Committing\u2026';
+    var draft = {
+      proposed_label: mergePreviewLabel.value,
+      proposed_body: mergePreviewBody.value,
+      proposed_raw: JSON.parse(mergePreview.dataset.raw || '{}'),
+      tier_used: mergePreview.dataset.tier || 'local',
+    };
+    postJSON('/vector/merge/commit', {
+      source: source,
+      ids: JSON.parse(mergePreview.dataset.ids || '[]'),
+      draft: draft,
+    }).then(function (resp) {
+      mergeCommitBtn.disabled = false;
+      if (resp.status !== 200) {
+        mergeStatusEl.textContent = 'Error: ' + (resp.body.error || resp.status);
+        return;
+      }
+      window.location.reload();
+    }).catch(function (ex) {
+      mergeCommitBtn.disabled = false;
+      mergeStatusEl.textContent = String(ex);
+    });
   });
 
   /* ── analyze ── */
