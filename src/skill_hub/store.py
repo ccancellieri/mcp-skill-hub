@@ -724,6 +724,30 @@ class SkillStore:
         except Exception:
             pass  # partial index unsupported on some SQLite builds
 
+        # Session-bind: cwd + branch captured on task creation for resume matching.
+        if "cwd" not in task_cols:
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN cwd TEXT")
+                self._conn.commit()
+                task_cols = task_cols | {"cwd"}
+            except Exception:
+                pass
+        if "branch" not in task_cols:
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN branch TEXT")
+                self._conn.commit()
+                task_cols = task_cols | {"branch"}
+            except Exception:
+                pass
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_cwd_branch_open "
+                "ON tasks(cwd, branch) WHERE status = 'open'"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
             # S1.3 — enables incremental reindex (skip rows whose file content
