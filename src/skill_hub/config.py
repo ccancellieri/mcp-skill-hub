@@ -187,6 +187,12 @@ _DEFAULTS = {
     "task_auto_create_min_chars": 0,             # every conversation
     "pipeline_synthesis_max_sentences": 5,
 
+    # Session → task auto-bind (resume-or-create on every new session)
+    "session_task_auto_create_enabled": True,          # master kill switch
+    "session_task_match_strategy": "hybrid",           # hybrid | cwd_branch | semantic | off
+    "session_task_match_window_days": 7,               # only resume tasks touched in last N days
+    "session_task_semantic_threshold": 0.75,           # min cosine for semantic match
+
     # Model/effort recommendation — inject hints based on task complexity
     "model_recommendation_enabled": True,       # inject model/effort hints in systemMessage
     "always_forward_to_claude": True,           # NEVER block — always forward to Claude
