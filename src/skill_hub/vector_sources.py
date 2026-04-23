@@ -66,3 +66,24 @@ class MergeableSource(Protocol):
     def fetch_for_merge(self, ids: list[str]) -> list[MergeItem]: ...
     def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft: ...
     def commit_merge(self, items: list[MergeItem], draft: MergeDraft) -> CommitResult: ...
+
+
+class SourceRegistry:
+    """Ordered registry of MergeableSource implementations."""
+
+    def __init__(self) -> None:
+        self._sources: dict[str, MergeableSource] = {}
+
+    def register(self, source: MergeableSource) -> None:
+        self._sources[source.name] = source
+
+    def get(self, name: str) -> MergeableSource:
+        if name not in self._sources:
+            raise KeyError(f"no vector source registered: {name!r}")
+        return self._sources[name]
+
+    def all(self) -> list[MergeableSource]:
+        return list(self._sources.values())
+
+    def names(self) -> list[str]:
+        return list(self._sources.keys())
