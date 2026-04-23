@@ -1019,6 +1019,29 @@ class SkillStore:
             result.append(d)
         return result
 
+    def record_memory_audit(
+        self,
+        *,
+        action: str,
+        namespace: str | None = None,
+        doc_id: str | None = None,
+        from_level: str | None = None,
+        to_level: str | None = None,
+        reason_json: dict | None = None,
+    ) -> int:
+        """Insert a row into memory_audit. Returns the new rowid.
+
+        reason_json is serialised into the `reason` TEXT column.
+        """
+        cur = self._conn.execute(
+            "INSERT INTO memory_audit (action, namespace, doc_id, from_level, to_level, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (action, namespace, doc_id, from_level, to_level,
+             json.dumps(reason_json) if reason_json is not None else None),
+        )
+        self._conn.commit()
+        return cur.lastrowid or 0
+
     def get_preset(self, preset_id: int) -> dict | None:
         r = self._conn.execute(
             "SELECT * FROM pipeline_presets WHERE id = ?", (preset_id,)

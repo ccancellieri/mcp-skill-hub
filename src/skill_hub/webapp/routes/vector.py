@@ -241,72 +241,27 @@ def _color_for(group: str) -> str:
 
 # ── index catalog ─────────────────────────────────────────────────────────────
 
-def _load_index_catalog(store: Any) -> list[dict]:
-    try:
-        configs = store._conn.execute(
-            "SELECT name, embedding_model, chunk_size, chunk_overlap, "
-            "       default_level, half_life_days, max_docs, updated_at "
-            "FROM vector_index_config ORDER BY name"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return []
-
-    counts: dict[str, dict] = {}
-    try:
-        rows = store._conn.execute(
-            "SELECT namespace, COUNT(*) AS n, "
-            "       ROUND(AVG((julianday('now') - julianday(indexed_at))), 1) AS avg_age, "
-            "       SUM(access_count) AS total_access, "
-            "       MAX(indexed_at) AS last_indexed "
-            "FROM vectors GROUP BY namespace"
-        ).fetchall()
-        for r in rows:
-            counts[r["namespace"]] = {
-                "doc_count": r["n"],
-                "avg_age_days": r["avg_age"],
-                "total_access": r["total_access"],
-                "last_indexed": (r["last_indexed"] or "")[:16],
-            }
-    except sqlite3.OperationalError:
-        pass
-
-    level_counts: dict[str, dict[str, int]] = {}
-    try:
-        rows = store._conn.execute(
-            "SELECT namespace, level, COUNT(*) AS n FROM vectors GROUP BY namespace, level"
-        ).fetchall()
-        for r in rows:
-            ns = r["namespace"]
-            if ns not in level_counts:
-                level_counts[ns] = {}
-            level_counts[ns][r["level"] or "?"] = r["n"]
-    except sqlite3.OperationalError:
-        pass
-
-    result = []
-    for c in configs:
-        ns = c["name"]
-        stats = counts.get(ns, {})
-        lvl_breakdown = level_counts.get(ns, {})
+def _load_index_catalog(registry: Any) -> list[dict]:
+    """Render every MergeableSource as a catalog row."""
+    out: list[dict] = []
+    for src in registry.all():
+        s = src.index_stats()
         lvl_str = "  ".join(
-            f"{lv}:{n}" for lv, n in sorted(lvl_breakdown.items())
-        ) if lvl_breakdown else "—"
-        result.append({
-            "name": ns,
-            "default_level": c["default_level"] or "L2",
-            "half_life_days": c["half_life_days"],
-            "chunk_size": c["chunk_size"] or 0,
-            "chunk_overlap": c["chunk_overlap"] or 0,
-            "max_docs": c["max_docs"] or 0,
-            "embedding_model": c["embedding_model"] or "—",
-            "doc_count": stats.get("doc_count", 0),
-            "avg_age_days": stats.get("avg_age_days", "—"),
-            "total_access": stats.get("total_access", 0),
-            "last_indexed": stats.get("last_indexed", "—"),
+            f"{lv}:{n}" for lv, n in sorted(s.level_breakdown.items())
+        ) or "—"
+        out.append({
+            "name": s.name,
+            "source_type": s.source_type,
+            "doc_count": s.doc_count,
+            "embedded_count": s.embedded_count,
+            "embedding_model": s.embedding_model or "—",
+            "last_indexed": s.last_indexed or "—",
             "level_breakdown": lvl_str,
-            "updated_at": (c["updated_at"] or "")[:16],
+            "scatter_url": s.scatter_url,
+            "supports_merge": s.supports_merge,
+            "merge_mode": s.merge_mode.value,
         })
-    return result
+    return out
 
 
 def _load_namespaces(store: Any) -> list[str]:
@@ -441,7 +396,8 @@ def vector_page(
     groups = sorted({p.get("group", "") for p in points if p.get("group")})
     legend = [{"group": g, "color": _color_for(g)} for g in groups]
 
-    catalog = _load_index_catalog(store)
+    registry = request.app.state.source_registry
+    catalog = _load_index_catalog(registry)
     all_namespaces = _load_namespaces(store)
 
     # colour map for JS: {group -> hex}
@@ -490,39 +446,118 @@ def vector_points(
     return {"points": points, "color_map": color_map, "count": len(points)}
 
 
-@router.post("/vector/merge", response_class=JSONResponse)
-async def vector_merge(request: Request) -> Any:
-    """Merge selected vectors. Currently only supports task vectors.
+from ...vector_sources import MergeDraft, MergeMode
 
-    For task vectors, delegates to the tasks merge API.
-    For other sources, returns error.
-    """
+
+@router.post("/vector/merge/draft", response_class=JSONResponse)
+async def vector_merge_draft(request: Request) -> Any:
     body = await request.json()
+    source_name: str = body.get("source", "")
     ids: list[str] = body.get("ids", [])
-    source: str = body.get("source", "tasks")
+    tier: str = body.get("tier", "local")
+    instruction: str = body.get("instruction", "")
 
-    if not ids or len(ids) < 2:
-        return JSONResponse(
-            {"error": "merge requires at least 2 items"},
-            status_code=400
-        )
+    if len(ids) < 2:
+        return JSONResponse({"error": "merge requires at least 2 items"}, status_code=400)
 
-    if source != "tasks":
-        return JSONResponse(
-            {"error": f"merge not supported for source={source}"},
-            status_code=400
-        )
-
-    store = request.app.state.store
+    registry = request.app.state.source_registry
     try:
-        # Convert IDs to integers for task merge
-        task_ids = [int(id_) for id_ in ids]
-        new_id = store.merge_tasks(task_ids)
-        return {"merged_into_id": new_id}
-    except (ValueError, TypeError) as e:
-        return JSONResponse({"error": f"invalid task ids: {e}"}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        src = registry.get(source_name)
+    except KeyError:
+        return JSONResponse({"error": f"unknown source: {source_name}"}, status_code=400)
+
+    if src.merge_mode == MergeMode.REJECTED:
+        return JSONResponse(
+            {"error": f"merge_rejected_for_source: {source_name}"}, status_code=400,
+        )
+
+    items = src.fetch_for_merge(ids)
+    if len(items) != len(ids):
+        missing = set(ids) - {it.id for it in items}
+        return JSONResponse(
+            {"error": "missing_ids", "missing": sorted(missing)}, status_code=404,
+        )
+
+    try:
+        draft = src.draft_merge(items, tier=tier, instruction=instruction)
+    except Exception as exc:
+        return JSONResponse({"error": f"draft_failed: {exc}"}, status_code=503)
+
+    return {
+        "proposed_label": draft.proposed_label,
+        "proposed_body": draft.proposed_body,
+        "proposed_raw": draft.proposed_raw,
+        "tier_used": draft.tier_used,
+        "tokens_used": draft.tokens_used,
+        "source": source_name,
+        "ids": ids,
+    }
+
+
+@router.post("/vector/merge/commit", response_class=JSONResponse)
+async def vector_merge_commit(request: Request) -> Any:
+    body = await request.json()
+    source_name: str = body.get("source", "")
+    ids: list[str] = body.get("ids", [])
+    draft_raw: dict = body.get("draft") or {}
+
+    if len(ids) < 2:
+        return JSONResponse({"error": "merge requires at least 2 items"}, status_code=400)
+
+    registry = request.app.state.source_registry
+    try:
+        src = registry.get(source_name)
+    except KeyError:
+        return JSONResponse({"error": f"unknown source: {source_name}"}, status_code=400)
+
+    if src.merge_mode == MergeMode.REJECTED:
+        return JSONResponse(
+            {"error": f"merge_rejected_for_source: {source_name}"}, status_code=400,
+        )
+
+    items = src.fetch_for_merge(ids)
+    if len(items) != len(ids):
+        missing = set(ids) - {it.id for it in items}
+        return JSONResponse(
+            {"error": "source_changed", "missing": sorted(missing)}, status_code=409,
+        )
+
+    try:
+        draft = MergeDraft(
+            proposed_label=draft_raw.get("proposed_label", ""),
+            proposed_body=draft_raw.get("proposed_body", ""),
+            proposed_raw=draft_raw.get("proposed_raw", {}),
+            tier_used=draft_raw.get("tier_used", "mechanical"),
+            tokens_used=draft_raw.get("tokens_used"),
+        )
+        result = src.commit_merge(items, draft)
+    except Exception as exc:
+        return JSONResponse({"error": f"commit_failed: {exc}"}, status_code=500)
+
+    return {
+        "new_id": result.new_id,
+        "closed_ids": result.closed_ids,
+        "audit_id": result.audit_id,
+    }
+
+
+@router.post("/vector/merge", response_class=JSONResponse)
+async def vector_merge_legacy(request: Request) -> Any:
+    """Backward-compat shim: drives TaskSource mechanical draft+commit."""
+    body = await request.json()
+    source_name: str = body.get("source", "tasks")
+    ids: list[str] = body.get("ids", [])
+    if source_name != "tasks" or len(ids) < 2:
+        return JSONResponse(
+            {"error": "legacy shim supports tasks with 2+ ids only"}, status_code=400,
+        )
+
+    registry = request.app.state.source_registry
+    src = registry.get("tasks")
+    items = src.fetch_for_merge(ids)
+    draft = src.draft_merge(items, tier="mechanical", instruction="")
+    result = src.commit_merge(items, draft)
+    return {"merged_into_id": int(result.new_id) if result.new_id else 0}
 
 
 @router.post("/vector/analyze", response_class=JSONResponse)
