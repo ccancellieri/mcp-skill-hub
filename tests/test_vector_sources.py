@@ -1,6 +1,7 @@
 """Tests for vector_sources module — protocol, dataclasses, registry."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -142,3 +143,81 @@ def test_task_source_commit_closes_originals(seeded_store):
     row = seeded_store._conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (int(ids[0]),)).fetchone()
     assert row["status"] == "closed"
+
+
+class _StubProvider:
+    def __init__(self, fake_response: str = "CONSOLIDATED BODY"):
+        self.fake = fake_response
+        self.calls: list[dict] = []
+
+    def complete(self, prompt, *, tier, model=None, max_tokens=1500,
+                 temperature=0.3, timeout=120.0):
+        self.calls.append({"prompt": prompt, "tier": tier})
+        return self.fake
+
+
+@pytest.fixture()
+def seeded_memory_store(tmp_path):
+    db = tmp_path / "hub.db"
+    store = SkillStore(db_path=db)
+    for i, body in enumerate(["body one", "body two", "body three"]):
+        store._conn.execute(
+            "INSERT INTO vectors (doc_id, namespace, level, metadata, vector, "
+            "access_count, indexed_at, last_accessed) "
+            "VALUES (?, 'skills', 'L2', ?, ?, ?, datetime('now'), datetime('now'))",
+            (f"doc-{i}", json.dumps({"title": f"Doc {i}", "content": body}),
+             "[0.1,0.2,0.3]", i + 1),
+        )
+    store._conn.commit()
+    yield store
+    store._conn.close()
+
+
+def test_namespace_source_index_stats(seeded_memory_store):
+    from skill_hub.vector_sources import NamespaceSource
+    src = NamespaceSource(seeded_memory_store, namespace="skills")
+    stats = src.index_stats()
+    assert stats.name == "skills"
+    assert stats.source_type == "namespace"
+    assert stats.doc_count == 3
+    assert stats.supports_merge is True
+    assert stats.merge_mode == MergeMode.LLM
+    assert stats.level_breakdown == {"L2": 3}
+
+
+def test_namespace_source_draft_calls_llm(seeded_memory_store, monkeypatch):
+    from skill_hub import vector_sources
+    from skill_hub.vector_sources import NamespaceSource
+    stub = _StubProvider("MERGED MEMORY BODY")
+    monkeypatch.setattr(vector_sources, "_get_provider", lambda: stub)
+    src = NamespaceSource(seeded_memory_store, namespace="skills")
+    items = src.fetch_for_merge(["doc-0", "doc-1", "doc-2"])
+    draft = src.draft_merge(items, tier="local", instruction="consolidate")
+    assert draft.proposed_body == "MERGED MEMORY BODY"
+    assert draft.tier_used == "local"
+    assert draft.proposed_raw["access_count"] == 6
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["tier"] == "tier_cheap"
+
+
+def test_namespace_source_commit_consolidates(seeded_memory_store, monkeypatch):
+    from skill_hub import vector_sources
+    from skill_hub.vector_sources import NamespaceSource
+    monkeypatch.setattr(vector_sources, "_get_provider",
+                        lambda: _StubProvider("MERGED"))
+    src = NamespaceSource(seeded_memory_store, namespace="skills")
+    items = src.fetch_for_merge(["doc-0", "doc-1", "doc-2"])
+    draft = src.draft_merge(items, tier="local", instruction="")
+    result = src.commit_merge(items, draft)
+
+    remaining = seeded_memory_store._conn.execute(
+        "SELECT doc_id FROM vectors WHERE namespace='skills'"
+    ).fetchall()
+    remaining_ids = sorted(r["doc_id"] for r in remaining)
+    assert len(remaining_ids) == 1
+    assert remaining_ids[0] == result.new_id
+    audit = seeded_memory_store._conn.execute(
+        "SELECT action, namespace FROM memory_audit WHERE id = ?", (result.audit_id,)
+    ).fetchone()
+    assert audit["action"] == "merge"
+    assert audit["namespace"] == "skills"

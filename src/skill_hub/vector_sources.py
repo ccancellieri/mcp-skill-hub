@@ -182,3 +182,166 @@ class TaskSource:
         )
         c.commit()
         return CommitResult(new_id=str(new_id), closed_ids=closed, audit_id=audit_id)
+
+
+def _get_provider():
+    """Thin indirection so tests can monkeypatch."""
+    from .llm import get_provider
+    return get_provider()
+
+
+_TIER_MAP = {"local": "tier_cheap", "mid": "tier_mid", "claude": "tier_strong"}
+
+
+class NamespaceSource:
+    """Memory namespace merge — LLM consolidates bodies, sums access_count."""
+
+    source_type = "namespace"
+    merge_mode = MergeMode.LLM
+
+    def __init__(self, store: Any, namespace: str) -> None:
+        self._store = store
+        self.name = namespace
+        self.namespace = namespace
+
+    def index_stats(self) -> IndexStats:
+        c = self._store._conn
+        total = c.execute(
+            "SELECT COUNT(*) AS n FROM vectors WHERE namespace = ?", (self.namespace,)
+        ).fetchone()["n"]
+        embedded = c.execute(
+            "SELECT COUNT(*) AS n FROM vectors WHERE namespace = ? AND vector IS NOT NULL",
+            (self.namespace,),
+        ).fetchone()["n"]
+        last = c.execute(
+            "SELECT MAX(indexed_at) AS t FROM vectors WHERE namespace = ?",
+            (self.namespace,),
+        ).fetchone()["t"]
+        level_rows = c.execute(
+            "SELECT level, COUNT(*) AS n FROM vectors WHERE namespace = ? GROUP BY level",
+            (self.namespace,),
+        ).fetchall()
+        breakdown = {r["level"] or "?": r["n"] for r in level_rows}
+        try:
+            cfg = c.execute(
+                "SELECT embedding_model FROM vector_index_config WHERE name = ?",
+                (self.namespace,),
+            ).fetchone()
+        except Exception:
+            cfg = None
+        return IndexStats(
+            name=self.namespace, source_type="namespace",
+            doc_count=total, embedded_count=embedded,
+            avg_age_days=None, last_indexed=(last or "")[:16] or None,
+            embedding_model=(cfg["embedding_model"] if cfg else None),
+            level_breakdown=breakdown,
+            scatter_url=f"/vector?source=namespaces&namespace={self.namespace}&tab=scatter",
+            supports_merge=True, merge_mode=MergeMode.LLM,
+        )
+
+    def fetch_for_merge(self, ids: list[str]) -> list[MergeItem]:
+        if not ids:
+            return []
+        ph = ",".join("?" * len(ids))
+        rows = self._store._conn.execute(
+            f"SELECT doc_id, metadata, level, access_count, last_accessed, vector "
+            f"FROM vectors WHERE namespace = ? AND doc_id IN ({ph})",
+            [self.namespace, *ids],
+        ).fetchall()
+        out: list[MergeItem] = []
+        for r in rows:
+            try:
+                meta = _json.loads(r["metadata"] or "{}")
+            except (TypeError, _json.JSONDecodeError):
+                meta = {}
+            body = meta.get("content") or meta.get("text") or meta.get("body") or ""
+            out.append(MergeItem(
+                id=r["doc_id"],
+                label=str(meta.get("title") or meta.get("name") or r["doc_id"])[:60],
+                body=f"[{r['level']}] {body[:800]}",
+                raw={
+                    "metadata": meta, "level": r["level"],
+                    "access_count": r["access_count"] or 0,
+                    "last_accessed": r["last_accessed"],
+                },
+            ))
+        return out
+
+    def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft:
+        items_text = "\n\n".join(
+            f"### [{i+1}] {it.label} (id={it.id})\n{it.body}"
+            for i, it in enumerate(items[:30])
+        )
+        prompt = (
+            f"You are consolidating memory items from namespace '{self.namespace}'.\n\n"
+            f"INSTRUCTION: {instruction or 'Merge these items into ONE cohesive note. Preserve all unique facts. Eliminate duplication.'}\n\n"
+            f"ITEMS ({len(items)}):\n\n{items_text}\n\n"
+            f"Output ONLY the merged body text. No preamble, no markdown headers, no commentary."
+        )
+        provider = _get_provider()
+        resolved_tier = _TIER_MAP.get(tier, "tier_cheap")
+        body = provider.complete(
+            prompt, tier=resolved_tier, max_tokens=1500,
+            temperature=0.3, timeout=120.0,
+        )
+        summed_access = sum(it.raw.get("access_count", 0) for it in items)
+        merged_meta: dict = {}
+        for it in items:
+            for k, v in (it.raw.get("metadata") or {}).items():
+                merged_meta.setdefault(k, v)
+        latest = max((it.raw.get("last_accessed") or "" for it in items), default="")
+        merged_meta["content"] = body
+        label = f"merged({len(items)}) — {items[0].label[:40]}"
+        merged_meta["title"] = label
+        return MergeDraft(
+            proposed_label=label,
+            proposed_body=body,
+            proposed_raw={
+                "metadata": merged_meta,
+                "level": items[0].raw.get("level", "L2"),
+                "access_count": summed_access,
+                "last_accessed": latest,
+            },
+            tier_used=tier,
+            tokens_used=None,
+        )
+
+    def commit_merge(self, items: list[MergeItem], draft: MergeDraft) -> CommitResult:
+        import uuid
+        c = self._store._conn
+        new_id = f"merged-{uuid.uuid4().hex[:12]}"
+        raw = draft.proposed_raw
+        # vector is NOT NULL in schema; insert empty-array placeholder, re-embed later.
+        c.execute(
+            "INSERT INTO vectors (doc_id, namespace, level, metadata, vector, "
+            "access_count, indexed_at, last_accessed) "
+            "VALUES (?, ?, ?, ?, '[]', ?, datetime('now'), ?)",
+            (new_id, self.namespace, raw.get("level", "L2"),
+             _json.dumps(raw.get("metadata", {})),
+             raw.get("access_count", 0),
+             raw.get("last_accessed") or None),
+        )
+        id_list = [it.id for it in items]
+        ph = ",".join("?" * len(id_list))
+        snapshot = [
+            dict(row) for row in c.execute(
+                f"SELECT doc_id, namespace, level, metadata, vector, access_count, "
+                f"indexed_at, last_accessed FROM vectors "
+                f"WHERE namespace = ? AND doc_id IN ({ph})",
+                [self.namespace, *id_list],
+            ).fetchall()
+        ]
+        c.execute(
+            f"DELETE FROM vectors WHERE namespace = ? AND doc_id IN ({ph})",
+            [self.namespace, *id_list],
+        )
+        audit_id = self._store.record_memory_audit(
+            action="merge", namespace=self.namespace, doc_id=new_id,
+            reason_json={
+                "closed_ids": id_list,
+                "tier": draft.tier_used,
+                "rollback": {"restore_docs": snapshot},
+            },
+        )
+        c.commit()
+        return CommitResult(new_id=new_id, closed_ids=id_list, audit_id=audit_id)
