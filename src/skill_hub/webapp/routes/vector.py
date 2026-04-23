@@ -241,72 +241,27 @@ def _color_for(group: str) -> str:
 
 # ── index catalog ─────────────────────────────────────────────────────────────
 
-def _load_index_catalog(store: Any) -> list[dict]:
-    try:
-        configs = store._conn.execute(
-            "SELECT name, embedding_model, chunk_size, chunk_overlap, "
-            "       default_level, half_life_days, max_docs, updated_at "
-            "FROM vector_index_config ORDER BY name"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return []
-
-    counts: dict[str, dict] = {}
-    try:
-        rows = store._conn.execute(
-            "SELECT namespace, COUNT(*) AS n, "
-            "       ROUND(AVG((julianday('now') - julianday(indexed_at))), 1) AS avg_age, "
-            "       SUM(access_count) AS total_access, "
-            "       MAX(indexed_at) AS last_indexed "
-            "FROM vectors GROUP BY namespace"
-        ).fetchall()
-        for r in rows:
-            counts[r["namespace"]] = {
-                "doc_count": r["n"],
-                "avg_age_days": r["avg_age"],
-                "total_access": r["total_access"],
-                "last_indexed": (r["last_indexed"] or "")[:16],
-            }
-    except sqlite3.OperationalError:
-        pass
-
-    level_counts: dict[str, dict[str, int]] = {}
-    try:
-        rows = store._conn.execute(
-            "SELECT namespace, level, COUNT(*) AS n FROM vectors GROUP BY namespace, level"
-        ).fetchall()
-        for r in rows:
-            ns = r["namespace"]
-            if ns not in level_counts:
-                level_counts[ns] = {}
-            level_counts[ns][r["level"] or "?"] = r["n"]
-    except sqlite3.OperationalError:
-        pass
-
-    result = []
-    for c in configs:
-        ns = c["name"]
-        stats = counts.get(ns, {})
-        lvl_breakdown = level_counts.get(ns, {})
+def _load_index_catalog(registry: Any) -> list[dict]:
+    """Render every MergeableSource as a catalog row."""
+    out: list[dict] = []
+    for src in registry.all():
+        s = src.index_stats()
         lvl_str = "  ".join(
-            f"{lv}:{n}" for lv, n in sorted(lvl_breakdown.items())
-        ) if lvl_breakdown else "—"
-        result.append({
-            "name": ns,
-            "default_level": c["default_level"] or "L2",
-            "half_life_days": c["half_life_days"],
-            "chunk_size": c["chunk_size"] or 0,
-            "chunk_overlap": c["chunk_overlap"] or 0,
-            "max_docs": c["max_docs"] or 0,
-            "embedding_model": c["embedding_model"] or "—",
-            "doc_count": stats.get("doc_count", 0),
-            "avg_age_days": stats.get("avg_age_days", "—"),
-            "total_access": stats.get("total_access", 0),
-            "last_indexed": stats.get("last_indexed", "—"),
+            f"{lv}:{n}" for lv, n in sorted(s.level_breakdown.items())
+        ) or "—"
+        out.append({
+            "name": s.name,
+            "source_type": s.source_type,
+            "doc_count": s.doc_count,
+            "embedded_count": s.embedded_count,
+            "embedding_model": s.embedding_model or "—",
+            "last_indexed": s.last_indexed or "—",
             "level_breakdown": lvl_str,
-            "updated_at": (c["updated_at"] or "")[:16],
+            "scatter_url": s.scatter_url,
+            "supports_merge": s.supports_merge,
+            "merge_mode": s.merge_mode.value,
         })
-    return result
+    return out
 
 
 def _load_namespaces(store: Any) -> list[str]:
@@ -441,7 +396,8 @@ def vector_page(
     groups = sorted({p.get("group", "") for p in points if p.get("group")})
     legend = [{"group": g, "color": _color_for(g)} for g in groups]
 
-    catalog = _load_index_catalog(store)
+    registry = request.app.state.source_registry
+    catalog = _load_index_catalog(registry)
     all_namespaces = _load_namespaces(store)
 
     # colour map for JS: {group -> hex}
