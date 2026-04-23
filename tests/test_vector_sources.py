@@ -78,3 +78,67 @@ def test_registry_get_missing_raises():
     reg = SourceRegistry()
     with pytest.raises(KeyError):
         reg.get("nope")
+
+
+import sqlite3
+
+from skill_hub.store import SkillStore
+
+
+@pytest.fixture()
+def seeded_store(tmp_path):
+    db = tmp_path / "hub.db"
+    store = SkillStore(db_path=db)
+    store._conn.execute(
+        "INSERT INTO tasks (title, summary, context, tags, vector, status) "
+        "VALUES (?, ?, ?, ?, ?, 'open')",
+        ("Task A", "summary A", "ctx A", "foo", "[0.1,0.2]"),
+    )
+    store._conn.execute(
+        "INSERT INTO tasks (title, summary, context, tags, vector, status) "
+        "VALUES (?, ?, ?, ?, ?, 'open')",
+        ("Task B", "summary B", "ctx B", "bar", "[0.1,0.3]"),
+    )
+    store._conn.commit()
+    yield store
+    store._conn.close()
+
+
+def test_task_source_index_stats(seeded_store):
+    from skill_hub.vector_sources import TaskSource
+    src = TaskSource(seeded_store)
+    stats = src.index_stats()
+    assert stats.name == "tasks"
+    assert stats.doc_count == 2
+    assert stats.embedded_count == 2
+    assert stats.supports_merge is True
+    assert stats.merge_mode == MergeMode.MECHANICAL
+
+
+def test_task_source_mechanical_draft(seeded_store):
+    from skill_hub.vector_sources import TaskSource
+    src = TaskSource(seeded_store)
+    ids = [str(r["id"]) for r in seeded_store._conn.execute(
+        "SELECT id FROM tasks ORDER BY id").fetchall()]
+    items = src.fetch_for_merge(ids)
+    assert len(items) == 2
+
+    draft = src.draft_merge(items, tier="mechanical", instruction="")
+    assert "Task A" in draft.proposed_body
+    assert "Task B" in draft.proposed_body
+    assert draft.tier_used == "mechanical"
+
+
+def test_task_source_commit_closes_originals(seeded_store):
+    from skill_hub.vector_sources import TaskSource
+    src = TaskSource(seeded_store)
+    ids = [str(r["id"]) for r in seeded_store._conn.execute(
+        "SELECT id FROM tasks ORDER BY id").fetchall()]
+    items = src.fetch_for_merge(ids)
+    draft = src.draft_merge(items, tier="mechanical", instruction="")
+    result = src.commit_merge(items, draft)
+    assert result.new_id is not None
+    assert sorted(result.closed_ids) == sorted(ids)
+    row = seeded_store._conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (int(ids[0]),)).fetchone()
+    assert row["status"] == "closed"
