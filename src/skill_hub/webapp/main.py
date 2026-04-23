@@ -144,12 +144,36 @@ def _inject_shared_macros(sub_app: FastAPI) -> None:
         _log.debug("could not wire shared macros into plugin sub-app: %s", exc)
 
 
+def _build_source_registry(store, verdicts_db_path):
+    """Construct the default vector source registry."""
+    from ..vector_sources import (
+        SourceRegistry, TaskSource, SkillSource, TeachingSource,
+        VerdictSource, NamespaceSource,
+    )
+    reg = SourceRegistry()
+    reg.register(SkillSource(store))
+    reg.register(TaskSource(store))
+    reg.register(TeachingSource(store))
+    reg.register(VerdictSource(verdicts_db_path))
+    try:
+        for row in store._conn.execute(
+            "SELECT name FROM vector_index_config ORDER BY name"
+        ).fetchall():
+            reg.register(NamespaceSource(store, namespace=row["name"]))
+    except Exception:
+        pass
+    return reg
+
+
 def create_app(store: Any) -> FastAPI:
     """Build the FastAPI app bound to the given SkillStore."""
     app = FastAPI(title="skill-hub control suite", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.state.store = store
     app.state.templates = templates
+    from pathlib import Path as _Path
+    _verdicts_db = _Path.home() / ".claude" / "mcp-skill-hub" / "command_verdicts.db"
+    app.state.source_registry = _build_source_registry(store, _verdicts_db)
     # Plugin extension-point: A11 — expose the shared macros dir to plugin
     # sub-apps so `{% from "_macros/kpi.html" import kpi_card %}` works.
     app.state.shared_templates_dir = str(SHARED_MACROS_DIR)
