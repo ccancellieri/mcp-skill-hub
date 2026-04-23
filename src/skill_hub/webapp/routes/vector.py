@@ -446,39 +446,118 @@ def vector_points(
     return {"points": points, "color_map": color_map, "count": len(points)}
 
 
-@router.post("/vector/merge", response_class=JSONResponse)
-async def vector_merge(request: Request) -> Any:
-    """Merge selected vectors. Currently only supports task vectors.
+from ...vector_sources import MergeDraft, MergeMode
 
-    For task vectors, delegates to the tasks merge API.
-    For other sources, returns error.
-    """
+
+@router.post("/vector/merge/draft", response_class=JSONResponse)
+async def vector_merge_draft(request: Request) -> Any:
     body = await request.json()
+    source_name: str = body.get("source", "")
     ids: list[str] = body.get("ids", [])
-    source: str = body.get("source", "tasks")
+    tier: str = body.get("tier", "local")
+    instruction: str = body.get("instruction", "")
 
-    if not ids or len(ids) < 2:
-        return JSONResponse(
-            {"error": "merge requires at least 2 items"},
-            status_code=400
-        )
+    if len(ids) < 2:
+        return JSONResponse({"error": "merge requires at least 2 items"}, status_code=400)
 
-    if source != "tasks":
-        return JSONResponse(
-            {"error": f"merge not supported for source={source}"},
-            status_code=400
-        )
-
-    store = request.app.state.store
+    registry = request.app.state.source_registry
     try:
-        # Convert IDs to integers for task merge
-        task_ids = [int(id_) for id_ in ids]
-        new_id = store.merge_tasks(task_ids)
-        return {"merged_into_id": new_id}
-    except (ValueError, TypeError) as e:
-        return JSONResponse({"error": f"invalid task ids: {e}"}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        src = registry.get(source_name)
+    except KeyError:
+        return JSONResponse({"error": f"unknown source: {source_name}"}, status_code=400)
+
+    if src.merge_mode == MergeMode.REJECTED:
+        return JSONResponse(
+            {"error": f"merge_rejected_for_source: {source_name}"}, status_code=400,
+        )
+
+    items = src.fetch_for_merge(ids)
+    if len(items) != len(ids):
+        missing = set(ids) - {it.id for it in items}
+        return JSONResponse(
+            {"error": "missing_ids", "missing": sorted(missing)}, status_code=404,
+        )
+
+    try:
+        draft = src.draft_merge(items, tier=tier, instruction=instruction)
+    except Exception as exc:
+        return JSONResponse({"error": f"draft_failed: {exc}"}, status_code=503)
+
+    return {
+        "proposed_label": draft.proposed_label,
+        "proposed_body": draft.proposed_body,
+        "proposed_raw": draft.proposed_raw,
+        "tier_used": draft.tier_used,
+        "tokens_used": draft.tokens_used,
+        "source": source_name,
+        "ids": ids,
+    }
+
+
+@router.post("/vector/merge/commit", response_class=JSONResponse)
+async def vector_merge_commit(request: Request) -> Any:
+    body = await request.json()
+    source_name: str = body.get("source", "")
+    ids: list[str] = body.get("ids", [])
+    draft_raw: dict = body.get("draft") or {}
+
+    if len(ids) < 2:
+        return JSONResponse({"error": "merge requires at least 2 items"}, status_code=400)
+
+    registry = request.app.state.source_registry
+    try:
+        src = registry.get(source_name)
+    except KeyError:
+        return JSONResponse({"error": f"unknown source: {source_name}"}, status_code=400)
+
+    if src.merge_mode == MergeMode.REJECTED:
+        return JSONResponse(
+            {"error": f"merge_rejected_for_source: {source_name}"}, status_code=400,
+        )
+
+    items = src.fetch_for_merge(ids)
+    if len(items) != len(ids):
+        missing = set(ids) - {it.id for it in items}
+        return JSONResponse(
+            {"error": "source_changed", "missing": sorted(missing)}, status_code=409,
+        )
+
+    try:
+        draft = MergeDraft(
+            proposed_label=draft_raw.get("proposed_label", ""),
+            proposed_body=draft_raw.get("proposed_body", ""),
+            proposed_raw=draft_raw.get("proposed_raw", {}),
+            tier_used=draft_raw.get("tier_used", "mechanical"),
+            tokens_used=draft_raw.get("tokens_used"),
+        )
+        result = src.commit_merge(items, draft)
+    except Exception as exc:
+        return JSONResponse({"error": f"commit_failed: {exc}"}, status_code=500)
+
+    return {
+        "new_id": result.new_id,
+        "closed_ids": result.closed_ids,
+        "audit_id": result.audit_id,
+    }
+
+
+@router.post("/vector/merge", response_class=JSONResponse)
+async def vector_merge_legacy(request: Request) -> Any:
+    """Backward-compat shim: drives TaskSource mechanical draft+commit."""
+    body = await request.json()
+    source_name: str = body.get("source", "tasks")
+    ids: list[str] = body.get("ids", [])
+    if source_name != "tasks" or len(ids) < 2:
+        return JSONResponse(
+            {"error": "legacy shim supports tasks with 2+ ids only"}, status_code=400,
+        )
+
+    registry = request.app.state.source_registry
+    src = registry.get("tasks")
+    items = src.fetch_for_merge(ids)
+    draft = src.draft_merge(items, tier="mechanical", instruction="")
+    result = src.commit_merge(items, draft)
+    return {"merged_into_id": int(result.new_id) if result.new_id else 0}
 
 
 @router.post("/vector/analyze", response_class=JSONResponse)
