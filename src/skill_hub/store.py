@@ -1736,11 +1736,12 @@ class SkillStore:
 
     def save_task(self, title: str, summary: str, vector: list[float],
                   context: str = "", tags: str = "",
-                  session_id: str = "") -> int:
+                  session_id: str = "",
+                  cwd: str = "", branch: str = "") -> int:
         cur = self._conn.execute("""
-            INSERT INTO tasks (title, summary, context, tags, vector, session_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (title, summary, context, tags, json.dumps(vector), session_id))
+            INSERT INTO tasks (title, summary, context, tags, vector, session_id, cwd, branch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (title, summary, context, tags, json.dumps(vector), session_id, cwd, branch))
         self._conn.commit()
         task_id = cur.lastrowid or 0
         self._mirror_task_vec(task_id, vector)
@@ -1864,6 +1865,66 @@ class SkillStore:
         if not row:
             return None
         return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def find_resumable_task_by_cwd_branch(
+        self, cwd: str, branch: str, window_days: int
+    ) -> sqlite3.Row | None:
+        """Most recently updated open task matching cwd+branch within window, or None."""
+        if not cwd:
+            return None
+        return self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' "
+            "AND cwd = ? AND IFNULL(branch,'') = ? "
+            "AND updated_at > datetime('now', ?) "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (cwd, branch or "", f"-{int(window_days)} days"),
+        ).fetchone()
+
+    def find_resumable_task_semantic(
+        self, query_vec: list[float], window_days: int, threshold: float
+    ) -> tuple[sqlite3.Row, float] | None:
+        """Top-1 open task within window whose stored vector has cosine >= threshold.
+
+        Best-effort: returns None if no rows, no stored vectors, or below threshold.
+        """
+        if not query_vec:
+            return None
+        import math
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' "
+            "AND updated_at > datetime('now', ?) "
+            "AND vector IS NOT NULL AND vector != '[]'",
+            (f"-{int(window_days)} days",),
+        ).fetchall()
+        if not rows:
+            return None
+        qn = math.sqrt(sum(v * v for v in query_vec)) or 1.0
+        best_row, best_score = None, 0.0
+        for r in rows:
+            try:
+                v = json.loads(r["vector"])
+                if not v or len(v) != len(query_vec):
+                    continue
+                dot = sum(a * b for a, b in zip(query_vec, v))
+                vn = math.sqrt(sum(x * x for x in v)) or 1.0
+                score = dot / (qn * vn)
+                if score > best_score:
+                    best_row, best_score = r, score
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if best_row is not None and best_score >= threshold:
+            return best_row, best_score
+        return None
+
+    def bind_task_to_session(self, task_id: int, session_id: str) -> None:
+        """Rebind an existing open task to a new session; bump updated_at + last_activity_at."""
+        self._conn.execute(
+            "UPDATE tasks SET session_id = ?, "
+            "updated_at = datetime('now'), last_activity_at = datetime('now') "
+            "WHERE id = ?",
+            (session_id, task_id),
+        )
+        self._conn.commit()
 
     def touch_task_activity(self, task_id: int) -> None:
         """Update last_activity_at = now() for a task. Best-effort, never raises."""
