@@ -250,3 +250,32 @@ def test_verdict_source_rejected_permanently():
     assert stats.name == "verdicts"
     assert stats.supports_merge is False
     assert stats.merge_mode == MergeMode.REJECTED
+
+
+def test_skill_source_rejects_merge_in_pr1(seeded_store):
+    from skill_hub.vector_sources import SkillSource
+    src = SkillSource(seeded_store)
+    stats = src.index_stats()
+    assert stats.name == "skills"
+    assert stats.supports_merge is False
+    assert stats.merge_mode == MergeMode.REJECTED
+    with pytest.raises(NotImplementedError):
+        src.draft_merge([], tier="local", instruction="")
+
+
+def test_teaching_source_rejects_merge_in_pr1(seeded_store):
+    from skill_hub.vector_sources import TeachingSource
+    src = TeachingSource(seeded_store)
+    stats = src.index_stats()
+    assert stats.name == "teachings"
+    assert stats.supports_merge is False
+    assert stats.merge_mode == MergeMode.REJECTED
+
+
+def test_verdict_source_rejected_permanently():
+    from skill_hub.vector_sources import VerdictSource
+    src = VerdictSource(db_path=None)
+    stats = src.index_stats()
+    assert stats.name == "verdicts"
+    assert stats.supports_merge is False
+    assert stats.merge_mode == MergeMode.REJECTED
