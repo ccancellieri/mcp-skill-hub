@@ -159,16 +159,23 @@ def has_open_task_for_session(session_id: str) -> bool:
 
 _QUESTION_PATTERNS = [
     re.compile(r"\(a\).{0,200}\(b\)", re.IGNORECASE | re.DOTALL),
-    re.compile(r"\b(want me to|should i|shall i|do you want me to|let me know|confirm|pause here|keep going|push through)\b", re.IGNORECASE),
-    re.compile(r"\?\s*$"),
+    re.compile(
+        r"\b(want(?: me)? to|should i|shall i|do you want me to|confirm|pause here"
+        r"|keep going|push through|proceed\?|continue\?)\b",
+        re.IGNORECASE,
+    ),
 ]
+# Intentionally no bare trailing-? pattern — that matches every conversational
+# question and causes runaway auto-proceed loops (dozens of Stop-hook fires/session).
 
 
 def last_message_is_clarifying_question(data: dict) -> bool:
-    """Detect a trailing clarifying question in the last assistant message.
+    """Detect a mid-task pause question in the last assistant message.
 
-    Covers multi-choice ((a)/(b)/(c)), hedged asks ("want me to", "should I"),
-    and plain trailing '?'. Tuned to catch subagent pauses mid-task.
+    Matches multi-choice offers ((a)/(b)) and explicit hedged asks
+    ("want me to", "should I", "proceed?"). The bare trailing-? pattern
+    is excluded: almost every summary message ends with '?' and auto-feeding
+    those causes runaway loops (dozens of Stop-hook fires per session).
     """
     msg = (data.get("last_assistant_message") or "").strip()
     if not msg:
