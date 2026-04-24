@@ -473,8 +473,8 @@
 </style>
 
 {# ── data islands (avoids HTML-attribute quoting issues) ── #}
-<script type="application/json" id="pts-data">{{ points_json }}</script>
-<script type="application/json" id="cmap-data">{{ color_map_json }}</script>
+<script type="application/json" id="pts-data">{{ points_json | safe }}</script>
+<script type="application/json" id="cmap-data">{{ color_map_json | safe }}</script>
 
 <div class="vec-header">
   <h1 class="page-h" style="margin:0">Vectors</h1>

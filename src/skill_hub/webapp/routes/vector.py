@@ -422,8 +422,10 @@ def vector_page(
             "legend": legend,
             "catalog": catalog,
             # serialised for JS
-            "points_json": json.dumps(points),
-            "color_map_json": json.dumps(color_map),
+            # Escape `</` to guard against `</script>` breakouts inside the
+            # <script type="application/json"> data island (template uses |safe).
+            "points_json": json.dumps(points).replace("</", "<\\/"),
+            "color_map_json": json.dumps(color_map).replace("</", "<\\/"),
         },
     )
 
