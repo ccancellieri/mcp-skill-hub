@@ -155,11 +155,16 @@ def _build_source_registry(store, verdicts_db_path):
     reg.register(TaskSource(store))
     reg.register(TeachingSource(store))
     reg.register(VerdictSource(verdicts_db_path))
+    # Register namespace sources — skip any name already claimed by a
+    # first-class source (e.g. a vector_index_config row named "skills"
+    # must not shadow SkillSource).
+    first_class = set(reg.names())
     try:
         for row in store._conn.execute(
             "SELECT name FROM vector_index_config ORDER BY name"
         ).fetchall():
-            reg.register(NamespaceSource(store, namespace=row["name"]))
+            if row["name"] not in first_class:
+                reg.register(NamespaceSource(store, namespace=row["name"]))
     except Exception:
         pass
     return reg
