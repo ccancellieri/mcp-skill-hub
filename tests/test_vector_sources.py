@@ -223,53 +223,159 @@ def test_namespace_source_commit_consolidates(seeded_memory_store, monkeypatch):
     assert audit["namespace"] == "skills"
 
 
-def test_skill_source_rejects_merge_in_pr1(seeded_store):
+@pytest.fixture()
+def seeded_skill_store(tmp_path):
+    db = tmp_path / "hub.db"
+    store = SkillStore(db_path=db)
+    for sid, name, desc, body, score in [
+        ("sk-1", "Alpha", "first skill", "alpha body content", 1.2),
+        ("sk-2", "Beta",  "second skill", "beta body content",  0.8),
+    ]:
+        store._conn.execute(
+            "INSERT INTO skills (id, name, description, content, file_path, "
+            "plugin, target, feedback_score, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'claude', ?, ?)",
+            (sid, name, desc, body, f"/tmp/{sid}.md", "pluginX", score, f"h{sid}"),
+        )
+        store._conn.execute(
+            "INSERT INTO embeddings (skill_id, model, vector, norm) "
+            "VALUES (?, 'local-mini', ?, 1.0)",
+            (sid, "[0.1,0.2,0.3]"),
+        )
+    store._conn.commit()
+    yield store
+    store._conn.close()
+
+
+def test_skill_source_supports_llm_merge(seeded_skill_store):
     from skill_hub.vector_sources import SkillSource
-    src = SkillSource(seeded_store)
+    src = SkillSource(seeded_skill_store)
     stats = src.index_stats()
     assert stats.name == "skills"
-    assert stats.supports_merge is False
-    assert stats.merge_mode == MergeMode.REJECTED
-    with pytest.raises(NotImplementedError):
-        src.draft_merge([], tier="local", instruction="")
+    assert stats.supports_merge is True
+    assert stats.merge_mode == MergeMode.LLM
+    assert stats.doc_count == 2
+    assert stats.embedded_count == 2
 
 
-def test_teaching_source_rejects_merge_in_pr1(seeded_store):
-    from skill_hub.vector_sources import TeachingSource
-    src = TeachingSource(seeded_store)
-    stats = src.index_stats()
-    assert stats.name == "teachings"
-    assert stats.supports_merge is False
-    assert stats.merge_mode == MergeMode.REJECTED
-
-
-def test_verdict_source_rejected_permanently():
-    from skill_hub.vector_sources import VerdictSource
-    src = VerdictSource(db_path=None)
-    stats = src.index_stats()
-    assert stats.name == "verdicts"
-    assert stats.supports_merge is False
-    assert stats.merge_mode == MergeMode.REJECTED
-
-
-def test_skill_source_rejects_merge_in_pr1(seeded_store):
+def test_skill_source_fetch_and_draft(seeded_skill_store):
     from skill_hub.vector_sources import SkillSource
-    src = SkillSource(seeded_store)
-    stats = src.index_stats()
-    assert stats.name == "skills"
-    assert stats.supports_merge is False
-    assert stats.merge_mode == MergeMode.REJECTED
-    with pytest.raises(NotImplementedError):
-        src.draft_merge([], tier="local", instruction="")
+    src = SkillSource(seeded_skill_store)
+    items = src.fetch_for_merge(["sk-1", "sk-2"])
+    assert len(items) == 2
+    draft = src.draft_merge(items, tier="tier_mid", instruction="consolidate these")
+    assert draft.directive is not None
+    assert "claude-haiku" in draft.directive
+    assert "consolidate these" in draft.directive
+    # feedback_score averaged
+    assert abs(float(draft.proposed_raw["feedback_score"]) - 1.0) < 1e-6
+    # both source contents present in mechanical body
+    assert "alpha body" in draft.proposed_body
+    assert "beta body" in draft.proposed_body
 
 
-def test_teaching_source_rejects_merge_in_pr1(seeded_store):
+def test_skill_source_commit_deletes_and_audits(seeded_skill_store):
+    from skill_hub.vector_sources import SkillSource
+    src = SkillSource(seeded_skill_store)
+    items = src.fetch_for_merge(["sk-1", "sk-2"])
+    draft = src.draft_merge(items, tier="tier_mid", instruction="x")
+    result = src.commit_merge(items, draft)
+    assert sorted(result.closed_ids) == ["sk-1", "sk-2"]
+    c = seeded_skill_store._conn
+    remaining = c.execute(
+        "SELECT id FROM skills WHERE id IN ('sk-1','sk-2')"
+    ).fetchall()
+    assert remaining == []
+    # cascade-deleted embeddings
+    emb_left = c.execute(
+        "SELECT skill_id FROM embeddings WHERE skill_id IN ('sk-1','sk-2')"
+    ).fetchall()
+    assert emb_left == []
+    # new row present
+    new_row = c.execute("SELECT id FROM skills WHERE id = ?", (result.new_id,)).fetchone()
+    assert new_row is not None
+    # audit with rollback payload
+    audit = c.execute(
+        "SELECT action, namespace, reason FROM memory_audit WHERE id = ?",
+        (result.audit_id,),
+    ).fetchone()
+    assert audit["action"] == "merge"
+    assert audit["namespace"] == "skills"
+    reason = json.loads(audit["reason"])
+    assert sorted(reason["closed_ids"]) == ["sk-1", "sk-2"]
+    assert len(reason["rollback"]["restore_docs"]) == 2
+    assert len(reason["rollback"]["restore_embeddings"]) == 2
+
+
+@pytest.fixture()
+def seeded_teaching_store(tmp_path):
+    db = tmp_path / "hub.db"
+    store = SkillStore(db_path=db)
+    for rule, action, ttype, tid, weight in [
+        ("when url, suggest chrome", "suggest", "plugin", "chrome-devtools", 0.9),
+        ("when url, open devtools",  "suggest", "plugin", "chrome-devtools", 1.1),
+        ("when chrome, use mcp",     "enable",  "plugin", "chrome-devtools", 1.0),
+    ]:
+        store._conn.execute(
+            "INSERT INTO teachings (rule, rule_vector, action, target_type, "
+            "target_id, weight) VALUES (?, '[0.1,0.2]', ?, ?, ?, ?)",
+            (rule, action, ttype, tid, weight),
+        )
+    store._conn.commit()
+    yield store
+    store._conn.close()
+
+
+def test_teaching_source_supports_llm_merge(seeded_teaching_store):
     from skill_hub.vector_sources import TeachingSource
-    src = TeachingSource(seeded_store)
+    src = TeachingSource(seeded_teaching_store)
     stats = src.index_stats()
     assert stats.name == "teachings"
-    assert stats.supports_merge is False
-    assert stats.merge_mode == MergeMode.REJECTED
+    assert stats.supports_merge is True
+    assert stats.merge_mode == MergeMode.LLM
+    assert stats.doc_count == 3
+
+
+def test_teaching_source_draft_unions_rules(seeded_teaching_store):
+    from skill_hub.vector_sources import TeachingSource
+    src = TeachingSource(seeded_teaching_store)
+    ids = [str(r["id"]) for r in seeded_teaching_store._conn.execute(
+        "SELECT id FROM teachings ORDER BY id").fetchall()]
+    items = src.fetch_for_merge(ids)
+    draft = src.draft_merge(items, tier="tier_mid", instruction="")
+    assert draft.directive is not None
+    # all 3 rules present in merged rule
+    assert "when url, suggest chrome" in draft.proposed_raw["rule"]
+    assert "when url, open devtools" in draft.proposed_raw["rule"]
+    assert "when chrome, use mcp" in draft.proposed_raw["rule"]
+    # weight averaged
+    assert abs(float(draft.proposed_raw["weight"]) - 1.0) < 1e-6
+    # most common action
+    assert draft.proposed_raw["action"] == "suggest"
+
+
+def test_teaching_source_commit_replaces_originals(seeded_teaching_store):
+    from skill_hub.vector_sources import TeachingSource
+    src = TeachingSource(seeded_teaching_store)
+    ids = [str(r["id"]) for r in seeded_teaching_store._conn.execute(
+        "SELECT id FROM teachings ORDER BY id").fetchall()]
+    items = src.fetch_for_merge(ids)
+    draft = src.draft_merge(items, tier="tier_mid", instruction="")
+    result = src.commit_merge(items, draft)
+    c = seeded_teaching_store._conn
+    int_ids = [int(i) for i in ids]
+    ph = ",".join("?" * len(int_ids))
+    remaining = c.execute(
+        f"SELECT id FROM teachings WHERE id IN ({ph})", int_ids
+    ).fetchall()
+    assert remaining == []
+    audit = c.execute(
+        "SELECT reason FROM memory_audit WHERE id = ?", (result.audit_id,)
+    ).fetchone()
+    reason = json.loads(audit["reason"])
+    assert len(reason["rollback"]["restore_docs"]) == 3
+    # snapshot includes rule_vector
+    assert "rule_vector" in reason["rollback"]["restore_docs"][0]
 
 
 def test_verdict_source_rejected_permanently():

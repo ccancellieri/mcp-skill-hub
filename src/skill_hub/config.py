@@ -392,10 +392,14 @@ _DEFAULTS = {
     # tier_mid:   used for batched router escalation
     # tier_smart: used for hard multi-step planning / final synthesis
     "llm_providers": {
-        "tier_cheap": "ollama/qwen2.5-coder:3b",
-        "tier_mid":   "anthropic/claude-haiku-4-5",
-        "tier_smart": "anthropic/claude-sonnet-4-6",
-        "embed":      "ollama/nomic-embed-text",
+        "tier_cheap":   "ollama/qwen2.5-coder:3b",
+        "tier_mid":     "anthropic/claude-haiku-4-5",
+        "tier_smart":   "anthropic/claude-sonnet-4-6",
+        # tier_planner: strongest model for authoring/design. Used by
+        # plan_executor's API-fallback runner; in-session runner prefers
+        # the active Claude Code agent (user's chosen model).
+        "tier_planner": "anthropic/claude-opus-4-6",
+        "embed":        "ollama/nomic-embed-text",
     },
     # Default tier when code doesn't specify one.
     "llm_default_tier": "tier_cheap",

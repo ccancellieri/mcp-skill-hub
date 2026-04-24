@@ -660,6 +660,14 @@
                    style="width:100%;margin-bottom:8px">
             <textarea id="merge-preview-body" class="mock-input"
                       style="width:100%;min-height:160px;font-family:monospace"></textarea>
+            <details id="merge-directive-wrap" style="display:none;margin-top:8px">
+              <summary class="muted" style="cursor:pointer">
+                Haiku directive (copy-paste to dispatch a subagent)
+              </summary>
+              <textarea id="merge-directive" readonly class="mock-input"
+                        style="width:100%;min-height:140px;font-family:monospace;
+                               margin-top:6px;background:var(--color-panel)"></textarea>
+            </details>
             <div style="margin-top:8px;display:flex;gap:8px">
               <button id="merge-commit-btn" class="preset-btn"
                       style="border-color:var(--color-accent);color:var(--color-accent)">
@@ -1221,6 +1229,15 @@
       mergePreview.dataset.raw = JSON.stringify(resp.body.proposed_raw || {});
       mergePreview.dataset.tier = resp.body.tier_used || tierSel.value;
       mergePreview.dataset.ids = JSON.stringify(currentIds());
+      mergePreview.dataset.directive = resp.body.directive || '';
+      var dirWrap = document.getElementById('merge-directive-wrap');
+      var dirEl = document.getElementById('merge-directive');
+      if (resp.body.directive) {
+        dirEl.value = resp.body.directive;
+        dirWrap.style.display = '';
+      } else {
+        dirWrap.style.display = 'none';
+      }
       mergePreview.style.display = '';
       mergeStatusEl.textContent = 'Drafted (' + (resp.body.tier_used || tierSel.value) + ')';
     }).catch(function (ex) {
@@ -1242,6 +1259,7 @@
       proposed_body: mergePreviewBody.value,
       proposed_raw: JSON.parse(mergePreview.dataset.raw || '{}'),
       tier_used: mergePreview.dataset.tier || 'local',
+      directive: mergePreview.dataset.directive || null,
     };
     postJSON('/vector/merge/commit', {
       source: source,

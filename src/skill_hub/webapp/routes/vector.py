@@ -489,6 +489,7 @@ async def vector_merge_draft(request: Request) -> Any:
         "proposed_raw": draft.proposed_raw,
         "tier_used": draft.tier_used,
         "tokens_used": draft.tokens_used,
+        "directive": draft.directive,
         "source": source_name,
         "ids": ids,
     }
@@ -529,6 +530,7 @@ async def vector_merge_commit(request: Request) -> Any:
             proposed_raw=draft_raw.get("proposed_raw", {}),
             tier_used=draft_raw.get("tier_used", "mechanical"),
             tokens_used=draft_raw.get("tokens_used"),
+            directive=draft_raw.get("directive"),
         )
         result = src.commit_merge(items, draft)
     except Exception as exc:

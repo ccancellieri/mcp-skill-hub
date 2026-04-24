@@ -588,12 +588,26 @@ Respond with ONLY this JSON:
     get_logger().debug("   smart_memory_quality: quality=%s escalate=%s reason=%s",
                        f"{quality:.2f}", escalate, reason)
 
-    return {
+    out = {
         "result": entry,
         "quality": quality,
         "escalate": escalate,
         "reason": reason,
     }
+    if escalate:
+        # In-session directive: tell the active Claude Code agent to dispatch a
+        # Haiku subagent for the summary instead of synthesising it itself.
+        # This keeps the main context lean while still producing a good memory
+        # entry — no ANTHROPIC_API_KEY is called server-side.
+        out["directive"] = (
+            "Memory summary quality was low ("
+            f"{reason}, q={quality:.2f}). Prefer dispatching a Haiku subagent "
+            "via Agent(subagent_type='general-purpose', model='claude-haiku-4-5') "
+            "with a compact prompt summarising the session context, then save "
+            "the result via hub-save-memory. Fall back to writing the memory "
+            "yourself only if the subagent dispatch is unavailable."
+        )
+    return out
 
 
 _TRIAGE_PROMPT = """\

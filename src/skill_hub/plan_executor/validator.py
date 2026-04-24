@@ -12,19 +12,29 @@ from typing import Any
 import yaml
 
 
-VALID_KINDS: frozenset[str] = frozenset(
-    {"architecture", "integration", "boilerplate", "tests", "docs"}
-)
+VALID_KINDS: frozenset[str] = frozenset({
+    "architecture", "integration", "boilerplate", "tests", "docs",
+    # Added for tiered in-session routing: summarize/commit → Haiku (tier_mid);
+    # review → Sonnet (tier_smart); plan → Opus (tier_planner, falls back to
+    # tier_smart when planner model not configured — see runner.py).
+    "summarize", "commit", "review", "plan",
+})
 
 TIER_MAP: dict[str, str] = {
     "architecture": "tier_smart",
-    "integration": "tier_smart",
-    "boilerplate": "tier_mid",
-    "tests": "tier_mid",
-    "docs": "tier_mid",
+    "integration":  "tier_smart",
+    "boilerplate":  "tier_mid",
+    "tests":        "tier_mid",
+    "docs":         "tier_mid",
+    "summarize":    "tier_mid",
+    "commit":       "tier_mid",
+    "review":       "tier_smart",
+    "plan":         "tier_planner",
 }
 
-VALID_TIERS: frozenset[str] = frozenset({"tier_cheap", "tier_mid", "tier_smart"})
+VALID_TIERS: frozenset[str] = frozenset(
+    {"tier_cheap", "tier_mid", "tier_smart", "tier_planner"}
+)
 
 
 class PlanValidationError(ValueError):

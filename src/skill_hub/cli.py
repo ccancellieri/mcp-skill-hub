@@ -3147,14 +3147,17 @@ def _cmd_session_end(session_id: str, last_message: str,
     reason = mem_result["reason"]
 
     if escalate:
-        # Quality too low — ask Claude to handle the memory write
+        # Quality too low — ask Claude to handle the memory write, optionally
+        # via a Haiku subagent (see smart_memory_write's `directive` field).
         log_event("STOP", f"memory escalated to Claude: {reason}")
+        directive = mem_result.get("directive") or ""
         parts.append(
             f"[Skill Hub — session end | memory needs Claude]\n"
             f"The local LLM produced low-quality memory (score={quality:.2f}, "
             f"reason={reason}). If this session involved non-trivial work, "
             f"please write a memory entry.\n"
-            f"Context summary: {context[:500]}"
+            + (f"Hint: {directive}\n" if directive else "")
+            + f"Context summary: {context[:500]}"
         )
     else:
         # Local LLM quality is good — write the memory
