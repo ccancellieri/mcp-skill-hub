@@ -1,8 +1,11 @@
 """Tests for auto_proceed.py — especially the clarifying-question detector.
 
-The bare trailing-? pattern was removed because it fired on every conversational
-message ending with '?', causing runaway stop-hook loops (dozens of fires per
-session).  These tests guard against re-introducing an over-broad pattern.
+History of fixes:
+- Bare trailing-? pattern removed: fired on every message ending with '?'.
+- clarifying_question standalone signal removed: keyword scanning the full
+  message body produces false positives (a message explaining the patterns
+  will match its own examples). The function is kept for future use as a
+  qualifier alongside open_task/plan signals.
 """
 import sys
 from pathlib import Path

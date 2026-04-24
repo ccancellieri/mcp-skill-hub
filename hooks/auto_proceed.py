@@ -240,9 +240,10 @@ def main() -> int:
             signal = "recent_marker"
             plan = marker_plan
             source_label = f"plan {marker_plan.name} has auto-proceed marker"
-        elif last_message_is_clarifying_question(data):
-            signal = "clarifying_question"
-            source_label = "assistant ended with a clarifying question"
+        # clarifying_question as standalone signal removed: scanning the full
+        # message body for keywords produces false positives (e.g. a message
+        # explaining the patterns will match its own examples). Without an
+        # active plan or task, auto-proceed should not fire.
 
     log(f"signal={signal}  session={session_id}")
     if signal == "none":
