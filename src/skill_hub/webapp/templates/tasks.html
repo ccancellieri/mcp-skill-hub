@@ -89,7 +89,7 @@ const TASK_DATA = {};
             <div class="task-item-skills" style="font-size:10px; margin-top:4px"
                  x-data="{skills:[], ctxAvg:0, ctxPeak:0}"
                  x-init="fetch('/tasks/'+t.id+'/stats/skills').then(r=>r.json()).then(d=>skills=d.top_skills||[]).catch(()=>skills=[]);
-                         fetch('/tasks/'+t.id+'/stats/models').then(r=>r.json()).then(d=>{ctxAvg=d.prompt_tokens_avg||0; ctxPeak=d.prompt_tokens_peak||0}).catch(()=>{})">
+                         fetch('/tasks/'+t.id+'/stats/models?include_turns=0').then(r=>r.json()).then(d=>{ctxAvg=d.prompt_tokens_avg||0; ctxPeak=d.prompt_tokens_peak||0}).catch(()=>{})">
               <template x-if="skills.length">
                 <span style="color:var(--color-accent); display:inline-block; margin-right:6px"
                       x-text="skills.length+' skill'+(skills.length!==1?'s':'')"></span>
@@ -334,8 +334,7 @@ const TASK_DATA = {};
                       fill="rgba(255,255,255,0.02)" rx="3"></rect>
                 <template x-for="(bar, i) in chartBars" :key="i">
                   <rect :x="bar.x" :y="bar.y" :width="bar.w" :height="bar.h"
-                        :fill="bar.color" rx="1"
-                        :title="bar.model + ' · ' + bar.tokens + ' tok'">
+                        :fill="bar.color" rx="1">
                     <title x-text="bar.model + ' · ' + bar.tokens + ' tok' + (bar.compacted ? ' · compacted' : '')"></title>
                   </rect>
                 </template>
@@ -663,7 +662,7 @@ function tasksApp() {
     },
 
     get chart() {
-      return { w: 400, h: 48 };
+      return { w: 400, h: 64 };
     },
 
     get chartBars() {

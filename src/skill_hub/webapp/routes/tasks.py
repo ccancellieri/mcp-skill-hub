@@ -381,6 +381,7 @@ def _parse_router_log(
     created_at: str | None = None,
     closed_at: str | None = None,
     task_id: int | None = None,
+    include_turns: bool = True,
 ) -> dict:
     """Parse router.jsonl for model routing stats for a given task window.
 
@@ -389,6 +390,9 @@ def _parse_router_log(
          was updated to pass --task-id; most reliable, works for open tasks.
       2. Time-window fallback for closed tasks: entries whose timestamp falls
          between created_at and closed_at.
+
+    When include_turns is False, prompt_tokens_total/avg/peak are still
+    computed but turns[] is omitted to keep the response small for list views.
     """
     import json as _json
     from pathlib import Path
@@ -451,6 +455,8 @@ def _parse_router_log(
     tokens_saved = 0
     compact_count = 0
     turns: list[dict] = []
+    prompt_tokens_total = 0
+    prompt_tokens_peak = 0
 
     for entry in entries:
         verdict = entry.get("verdict") or {}
@@ -468,22 +474,24 @@ def _parse_router_log(
                 skills_counter[sk] += 1
         entry_saved = (entry.get("savings") or {}).get("tokens_estimated", 0) or 0
         tokens_saved += entry_saved
-        if (entry.get("compact") or {}).get("suggested"):
+        compacted = bool((entry.get("compact") or {}).get("suggested"))
+        if compacted:
             compact_count += 1
-        # Turn-level series — prompt_len chars → rough token estimate (chars/4).
-        prompt_text = entry.get("prompt") or ""
-        prompt_len = len(prompt_text)
-        turns.append({
-            "ts": entry.get("ts", ""),
-            "prompt_tokens": prompt_len // 4,
-            "model": model,
-            "tokens_saved": entry_saved,
-            "compacted": bool((entry.get("compact") or {}).get("suggested")),
-        })
+        # Per-turn prompt size — chars÷4 estimate of user prompt only (NOT total context).
+        prompt_tokens = len(entry.get("prompt") or "") // 4
+        prompt_tokens_total += prompt_tokens
+        if prompt_tokens > prompt_tokens_peak:
+            prompt_tokens_peak = prompt_tokens
+        if include_turns:
+            turns.append({
+                "ts": entry.get("ts", ""),
+                "prompt_tokens": prompt_tokens,
+                "model": model,
+                "tokens_saved": entry_saved,
+                "compacted": compacted,
+            })
 
-    prompt_tokens_total = sum(t["prompt_tokens"] for t in turns)
-    prompt_tokens_peak = max((t["prompt_tokens"] for t in turns), default=0)
-    prompt_tokens_avg = (prompt_tokens_total // len(turns)) if turns else 0
+    prompt_tokens_avg = (prompt_tokens_total // len(entries)) if entries else 0
 
     total = sum(model_counter.values())
     models = [
@@ -511,8 +519,15 @@ def _parse_router_log(
 
 
 @router.get("/tasks/{task_id}/stats/models")
-def task_model_stats(task_id: int, request: Request) -> JSONResponse:
-    """Return model routing stats for a task's window (from router.jsonl)."""
+def task_model_stats(
+    task_id: int,
+    request: Request,
+    include_turns: bool = True,
+) -> JSONResponse:
+    """Return model routing stats for a task's window (from router.jsonl).
+
+    Pass ?include_turns=0 from list views to skip the per-turn array.
+    """
     store = request.app.state.store
     task = store.get_task(task_id)
     if not task:
@@ -524,6 +539,7 @@ def task_model_stats(task_id: int, request: Request) -> JSONResponse:
         created_at=task_dict.get("created_at"),
         closed_at=task_dict.get("closed_at"),
         task_id=task_id,
+        include_turns=include_turns,
     )
     stats["session_id"] = session_id
     return JSONResponse(stats)
