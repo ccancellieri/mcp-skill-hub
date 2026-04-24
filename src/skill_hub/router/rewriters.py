@@ -99,6 +99,29 @@ def _rw_add_skill_context(prompt: str, store: Any, cfg: dict[str, Any]) -> Rewri
     return RewriterResult(prefix=prefix, note=f"skill_context: {len(names)} skills", applied=True)
 
 
+_PRIVILEGED_TAG_RE = __import__("re").compile(
+    r"</?\s*(?:system-reminder|system|assistant|user|tool_use|tool_result|"
+    r"function_calls|antml:[a-z_]+)\s*/?>",
+    __import__("re").IGNORECASE,
+)
+
+
+def _sanitize_for_hook_output(s: str) -> str:
+    """Strip privileged tags and control chars that Claude Code's hook-output
+    validator treats as prompt-injection and rejects (""Invalid input"").
+
+    Also drop stray braces that some auto-generated task titles carry.
+    """
+    if not s:
+        return ""
+    s = _PRIVILEGED_TAG_RE.sub("", s)
+    # Drop literal control characters (NUL/backspace/etc.) — keep tab/newline.
+    s = "".join(ch for ch in s if ch in ("\t", "\n") or ord(ch) >= 0x20)
+    # Collapse runs of whitespace to a single space.
+    s = " ".join(s.split())
+    return s.strip()
+
+
 def _rw_add_recent_tasks(prompt: str, store: Any, cfg: dict[str, Any]) -> RewriterResult:
     """Inject up to N recent open tasks (title + first line of summary)."""
     limit = int(cfg.get("improve_prompt_tasks_limit", 2))
@@ -110,13 +133,17 @@ def _rw_add_recent_tasks(prompt: str, store: Any, cfg: dict[str, Any]) -> Rewrit
         return RewriterResult(note="recent_tasks: none open")
     parts: list[str] = []
     for t in tasks[:limit]:
-        title = (_row_get(t, "title") or "").strip()
+        title = _sanitize_for_hook_output(_row_get(t, "title") or "")
         summary_raw = _row_get(t, "summary") or ""
-        summary = summary_raw.splitlines()[0].strip() if summary_raw else ""
+        summary = _sanitize_for_hook_output(
+            summary_raw.splitlines()[0] if summary_raw else ""
+        )
         if title and summary:
             parts.append(f"{title} — {summary[:120]}")
         elif title:
             parts.append(title)
+    # Drop any entries that sanitized down to empty.
+    parts = [p for p in parts if p]
     if not parts:
         return RewriterResult(note="recent_tasks: empty titles")
     prefix = "[Open tasks: " + " | ".join(parts) + "]"

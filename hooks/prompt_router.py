@@ -117,13 +117,31 @@ def main() -> None:
     # Translate CLI's internal shape (decision/userMessage) into Claude Code's
     # hook-output schema: top-level systemMessage + hookSpecificOutput.additionalContext.
     # `decision: "allow"` and top-level `userMessage` are NOT valid fields.
+    # Strip privileged tags that Claude Code's hook-output validator rejects
+    # as prompt injection (produces "Hook JSON output validation failed —
+    # (root): Invalid input"). Covers user-authored task titles that happened
+    # to capture a <system-reminder> block.
+    import re as _re
+    _PRIV_TAG = _re.compile(
+        r"</?\s*(?:system-reminder|system|assistant|user|tool_use|tool_result|"
+        r"function_calls|antml:[a-z_]+)\s*/?>",
+        _re.IGNORECASE,
+    )
+
+    def _sanitize(s: str) -> str:
+        if not s:
+            return ""
+        s = _PRIV_TAG.sub("", s)
+        s = "".join(ch for ch in s if ch in ("\t", "\n") or ord(ch) >= 0x20)
+        return s
+
     output: dict = {}
     if cli_data.get("systemMessage"):
-        output["systemMessage"] = cli_data["systemMessage"]
+        output["systemMessage"] = _sanitize(cli_data["systemMessage"])
     if cli_data.get("userMessage"):
         output["hookSpecificOutput"] = {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": cli_data["userMessage"],
+            "additionalContext": _sanitize(cli_data["userMessage"]),
         }
 
     if output:
