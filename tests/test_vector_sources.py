@@ -185,19 +185,30 @@ def test_namespace_source_index_stats(seeded_memory_store):
     assert stats.level_breakdown == {"L2": 3}
 
 
-def test_namespace_source_draft_calls_llm(seeded_memory_store, monkeypatch):
-    from skill_hub import vector_sources
+def test_namespace_source_draft_emits_directive(seeded_memory_store):
+    """NamespaceSource is now directive-only: no server-side LLM call.
+    The active Claude Code agent dispatches the directive via the Agent tool.
+    """
     from skill_hub.vector_sources import NamespaceSource
-    stub = _StubProvider("MERGED MEMORY BODY")
-    monkeypatch.setattr(vector_sources, "_get_provider", lambda: stub)
     src = NamespaceSource(seeded_memory_store, namespace="skills")
     items = src.fetch_for_merge(["doc-0", "doc-1", "doc-2"])
-    draft = src.draft_merge(items, tier="local", instruction="consolidate")
-    assert draft.proposed_body == "MERGED MEMORY BODY"
-    assert draft.tier_used == "local"
+    draft = src.draft_merge(
+        items, tier="local", instruction="consolidate",
+        model="haiku", operations=["consolidate", "promote"],
+    )
+    # Mechanical fallback body is populated (deduped concat).
+    assert "body one" in draft.proposed_body
+    assert "body three" in draft.proposed_body
+    # Sum of access_count preserved.
     assert draft.proposed_raw["access_count"] == 6
-    assert len(stub.calls) == 1
-    assert stub.calls[0]["tier"] == "tier_cheap"
+    # Directive populated and references the chosen model + ops + instruction.
+    assert draft.directive is not None
+    assert "claude-haiku-4-5" in draft.directive
+    assert "consolidate" in draft.directive.lower()
+    assert "promote" in draft.directive.lower()
+    assert "consolidate" in draft.directive  # user instruction echoed
+    # tier_used reflects the chosen UI model label, not a server tier.
+    assert draft.tier_used == "haiku"
 
 
 def test_namespace_source_commit_consolidates(seeded_memory_store, monkeypatch):

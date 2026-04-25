@@ -177,9 +177,16 @@ def test_end_to_end_memory_merge(memory_client):
 
     draft = c.post(
         "/vector/merge/draft",
-        json={"source": "skills", "ids": ids, "tier": "local"},
+        json={
+            "source": "skills", "ids": ids,
+            "model": "haiku", "operations": ["consolidate"],
+        },
     ).json()
-    assert draft["proposed_body"] == "CONSOLIDATED"
+    # Directive-only path: mechanical body holds the deduped concat fallback,
+    # the directive carries the Claude dispatch instructions.
+    assert "body0" in draft["proposed_body"]
+    assert draft["directive"] is not None
+    assert "claude-haiku-4-5" in draft["directive"]
     assert draft["proposed_raw"]["access_count"] == 6
 
     commit = c.post(

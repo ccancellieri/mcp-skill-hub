@@ -636,21 +636,31 @@
             <button class="preset-btn" data-preset="Cluster">Cluster</button>
           </div>
 
-          <div id="merge-toolbar" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-            <button id="merge-mechanical-btn" class="preset-btn"
-                    style="border-color:var(--color-accent);color:var(--color-accent)">
-              Quick merge
-            </button>
-            <span class="muted">or draft with</span>
-            <select id="merge-tier" class="preset-btn" style="padding:4px 8px">
-              <option value="local">local</option>
-              <option value="mid">mid</option>
-              <option value="claude">claude</option>
-            </select>
+          <div id="merge-toolbar" style="display:none;flex-direction:column;gap:8px;margin-top:8px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button id="merge-mechanical-btn" class="preset-btn"
+                      style="border-color:var(--color-accent);color:var(--color-accent)">
+                Quick merge (offline)
+              </button>
+              <span class="muted">or ask Claude with</span>
+              <select id="merge-model" class="preset-btn" style="padding:4px 8px">
+                <option value="haiku">claude-haiku-4-5</option>
+                <option value="sonnet">claude-sonnet-4-6</option>
+                <option value="opus">claude-opus-4-6</option>
+              </select>
+              <button id="merge-draft-btn" class="preset-btn">Build directive</button>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <span class="muted" style="font-size:12px">Operations:</span>
+              <label class="level-chip"><input type="checkbox" class="merge-op" value="consolidate" checked> consolidate</label>
+              <label class="level-chip"><input type="checkbox" class="merge-op" value="promote"> promote</label>
+              <label class="level-chip"><input type="checkbox" class="merge-op" value="prune"> prune</label>
+              <label class="level-chip"><input type="checkbox" class="merge-op" value="synthesize"> synthesize</label>
+              <label class="level-chip"><input type="checkbox" class="merge-op" value="cluster"> cluster</label>
+            </div>
             <input id="merge-instruction" class="preset-btn"
-                   style="padding:4px 8px;min-width:200px"
-                   placeholder="optional instruction">
-            <button id="merge-draft-btn" class="preset-btn">Draft merge</button>
+                   style="padding:4px 8px;width:100%;box-sizing:border-box"
+                   placeholder="optional extra instruction (e.g. 'keep all FastAPI examples')">
           </div>
 
           <div id="merge-preview" style="display:none;margin-top:12px;padding:12px;
@@ -662,7 +672,8 @@
                       style="width:100%;min-height:160px;font-family:monospace"></textarea>
             <details id="merge-directive-wrap" style="display:none;margin-top:8px">
               <summary class="muted" style="cursor:pointer">
-                Haiku directive (copy-paste to dispatch a subagent)
+                Claude directive — copy-paste into your Claude Code session to
+                dispatch the chosen model on the selected operations
               </summary>
               <textarea id="merge-directive" readonly class="mock-input"
                         style="width:100%;min-height:140px;font-family:monospace;
@@ -841,7 +852,7 @@
   var mergeToolbar = document.getElementById('merge-toolbar');
   var mechanicalBtn = document.getElementById('merge-mechanical-btn');
   var draftBtn = document.getElementById('merge-draft-btn');
-  var tierSel = document.getElementById('merge-tier');
+  var modelSel = document.getElementById('merge-model');
   var instrInput = document.getElementById('merge-instruction');
   var mergePreview = document.getElementById('merge-preview');
   var mergePreviewLabel = document.getElementById('merge-preview-label');
@@ -1211,13 +1222,27 @@
       .finally(function () { mechanicalBtn.disabled = false; });
   });
 
+  function selectedOps() {
+    var nodes = document.querySelectorAll('input.merge-op:checked');
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) out.push(nodes[i].value);
+    return out;
+  }
+
   draftBtn.addEventListener('click', function () {
     if (selected.size < 2) return;
+    var ops = selectedOps();
+    if (!ops.length) {
+      mergeStatusEl.textContent = 'Pick at least one operation.';
+      return;
+    }
     draftBtn.disabled = true;
-    mergeStatusEl.textContent = 'Drafting\u2026';
+    mergeStatusEl.textContent = 'Building directive\u2026';
     postJSON('/vector/merge/draft', {
       source: source, ids: currentIds(),
-      tier: tierSel.value, instruction: instrInput.value,
+      model: modelSel.value,
+      operations: ops,
+      instruction: instrInput.value,
     }).then(function (resp) {
       draftBtn.disabled = false;
       if (resp.status !== 200) {
@@ -1227,7 +1252,7 @@
       mergePreviewLabel.value = resp.body.proposed_label || '';
       mergePreviewBody.value = resp.body.proposed_body || '';
       mergePreview.dataset.raw = JSON.stringify(resp.body.proposed_raw || {});
-      mergePreview.dataset.tier = resp.body.tier_used || tierSel.value;
+      mergePreview.dataset.tier = resp.body.tier_used || modelSel.value;
       mergePreview.dataset.ids = JSON.stringify(currentIds());
       mergePreview.dataset.directive = resp.body.directive || '';
       var dirWrap = document.getElementById('merge-directive-wrap');
@@ -1235,11 +1260,13 @@
       if (resp.body.directive) {
         dirEl.value = resp.body.directive;
         dirWrap.style.display = '';
+        dirWrap.open = true;  // expand by default — this is the action item
       } else {
         dirWrap.style.display = 'none';
       }
       mergePreview.style.display = '';
-      mergeStatusEl.textContent = 'Drafted (' + (resp.body.tier_used || tierSel.value) + ')';
+      mergeStatusEl.textContent = 'Directive ready — paste it to your Claude Code session, '
+                                + 'or commit the offline body below.';
     }).catch(function (ex) {
       draftBtn.disabled = false;
       mergeStatusEl.textContent = String(ex);

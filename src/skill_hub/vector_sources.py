@@ -69,7 +69,15 @@ class MergeableSource(Protocol):
 
     def index_stats(self) -> IndexStats: ...
     def fetch_for_merge(self, ids: list[str]) -> list[MergeItem]: ...
-    def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft: ...
+    def draft_merge(
+        self,
+        items: list[MergeItem],
+        tier: str,
+        instruction: str,
+        *,
+        model: str | None = ...,
+        operations: list[str] | None = ...,
+    ) -> MergeDraft: ...
     def commit_merge(self, items: list[MergeItem], draft: MergeDraft) -> CommitResult: ...
 
 
@@ -198,6 +206,80 @@ def _get_provider():
 _TIER_MAP = {"local": "tier_cheap", "mid": "tier_mid", "claude": "tier_strong"}
 
 
+# ─── In-session directive helpers ──────────────────────────────────────────
+# Server-side LLM calls require ANTHROPIC_API_KEY (which the user does not
+# have) or a running Ollama (often disabled). Instead, *every* LLM-mode merge
+# returns a structured directive that the active Claude Code agent dispatches
+# via the `Agent` tool to a Haiku/Sonnet/Opus subagent — no key required. The
+# subagent's output is POSTed back to /vector/merge/commit.
+
+# UI-facing model labels → Anthropic model IDs the active agent passes to the
+# Agent tool. Adding a new model = one line here + bump the dropdown.
+DIRECTIVE_MODELS: dict[str, str] = {
+    "haiku":  "claude-haiku-4-5",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-6",
+}
+
+# UI-facing operation tokens → human-readable instruction snippet woven into
+# the directive prompt. The user can pick one or many; the directive lists
+# all selected operations as numbered steps.
+OPERATION_HINTS: dict[str, str] = {
+    "consolidate": "Consolidate the source items into ONE cohesive entry, "
+                   "preserving all unique facts and removing duplication.",
+    "promote":     "Promote the merged entry's importance: tighten the rule, "
+                   "increase weight/feedback_score where appropriate.",
+    "prune":       "Prune redundant, contradicted, or obsolete content; "
+                   "drop low-signal sentences before merging.",
+    "synthesize":  "Synthesize a higher-level abstraction that subsumes the "
+                   "source items rather than concatenating them verbatim.",
+    "cluster":     "Group the source items by sub-topic and produce a brief "
+                   "section per group inside the merged body.",
+}
+
+
+def _build_directive(
+    *,
+    source_kind: str,           # "skill" | "teaching" | "memory" — for the prompt header
+    items_section: str,         # pre-rendered "### [1] ... ### [2] ..." block
+    item_count: int,
+    output_spec: str,           # what the subagent must output (markdown body, JSON shape, etc.)
+    commit_hint: str,           # how to send the result back ("POST to /vector/merge/commit with source='skills'")
+    model: str | None,          # ui label "haiku|sonnet|opus" or None → use haiku
+    operations: list[str] | None,
+    instruction: str,
+) -> str:
+    """Render a Claude Code Agent-tool dispatch directive.
+
+    Returns a plain-text string the active agent can copy/paste or read and
+    execute. Multi-operation: each selected op appears as a numbered step
+    so the subagent applies all of them.
+    """
+    model_id = DIRECTIVE_MODELS.get((model or "haiku").lower(), DIRECTIVE_MODELS["haiku"])
+    ops = [o for o in (operations or []) if o in OPERATION_HINTS]
+    if not ops:
+        ops = ["consolidate"]
+    op_steps = "\n".join(
+        f"  {i+1}. [{op}] {OPERATION_HINTS[op]}" for i, op in enumerate(ops)
+    )
+    user_instr = (instruction or "").strip()
+    instr_line = f"USER INSTRUCTION: {user_instr}" if user_instr else \
+                 "USER INSTRUCTION: (none — apply the operations faithfully)"
+    return (
+        f"Dispatch an Agent call (subagent_type='general-purpose', "
+        f"model='{model_id}') with this prompt:\n\n"
+        f"---\n"
+        f"You are operating on {item_count} {source_kind} entries from the "
+        f"skill-hub. Apply the following operations in order:\n"
+        f"{op_steps}\n\n"
+        f"{instr_line}\n\n"
+        f"SOURCE ITEMS:\n\n{items_section}\n\n"
+        f"---\n"
+        f"{output_spec}\n"
+        f"After receiving the subagent result, {commit_hint}"
+    )
+
+
 class NamespaceSource:
     """Memory namespace merge — LLM consolidates bodies, sums access_count."""
 
@@ -272,23 +354,36 @@ class NamespaceSource:
             ))
         return out
 
-    def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft:
-        items_text = "\n\n".join(
+    def draft_merge(
+        self, items: list[MergeItem], tier: str, instruction: str,
+        *, model: str | None = None, operations: list[str] | None = None,
+    ) -> MergeDraft:
+        # Mechanical fallback body: deduped concat of source bodies. The
+        # active Claude Code agent dispatches the directive to a subagent
+        # (no API key required server-side); the subagent rewrites the
+        # body and POSTs back to /vector/merge/commit.
+        bodies = [(it.body or "").strip() for it in items]
+        bodies_clean = list(dict.fromkeys(b for b in bodies if b))
+        body = "\n\n---\n\n".join(bodies_clean)
+
+        items_section = "\n\n".join(
             f"### [{i+1}] {it.label} (id={it.id})\n{it.body}"
             for i, it in enumerate(items[:30])
         )
-        prompt = (
-            f"You are consolidating memory items from namespace '{self.namespace}'.\n\n"
-            f"INSTRUCTION: {instruction or 'Merge these items into ONE cohesive note. Preserve all unique facts. Eliminate duplication.'}\n\n"
-            f"ITEMS ({len(items)}):\n\n{items_text}\n\n"
-            f"Output ONLY the merged body text. No preamble, no markdown headers, no commentary."
+        directive = _build_directive(
+            source_kind=f"memory ({self.namespace})",
+            items_section=items_section,
+            item_count=len(items),
+            output_spec="Output ONLY the merged body text in markdown. "
+                        "No preamble, no commentary.",
+            commit_hint=f"POST it to /vector/merge/commit with "
+                        f"source='{self.namespace}' and the merged body in "
+                        f"draft.proposed_body.",
+            model=model,
+            operations=operations,
+            instruction=instruction,
         )
-        provider = _get_provider()
-        resolved_tier = _TIER_MAP.get(tier, "tier_cheap")
-        body = provider.complete(
-            prompt, tier=resolved_tier, max_tokens=1500,
-            temperature=0.3, timeout=120.0,
-        )
+
         summed_access = sum(it.raw.get("access_count", 0) for it in items)
         merged_meta: dict = {}
         for it in items:
@@ -307,8 +402,9 @@ class NamespaceSource:
                 "access_count": summed_access,
                 "last_accessed": latest,
             },
-            tier_used=tier,
+            tier_used=model or "haiku",
             tokens_used=None,
+            directive=directive,
         )
 
     def commit_merge(self, items: list[MergeItem], draft: MergeDraft) -> CommitResult:
@@ -421,7 +517,10 @@ class SkillSource:
             ) for r in rows
         ]
 
-    def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft:
+    def draft_merge(
+        self, items: list[MergeItem], tier: str, instruction: str,
+        *, model: str | None = None, operations: list[str] | None = None,
+    ) -> MergeDraft:
         # Mechanical fallback body: deduped concat of descriptions + contents.
         names = [it.raw.get("name") or it.id for it in items]
         label = f"merged: {' + '.join(n[:30] for n in names[:3])}"[:120]
@@ -441,22 +540,22 @@ class SkillSource:
         scores = [float(it.raw.get("feedback_score") or 1.0) for it in items]
         avg_score = sum(scores) / len(scores) if scores else 1.0
 
-        directive = (
-            f"Dispatch an Agent call (subagent_type='general-purpose', "
-            f"model='claude-haiku-4-5') with this prompt:\n\n"
-            f"---\n"
-            f"You are consolidating {len(items)} skill entries from the skill-hub "
-            f"into a single cohesive skill.\n"
-            f"USER INSTRUCTION: {instruction or '(none — merge faithfully, preserve all unique facts)'}\n\n"
-            f"SOURCE SKILLS:\n\n"
-            + "\n\n".join(
-                f"### [{i+1}] {it.raw.get('name')}\nDescription: {it.raw.get('description') or ''}"
-                f"\n\n{(it.raw.get('content') or '')[:2000]}"
-                for i, it in enumerate(items)
-            )
-            + "\n\n---\n"
-            f"Output ONLY the merged skill body in markdown. No preamble, no commentary."
-            f" After receiving the result, POST it to /vector/merge/commit with source='skills'."
+        items_section = "\n\n".join(
+            f"### [{i+1}] {it.raw.get('name')}\nDescription: {it.raw.get('description') or ''}"
+            f"\n\n{(it.raw.get('content') or '')[:2000]}"
+            for i, it in enumerate(items)
+        )
+        directive = _build_directive(
+            source_kind="skill",
+            items_section=items_section,
+            item_count=len(items),
+            output_spec="Output ONLY the merged skill body in markdown. "
+                        "No preamble, no commentary.",
+            commit_hint="POST it to /vector/merge/commit with source='skills' "
+                        "and the merged body in draft.proposed_body.",
+            model=model,
+            operations=operations,
+            instruction=instruction,
         )
 
         proposed_raw = {
@@ -471,7 +570,7 @@ class SkillSource:
             proposed_label=label,
             proposed_body=body,
             proposed_raw=proposed_raw,
-            tier_used=tier or "mechanical",
+            tier_used=model or tier or "haiku",
             tokens_used=None,
             directive=directive,
         )
@@ -589,7 +688,10 @@ class TeachingSource:
             ) for r in rows
         ]
 
-    def draft_merge(self, items: list[MergeItem], tier: str, instruction: str) -> MergeDraft:
+    def draft_merge(
+        self, items: list[MergeItem], tier: str, instruction: str,
+        *, model: str | None = None, operations: list[str] | None = None,
+    ) -> MergeDraft:
         from collections import Counter
         rules = [(it.raw.get("rule") or "").strip() for it in items]
         rules_unique = list(dict.fromkeys(r for r in rules if r))
@@ -613,20 +715,24 @@ class TeachingSource:
             f"WEIGHT: {avg_weight:.2f}"
         )
 
-        directive = (
-            f"Dispatch an Agent call (subagent_type='general-purpose', "
-            f"model='claude-haiku-4-5') with this prompt:\n\n"
-            f"---\n"
-            f"You are consolidating {len(items)} hub teaching rules into ONE.\n"
-            f"USER INSTRUCTION: {instruction or '(none)'}\n\n"
-            f"RULES:\n"
-            + "\n".join(f"- IF: {it.raw.get('rule')} THEN: {it.raw.get('action')}"
-                       f" ({it.raw.get('target_type')}={it.raw.get('target_id')})"
-                       for it in items)
-            + "\n\n---\n"
-            f"Output a JSON object: {{\"rule\": \"...\", \"action\": \"...\", "
-            f"\"target_type\": \"plugin|skill\", \"target_id\": \"...\"}}. "
-            f"POST to /vector/merge/commit with source='teachings'."
+        items_section = "\n".join(
+            f"- IF: {it.raw.get('rule')} THEN: {it.raw.get('action')}"
+            f" ({it.raw.get('target_type')}={it.raw.get('target_id')})"
+            for it in items
+        )
+        directive = _build_directive(
+            source_kind="teaching",
+            items_section=items_section,
+            item_count=len(items),
+            output_spec=(
+                'Output a JSON object: {"rule": "...", "action": "...", '
+                '"target_type": "plugin|skill", "target_id": "..."}.'
+            ),
+            commit_hint="POST to /vector/merge/commit with source='teachings' "
+                        "and the JSON fields populated in draft.proposed_raw.",
+            model=model,
+            operations=operations,
+            instruction=instruction,
         )
 
         return MergeDraft(
@@ -639,7 +745,7 @@ class TeachingSource:
                 "target_id": top_tid,
                 "weight": avg_weight,
             },
-            tier_used=tier or "mechanical",
+            tier_used=model or tier or "haiku",
             tokens_used=None,
             directive=directive,
         )

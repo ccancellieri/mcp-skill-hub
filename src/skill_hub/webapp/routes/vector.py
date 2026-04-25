@@ -458,6 +458,13 @@ async def vector_merge_draft(request: Request) -> Any:
     ids: list[str] = body.get("ids", [])
     tier: str = body.get("tier", "local")
     instruction: str = body.get("instruction", "")
+    # In-session directive controls (no API key required server-side):
+    #   model: ui label "haiku|sonnet|opus" — picks the subagent model
+    #   operations: ["consolidate", "promote", ...] — woven into the prompt
+    model: str | None = body.get("model")
+    operations: list[str] | None = body.get("operations")
+    if not isinstance(operations, list):
+        operations = None
 
     if len(ids) < 2:
         return JSONResponse({"error": "merge requires at least 2 items"}, status_code=400)
@@ -481,7 +488,17 @@ async def vector_merge_draft(request: Request) -> Any:
         )
 
     try:
-        draft = src.draft_merge(items, tier=tier, instruction=instruction)
+        # Sources accept model/operations as kwargs. Older Task-style sources
+        # ignore them (mechanical-only); LLM-mode sources weave them into the
+        # directive. We pass via try/except to remain compatible with sources
+        # that don't take the new kwargs yet.
+        try:
+            draft = src.draft_merge(
+                items, tier=tier, instruction=instruction,
+                model=model, operations=operations,
+            )
+        except TypeError:
+            draft = src.draft_merge(items, tier=tier, instruction=instruction)
     except Exception as exc:
         return JSONResponse({"error": f"draft_failed: {exc}"}, status_code=503)
 
