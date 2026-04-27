@@ -51,6 +51,7 @@ skill-hub = "skill_hub.server:main"
 skill-hub-cli = "skill_hub.cli:main"
 skill-hub-repl = "skill_hub.repl:main"
 skill-hub-dashboard = "skill_hub.webapp.__main__:main"
+cct = "skill_hub.cct:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/skill_hub"]

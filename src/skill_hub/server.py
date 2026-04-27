@@ -559,18 +559,60 @@ def save_task(
     summary: str,
     context: str = "",
     tags: str = "",
+    project: str = "",
+    mode: str = "",
+    initial_prompt: str = "",
+    cwd: str = "",
 ) -> str:
     """Save an open task for retrieval in future sessions.
+
+    Optional worktree spawn:
+        project=<repo-name>     name under worktree.repo_roots (default ~/work/code).
+                                When set, skill-hub creates a git worktree at
+                                <repo>/.claude/worktrees/<task-name> on branch
+                                cc/<task-name> and launches a Claude session in it.
+        mode=terminal|tmux|background
+                                terminal opens a new iTerm/Terminal tab (macOS),
+                                tmux adds a window to $TMUX, background spawns
+                                claude --print to a logfile. Default: from
+                                worktree.default_mode config (terminal).
+        initial_prompt=<text>   first message to send to the spawned session.
+        cwd=<path>              if project is empty, walk up from cwd to find
+                                a .git, then map back to a project name.
 
     Parallel-safe: each call creates an independent row (distinct task IDs).
     Two concurrent calls with identical args produce two separate tasks rather
     than merging -- callers should deduplicate before saving.
     """
-    log_tool("save_task", title=title, tags=tags)
+    log_tool("save_task", title=title, tags=tags, project=project, mode=mode)
 
     # Auto-generate title when caller leaves it blank or too short
     if not title or len(title.strip()) < 4:
         title = _generate_title(summary, context)
+
+    # Resolve project: explicit > cwd-based detection > none.
+    from . import worktree as _wt
+    resolved_project = project.strip() or None
+    if not resolved_project and cwd:
+        resolved_project = _wt.detect_project_from_cwd(cwd)
+
+    worktree_blob = ""
+    worktree_msg = ""
+    spec = None
+    if resolved_project:
+        try:
+            wt_name = _slugify_task_name(title)
+            spec = _wt.ensure_worktree(
+                resolved_project, wt_name, mode=(mode or None),  # type: ignore[arg-type]
+            )
+            spec = _wt.launch_session(spec, initial_prompt=initial_prompt or None)
+            worktree_blob = spec.to_json()
+            worktree_msg = (
+                f"\nWorktree: {spec.worktree_path} (branch {spec.branch}, "
+                f"mode {spec.mode}, pid {spec.last_pid or '?'})"
+            )
+        except _wt.WorktreeError as e:
+            worktree_msg = f"\nWorktree skipped: {e}"
 
     try:
         vector = embed(f"{title}: {summary}")
@@ -579,23 +621,38 @@ def save_task(
     tid = _store.save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
+        cwd=(spec.worktree_path if spec else cwd),
+        branch=(spec.branch if spec else ""),
+        worktree=worktree_blob,
     )
     task_opts = _store.get_task_options(tid)
     _write_active_task_marker(tid, _session["id"], title,
                               auto_approve=task_opts.get("auto_approve"),
                               options=task_opts)
-    return f"Task #{tid} saved (open): \"{title}\"\nWill surface in future search_context() calls."
+    return f"Task #{tid} saved (open): \"{title}\"{worktree_msg}\nWill surface in future search_context() calls."
+
+
+def _slugify_task_name(title: str) -> str:
+    """Turn a task title into a worktree/branch-friendly slug."""
+    import re
+    slug = re.sub(r"[^A-Za-z0-9._\-]+", "-", title.strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-.")
+    return slug[:48] or "task"
 
 
 @mcp.tool()
-def close_task(task_id: int, summary: str = "") -> str:
+def close_task(task_id: int, summary: str = "", remove_worktree: bool = False) -> str:
     """Close a task with LLM-compacted summary (~200 tokens).
+
+    remove_worktree=True also runs `git worktree remove --force` and deletes
+    the cc/<name> branch. Default keeps the worktree on disk so the task
+    can be reopened later into the same workspace.
 
     Parallel-safe: concurrent closes of the same task_id are idempotent --
     the second call finds status='closed' and returns early without
     overwriting the first compaction.
     """
-    log_tool("close_task", task_id=task_id)
+    log_tool("close_task", task_id=task_id, remove_worktree=remove_worktree)
     task = _store.get_task(task_id)
     if not task:
         return f"Task #{task_id} not found."
@@ -622,6 +679,20 @@ def close_task(task_id: int, summary: str = "") -> str:
     _store.close_task(task_id, compact_text, compact_vector)
     _clear_active_task_marker(task_id)
 
+    # Optional worktree cleanup. Default is to keep the worktree on disk so
+    # reopen_task() can spawn back into it.
+    worktree_msg = ""
+    blob = task["worktree"] if "worktree" in task.keys() else None
+    if remove_worktree and blob:
+        from . import worktree as _wt
+        try:
+            spec = _wt.WorktreeSpec.from_json(blob)
+            _wt.teardown_worktree(spec)
+            _store.set_task_worktree(task_id, "")
+            worktree_msg = f"\nWorktree removed: {spec.worktree_path}"
+        except (ValueError, TypeError, _wt.WorktreeError) as e:
+            worktree_msg = f"\nWorktree teardown failed: {e}"
+
     # Refresh benefit/cost dashboard; never fail close_task on render error.
     dash_line = ""
     try:
@@ -641,6 +712,7 @@ def close_task(task_id: int, summary: str = "") -> str:
         f"Summary: {digest.get('summary', 'N/A')}\n"
         f"Tags: {digest.get('tags', 'N/A')}\n"
         f"Decisions: {digest.get('decisions', [])}"
+        f"{worktree_msg}"
         f"{dash_line}"
     )
 
@@ -733,11 +805,41 @@ def update_task(task_id: int, summary: str = "", context: str = "",
 
 @mcp.tool()
 def reopen_task(task_id: int) -> str:
-    """Reopen a previously closed task."""
+    """Reopen a previously closed task.
+
+    If the task owns a worktree:
+      - and a session is still alive in it → focus message, no relaunch.
+      - else → spawn a fresh Claude session in the same worktree directory
+        (worktree itself is preserved across closes).
+    """
     log_tool("reopen_task", task_id=task_id)
-    if _store.reopen_task(task_id):
+    if not _store.reopen_task(task_id):
+        return f"Task #{task_id} not found."
+
+    task = _store.get_task(task_id)
+    blob = task["worktree"] if task else None
+    if not blob:
         return f"Task #{task_id} reopened."
-    return f"Task #{task_id} not found."
+
+    from . import worktree as _wt
+    try:
+        spec = _wt.WorktreeSpec.from_json(blob)
+    except (ValueError, TypeError) as e:
+        return f"Task #{task_id} reopened (worktree spec unreadable: {e})."
+
+    if _wt.is_session_alive(spec):
+        return f"Task #{task_id} reopened.\n{_wt.focus_session(spec)}"
+
+    try:
+        spec = _wt.launch_session(spec)
+        _store.set_task_worktree(task_id, spec.to_json())
+        return (
+            f"Task #{task_id} reopened.\n"
+            f"Worktree: {spec.worktree_path} (mode {spec.mode}, "
+            f"pid {spec.last_pid or '?'})"
+        )
+    except _wt.WorktreeError as e:
+        return f"Task #{task_id} reopened (relaunch failed: {e})."
 
 
 @mcp.tool()

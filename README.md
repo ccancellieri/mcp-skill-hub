@@ -219,6 +219,46 @@ token_stats()   # → e.g. "52,300 tokens saved across 89 interceptions"
 
 ---
 
+## 🌳 Worktree-Driven Parallel Sessions
+
+Spawn a Claude session inside an isolated git worktree as part of saving a task,
+and resume it later — the worktree outlives the task by default.
+
+```bash
+# Cold start from a non-repo dir like ~/work/code/
+cct geoid es-pr2c                              # opens iTerm tab in a fresh worktree
+cct geoid swarm-3 --mode background            # headless agent, output to logfile
+cct --resume 47                                # focus alive session, or relaunch
+cct --list                                     # open tasks + worktree liveness
+```
+
+From inside Claude (auto-saves the task and spawns the session):
+```python
+save_task("ES PR-2c retarget", "...", project="geoid", mode="terminal")
+reopen_task(47)                                # alive → focus, dead → relaunch
+close_task(47, remove_worktree=True)           # also tears down the worktree
+```
+
+**Layout:**
+- Worktree: `<repo>/.claude/worktrees/<slug>` (per-repo, gitignored)
+- Branch: `cc/<slug>` (local-only convention for AI-tooling work)
+- Liveness: `<worktree>/.claude/session.pid` (cleaned up by a Stop hook)
+
+**Modes:** `terminal` (macOS iTerm/Terminal tab), `tmux` (window in `$TMUX`),
+`background` (headless `claude --print` to a logfile).
+
+**Config** (`~/.claude/mcp-skill-hub/config.json`):
+```json
+{
+  "worktree": {
+    "repo_roots": ["~/work/code"],
+    "default_mode": "terminal"
+  }
+}
+```
+
+---
+
 ## 🔧 Requirements
 
 - **Python 3.10+**, **Ollama**, **~5 GB disk** for models (more for larger reasoning models)

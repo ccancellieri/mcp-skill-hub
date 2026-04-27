@@ -498,6 +498,13 @@ _MONITOR_DEFAULTS = {
 _DEFAULTS["services"] = _SERVICE_DEFAULTS
 _DEFAULTS["monitor"] = _MONITOR_DEFAULTS
 
+# Worktree-driven parallel sessions (skill_hub.worktree).
+_WORKTREE_DEFAULTS = {
+    "repo_roots":   ["~/work/code"],
+    "default_mode": "terminal",          # terminal | tmux | background
+}
+_DEFAULTS["worktree"] = _WORKTREE_DEFAULTS
+
 
 # Legacy top-level keys folded into the services/monitor dicts on load.
 # Tuple shape: (legacy_key, service_name, field) — service_name=None means

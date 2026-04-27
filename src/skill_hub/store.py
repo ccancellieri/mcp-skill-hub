@@ -748,6 +748,15 @@ class SkillStore:
         except Exception:
             pass
 
+        # Worktree spec (JSON blob) — populated when a task owns a git worktree.
+        if "worktree" not in task_cols:
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN worktree TEXT")
+                self._conn.commit()
+                task_cols = task_cols | {"worktree"}
+            except Exception:
+                pass
+
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
             # S1.3 — enables incremental reindex (skip rows whose file content
@@ -1760,15 +1769,28 @@ class SkillStore:
     def save_task(self, title: str, summary: str, vector: list[float],
                   context: str = "", tags: str = "",
                   session_id: str = "",
-                  cwd: str = "", branch: str = "") -> int:
+                  cwd: str = "", branch: str = "",
+                  worktree: str = "") -> int:
         cur = self._conn.execute("""
-            INSERT INTO tasks (title, summary, context, tags, vector, session_id, cwd, branch)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (title, summary, context, tags, json.dumps(vector), session_id, cwd, branch))
+            INSERT INTO tasks (title, summary, context, tags, vector,
+                               session_id, cwd, branch, worktree)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (title, summary, context, tags, json.dumps(vector),
+              session_id, cwd, branch, worktree or None))
         self._conn.commit()
         task_id = cur.lastrowid or 0
         self._mirror_task_vec(task_id, vector)
         return task_id
+
+    def set_task_worktree(self, task_id: int, worktree: str) -> bool:
+        """Persist or refresh a task's worktree spec JSON. Empty string clears."""
+        cur = self._conn.execute(
+            "UPDATE tasks SET worktree = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (worktree or None, task_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def update_task(self, task_id: int, summary: str = "",
                     context: str = "", tags: str = "",
