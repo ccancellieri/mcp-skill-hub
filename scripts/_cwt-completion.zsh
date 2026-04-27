@@ -1,8 +1,8 @@
-#compdef cct
-# zsh completion for cct (worktree-driven Claude sessions).
-# Source from ~/.zshrc:   source /path/to/mcp-skill-hub/scripts/_cct-completion.zsh
+#compdef cwt
+# zsh completion for cwt (worktree-driven Claude sessions).
+# Source from ~/.zshrc:   source /path/to/mcp-skill-hub/scripts/_cwt-completion.zsh
 
-_cct() {
+_cwt() {
     local -a projects modes
     # Project candidates: any directory containing a .git under repo_roots.
     local roots
@@ -35,4 +35,4 @@ _cct() {
             ;;
     esac
 }
-compdef _cct cct
+compdef _cwt cwt

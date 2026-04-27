@@ -1,9 +1,9 @@
-"""cct -- cold-start CLI for worktree-driven parallel sessions.
+"""cwt -- cold-start CLI for worktree-driven parallel sessions.
 
 Usage:
-    cct <project> <name> [--mode terminal|tmux|background] [--prompt TEXT]
-    cct --resume <task_id>
-    cct --list
+    cwt <project> <name> [--mode terminal|tmux|background] [--prompt TEXT]
+    cwt --resume <task_id>
+    cwt --list
 
 Direct counterpart to the MCP tools save_task/reopen_task/list_tasks.
 Calls the same skill_hub.worktree helpers; no MCP round-trip.
@@ -34,7 +34,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             vector=[],
             context="",
             tags="worktree",
-            session_id="cct",
+            session_id="cwt",
             cwd=spec.worktree_path,
             branch=spec.branch,
             worktree=spec.to_json(),
@@ -106,7 +106,7 @@ def _cmd_list(_args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="cct",
+        prog="cwt",
         description="Worktree-driven parallel Claude sessions.",
     )
     sub = parser.add_subparsers(dest="cmd")
@@ -125,11 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     p_list = sub.add_parser("list", help="list open tasks")
     p_list.set_defaults(func=_cmd_list)
 
-    # Top-level shorthand flags so `cct --resume 12` and `cct --list` work.
+    # Top-level shorthand flags so `cwt --resume 12` and `cwt --list` work.
     parser.add_argument("--resume", type=int, dest="resume_id", default=None)
     parser.add_argument("--list", action="store_true", dest="do_list")
 
-    # Positional shortcut: `cct geoid foo` == `cct create geoid foo`
+    # Positional shortcut: `cwt geoid foo` == `cwt create geoid foo`
     args, _unknown = parser.parse_known_args(argv)
     if args.resume_id is not None:
         ns = argparse.Namespace(task_id=args.resume_id)

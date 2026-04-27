@@ -226,10 +226,10 @@ and resume it later — the worktree outlives the task by default.
 
 ```bash
 # Cold start from a non-repo dir like ~/work/code/
-cct geoid es-pr2c                              # opens iTerm tab in a fresh worktree
-cct geoid swarm-3 --mode background            # headless agent, output to logfile
-cct --resume 47                                # focus alive session, or relaunch
-cct --list                                     # open tasks + worktree liveness
+cwt geoid es-pr2c                              # opens iTerm tab in a fresh worktree
+cwt geoid swarm-3 --mode background            # headless agent, output to logfile
+cwt --resume 47                                # focus alive session, or relaunch
+cwt --list                                     # open tasks + worktree liveness
 ```
 
 From inside Claude (auto-saves the task and spawns the session):

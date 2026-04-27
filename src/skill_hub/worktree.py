@@ -14,7 +14,7 @@ Design notes:
   relaunch.
 - The MCP server runs as a daemon, so os.getcwd() in a tool is not the
   Claude session's cwd. Project resolution is therefore explicit:
-  resolve_project(name) searches configured repo roots; the cct CLI passes
+  resolve_project(name) searches configured repo roots; the cwt CLI passes
   its actual shell cwd; auto-detect from MCP requires the caller to pass
   cwd= or project= explicitly.
 """
