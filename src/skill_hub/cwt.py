@@ -61,8 +61,10 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         return 1
     blob = task["worktree"] if "worktree" in task.keys() else None
     if not blob:
-        print(f"error: task #{args.task_id} has no worktree", file=sys.stderr)
-        return 1
+        # Legacy reopen: no worktree attached, just flip status.
+        store.reopen_task(args.task_id)
+        print(f"Task #{args.task_id} reopened (no worktree attached).")
+        return 0
     try:
         spec = _wt.WorktreeSpec.from_json(blob)
     except (ValueError, TypeError) as e:
