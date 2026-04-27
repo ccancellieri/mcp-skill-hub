@@ -592,7 +592,7 @@ def main():
     if bind_advisory:
         system_msg = bind_advisory + "\n\n" + system_msg
 
-    print(json.dumps({"decision": "allow", "systemMessage": system_msg}))
+    print(json.dumps({"systemMessage": system_msg}))
 
 
 if __name__ == "__main__":

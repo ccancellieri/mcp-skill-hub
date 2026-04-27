@@ -174,10 +174,10 @@ def main():
     if decision == "block":
         blocked_msg = cli_data.get("message", "")[:100]
         log(f"BLOCK  msg=\"{blocked_msg}\"  cli_time={cli_ms}ms")
-        # UserPromptSubmit block: `reason` (not `message`) is the documented field.
+        # UserPromptSubmit block: use `continue: false` + `stopReason` (not `decision`).
         output = {
-            "decision": "block",
-            "reason": cli_data.get("message") or cli_data.get("reason") or "Command handled locally.",
+            "continue": False,
+            "stopReason": cli_data.get("message") or cli_data.get("reason") or "Command handled locally.",
         }
         print(json.dumps(output))
     elif decision == "allow":
