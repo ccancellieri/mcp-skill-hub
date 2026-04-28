@@ -102,12 +102,57 @@ def _check_profile_drift() -> str:
     )
 
 
+def _classify_color(text: str) -> str:
+    """Map a memory description to a short status colour label.
+
+    Order matters: DEFERRED beats SHIPPED when both appear ("Phase A SHIPPED;
+    Phase B DEFERRED" should be red). PARTIAL/IN-PROGRESS beats SHIPPED for
+    similar reasons. SHIPPED-only without follow-up keywords goes green.
+    """
+    import re as _re
+    t = text or ""
+    if _re.search(r"\b(DEFERRED|BLOCKED)\b", t, _re.IGNORECASE):
+        return "red"
+    if _re.search(r"\b(WIP|IN[ -]PROGRESS|ongoing|PARTIAL|wave-\d+ files remain)\b",
+                  t, _re.IGNORECASE):
+        return "yellow"
+    if _re.search(r"\bOPEN PR\b", t, _re.IGNORECASE):
+        return "cyan"
+    if _re.search(r"\b(SHIPPED|DONE|COMPLETE|VERIFIED)\b", t, _re.IGNORECASE):
+        return "green"
+    return "blue"
+
+
+def _read_memory_frontmatter(path: Path) -> dict:
+    """Best-effort YAML frontmatter parse. Returns {} on any failure."""
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        return {}
+    block = text[4:end]
+    out: dict = {}
+    for line in block.splitlines():
+        if ":" not in line or line.lstrip().startswith("#"):
+            continue
+        key, _, value = line.partition(":")
+        out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
 def _ensure_open_tasks() -> str:
     """Scan MEMORY.md for PARTIAL/DEFERRED/ongoing entries that have no open task.
 
     Creates open tasks directly (Python API, no LLM cost) for any work that
-    is tracked in memory but missing from the task list. Returns a brief
-    advisory string listing created tasks, or empty string on no-op / error.
+    is tracked in memory but missing from the task list. Title comes from
+    the linked memory file's YAML frontmatter ``name`` (falls back to the
+    link text); colour is auto-classified from the description.
 
     Opt-out via config ``task_auto_create_enabled`` (default True).
     """
@@ -130,6 +175,7 @@ def _ensure_open_tasks() -> str:
                 return ""
             memory_index = memory_dirs[0]
 
+        memory_dir = memory_index.parent
         text = memory_index.read_text(encoding="utf-8", errors="replace")
 
         # Patterns that indicate unfinished work
@@ -138,13 +184,16 @@ def _ensure_open_tasks() -> str:
             re.IGNORECASE,
         )
         # Extract lines with links: - [title](file.md) — description
-        link_re = re.compile(r"^[-*]\s+\[([^\]]+)\]\([^)]+\)\s*[—–-]+\s*(.+)$", re.MULTILINE)
+        link_re = re.compile(
+            r"^[-*]\s+\[([^\]]+)\]\(([^)]+)\)\s*[—–-]+\s*(.+)$", re.MULTILINE)
 
-        candidates: list[tuple[str, str]] = []  # (title, description)
+        candidates: list[tuple[str, str, str]] = []  # (link_text, link_target, description)
         for m in link_re.finditer(text):
-            title, desc = m.group(1).strip(), m.group(2).strip()
+            link_text = m.group(1).strip()
+            link_target = m.group(2).strip()
+            desc = m.group(3).strip()
             if partial_pattern.search(desc):
-                candidates.append((title, desc))
+                candidates.append((link_text, link_target, desc))
 
         if not candidates:
             return ""
@@ -155,7 +204,16 @@ def _ensure_open_tasks() -> str:
         open_titles_lower = {dict(r)["title"].lower() for r in open_rows}
 
         created: list[str] = []
-        for title, desc in candidates:
+        for link_text, link_target, desc in candidates:
+            # Resolve the linked memory file and pull its frontmatter for a
+            # human title; fall back to the link text when frontmatter is
+            # missing (older memories) or unreadable.
+            mem_path = memory_dir / link_target
+            fm = _read_memory_frontmatter(mem_path)
+            title = (fm.get("name") or link_text).strip()
+            full_desc = (fm.get("description") or "").strip()
+            classify_text = f"{full_desc}\n{desc}"
+
             # Skip if a task with a very similar title already exists (substring match)
             title_lower = title.lower()
             already_exists = any(
@@ -167,9 +225,11 @@ def _ensure_open_tasks() -> str:
 
             # Derive tags from description keywords
             tags_raw = []
-            for word in re.findall(r"\b(geoid|dynastore|mcp-skill-hub|pyright|duckdb|iceberg|ogc|stac|airflow|fao)\b", desc, re.IGNORECASE):
+            for word in re.findall(r"\b(geoid|dynastore|mcp-skill-hub|pyright|duckdb|iceberg|ogc|stac|airflow|fao)\b", classify_text, re.IGNORECASE):
                 tags_raw.append(word.lower())
             tags = ",".join(dict.fromkeys(tags_raw))  # dedup, preserve order
+
+            color = _classify_color(classify_text)
 
             store.save_task(
                 title=title,
@@ -178,6 +238,7 @@ def _ensure_open_tasks() -> str:
                 context="",
                 tags=tags,
                 session_id="",
+                color=color,
             )
             open_titles_lower.add(title_lower)
             created.append(title)

@@ -776,8 +776,13 @@ def set_task_options(task_id: int, options: str = "") -> str:
 
 @mcp.tool()
 def update_task(task_id: int, summary: str = "", context: str = "",
-                tags: str = "") -> str:
+                tags: str = "", title: str = "", color: str = "") -> str:
     """Update an open task with new information.
+
+    Optional ``title`` rewrites the task's title (useful for cleaning up
+    auto-created stubs whose title is the raw memory filename). Optional
+    ``color`` sets a short status label (`green`, `yellow`, `red`, `cyan`,
+    `blue`, `gray`) used by the dashboard + listings.
 
     Parallel-safe: SQLite serialises writes. Concurrent updates to the
     same task_id use last-write-wins semantics -- no corruption, no silent
@@ -785,20 +790,24 @@ def update_task(task_id: int, summary: str = "", context: str = "",
     """
     log_tool("update_task", task_id=task_id)
 
-    # Re-embed if summary changed. Optional: if embed service is disabled or
-    # the model is unavailable, update text fields without touching the vector
-    # (store leaves the existing vector column untouched when vector is None).
+    # Re-embed if title or summary changed. Optional: if embed service is
+    # disabled or the model is unavailable, update text fields without
+    # touching the vector (store leaves the existing vector column untouched
+    # when vector is None).
     vector = None
-    if summary:
+    if summary or title:
         task = _store.get_task(task_id)
         if task:
+            new_title = title or task["title"]
+            new_summary = summary or task.get("summary", "")
             try:
-                vector = embed(f"{task['title']}: {summary}")
+                vector = embed(f"{new_title}: {new_summary}")
             except RuntimeError:
                 vector = None
 
     if _store.update_task(task_id, summary=summary, context=context,
-                          tags=tags, vector=vector):
+                          tags=tags, vector=vector,
+                          title=title, color=color):
         return f"Task #{task_id} updated."
     return f"Task #{task_id} not found."
 
@@ -842,6 +851,12 @@ def reopen_task(task_id: int) -> str:
         return f"Task #{task_id} reopened (relaunch failed: {e})."
 
 
+_COLOR_GLYPH = {
+    "green": "●", "yellow": "◐", "red": "✗",
+    "cyan": "◆", "blue": "○", "gray": "·",
+}
+
+
 @mcp.tool()
 def list_tasks(status: str = "open") -> str:
     """List tasks. status: open (default), closed, or all."""
@@ -853,7 +868,14 @@ def list_tasks(status: str = "open") -> str:
     for r in rows:
         state = f"[{r['status'].upper()}]"
         tags = f" ({r['tags']})" if r['tags'] else ""
-        lines.append(f"  #{r['id']} {state} {r['title']}{tags} — {r['summary'][:80]}...")
+        # Glyph keyed on auto-derived/explicit color column. ' ' keeps column
+        # alignment when no colour is set (older rows pre-migration).
+        try:
+            color = r["color"]
+        except (IndexError, KeyError):
+            color = None
+        glyph = _COLOR_GLYPH.get(color or "", " ")
+        lines.append(f"  {glyph} #{r['id']} {state} {r['title']}{tags} — {r['summary'][:80]}...")
     return f"{len(lines)} tasks:\n" + "\n".join(lines)
 
 

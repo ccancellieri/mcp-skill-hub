@@ -3424,6 +3424,165 @@ type: {mem_type}
     return result
 
 
+def _cmd_precompact_snapshot(session_id: str, trigger: str = "",
+                             transcript_path: str = "") -> dict:
+    """PreCompact hook handler — snapshot routing/tool-chain state.
+
+    Compaction discards the in-flight tool-chain window and the bandit's
+    recent reward signal. We persist a marker into the ``session:log``
+    namespace keyed on session_id+timestamp so post-compact queries can
+    surface it via search_context.
+    """
+    import time
+    log_event("PRECOMPACT", f"session={session_id[:12]} trigger={trigger}")
+    if not session_id:
+        return {"decision": "allow"}
+
+    try:
+        store = SkillStore()
+    except Exception as exc:  # noqa: BLE001
+        log_event("PRECOMPACT", f"store_error: {exc}")
+        return {"decision": "allow"}
+
+    try:
+        # Pull recent tool-chain window for this session.
+        rows = store._conn.execute(  # noqa: SLF001
+            "SELECT tool_used, agent_type, COALESCE(plugin_id,'') AS plugin_id, "
+            "       COALESCE(event,'') AS event, created_at "
+            "FROM session_log WHERE session_id = ? "
+            "ORDER BY id DESC LIMIT 50",
+            (session_id,),
+        ).fetchall()
+        chain = " → ".join(
+            (r["tool_used"] or "") + (f"({r['agent_type']})" if r["agent_type"] else "")
+            for r in reversed(rows)
+        ) or "(no tool calls captured)"
+
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+        text = (
+            f"PreCompact snapshot at {ts}\n"
+            f"Trigger: {trigger or 'unknown'}\n"
+            f"Recent tool chain (last {len(rows)}): {chain[:1500]}\n"
+            f"Transcript: {transcript_path or '-'}"
+        )
+        store.upsert_vector(
+            namespace="session:log",
+            doc_id=f"precompact:{session_id}:{ts}",
+            text=text,
+            metadata={
+                "session_id": session_id,
+                "trigger": trigger or "",
+                "kind": "precompact_snapshot",
+                "rows": len(rows),
+            },
+            level="L1",
+            source="precompact_snapshot",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event("PRECOMPACT", f"snapshot_error: {exc}")
+    finally:
+        store.close()
+
+    return {"decision": "allow"}
+
+
+def _cmd_postcompact_optimize(session_id: str) -> dict:
+    """PostCompact hook handler — surface optimize_memory recommendations.
+
+    Compaction is the natural moment to prune duplicate/decayed memory.
+    We default to dry-run so the user sees the report; flip
+    ``postcompact_optimize_apply`` in config to actually mutate.
+    """
+    log_event("POSTCOMPACT", f"session={session_id[:12]}")
+    try:
+        from . import config as _cfg_mod
+        from .server import optimize_memory as _optimize_memory
+    except Exception as exc:  # noqa: BLE001
+        log_event("POSTCOMPACT", f"import_error: {exc}")
+        return {"decision": "allow"}
+
+    apply = bool(_cfg_mod.get("postcompact_optimize_apply"))
+    try:
+        report = _optimize_memory(dry_run=not apply)
+    except Exception as exc:  # noqa: BLE001
+        log_event("POSTCOMPACT", f"optimize_error: {exc}")
+        return {"decision": "allow"}
+
+    out: dict = {"decision": "allow"}
+    if isinstance(report, str) and report.strip():
+        # Truncate to a sane size — full reports can be huge.
+        snippet = report.strip()
+        if len(snippet) > 4000:
+            snippet = snippet[:4000] + "\n\n…(truncated)"
+        prefix = (
+            "PostCompact memory optimization "
+            f"({'applied' if apply else 'dry-run'}):"
+        )
+        out["systemMessage"] = f"{prefix}\n\n{snippet}"
+    return out
+
+
+def _cmd_session_close(session_id: str, reason: str = "",
+                       summary: str = "") -> dict:
+    """SessionEnd hook handler — once-per-session work.
+
+    Persists the session's L1 summary into ``session:log`` and dispatches
+    the plugin ``on_session_end`` hook. Distinct from MCP ``close_session``
+    (which uses the in-process MCP-server session id) — here we anchor on
+    Claude Code's hook session_id so the row is correlatable later.
+    """
+    import time
+    log_event("SESSEND", f"session={session_id[:12]} reason={reason}")
+    if not session_id:
+        return {"decision": "allow"}
+
+    try:
+        store = SkillStore()
+    except Exception as exc:  # noqa: BLE001
+        log_event("SESSEND", f"store_error: {exc}")
+        return {"decision": "allow"}
+
+    topic = ""
+    try:
+        ctx = store.get_session_context(session_id)
+        topic = ctx.get("context_summary", "") or ""
+    except Exception:
+        pass
+
+    text = (summary or topic or "Session ended without summary").strip()
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        store.upsert_vector(
+            namespace="session:log",
+            doc_id=f"session:{session_id}",
+            text=f"Topic: {topic}\nSummary: {text}\nReason: {reason or 'unknown'}",
+            metadata={
+                "session_id": session_id,
+                "topic": topic,
+                "reason": reason or "",
+                "closed_at": ts,
+            },
+            level="L1",
+            source="session_close",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_event("SESSEND", f"vector_write_error: {exc}")
+    finally:
+        store.close()
+
+    try:
+        from . import plugin_hooks
+        plugin_hooks.dispatch(
+            "on_session_end",
+            {"session_id": session_id, "topic": topic,
+             "summary": text, "reason": reason or ""},
+        )
+    except Exception:
+        pass
+
+    return {"decision": "allow"}
+
+
 def _heuristic_skill_split(message: str) -> list[str] | None:
     """Fallback split: divide on conjunctions only if EVERY part independently
     matches a local skill via embedding. Fast enough because the embed model
@@ -6474,6 +6633,40 @@ def main() -> None:
                 i += 1
         result = _cmd_session_end(session_id, last_message, transcript)
         print(json.dumps(result))
+
+    elif cmd in ("precompact_snapshot", "postcompact_optimize", "session_close"):
+        # PreCompact / PostCompact / SessionEnd hooks — all share the same
+        # arg shape: --session-id, plus a couple of optional fields.
+        session_id = ""
+        trigger = ""
+        transcript_path = ""
+        reason = ""
+        summary = ""
+        i = 0
+        while i < len(args):
+            if args[i] == "--session-id" and i + 1 < len(args):
+                session_id = args[i + 1]; i += 2
+            elif args[i] == "--trigger" and i + 1 < len(args):
+                trigger = args[i + 1]; i += 2
+            elif args[i] == "--transcript" and i + 1 < len(args):
+                transcript_path = args[i + 1]; i += 2
+            elif args[i] == "--reason" and i + 1 < len(args):
+                reason = args[i + 1]; i += 2
+            elif args[i] == "--summary" and i + 1 < len(args):
+                summary = args[i + 1]; i += 2
+            else:
+                i += 1
+        if cmd == "precompact_snapshot":
+            result = _cmd_precompact_snapshot(session_id, trigger, transcript_path)
+        elif cmd == "postcompact_optimize":
+            result = _cmd_postcompact_optimize(session_id)
+        else:
+            result = _cmd_session_close(session_id, reason, summary)
+        # Stop-hook style: print only when there's something to forward; hooks
+        # tolerate empty stdout (no-op).
+        if result.get("systemMessage"):
+            out = {"systemMessage": result["systemMessage"]}
+            print(json.dumps(out))
 
     elif cmd == "route":
         # Prompt router — called by hooks/prompt_router.py on every UserPromptSubmit.

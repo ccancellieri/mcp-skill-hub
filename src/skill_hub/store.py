@@ -757,6 +757,18 @@ class SkillStore:
             except Exception:
                 pass
 
+        # Status colour: short label (`green`, `yellow`, `red`, `cyan`, `blue`,
+        # `gray`) used by the dashboard + listings to convey state at a glance.
+        # Auto-derived for memory-index-created tasks; can be overridden via
+        # ``update_task(color=...)``.
+        if "color" not in task_cols:
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN color TEXT")
+                self._conn.commit()
+                task_cols = task_cols | {"color"}
+            except Exception:
+                pass
+
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
             # S1.3 — enables incremental reindex (skip rows whose file content
@@ -888,6 +900,28 @@ class SkillStore:
 
         # Phase B.10 — seed built-in pipeline presets (idempotent).
         self._seed_builtin_presets()
+
+        # session_log: SubagentStart/SubagentStop columns (Claude Code 1.0.41+).
+        sl_cols = {row[1] for row in self._conn.execute(
+            "PRAGMA table_info(session_log)")}
+        if "agent_id" not in sl_cols:
+            self._conn.execute("ALTER TABLE session_log ADD COLUMN agent_id TEXT")
+        if "agent_type" not in sl_cols:
+            self._conn.execute("ALTER TABLE session_log ADD COLUMN agent_type TEXT")
+        if "event" not in sl_cols:
+            self._conn.execute("ALTER TABLE session_log ADD COLUMN event TEXT")
+        if "transcript_path" not in sl_cols:
+            self._conn.execute(
+                "ALTER TABLE session_log ADD COLUMN transcript_path TEXT")
+        self._conn.commit()
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_log_agent "
+                "ON session_log(agent_id) WHERE agent_id IS NOT NULL"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
 
         # Phase B.11 — memory-export history log.
         self._conn.execute("""
@@ -1751,6 +1785,24 @@ class SkillStore:
               tool_used, plugin_id))
         self._conn.commit()
 
+    def log_session_subagent(self, session_id: str, agent_id: str,
+                             agent_type: str, event: str,
+                             transcript_path: str = "") -> None:
+        """Record a SubagentStart / SubagentStop event for the session.
+
+        Stored in ``session_log`` with ``tool_used`` set to ``"subagent"`` so
+        existing aggregations (which group by ``tool_used``) still work, while
+        the new ``agent_id``/``agent_type``/``event`` columns let
+        ``session_stats()`` and downstream analyses break out the timeline.
+        """
+        self._conn.execute("""
+            INSERT INTO session_log
+                (session_id, query, query_vector, tool_used, plugin_id,
+                 agent_id, agent_type, event, transcript_path)
+            VALUES (?, NULL, NULL, 'subagent', NULL, ?, ?, ?, ?)
+        """, (session_id, agent_id, agent_type, event, transcript_path or None))
+        self._conn.commit()
+
     def get_session_stats(self, limit: int = 20) -> list[sqlite3.Row]:
         """Most-used plugins across recent sessions."""
         return self._conn.execute("""
@@ -1770,13 +1822,13 @@ class SkillStore:
                   context: str = "", tags: str = "",
                   session_id: str = "",
                   cwd: str = "", branch: str = "",
-                  worktree: str = "") -> int:
+                  worktree: str = "", color: str = "") -> int:
         cur = self._conn.execute("""
             INSERT INTO tasks (title, summary, context, tags, vector,
-                               session_id, cwd, branch, worktree)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               session_id, cwd, branch, worktree, color)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (title, summary, context, tags, json.dumps(vector),
-              session_id, cwd, branch, worktree or None))
+              session_id, cwd, branch, worktree or None, color or None))
         self._conn.commit()
         task_id = cur.lastrowid or 0
         self._mirror_task_vec(task_id, vector)
@@ -1794,9 +1846,13 @@ class SkillStore:
 
     def update_task(self, task_id: int, summary: str = "",
                     context: str = "", tags: str = "",
-                    vector: list[float] | None = None) -> bool:
+                    vector: list[float] | None = None,
+                    title: str = "", color: str = "") -> bool:
         parts: list[str] = ["updated_at = datetime('now')"]
         params: list = []
+        if title:
+            parts.append("title = ?")
+            params.append(title)
         if summary:
             parts.append("summary = ?")
             params.append(summary)
@@ -1806,6 +1862,9 @@ class SkillStore:
         if tags:
             parts.append("tags = ?")
             params.append(tags)
+        if color:
+            parts.append("color = ?")
+            params.append(color)
         if vector is not None:
             parts.append("vector = ?")
             params.append(json.dumps(vector))
@@ -1871,7 +1930,7 @@ class SkillStore:
 
     def list_tasks(self, status: str = "open") -> list[sqlite3.Row]:
         cols = (
-            "id, title, summary, context, status, tags, session_id, "
+            "id, title, summary, context, status, tags, color, session_id, "
             "created_at, updated_at, closed_at"
         )
         if status == "all":

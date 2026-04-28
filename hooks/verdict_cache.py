@@ -56,8 +56,8 @@ CREATE TABLE IF NOT EXISTS command_verdicts (
     cmd_hash      TEXT PRIMARY KEY,
     tool_name     TEXT NOT NULL,
     command       TEXT NOT NULL,
-    decision      TEXT NOT NULL,        -- allow | deny
-    source        TEXT NOT NULL,        -- user_approved | llm | static
+    decision      TEXT NOT NULL,        -- allow | deny | failed
+    source        TEXT NOT NULL,        -- user_approved | llm | static | tool_failure
     confidence    REAL NOT NULL DEFAULT 1.0,
     hit_count     INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
@@ -143,10 +143,14 @@ def put(conn: sqlite3.Connection, tool_name: str, command: str,
         decision: str, source: str, confidence: float = 1.0) -> None:
     key = hash_key(tool_name, command)
     now = int(time.time())
-    # Priority: user_approved > llm (any tier) > static
+    # Priority: user_approved > llm (any tier) > static. tool_failure ties
+    # with llm so a real-world failure overrides an LLM-classified allow but
+    # still loses to an explicit user_approved (one transient failure should
+    # not unlearn a daily-use command).
     priority = {
         "static": 0,
         "llm": 1, "llm_l1": 1, "llm_l2": 1, "llm_l3": 1, "haiku": 1,
+        "tool_failure": 1,
         "user_approved": 2,
     }
     existing = conn.execute(

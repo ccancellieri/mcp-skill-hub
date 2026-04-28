@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: record successful tool runs as training signal.
+"""PostToolUse / PostToolUseFailure hook: record tool outcomes as training signal.
 
-If Claude ran a Bash command successfully, the user either approved it or it
-was auto-approved. Either way the command was judged safe-enough in this
-project context — record it so future identical/similar commands can be
-auto-approved from cache without re-prompting.
+PostToolUse: if Claude ran a Bash command successfully, the user either
+approved it or it was auto-approved. Either way the command was judged
+safe-enough in this project context — record it so future identical/similar
+commands can be auto-approved from cache without re-prompting.
+
+PostToolUseFailure (Claude Code 2.1.119): the same Bash command failed.
+We record it as ``status=failed`` so the verdict cache learns *not* to
+auto-approve flaky commands. ``duration_ms`` from the hook input is also
+captured for telemetry on slow runs.
 
 Only writes to cache when:
   - tool_name is Bash (others are handled by safe_tools list)
-  - the tool did not error (PostToolUse fires regardless; we inspect result)
+  - PostToolUse: the tool did not error (we re-check tool_response too because
+    the success/failure split between events isn't always honoured by hosts)
 """
 from __future__ import annotations
 
@@ -134,18 +140,34 @@ def main() -> int:
     session_id = data.get("session_id", "")
     _update_task_activity(session_id)
 
+    event = data.get("hook_event_name", "PostToolUse")
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input") or {}
+    duration_ms = data.get("duration_ms")
 
     # Phase G.2 — auto-teach from feedback file writes (always attempt, regardless
     # of auto_approve_learn; continuous_teaching_enabled guards it internally).
-    _maybe_auto_teach_from_feedback(tool_name, tool_input)
+    # Failure events skip auto-teach: a feedback file written then immediately
+    # erroring out shouldn't propagate as a teaching.
+    if event == "PostToolUse":
+        _maybe_auto_teach_from_feedback(tool_name, tool_input)
 
     if tool_name != "Bash":
         return 0
 
     cmd = (tool_input.get("command") or "").strip()
     if not cmd:
+        return 0
+
+    if event == "PostToolUseFailure":
+        # Negative reinforcement: store as a `failed` verdict so the verdict
+        # cache lookup can downweight or refuse to auto-approve repeat runs.
+        try:
+            conn = verdict_cache.connect()
+            verdict_cache.put(conn, tool_name, cmd, "failed", "tool_failure", 1.0)
+            log(f"failed  cmd=\"{cmd[:60]}\"  duration_ms={duration_ms}")
+        except Exception as e:  # noqa: BLE001
+            log(f"cache  error={e}")
         return 0
 
     tool_response = data.get("tool_response") or {}
@@ -163,7 +185,7 @@ def main() -> int:
     try:
         conn = verdict_cache.connect()
         verdict_cache.put(conn, tool_name, cmd, "allow", "user_approved", 1.0)
-        log(f"learned  cmd=\"{cmd[:60]}\"")
+        log(f"learned  cmd=\"{cmd[:60]}\"  duration_ms={duration_ms}")
     except Exception as e:  # noqa: BLE001
         log(f"cache  error={e}")
 

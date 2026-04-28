@@ -374,73 +374,157 @@ def step_seed_allowlist(step: int, total: int):
 
 
 def step_install_hooks(step: int, total: int):
-    """Register hooks in settings.json (idempotent)."""
+    """Register hooks in settings.json (idempotent + upgrades existing entries).
+
+    Each hook definition's ``command`` is its identity key. Re-running this
+    step will *replace* an existing entry's other fields (``timeout``, ``if``,
+    ``statusMessage``, ...) so changes here propagate without forcing the
+    user to hand-edit settings.
+    """
     print(f"[{step}/{total}] Installing hooks...")
 
     if not IS_WINDOWS:
         for sh in HOOKS_DIR.glob("*.sh"):
             sh.chmod(sh.stat().st_mode | 0o755)
 
-    user_prompt_hooks = [
-        {
-            "type": "command",
-            "command": _hook_command("session-start-enforcer.sh"),
-            "timeout": 5,
-            "statusMessage": "Checking session start protocol...",
-        },
-        {
-            # Prompt router: three-tier classifier (heuristics → Ollama → Haiku)
-            # Selects model, plan-mode, preloads skills before Claude responds.
-            "type": "command",
-            "command": _hook_command("prompt-router.sh"),
-            "timeout": 20,
-            "statusMessage": "Routing prompt...",
-        },
-        {
-            "type": "command",
-            "command": _hook_command("intercept-task-commands.sh"),
-            "timeout": 45,
-            "statusMessage": "Checking for task commands...",
-        },
-    ]
-    pre_tool_hooks = [
-        {
-            # Per-project auto-approve / auto-deny based on
-            # <cwd>/.claude/skill-hub-allow.yml. Returns permissionDecision
-            # "allow" or "deny"; otherwise passes through to default prompt.
-            "type": "command",
-            "command": _hook_command("auto-approve.sh"),
-            "timeout": 5,
-            "statusMessage": "Checking allow-list...",
-        },
-    ]
-    post_tool_hooks = [
-        {
-            # Observe successful Bash runs; record as "user_approved" verdicts
-            # so future identical/similar commands auto-approve from cache.
-            "type": "command",
-            "command": _hook_command("post-tool-observer.sh"),
-            "timeout": 5,
-            "statusMessage": "Recording approved command...",
-        },
-    ]
-    stop_hooks = [
-        {
-            "type": "command",
-            "command": _hook_command("session-end.sh"),
-            "timeout": 45,
-            "statusMessage": "Saving session memory...",
-        },
-        {
-            # Opt-in overnight auto-proceed (requires SKILL_HUB_AUTO_PROCEED=1).
-            # Re-feeds "proceed" to Claude while the active plan still has
-            # unchecked items, up to SKILL_HUB_MAX_PROCEEDS (default 20).
-            "type": "command",
-            "command": _hook_command("auto-proceed.sh"),
-            "timeout": 5,
-            "statusMessage": "Checking for plan continuation...",
-        },
-    ]
+    # Event → list of hook definitions.
+    event_hooks: dict[str, list[dict]] = {
+        "UserPromptSubmit": [
+            {
+                "type": "command",
+                "command": _hook_command("session-start-enforcer.sh"),
+                "timeout": 5,
+                "statusMessage": "Checking session start protocol...",
+            },
+            {
+                # Prompt router: three-tier classifier (heuristics → Ollama → Haiku)
+                # Selects model, plan-mode, preloads skills before Claude responds.
+                "type": "command",
+                "command": _hook_command("prompt-router.sh"),
+                "timeout": 20,
+                "statusMessage": "Routing prompt...",
+            },
+            {
+                "type": "command",
+                "command": _hook_command("intercept-task-commands.sh"),
+                "timeout": 45,
+                "statusMessage": "Checking for task commands...",
+            },
+        ],
+        "PreToolUse": [
+            {
+                # Per-project auto-approve / auto-deny based on
+                # <cwd>/.claude/skill-hub-allow.yml. The ``if`` filter
+                # (Claude Code 2.1.83) skips the subprocess for non-Bash
+                # tool calls — auto-approve only ever acts on Bash anyway.
+                "type": "command",
+                "command": _hook_command("auto-approve.sh"),
+                "if": "Bash(*)",
+                "timeout": 5,
+                "statusMessage": "Checking allow-list...",
+            },
+        ],
+        "PostToolUse": [
+            {
+                # Observe successful Bash runs; record as "user_approved"
+                # verdicts so future identical/similar commands auto-approve
+                # from cache. ``if`` filter avoids per-call subprocess on
+                # non-Bash tools (Read/Edit/Grep/...).
+                "type": "command",
+                "command": _hook_command("post-tool-observer.sh"),
+                "if": "Bash(*)",
+                "timeout": 5,
+                "statusMessage": "Recording approved command...",
+            },
+        ],
+        "PostToolUseFailure": [
+            {
+                # Negative reinforcement (Claude Code 2.1.119): failed Bash
+                # runs flow into the verdict cache as ``status=failed`` so
+                # the auto-approve classifier learns to *not* auto-approve
+                # flaky commands. Same script, different code branch.
+                "type": "command",
+                "command": _hook_command("post-tool-observer.sh"),
+                "if": "Bash(*)",
+                "timeout": 5,
+                "statusMessage": "Recording failed command...",
+            },
+        ],
+        "Stop": [
+            {
+                "type": "command",
+                "command": _hook_command("session-end.sh"),
+                "timeout": 45,
+                "statusMessage": "Saving session memory...",
+            },
+            {
+                # Opt-in overnight auto-proceed (requires SKILL_HUB_AUTO_PROCEED=1).
+                # Re-feeds "proceed" to Claude while the active plan still has
+                # unchecked items, up to SKILL_HUB_MAX_PROCEEDS (default 20).
+                "type": "command",
+                "command": _hook_command("auto-proceed.sh"),
+                "timeout": 5,
+                "statusMessage": "Checking for plan continuation...",
+            },
+        ],
+        "StopFailure": [
+            {
+                # Append API errors to api-errors.jsonl for the dashboard
+                # monitoring tab (Claude Code 2.1.78).
+                "type": "command",
+                "command": _hook_command("stop-failure.sh"),
+                "timeout": 5,
+                "statusMessage": "Logging API error...",
+            },
+        ],
+        "SessionEnd": [
+            {
+                # Real end-of-session work (Claude Code 1.0.85): persists
+                # the L1 summary into session:log + dispatches plugin
+                # on_session_end. Stop fires per-turn — this fires once.
+                "type": "command",
+                "command": _hook_command("session-end-real.sh"),
+                "timeout": 30,
+                "statusMessage": "Closing session...",
+            },
+        ],
+        "PreCompact": [
+            {
+                # Snapshot routing/tool-chain state before /compact wipes it.
+                "type": "command",
+                "command": _hook_command("precompact.sh"),
+                "timeout": 10,
+                "statusMessage": "Snapshotting routing state...",
+            },
+        ],
+        "PostCompact": [
+            {
+                # Run optimize_memory after compaction trims context.
+                "type": "command",
+                "command": _hook_command("postcompact.sh"),
+                "timeout": 30,
+                "statusMessage": "Optimising memory...",
+            },
+        ],
+        "SubagentStart": [
+            {
+                # Log subagent spawn into session_log (Claude Code 2.1.43).
+                "type": "command",
+                "command": _hook_command("subagent-observer.sh"),
+                "timeout": 5,
+                "statusMessage": "Logging subagent start...",
+            },
+        ],
+        "SubagentStop": [
+            {
+                # Log subagent stop into session_log (Claude Code 1.0.41).
+                "type": "command",
+                "command": _hook_command("subagent-observer.sh"),
+                "timeout": 5,
+                "statusMessage": "Logging subagent stop...",
+            },
+        ],
+    }
 
     settings = {}
     if SETTINGS.exists():
@@ -451,43 +535,43 @@ def step_install_hooks(step: int, total: int):
 
     hooks = settings.setdefault("hooks", {})
     changed = False
+    added = 0
+    updated = 0
 
-    ups = hooks.setdefault("UserPromptSubmit", [{"hooks": []}])
-    existing_cmds = {h.get("command", "") for entry in ups for h in entry.get("hooks", [])}
-    for hook_def in user_prompt_hooks:
-        if hook_def["command"] not in existing_cmds:
-            ups[0].setdefault("hooks", []).append(hook_def)
-            changed = True
-            print(f"  + Added {Path(hook_def['command']).name}")
-
-    pre = hooks.setdefault("PreToolUse", [{"hooks": []}])
-    existing_pre_cmds = {h.get("command", "") for entry in pre for h in entry.get("hooks", [])}
-    for hook_def in pre_tool_hooks:
-        if hook_def["command"] not in existing_pre_cmds:
-            pre[0].setdefault("hooks", []).append(hook_def)
-            changed = True
-            print(f"  + Added {Path(hook_def['command']).name}")
-
-    post = hooks.setdefault("PostToolUse", [{"hooks": []}])
-    existing_post_cmds = {h.get("command", "") for entry in post for h in entry.get("hooks", [])}
-    for hook_def in post_tool_hooks:
-        if hook_def["command"] not in existing_post_cmds:
-            post[0].setdefault("hooks", []).append(hook_def)
-            changed = True
-            print(f"  + Added {Path(hook_def['command']).name}")
-
-    stop = hooks.setdefault("Stop", [{"hooks": []}])
-    existing_stop_cmds = {h.get("command", "") for entry in stop for h in entry.get("hooks", [])}
-    for hook_def in stop_hooks:
-        if hook_def["command"] not in existing_stop_cmds:
-            stop[0].setdefault("hooks", []).append(hook_def)
-            changed = True
-            print(f"  + Added {Path(hook_def['command']).name}")
+    # Upgrade strategy: shallow-merge ONLY missing keys. We never overwrite a
+    # field the user has manually customized (e.g. ``statusMessage``,
+    # ``timeout``); we only add new keys we ship in this release (e.g. the
+    # ``if`` filter introduced in Claude Code 2.1.83).
+    for event_name, defs in event_hooks.items():
+        event_block = hooks.setdefault(event_name, [{"hooks": []}])
+        for new_def in defs:
+            existing = None
+            for entry in event_block:
+                for h in entry.get("hooks", []):
+                    if h.get("command") == new_def["command"]:
+                        existing = h
+                        break
+                if existing is not None:
+                    break
+            if existing is None:
+                event_block[0].setdefault("hooks", []).append(new_def)
+                added += 1
+                changed = True
+                print(f"  + {event_name}: {Path(new_def['command']).name}")
+            else:
+                missing = {k: v for k, v in new_def.items() if k not in existing}
+                if missing:
+                    existing.update(missing)
+                    updated += 1
+                    changed = True
+                    keys = ", ".join(sorted(missing))
+                    print(f"  ~ {event_name}: {Path(new_def['command']).name} "
+                          f"(added {keys})")
 
     if changed:
         with open(SETTINGS, "w") as f:
             json.dump(settings, f, indent=2)
-        print(f"  Updated {SETTINGS}")
+        print(f"  Updated {SETTINGS} ({added} added, {updated} updated)")
     else:
         print("  Hooks already registered.")
 

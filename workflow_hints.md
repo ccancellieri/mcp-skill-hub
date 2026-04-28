@@ -176,6 +176,27 @@ claude --max-turns 10            # Limit agentic turns
 claude --output-format json      # Machine-readable output
 ```
 
+### Hook performance: the `if` filter
+
+PreToolUse / PostToolUse hooks fire on **every** tool call by default
+(Read, Grep, Edit, Bash, …). Each fire spawns a subprocess. If your hook
+only cares about a subset of tools, narrow it with the `if` field
+(Claude Code 2.1.83+) so the harness skips the spawn entirely:
+
+```json
+{
+  "type": "command",
+  "command": "/path/to/auto-approve.sh",
+  "if": "Bash(*)",
+  "timeout": 5
+}
+```
+
+`if` accepts the same permission-rule syntax as `permissions.allow` /
+`permissions.deny` — `Bash(git *)`, `Edit(*.py)`, etc. Skill-hub's
+`auto-approve.sh` and `post-tool-observer.sh` ship with `Bash(*)` so
+non-Bash tool calls cost nothing.
+
 ---
 
 ## Quick Reference
