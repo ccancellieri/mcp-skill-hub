@@ -317,7 +317,10 @@ def compact_master_state(
         if json_match:
             parsed = json.loads(json_match.group())
             if all(k in parsed for k in ("architecture", "invariants", "active_modules", "recent_pivots")):
-                parsed.setdefault("assumptions", [])
+                # Normalize assumptions: missing OR null OR non-list -> [].
+                # `setdefault` only handles "missing"; null/wrong-type still leaks.
+                ass = parsed.get("assumptions")
+                parsed["assumptions"] = ass if isinstance(ass, list) else []
                 return parsed
     except Exception:
         pass

@@ -79,6 +79,24 @@ Long-running multi-repo systems accumulate per-task auto-memory faster than huma
 
 Tactical helpers (rerank, query-rewrite, classify) stay on `tier_cheap` / `tier_mid` because their failure mode is "slightly worse search results", not "wrong cold-start context". Don't blanket-promote the rest of the codebase to `tier_smart`.
 
+## `.skillhub/master_state.yaml` — always-keep markers (optional)
+
+If `<project>/.skillhub/master_state.yaml` exists, its raw text is passed to the LLM as `always_keep` context. Use it to pin invariants the model should NEVER drop on any subsequent compaction (typically things you discovered the hard way and don't want a future LLM to relax). Free-form YAML — no schema enforced; the file content is concatenated verbatim into the prompt up to 3 KB.
+
+Example `<project>/.skillhub/master_state.yaml`:
+
+```yaml
+# Invariants the LLM MUST preserve on every compaction.
+always_keep: |
+  - NEVER import `dynastore.modules.iam.*` from non-IAM code.
+  - NEVER add bespoke per-domain authz middleware. PermissionProtocol policies only.
+  - The catalog dev compose `extends` geoid's dev `db` service via relative path —
+    do not break this inheritance.
+  - Live API at v0.X.Y vs main at v0.Y.Z — flag any compaction that ignores this gap.
+```
+
+The file is optional; absence yields `always_keep="(none)"` in the prompt.
+
 ## Slug resolution
 
 `_project_to_memory_dir(project_root)` walks parent directories to find the longest matching `~/.claude/projects/<slug>/memory/` where `<slug>` is the path-as-slug encoding (`-Users-ccancellieri-work-code-geoid` → walks to `-Users-ccancellieri-work-code` if the leaf has no `memory/` subdir). This matches Claude Code's actual layout where session JSONLs may live under `<project>-<subdir>/` slugs but the canonical `memory/` lives under the parent. Verified by `test_project_to_memory_dir_walks_up_to_parent_slug`.

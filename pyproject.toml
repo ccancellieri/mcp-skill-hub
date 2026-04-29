@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-skill-hub"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local MCP server for semantic skill search with usage-based learning"
 readme = "README.md"
 license = "Apache-2.0"

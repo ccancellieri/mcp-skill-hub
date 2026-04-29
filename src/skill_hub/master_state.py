@@ -31,9 +31,17 @@ _BACKUP_RETENTION = 10
 def _atomic_write(path: Path, content: str) -> None:
     """Write `content` to `path` atomically: temp file in same dir + os.replace.
 
-    Same-directory tempfile guarantees the rename is atomic on POSIX (a single
-    inode swap, no cross-filesystem fallback). Crash mid-write leaves either
-    the old file intact or the new file complete — never a truncated one.
+    Sequence:
+      1. Write content to a tempfile in the SAME directory (guarantees os.replace
+         is a single-inode swap on POSIX, no cross-filesystem fallback).
+      2. fsync the tempfile FD before close — ensures data hits disk, not just
+         the OS page cache.
+      3. os.replace — atomic on POSIX, atomic on Windows for ≥3.3.
+      4. fsync the parent directory — ensures the rename itself is durable
+         (POSIX only; Windows / FAT32 silently ignore dir fsync).
+
+    Net guarantee: a power-cut at any point leaves either the OLD file intact
+    or the NEW file complete and durable. No truncation, no zero-filled tail.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -42,7 +50,21 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass  # fsync not supported on this fs (e.g. some tmpfs); best-effort
         os.replace(tmp_name, path)
+        # fsync the parent dir so the rename is durable on power-cut.
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except (OSError, AttributeError):
+            pass  # Windows / non-POSIX — dir fsync unsupported, swallowed
     except Exception:
         # Best-effort cleanup of orphaned tempfile on failure.
         try:
@@ -130,16 +152,40 @@ def _read_existing_section(file_path: Path, section_title: str) -> str:
     return m.group(0).strip() if m else ""
 
 
-def _summarize_memory_entries(paths: list[Path], char_budget: int = 6000) -> str:
-    """Concatenate first ~10 lines of each recent memory file, capped at budget."""
+_FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.DOTALL)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter block from a markdown file (if present).
+
+    Auto-memory entries written by mcp-skill-hub use frontmatter for `name`,
+    `description`, `type`. That's metadata for the indexer, not signal for the
+    LLM doing master-state synthesis — including it wastes the per-entry
+    line budget on stuff the LLM already gets in the file's filename.
+    """
+    return _FRONTMATTER_RE.sub("", text, count=1)
+
+
+def _summarize_memory_entries(
+    paths: list[Path],
+    char_budget: int = 6000,
+    body_lines_per_entry: int = 12,
+) -> str:
+    """Concatenate the first N body lines (post-frontmatter) of each recent memory file.
+
+    Capped at `char_budget` total. Frontmatter is stripped so all N lines
+    represent actual content, not YAML metadata.
+    """
     chunks: list[str] = []
     used = 0
     for p in paths:
         try:
-            head = "\n".join(p.read_text(encoding="utf-8").splitlines()[:12])
-            entry = f"### {p.name}\n{head}\n"
+            raw = p.read_text(encoding="utf-8")
         except OSError:
             continue
+        body = _strip_frontmatter(raw)
+        head = "\n".join(body.splitlines()[:body_lines_per_entry])
+        entry = f"### {p.name}\n{head}\n"
         if used + len(entry) > char_budget:
             break
         chunks.append(entry)
