@@ -15,6 +15,7 @@ from skill_hub.master_state import (
     _prune_backups,
     _read_existing_section,
     _render_markdown,
+    _strip_frontmatter,
     _summarize_memory_entries,
     _upsert_section,
     compact_to_master_state,
@@ -90,6 +91,32 @@ def test_summarize_respects_char_budget(tmp_path: Path):
     paths = list(tmp_path.glob("project_*.md"))
     summary = _summarize_memory_entries(paths, char_budget=200)
     assert len(summary) <= 250  # budget + small overhead
+
+
+def test_strip_frontmatter_removes_yaml_block():
+    raw = "---\nname: foo\ndescription: bar\ntype: feedback\n---\n\nactual body line 1\nactual body line 2\n"
+    stripped = _strip_frontmatter(raw)
+    assert stripped.startswith("\nactual body line 1") or stripped.startswith("actual body line 1")
+    assert "name: foo" not in stripped
+
+
+def test_strip_frontmatter_passthrough_when_absent():
+    raw = "# Heading\n\nbody only\n"
+    assert _strip_frontmatter(raw) == raw
+
+
+def test_summarize_strips_frontmatter_so_body_lines_get_through(tmp_path: Path):
+    """Frontmatter eats line budget if not stripped — body lines should appear."""
+    p = tmp_path / "feedback_x.md"
+    p.write_text(
+        "---\nname: x\ndescription: y\ntype: feedback\n---\n\n"
+        "BODY-LINE-1\nBODY-LINE-2\nBODY-LINE-3\n",
+        encoding="utf-8",
+    )
+    summary = _summarize_memory_entries([p], body_lines_per_entry=12)
+    assert "BODY-LINE-1" in summary
+    assert "BODY-LINE-3" in summary
+    assert "name: x" not in summary  # frontmatter stripped
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +247,65 @@ def test_compact_to_master_state_dry_run(tmp_path: Path, monkeypatch):
     assert "## Master Project State" in result["rendered"]
     # File should NOT have been written
     assert not (project / ".memory" / "decisions.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# LLM helper assumption normalization
+# ---------------------------------------------------------------------------
+
+def test_llm_helper_normalizes_null_assumptions():
+    """The LLM may emit `assumptions: null` or omit the field; helper must coerce to []."""
+    from skill_hub import embeddings as _emb
+
+    def fake_complete(*args, **kwargs):
+        return (
+            '{"architecture": "x", "invariants": [], "active_modules": [], '
+            '"recent_pivots": [], "assumptions": null}'
+        )
+
+    class FakeProvider:
+        def complete(self, *a, **kw):
+            return fake_complete()
+
+    with patch.object(_emb, "get_provider", return_value=FakeProvider()):
+        out = _emb.compact_master_state(
+            existing_snapshot="", task_summaries="", memory_entries="",
+        )
+    assert out["assumptions"] == []
+    assert isinstance(out["assumptions"], list)
+
+
+def test_llm_helper_normalizes_missing_assumptions():
+    """Missing key → []."""
+    from skill_hub import embeddings as _emb
+
+    class FakeProvider:
+        def complete(self, *a, **kw):
+            return ('{"architecture": "x", "invariants": [], '
+                    '"active_modules": [], "recent_pivots": []}')
+
+    with patch.object(_emb, "get_provider", return_value=FakeProvider()):
+        out = _emb.compact_master_state(
+            existing_snapshot="", task_summaries="", memory_entries="",
+        )
+    assert out["assumptions"] == []
+
+
+def test_llm_helper_normalizes_wrong_type_assumptions():
+    """If the LLM returns assumptions as a string instead of list, coerce to []."""
+    from skill_hub import embeddings as _emb
+
+    class FakeProvider:
+        def complete(self, *a, **kw):
+            return ('{"architecture": "x", "invariants": [], '
+                    '"active_modules": [], "recent_pivots": [], '
+                    '"assumptions": "not a list"}')
+
+    with patch.object(_emb, "get_provider", return_value=FakeProvider()):
+        out = _emb.compact_master_state(
+            existing_snapshot="", task_summaries="", memory_entries="",
+        )
+    assert out["assumptions"] == []
 
 
 # ---------------------------------------------------------------------------

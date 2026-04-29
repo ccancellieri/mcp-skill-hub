@@ -793,11 +793,21 @@ def compact_master_state(
             f"--- snapshot preview ---\n{rendered}"
         )
     if result.get("status") == "written":
+        ass_count = result.get("assumptions_count", 0)
+        inbox_path = result.get("inbox")
+        ass_line = (
+            f"\nAssumptions surfaced: {ass_count} (appended to {inbox_path})"
+            if ass_count and inbox_path else ""
+        )
+        pruned = result.get("backups_pruned", 0)
+        prune_line = f"\nOld backups pruned: {pruned}" if pruned else ""
         return (
             f"Wrote: {result.get('wrote')}\n"
             f"Backup: {result.get('backup') or '(none — first write)'}\n"
             f"Delta: {result.get('delta_chars'):+d} chars\n"
             f"Memory files folded in: {len(result.get('memory_files_considered', []))}"
+            f"{ass_line}"
+            f"{prune_line}"
         )
     return f"{result.get('status', 'unknown')}: {result.get('reason', '')}"
 
