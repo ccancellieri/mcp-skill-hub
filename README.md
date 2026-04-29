@@ -206,6 +206,13 @@ search_context("accessibility audit for a website")
 save_task(title="MCP skill hub dev", summary="Building semantic search…")
 close_task(task_id=1)    # compacts to ~200 tokens, writes memory entry
 
+# Master State compaction (folds task auto-memory into project's decisions.md)
+compact_master_state(project_root="~/work/code/geoid", dry_run=True)
+# After preview + approval:
+compact_master_state(project_root="~/work/code/geoid")
+# Or wire into close_task:
+close_task(task_id=1, compact_master_state=True)
+
 # Teach the hub
 teach(rule="when I give a URL", suggest="chrome-devtools-mcp")
 

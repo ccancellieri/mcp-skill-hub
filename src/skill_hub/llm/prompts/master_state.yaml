@@ -1,0 +1,70 @@
+name: master_state
+version: 1
+model_hint: tier_smart
+description: >
+  Generate a Master Project State JSON snapshot for a multi-repo system.
+  Layer-analyzes recent auto-memory entries (Active vs Superseded) and
+  preserves invariants from any existing snapshot.
+template: |
+  You are a senior architect curating a project's Master Project State —
+  a single page that captures:
+    1. Current architecture (what the system IS today)
+    2. Global invariants (always/never rules — load-bearing)
+    3. Top 3 modules under active work
+    4. Last 3 major pivots (with date / trigger / decision / why)
+
+  Rules:
+  - Recent decisions outweigh older ones.
+  - If a recent entry contradicts an older one, the older is ARCHIVED — drop it.
+  - Preserve invariants from the existing snapshot UNLESS explicitly contradicted by recent entries.
+  - Feedback rules (small hard-won corrections) stay forever.
+  - SHIPPED one-shots > 14 days old are noise — exclude unless they encode an invariant.
+  - Keep architecture section to 6-8 short paragraphs grouped by subsystem.
+  - Invariants are numbered NEVER/ALWAYS rules; aim for 8-12.
+  - Active modules: exactly 3, each one paragraph; cite recent PR numbers.
+  - Recent pivots: exactly 3, format `date — title` then trigger / decision / why.
+
+  Existing snapshot (preserve invariants unless contradicted):
+  ---
+  {existing_snapshot}
+  ---
+
+  Recent task summaries (last {window_days} days, newest first):
+  ---
+  {task_summaries}
+  ---
+
+  Recent auto-memory entries (project_*.md mtime in window):
+  ---
+  {memory_entries}
+  ---
+
+  Always-keep markers (user-provided invariants — never drop):
+  ---
+  {always_keep}
+  ---
+
+  In addition to the snapshot, surface ASSUMPTIONS — anything you inferred
+  rather than directly observed. These belong in the `assumptions` array.
+  Each assumption should be: a one-sentence claim + one-sentence "verify by"
+  step (a grep, a file to read, a question for the user). Be skeptical: if
+  the input contains conflicting evidence about a point, list both readings
+  as separate assumptions instead of picking one silently. Empty array if
+  truly nothing is uncertain.
+
+  Output ONLY a JSON object with this exact shape (no markdown, no preamble):
+  {{
+    "architecture": "Markdown subsection content — paragraphs grouped under bold headers like **Subsystem name**.",
+    "invariants": ["1. **NEVER** ... .", "2. **ALWAYS** ... ."],
+    "active_modules": [
+      {{"name": "modules/x", "paragraph": "..."}},
+      {{"name": "modules/y", "paragraph": "..."}},
+      {{"name": "modules/z", "paragraph": "..."}}
+    ],
+    "recent_pivots": [
+      {{"date": "YYYY-MM-DD", "title": "...", "trigger": "...", "decision": "...", "why": "..."}}
+    ],
+    "assumptions": [
+      {{"claim": "Inferred X applies to all Y.", "verify_by": "grep -r 'foo' src/ | wc -l should be > 0"}}
+    ]
+  }}
