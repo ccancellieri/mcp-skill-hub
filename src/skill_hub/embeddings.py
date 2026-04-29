@@ -269,6 +269,68 @@ def compact(content: str, model: str = RERANK_MODEL) -> dict:
     }
 
 
+def compact_master_state(
+    existing_snapshot: str,
+    task_summaries: str,
+    memory_entries: str,
+    always_keep: str = "",
+    window_days: int = 7,
+    tier: str = "tier_smart",
+    model: str | None = None,
+    timeout: float = 240.0,
+) -> dict:
+    """Generate a Master Project State JSON snapshot for a multi-repo system.
+
+    Routes through `get_provider()` so the best configured model wins:
+    `tier_smart` resolves to Claude Opus / Sonnet when an Anthropic key is set,
+    falling back to the local "smart" Ollama model otherwise. Prompt caching
+    is enabled (`cache=True`) so the existing snapshot + memory entries do
+    not pay full cost on repeat compactions.
+
+    Returns a dict with keys: architecture, invariants, active_modules,
+    recent_pivots, assumptions. On any failure, returns a minimal fallback
+    so callers always have a renderable shape.
+    """
+    from .llm.prompts import load_prompt
+
+    log_llm("compact_master_state", model=model or tier,
+            input_chars=len(existing_snapshot) + len(task_summaries) + len(memory_entries))
+    prompt = load_prompt("master_state").format(
+        existing_snapshot=existing_snapshot[:12000] or "(none — first snapshot)",
+        task_summaries=task_summaries[:6000] or "(no recent tasks in window)",
+        memory_entries=memory_entries[:12000] or "(no recent memory entries in window)",
+        always_keep=always_keep[:3000] or "(none)",
+        window_days=window_days,
+    )
+    try:
+        raw = get_provider().complete(
+            prompt,
+            tier=tier,
+            model=model,
+            max_tokens=4096,
+            temperature=0.1,
+            timeout=timeout,
+            cache=True,
+        )
+        raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            if all(k in parsed for k in ("architecture", "invariants", "active_modules", "recent_pivots")):
+                parsed.setdefault("assumptions", [])
+                return parsed
+    except Exception:
+        pass
+    return {
+        "architecture": "(LLM compaction failed — preserving prior snapshot if any)",
+        "invariants": [],
+        "active_modules": [],
+        "recent_pivots": [],
+        "assumptions": [],
+        "_fallback": True,
+    }
+
+
 def rewrite_query(message: str, context: str = "",
                   model: str = RERANK_MODEL) -> str:
     """

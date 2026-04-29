@@ -6,4 +6,5 @@ build/
 .venv/
 *.db
 .claude/
+.memory/
 .worktrees/

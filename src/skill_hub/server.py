@@ -641,18 +641,31 @@ def _slugify_task_name(title: str) -> str:
 
 
 @mcp.tool()
-def close_task(task_id: int, summary: str = "", remove_worktree: bool = False) -> str:
+def close_task(
+    task_id: int,
+    summary: str = "",
+    remove_worktree: bool = False,
+    compact_master_state: bool = False,
+    master_state_project: str | None = None,
+) -> str:
     """Close a task with LLM-compacted summary (~200 tokens).
 
     remove_worktree=True also runs `git worktree remove --force` and deletes
     the cc/<name> branch. Default keeps the worktree on disk so the task
     can be reopened later into the same workspace.
 
+    compact_master_state=True additionally folds the task's recent auto-memory
+    delta into the project's `## Master Project State` snapshot at
+    `<project>/.memory/decisions.md`. master_state_project overrides the
+    project root (default: cwd resolved from the task's stored worktree path,
+    falling back to the current working directory).
+
     Parallel-safe: concurrent closes of the same task_id are idempotent --
     the second call finds status='closed' and returns early without
     overwriting the first compaction.
     """
-    log_tool("close_task", task_id=task_id, remove_worktree=remove_worktree)
+    log_tool("close_task", task_id=task_id, remove_worktree=remove_worktree,
+             compact_master_state=compact_master_state)
     task = _store.get_task(task_id)
     if not task:
         return f"Task #{task_id} not found."
@@ -706,6 +719,32 @@ def close_task(task_id: int, summary: str = "", remove_worktree: bool = False) -
         import logging
         logging.getLogger(__name__).warning("dashboard render failed: %s", e)
 
+    # Optional: fold this task's auto-memory delta into the project's
+    # Master Project State snapshot. Never fail close_task on this error.
+    master_state_line = ""
+    if compact_master_state:
+        try:
+            from .master_state import compact_to_master_state as _cms
+            project = master_state_project
+            if not project and blob:
+                from . import worktree as _wt2
+                try:
+                    project = _wt2.WorktreeSpec.from_json(blob).worktree_path
+                except (ValueError, TypeError, _wt2.WorktreeError):
+                    project = None
+            if not project:
+                import os as _os
+                project = _os.getcwd()
+            ms_result = _cms(project_root=project)
+            if ms_result.get("status") == "written":
+                master_state_line = f"\nMaster State: updated {ms_result.get('wrote')}"
+            else:
+                master_state_line = f"\nMaster State: {ms_result.get('status')} ({ms_result.get('reason', '')})"
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("master_state compaction failed: %s", e)
+            master_state_line = f"\nMaster State: error ({e})"
+
     return (
         f"Task #{task_id} closed and compacted.\n"
         f"Title: {digest.get('title', 'N/A')}\n"
@@ -714,7 +753,53 @@ def close_task(task_id: int, summary: str = "", remove_worktree: bool = False) -
         f"Decisions: {digest.get('decisions', [])}"
         f"{worktree_msg}"
         f"{dash_line}"
+        f"{master_state_line}"
     )
+
+
+@mcp.tool()
+def compact_master_state(
+    project_root: str,
+    output_file: str = ".memory/decisions.md",
+    section_title: str = "Master Project State",
+    since_iso: str | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Generate or refresh the Master Project State snapshot for a project.
+
+    Layer-analyzes recent auto-memory entries and produces a 4-section snapshot
+    (Architecture / Invariants / Active Working Set / Recent Pivots) under the
+    `## <section_title>` heading at `<project_root>/<output_file>`.
+
+    dry_run=True returns the rendered Markdown without writing to disk.
+
+    Idempotent: a rerun with no new memory entries returns "noop". Existing
+    file is backed up to `<output_dir>/.backups/` before overwrite.
+    """
+    log_tool("compact_master_state", project_root=project_root, dry_run=dry_run)
+    from .master_state import compact_to_master_state as _cms
+    result = _cms(
+        project_root=project_root,
+        output_file=output_file,
+        section_title=section_title,
+        since_iso=since_iso,
+        dry_run=dry_run,
+    )
+    if result.get("status") == "dry_run":
+        rendered = result.get("rendered", "")
+        files = result.get("memory_files_considered", [])
+        return (
+            f"DRY RUN — {len(rendered)} chars rendered from {len(files)} memory files.\n"
+            f"--- snapshot preview ---\n{rendered}"
+        )
+    if result.get("status") == "written":
+        return (
+            f"Wrote: {result.get('wrote')}\n"
+            f"Backup: {result.get('backup') or '(none — first write)'}\n"
+            f"Delta: {result.get('delta_chars'):+d} chars\n"
+            f"Memory files folded in: {len(result.get('memory_files_considered', []))}"
+        )
+    return f"{result.get('status', 'unknown')}: {result.get('reason', '')}"
 
 
 @mcp.tool()
