@@ -862,6 +862,45 @@ def fanout_close(group_id: str, summary: str = "") -> str:
 
 
 @mcp.tool()
+def fanout_cleanup(
+    group_id: str,
+    close_open_tasks: bool = True,
+    remove_worktrees: bool = True,
+    delete_branches: bool = True,
+    summary: str = "",
+) -> str:
+    """Tear down every task + worktree + branch in a fanout group.
+
+    Bulk inverse of fanout_issues. Closes any still-open tasks (with a short
+    shared summary), runs ``git worktree remove --force`` on each task's
+    recorded worktree path, and deletes the ``cc/<slug>`` branch. Idempotent.
+    """
+    from .fanout.coordinator import fanout_cleanup as _cleanup
+
+    log_tool("fanout_cleanup", group_id=group_id)
+    res = _cleanup(
+        group_id,
+        close_open_tasks=close_open_tasks,
+        remove_worktrees=remove_worktrees,
+        delete_branches=delete_branches,
+        summary=summary,
+        store=_store,
+    )
+    lines = [
+        f"fanout group `{group_id}` cleanup:",
+        f"  closed tasks:     {len(res.closed_task_ids)} "
+        f"({', '.join(str(i) for i in res.closed_task_ids) or 'none'})",
+        f"  worktrees gone:   {len(res.removed_worktrees)}",
+        f"  branches deleted: {len(res.deleted_branches)}",
+    ]
+    if res.skipped:
+        lines.append(f"  skipped:          {len(res.skipped)}")
+        for s in res.skipped[:5]:
+            lines.append(f"    - {s}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def compact_master_state(
     project_root: str,
     output_file: str = ".memory/decisions.md",

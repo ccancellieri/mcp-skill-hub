@@ -15,7 +15,7 @@ import pytest
 SRC = Path(__file__).resolve().parent.parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from skill_hub.fanout.coordinator import fanout
+from skill_hub.fanout.coordinator import fanout, fanout_cleanup
 from skill_hub.fanout.sources import Issue
 from skill_hub.store import SkillStore
 
@@ -120,3 +120,41 @@ def test_fanout_empty_source_returns_no_directive(patch_repo_roots, tmp_path: Pa
     )
     assert result.task_ids == []
     assert "no tasks created" in result.directive
+
+
+def test_fanout_cleanup_removes_tasks_worktrees_branches(patch_repo_roots, tmp_path: Path):
+    store = SkillStore(db_path=tmp_path / "store.db")
+    result = fanout(
+        "text",
+        filter="- alpha\n- beta",
+        limit=2,
+        project="demo",
+        dry_run=False,
+        use_llm=False,
+        store=store,
+    )
+    gid = result.group_id
+    wt_paths = result.worktree_paths
+    assert all(Path(p).exists() for p in wt_paths)
+
+    cleanup = fanout_cleanup(gid, store=store, summary="test cleanup")
+
+    assert sorted(cleanup.closed_task_ids) == sorted(result.task_ids)
+    assert len(cleanup.removed_worktrees) == 2
+    assert len(cleanup.deleted_branches) == 2
+    assert cleanup.skipped == []
+
+    # Worktree directories really removed
+    for p in wt_paths:
+        assert not Path(p).exists(), f"{p} should be gone"
+
+    # Open-task query returns nothing for the group; closed rows persist
+    assert store.list_tasks(status="open", tag=f"fanout:{gid}") == []
+    closed_rows = store.list_tasks(status="closed", tag=f"fanout:{gid}")
+    assert len(closed_rows) == 2
+
+    # Branches gone — running cleanup again is idempotent
+    again = fanout_cleanup(gid, store=store)
+    assert again.closed_task_ids == []  # already closed
+    assert again.removed_worktrees == []  # worktrees already gone
+    assert again.skipped == []

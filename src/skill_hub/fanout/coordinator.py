@@ -170,4 +170,76 @@ def fanout(
     return result
 
 
-__all__ = ["FanoutResult", "fanout"]
+@dataclass
+class CleanupResult:
+    group_id: str
+    closed_task_ids: list[int] = field(default_factory=list)
+    removed_worktrees: list[str] = field(default_factory=list)
+    deleted_branches: list[str] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
+
+
+def fanout_cleanup(
+    group_id: str,
+    *,
+    close_open_tasks: bool = True,
+    remove_worktrees: bool = True,
+    delete_branches: bool = True,
+    summary: str = "",
+    store: object | None = None,
+) -> CleanupResult:
+    """Tear down every task + worktree + branch in a fanout group.
+
+    The bulk inverse of :func:`fanout`. Idempotent: safe to call after a
+    partial cleanup. Closed tasks are still inspected so their worktrees /
+    branches can be removed.
+    """
+    from .. import worktree as _wt
+
+    if store is None:
+        from ..store import SkillStore
+        store = SkillStore()
+
+    rows = store.list_tasks(status="all", tag=f"fanout:{group_id}")  # type: ignore[attr-defined]
+    result = CleanupResult(group_id=group_id)
+    if not rows:
+        return result
+
+    digest = (summary or f"fanout group {group_id} cleanup").strip()
+
+    for r in rows:
+        row = dict(r)
+        task_id = row.get("id")
+
+        if close_open_tasks and row.get("status") == "open":
+            try:
+                if store.close_task(task_id, compact=digest):  # type: ignore[attr-defined]
+                    result.closed_task_ids.append(task_id)
+            except Exception as e:  # noqa: BLE001
+                result.skipped.append({"task_id": task_id, "stage": "close", "reason": str(e)})
+
+        full = store.get_task(task_id)  # type: ignore[attr-defined]
+        spec_blob = dict(full).get("worktree") if full else None
+        if not spec_blob or not (remove_worktrees or delete_branches):
+            continue
+
+        try:
+            spec = _wt.WorktreeSpec.from_json(spec_blob)
+        except Exception as e:  # noqa: BLE001
+            result.skipped.append({"task_id": task_id, "stage": "parse_spec", "reason": str(e)})
+            continue
+
+        worktree_existed = Path(spec.worktree_path).exists()
+        try:
+            _wt.teardown_worktree(spec, delete_branch=delete_branches)
+            if remove_worktrees and worktree_existed:
+                result.removed_worktrees.append(spec.worktree_path)
+            if delete_branches:
+                result.deleted_branches.append(spec.branch)
+        except Exception as e:  # noqa: BLE001
+            result.skipped.append({"task_id": task_id, "stage": "teardown", "reason": str(e)})
+
+    return result
+
+
+__all__ = ["FanoutResult", "CleanupResult", "fanout", "fanout_cleanup"]
