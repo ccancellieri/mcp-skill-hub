@@ -66,8 +66,8 @@ Sub-issues filed in a follow-up batch once the design has settled.
 
 Move maintainer feedback rules from memory into callable skill-hub primitives.
 
-- [ ] #15 — `worktree_preflight`: collision check tool
-- [ ] #16 — `sync_check`: cross-repo stale-import detector
+- [x] #15 — `worktree_preflight`: collision check tool (3-axis: worktree + branch + open PR)
+- [x] #16 — `sync_check`: cross-repo stale-import detector (git diff + grep, no false positives)
 - [x] #17 — `lint_canary`: rotate through ruff selectors (core_task + MCP tool, witness-log JSONL)
 - [x] #18 — memory-rule export: feedback files → per-repo `POLICY.md` (`export_policies` MCP tool)
 - [x] #19 — cross-project task federation: per-repo filter on every task tool

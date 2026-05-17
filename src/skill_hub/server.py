@@ -920,6 +920,48 @@ def fanout_cleanup(
     return "\n".join(lines)
 
 
+# ─────────────────────── Worktree pre-flight (M3-1) ─────────────────────────
+
+@mcp.tool()
+def worktree_preflight(
+    issue_number: int,
+    project: str,
+    repo: str = "",
+) -> str:
+    """Pre-flight collision check before starting a worktree-bound issue task.
+
+    Sub-second three-axis check that encodes the worktree-naming-collision
+    rule as a callable tool rather than a memory rule re-read every session:
+
+    1. Local worktrees under ``<repo>/.claude/worktrees/issue-<N>-*``
+    2. Local branches matching ``cc/issue-<N>-*``
+    3. Open GitHub PRs whose head branch starts with ``cc/issue-<N>-``
+       (best-effort via ``gh``; skipped with a warning if ``gh`` is
+       missing / unauthenticated)
+
+    Parameters
+    ----------
+    issue_number: positive GitHub issue id.
+    project:      skill-hub project name (resolved under
+                  ``worktree.repo_roots``); the *local* repo whose
+                  worktrees / branches we inspect.
+    repo:         optional ``owner/name`` passed to ``gh`` for the issue
+                  metadata + PR lookup. Always set this from the MCP
+                  daemon — its cwd is not the user's shell cwd.
+
+    Returns a single string: either "safe to start" or "collision
+    detected" plus per-axis details and any ``gh`` warnings.
+    """
+    from .worktree_preflight import preflight as _preflight, format_result
+    log_tool("worktree_preflight", issue_number=issue_number,
+             project=project, repo=repo)
+    try:
+        res = _preflight(issue_number, project=project, repo=repo)
+    except (ValueError, RuntimeError) as e:
+        return f"worktree_preflight failed: {e}"
+    return format_result(res)
+
+
 @mcp.tool()
 def federation_view(remote_db_path: str, alias: str = "remote") -> str:
     """M4-3 federation-lite — open a peer host's skill-hub DB read-only.
@@ -2891,6 +2933,44 @@ def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
         cursor=run.cursor_after,
     )
     return format_run(run)
+
+
+@mcp.tool()
+def sync_check(
+    primary: str,
+    followers: list[str],
+    base_ref: str = "HEAD~1",
+    removed_symbols: list[str] | None = None,
+) -> str:
+    """M3 #16 — Cross-repo stale-import detector.
+
+    Greps follower repos for symbols recently removed/renamed in the primary
+    (SSOT) repo. Reports lines like
+    ``stale ref "OldClass" in follower/src/foo.py:42``.
+
+    Pure grep — no LLM. The primary diff is computed via
+    ``git diff <base_ref>``; symbols that still exist anywhere in the primary
+    working tree are filtered out (so renames/moves don't generate false
+    positives). Pass ``removed_symbols`` to bypass the diff step and grep
+    for a caller-supplied list.
+    """
+    from .sync_check import sync_check as _sc, format_report
+
+    report = _sc(
+        primary=primary,
+        followers=followers,
+        base_ref=base_ref,
+        removed_symbols=removed_symbols,
+    )
+    log_tool(
+        "sync_check",
+        primary=primary,
+        base_ref=base_ref,
+        followers=len(followers),
+        removed_symbols=len(report.removed_symbols),
+        findings=len(report.findings),
+    )
+    return format_report(report)
 
 
 @mcp.tool()
