@@ -51,16 +51,16 @@ Visibility + pure-stdlib tools so skill-hub is obviously useful even with no Oll
 - [ ] #9 — claims-board: claim / handoff / steal on tasks (no LLM needed)
 - [ ] #10 — witness-log: append-only fix manifest per repo
 - [ ] #11 — worktree-aware tasks: capture branch + worktree path on save
-- [ ] #12 — PII gate: regex scan before `save_task` / `teach` on public repos
-- [ ] #13 — dashboard: `/status/capabilities` view
+- [x] #12 — PII gate: regex scan before `save_task` / `teach` on public repos
+- [x] #13 — dashboard: `/status/capabilities` view
 
 ### M2 — Managed-Agents architectural refactor (design phase)
 
 Selectively apply patterns from Anthropic's Managed Agents post — durable event log, stateless recovery, uniform tool envelope, credential vault, optional sandbox.
 
-- [ ] #14 — tracking issue + `docs/design/managed-agents-refactor.md`
+- [x] #14 — tracking issue + `docs/design/managed-agents-refactor.md` (Q1/Q4/Q5 resolved; W1-W5 sub-issues to file)
 
-Sub-issues filed in a follow-up batch once the design has settled.
+Sub-issues (W1-W5) to be filed against this milestone now that decision gates are settled.
 
 ### M3 — Worktree + multi-repo policy enforcement
 
