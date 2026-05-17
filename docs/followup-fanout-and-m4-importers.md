@@ -72,7 +72,7 @@ After the safe pile commits, the cleanup sequence is:
 **P2 (fanout cleanup)**
 - [ ] Resolve F1 bookmark-vs-harness worktree duplication
 - [x] Implement F2 `fanout_cleanup(group_id)` — bulk inverse of `fanout_issues`; closes tasks + removes worktrees + deletes branches; idempotent
-- [ ] Document F3 MCP-reload workflow
+- [x] Document F3 MCP-reload workflow (see `docs/installation.md` Troubleshooting)
 
 **P3 (smoke + polish)**
 - [ ] End-to-end smoke: fresh fanout against a different repo with real GH issues

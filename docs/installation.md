@@ -204,6 +204,47 @@ The agent tries OpenAI-compatible `/v1/chat/completions` first, falls back to Ol
 
 ---
 
+## Troubleshooting
+
+### MCP tools not showing up after a code change
+
+Symptom: you added a new `@mcp.tool()` (or pulled a release that did), but the
+tool name doesn't appear in the deferred-tool list and direct calls fail with
+`InputValidationError`.
+
+Reason: Claude Code starts the skill-hub MCP server **once per session** and
+caches the tool schema list. New `@mcp.tool()` functions are only registered
+when the server boots — there is no in-session reload.
+
+Fix:
+
+1. Exit Claude Code (`Ctrl-D` or `/exit`).
+2. Re-open Claude Code in the same project — the skill-hub server restarts and
+   re-introspects, exposing every `@mcp.tool()`.
+3. In the new session, the tool will be discoverable via `ToolSearch` and
+   callable directly.
+
+If you'd rather not restart, you can still invoke the underlying coordinator
+from Python:
+
+```bash
+uv run python -c "
+from skill_hub.fanout.coordinator import fanout_cleanup
+print(fanout_cleanup('<group-id>'))
+"
+```
+
+This bypasses MCP entirely and hits the same code path the tool would.
+
+### Verifying the server picked up a new tool
+
+After restart, ask the assistant to `ToolSearch("select:fanout_cleanup", 1)`
+(or the new tool's name). A schema in the result means the server registered
+it. An empty result means the install in `~/.mcp.json` is pointing at a stale
+checkout — re-run `./install.sh` or correct the path manually.
+
+---
+
 ## What to do next
 
 - Run `status()` to verify everything is wired → [reference/logs.md](reference/logs.md)
