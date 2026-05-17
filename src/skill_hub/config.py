@@ -506,6 +506,20 @@ _WORKTREE_DEFAULTS = {
 _DEFAULTS["worktree"] = _WORKTREE_DEFAULTS
 
 
+# Fan-out: parallel-issue worktree dispatch (skill_hub.fanout).
+_FANOUT_DEFAULTS = {
+    "default_limit":  3,
+    "prompt_model":   "",             # blank → use llm provider's default
+    "prompt_timeout": 60,
+    "sources": [
+        "skill_hub.fanout.sources:GitHubSource",
+        "skill_hub.fanout.sources:TextSource",
+    ],
+    "naming": "issue-{number}-{slug}",
+}
+_DEFAULTS["fanout"] = _FANOUT_DEFAULTS
+
+
 # Legacy top-level keys folded into the services/monitor dicts on load.
 # Tuple shape: (legacy_key, service_name, field) — service_name=None means
 # top-level is preserved (only delete the old key).

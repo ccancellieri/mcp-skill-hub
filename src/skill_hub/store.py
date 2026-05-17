@@ -1928,18 +1928,29 @@ class SkillStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def list_tasks(self, status: str = "open") -> list[sqlite3.Row]:
+    def list_tasks(self, status: str = "open",
+                   tag: str | None = None) -> list[sqlite3.Row]:
         cols = (
             "id, title, summary, context, status, tags, color, session_id, "
             "created_at, updated_at, closed_at"
         )
-        if status == "all":
-            return self._conn.execute(
-                f"SELECT {cols} FROM tasks ORDER BY updated_at DESC"
-            ).fetchall()
+        where: list[str] = []
+        params: list = []
+        if status != "all":
+            where.append("status = ?")
+            params.append(status)
+        if tag:
+            # Tags are stored as a space- or comma-delimited string; match the
+            # token bounded by start/end or non-word chars to avoid `fanout:abc`
+            # matching `fanout:abcdef`.
+            where.append(
+                "(tags = ? OR tags LIKE ? OR tags LIKE ? OR tags LIKE ?)"
+            )
+            params += [tag, f"{tag} %", f"% {tag}", f"% {tag} %"]
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
         return self._conn.execute(
-            f"SELECT {cols} FROM tasks WHERE status = ? ORDER BY updated_at DESC",
-            (status,)
+            f"SELECT {cols} FROM tasks{clause} ORDER BY updated_at DESC",
+            params,
         ).fetchall()
 
     def get_task(self, task_id: int) -> sqlite3.Row | None:

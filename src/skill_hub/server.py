@@ -757,6 +757,110 @@ def close_task(
     )
 
 
+# ───────────────────────── Fanout (parallel issue dispatch) ──────────────────
+
+@mcp.tool()
+def fanout_issues(
+    project: str,
+    source: str = "gh",
+    filter: str = "",
+    limit: int = 0,
+    repo: str = "",
+    dry_run: bool = False,
+    use_llm: bool = True,
+) -> str:
+    """Fan out N issues into N worktree-bound tasks + an Agent dispatch directive.
+
+    One call prepares the parallel-work scaffolding the active Claude needs to
+    dispatch `Agent({...})` calls in a single message.
+
+    Parameters
+    ----------
+    project: skill-hub project name (resolved under worktree.repo_roots).
+    source:  "gh" (default) | "text" | a configured custom adapter name.
+    filter:  source-specific filter — for gh, a search query like
+             "label:bug is:open"; for text, the raw bullet/numbered list.
+    limit:   max issues to fan out (0 → fanout.default_limit, default 3).
+    repo:    optional "owner/name" passed to sources that support it (gh).
+    dry_run: when True, no worktrees / tasks are created — preview only.
+    use_llm: when False, every per-issue prompt uses the deterministic
+             fallback template instead of the local LLM.
+
+    Returns a multi-line string: summary, per-task rows, and the directive
+    block the active Claude should paste back as ONE message with N Agent
+    tool uses (so they run concurrently).
+    """
+    log_tool("fanout_issues", project=project, source=source,
+             limit=limit, dry_run=dry_run)
+    from .fanout import fanout as _fanout
+    try:
+        result = _fanout(
+            source,
+            filter=filter,
+            limit=(limit or None),
+            project=project,
+            repo=repo,
+            dry_run=dry_run,
+            use_llm=use_llm,
+            store=_store,
+        )
+    except (ValueError, RuntimeError) as e:
+        return f"fanout failed: {e}"
+    skipped_line = ""
+    if result.skipped:
+        rows = "\n".join(f"  - {s['issue']}: {s['reason']}" for s in result.skipped)
+        skipped_line = f"\n\nSkipped:\n{rows}"
+    return result.directive + skipped_line
+
+
+@mcp.tool()
+def fanout_status(group_id: str) -> str:
+    """Roll up progress for all tasks in a fanout group.
+
+    Shows open/closed counts and per-task one-liners (id, title, status).
+    """
+    log_tool("fanout_status", group_id=group_id)
+    rows = _store.list_tasks(status="all", tag=f"fanout:{group_id}")
+    if not rows:
+        return f"fanout group {group_id}: no tasks found."
+    open_n = sum(1 for r in rows if r["status"] == "open")
+    closed_n = sum(1 for r in rows if r["status"] == "closed")
+    lines = [
+        f"fanout group `{group_id}` — {len(rows)} tasks "
+        f"({open_n} open, {closed_n} closed)",
+    ]
+    for r in rows:
+        lines.append(f"  #{r['id']} [{r['status']}] {r['title']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def fanout_close(group_id: str, summary: str = "") -> str:
+    """Close every open task in a fanout group.
+
+    Uses a short shared summary (or a placeholder) to avoid running the
+    per-task LLM compactor N times. Worktrees stay on disk so each task
+    can still be resumed if needed.
+    """
+    log_tool("fanout_close", group_id=group_id)
+    rows = _store.list_tasks(status="open", tag=f"fanout:{group_id}")
+    if not rows:
+        return f"fanout group {group_id}: no open tasks to close."
+    digest = (summary or f"fanout group {group_id} closed in bulk").strip()
+    closed: list[int] = []
+    for r in rows:
+        try:
+            ok = _store.close_task(r["id"], compact=digest)
+            if ok:
+                closed.append(r["id"])
+        except Exception:  # noqa: BLE001
+            continue
+    return (
+        f"fanout group `{group_id}`: closed {len(closed)} task(s) "
+        f"(ids: {', '.join(str(i) for i in closed) or 'none'})"
+    )
+
+
 @mcp.tool()
 def compact_master_state(
     project_root: str,
