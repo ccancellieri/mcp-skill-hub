@@ -1,0 +1,70 @@
+name: Feature request
+description: Propose a new feature or enhancement.
+labels: ["kind:feat"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who benefits?
+      placeholder: |
+        Skill-hub currently does X, but a user trying to Y has to manually...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Specific behavior, tool surface, or change.
+      placeholder: |
+        Add a new MCP tool `foo_bar(arg1, arg2)` that...
+        New columns on `tasks` table: ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know this is done?
+      placeholder: |
+        - [ ] Tool returns expected output for X
+        - [ ] `hub-status` reports new capability
+        - [ ] Tests in `tests/test_foo.py` cover happy path + error path
+    validations:
+      required: true
+  - type: dropdown
+    id: llm_dep
+    attributes:
+      label: LLM dependency
+      description: Does this feature need a model to function?
+      options:
+        - none (pure stdlib / SQLite / regex)
+        - embedding (sqlite-vec / sentence-transformers / Ollama embed)
+        - full LLM (Ollama generate / Voyage / litellm)
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Target milestone
+      options:
+        - M1 No-LLM
+        - M2 Managed Agents
+        - M3 Worktree Policy
+        - M4 Ruflo Absorption
+        - Unscheduled
+      default: 4
+    validations:
+      required: true
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Estimated effort
+      options:
+        - S (≤1 day)
+        - M (2–4 days)
+        - L (>4 days)
+      default: 1
+    validations:
+      required: true

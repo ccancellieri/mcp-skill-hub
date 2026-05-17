@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Roadmap
+    url: https://github.com/ccancellieri/mcp-skill-hub/blob/main/docs/roadmap.md
+    about: See what is shipped, in progress, and planned per milestone.
+  - name: Comparison with ruflo (claude-flow)
+    url: https://github.com/ccancellieri/mcp-skill-hub/blob/main/docs/comparison-ruflo.md
+    about: How skill-hub relates to ruflo and the absorption plan (M4).

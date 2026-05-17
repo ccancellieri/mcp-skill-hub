@@ -1,0 +1,69 @@
+# Canonical label set for ccancellieri/mcp-skill-hub.
+# Apply with `scripts/seed_labels.sh`.
+
+# Milestones (one per roadmap milestone)
+- name: m1-no-llm
+  color: "0e8a16"
+  description: "M1: Useful Without LLM — visibility + pure-stdlib tools"
+- name: m2-managed-agents
+  color: "1d76db"
+  description: "M2: Managed-Agents architectural refactor (design phase)"
+- name: m3-worktree-policy
+  color: "5319e7"
+  description: "M3: Worktree + multi-repo policy enforcement"
+- name: m4-ruflo-absorb
+  color: "b60205"
+  description: "M4: Absorb ruflo (claude-flow) features natively, no runtime dep"
+
+# Areas
+- name: "area:tools"
+  color: "fbca04"
+  description: MCP tool surface
+- name: "area:docs"
+  color: "fbca04"
+  description: Documentation
+- name: "area:dashboard"
+  color: "fbca04"
+  description: /control FastAPI dashboard
+- name: "area:db"
+  color: "fbca04"
+  description: SQLite schema / migrations
+
+# Kinds
+- name: "kind:bug"
+  color: "d73a4a"
+  description: Something doesn't work
+- name: "kind:feat"
+  color: "a2eeef"
+  description: New feature or enhancement
+- name: "kind:refactor"
+  color: "c2e0c6"
+  description: Internal restructuring, no behavior change
+- name: "kind:perf"
+  color: "bfd4f2"
+  description: Performance work
+- name: "kind:meta"
+  color: "ededed"
+  description: Tracking / planning / process
+- name: "kind:docs"
+  color: "0075ca"
+  description: Documentation
+
+# Efforts
+- name: "effort:S"
+  color: "c5def5"
+  description: ≤1 day
+- name: "effort:M"
+  color: "bfd4f2"
+  description: 2–4 days
+- name: "effort:L"
+  color: "84b6eb"
+  description: >4 days
+
+# Cross-cutting flags
+- name: degrades-gracefully
+  color: "0e8a16"
+  description: Designed to work even when LLM / embedding backends are unavailable
+- name: no-ruflo-dep
+  color: "b60205"
+  description: Hard constraint — implementation MUST NOT runtime-depend on ruflo/claude-flow
