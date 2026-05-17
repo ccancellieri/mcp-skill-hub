@@ -901,6 +901,114 @@ def fanout_cleanup(
 
 
 @mcp.tool()
+def federation_view(remote_db_path: str, alias: str = "remote") -> str:
+    """M4-3 federation-lite — open a peer host's skill-hub DB read-only.
+
+    Attaches ``remote_db_path`` to the local SQLite connection, reports a
+    summary of what's visible there (task / event counts, distinct node_ids),
+    then detaches. Intended for multi-host setups where the DB file is shared
+    via Syncthing / rsync / git-annex — no network protocol involved.
+
+    Use cases:
+    - "Whose tasks are these?" — list node_ids in the synced replica.
+    - "Did host X record events I haven't seen?" — count by node_id.
+    - Cross-host queries can be built manually by ATTACHing in a session.
+    """
+    log_tool("federation_view", remote_db_path=remote_db_path, alias=alias)
+    try:
+        info = _store.federation_view(remote_db_path, alias=alias)
+    except FileNotFoundError as exc:
+        return f"federation_view error: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return f"federation_view failed: {exc.__class__.__name__}: {exc}"
+
+    nodes = info["remote_nodes"]
+    nodes_line = ", ".join(nodes) if nodes else "(none)"
+    return (
+        f"federation_view: {info['remote_path']}\n"
+        f"  alias:        {info['alias']}\n"
+        f"  local node:   {info['local_node']}\n"
+        f"  remote nodes: {nodes_line}\n"
+        f"  tasks  local={info['tasks']['local']}  remote={info['tasks']['remote']}\n"
+        f"  events local={info['events']['local']}  remote={info['events']['remote']}\n"
+        f"  schemas: tasks={info['schemas']['tasks_remote']} "
+        f"events={info['schemas']['events_remote']}"
+    )
+
+
+# ───────────────────────── Swarm-lite (parallel claim dispatch) ──────────────
+
+@mcp.tool()
+def swarm_launch(
+    claims: list[dict],
+    group_id: str = "",
+    claude_binary: str = "",
+) -> str:
+    """Spawn one `claude` subprocess per claim, each cwd'd to its worktree.
+
+    Provides the "swarm" capability without depending on claude-flow/ruflo.
+    Each claim dict must carry:
+
+    * ``claim_id``       — stable id from the claims board (m1-#9)
+    * ``worktree_path``  — existing worktree directory (m1-#6)
+    * ``task_summary``   — optional human description used in the prompt
+    * ``prompt``         — optional override of the default prompt
+
+    Returns a multi-line string with one row per spawned subprocess
+    (claim_id, pid, log path) plus the assigned ``group_id``. Use
+    ``swarm_reap`` to poll for completion and collect exit codes.
+    """
+    from .swarm import swarm_launch as _launch, SwarmError
+
+    log_tool("swarm_launch", count=len(claims or []), group_id=group_id or None)
+    try:
+        handles = _launch(
+            claims,
+            group_id=group_id or None,
+            claude_binary=(claude_binary or None),
+        )
+    except SwarmError as exc:
+        return f"swarm_launch failed: {exc}"
+
+    gid = Path(handles[0].log_path).parent.name if handles else (group_id or "")
+    lines = [f"swarm group `{gid}` — launched {len(handles)} subprocess(es):"]
+    for h in handles:
+        lines.append(
+            f"  claim={h.claim_id} pid={h.pid} status={h.status} "
+            f"log={h.log_path}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def swarm_reap(
+    handles: list[dict],
+    timeout_sec: float = 0.0,
+) -> str:
+    """Poll swarm subprocess handles; return updated status + exit codes.
+
+    ``handles`` is the list-of-dicts form of what ``swarm_launch`` returned
+    (callers persist these between MCP calls). ``timeout_sec`` of 0 performs
+    a single non-blocking sweep; >0 waits up to that many seconds for any
+    still-running children.
+    """
+    from .swarm import swarm_reap as _reap, SwarmHandle
+
+    log_tool("swarm_reap", count=len(handles or []), timeout=timeout_sec)
+    if not handles:
+        return "swarm_reap: no handles provided"
+    objs = [SwarmHandle(**h) if isinstance(h, dict) else h for h in handles]
+    _reap(objs, timeout=(timeout_sec or None))
+    lines = ["swarm reap result:"]
+    for h in objs:
+        rc = "?" if h.returncode is None else str(h.returncode)
+        lines.append(
+            f"  claim={h.claim_id} status={h.status} rc={rc} pid={h.pid}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def compact_master_state(
     project_root: str,
     output_file: str = ".memory/decisions.md",
@@ -3054,6 +3162,67 @@ def rebuild_session_memory(
     path = _sm.write_memory(session_id, memory)
     preview = memory[:500]
     return f"Saved {len(memory)} chars to {path}.\n\nPreview:\n{preview}"
+
+
+# ---------------------------------------------------------------------------
+# Autopilot-lite (issue #21 / M4-2) — drain the claims board in a loop.
+# Pure SQLite + subprocess; no ruflo runtime dependency.
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def autopilot_run(
+    poll_interval: float = 5.0,
+    max_claims: int = 0,
+    drain_and_exit: bool = True,
+    runner_id: str = "",
+) -> str:
+    """Foreground loop: pick the next stealable claim, run it, repeat.
+
+    The default mode (``drain_and_exit=True``) returns once the queue is
+    empty so this tool can be called interactively without blocking the
+    MCP session. Set it to ``False`` and run the CLI binary instead
+    (``skill-hub-cli autopilot_run``) for true overnight operation.
+    """
+    from .autopilot import AutopilotRunner
+    log_tool(
+        "autopilot_run",
+        poll_interval=poll_interval,
+        max_claims=max_claims,
+        drain_and_exit=drain_and_exit,
+    )
+    runner = AutopilotRunner(
+        _store_db_path(),
+        runner_id=runner_id,
+        poll_interval=poll_interval,
+        max_claims=max_claims,
+        drain_and_exit=drain_and_exit,
+    )
+    result = runner.run()
+    return (
+        f"autopilot[{result.runner_id}] drained={result.drained} "
+        f"failed={result.failed} stopped_by={result.stopped_by} "
+        f"claims={','.join(str(i) for i in result.claim_ids) or 'none'}"
+    )
+
+
+@mcp.tool()
+def autopilot_stop(runner_id: str = "") -> str:
+    """Signal one (or every) autopilot runner to exit at its next checkpoint.
+
+    Empty ``runner_id`` stops all runners. The flag lives in SQLite so a
+    runner in a separate process picks it up on its next poll cycle.
+    """
+    from .autopilot import request_stop
+    log_tool("autopilot_stop", runner_id=runner_id)
+    touched = request_stop(_store_db_path(), runner_id)
+    target = runner_id or "all runners"
+    return f"autopilot_stop: {target} flagged ({touched} row(s))"
+
+
+def _store_db_path() -> str:
+    """Resolve the SkillStore SQLite file used by the autopilot board."""
+    from .store import DB_PATH
+    return str(DB_PATH)
 
 
 def main() -> None:

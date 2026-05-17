@@ -520,6 +520,16 @@ _FANOUT_DEFAULTS = {
 _DEFAULTS["fanout"] = _FANOUT_DEFAULTS
 
 
+# M4-3 federation-lite — schema convention for multi-host shared state.
+# ``node_id`` tags every event/task with the authoring host so a synced DB
+# replica (Syncthing / rsync / git-annex) can be filtered cross-host. Empty
+# string → store.py falls back to $SKILL_HUB_NODE_ID then socket.gethostname().
+_FEDERATION_DEFAULTS = {
+    "node_id": "",
+}
+_DEFAULTS["federation"] = _FEDERATION_DEFAULTS
+
+
 # Legacy top-level keys folded into the services/monitor dicts on load.
 # Tuple shape: (legacy_key, service_name, field) — service_name=None means
 # top-level is preserved (only delete the old key).

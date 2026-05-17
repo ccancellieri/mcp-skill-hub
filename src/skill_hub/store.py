@@ -15,12 +15,56 @@ import json
 import logging
 import math
 import re
+import socket
 import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
+
+
+def _resolve_node_id() -> str:
+    """Resolve this host's federation node_id.
+
+    Order: ``federation.node_id`` config value → ``$SKILL_HUB_NODE_ID`` env var
+    → ``socket.gethostname()`` → ``"local"``. Sanitized to a safe identifier so
+    it can be used in attached-DB aliases and cross-host queries.
+
+    Federation-lite (M4-3) treats this as an opaque tag: SQLite stores it on
+    every row of ``events`` and ``tasks`` so that, when two databases live on
+    the same disk (via Syncthing / rsync / git-annex), rows can be filtered or
+    grouped by originating host without any coordination protocol.
+    """
+    import os
+
+    raw: str | None = None
+    try:
+        from . import config as _cfg
+
+        cfg = _cfg.load_config()
+        fed = cfg.get("federation") or {}
+        if isinstance(fed, dict):
+            val = fed.get("node_id")
+            if isinstance(val, str) and val.strip():
+                raw = val.strip()
+    except Exception:  # noqa: BLE001 — config is optional during early init
+        pass
+
+    if not raw:
+        env = os.environ.get("SKILL_HUB_NODE_ID", "").strip()
+        if env:
+            raw = env
+    if not raw:
+        try:
+            raw = socket.gethostname() or "local"
+        except Exception:  # noqa: BLE001
+            raw = "local"
+
+    # Allow letters, digits, underscore, hyphen, dot. Replace anything else
+    # with underscore so the value is safe inside SQL identifiers / file names.
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("_")
+    return cleaned or "local"
 
 try:  # Optional: sqlite-vec native ANN extension.
     import sqlite_vec  # type: ignore
@@ -159,8 +203,14 @@ def compute_activity_state(last_activity_at: str | None, status: str) -> str:
 class SkillStore:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db_path: Path = db_path
+        self.node_id: str = _resolve_node_id()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # WAL is idempotent — re-running on an already-WAL DB is a no-op and
+        # returns ``"wal"`` again. Federation-lite (M4-3) needs WAL so a
+        # sibling Syncthing/rsync replica can be read concurrently without
+        # blocking the local writer.
         result = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
         if result and result[0].lower() != "wal":
             _log.warning("WAL mode unavailable (filesystem may not support it); using %s", result[0])
@@ -500,6 +550,25 @@ class SkillStore:
                 reason     TEXT
             );
 
+            -- M2 W1 / M4-3 federation-lite — durable event log.
+            -- Append-only record of tool invocations + config changes that
+            -- can be replayed on wake_session (M2 W2) and joined across hosts
+            -- (Federation-lite) by ``node_id``. Schema matches the design in
+            -- docs/design/managed-agents-refactor.md, with ``source`` renamed
+            -- to the more explicit ``node_id`` per issue #22.
+            CREATE TABLE IF NOT EXISTS events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                ts          REAL NOT NULL,
+                kind        TEXT NOT NULL,
+                tool_name   TEXT,
+                payload     TEXT NOT NULL,
+                node_id     TEXT NOT NULL DEFAULT 'local'
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id, ts);
+            CREATE INDEX IF NOT EXISTS idx_events_kind    ON events (kind, ts);
+            CREATE INDEX IF NOT EXISTS idx_events_node    ON events (node_id);
+
             -- S3 F-SELECT: profile-based plugin curation
             CREATE TABLE IF NOT EXISTS profiles (
                 name         TEXT PRIMARY KEY,
@@ -768,6 +837,28 @@ class SkillStore:
                 task_cols = task_cols | {"color"}
             except Exception:
                 pass
+
+        # M4-3 federation-lite — tag every task with the node that authored it.
+        # Cross-host queries (via ``federation_view``) filter on this column to
+        # answer "which tasks belong to me vs. the synced replica?" without a
+        # protocol — pure schema convention over a shared/synced file system.
+        if "node_id" not in task_cols:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN node_id TEXT NOT NULL "
+                    f"DEFAULT '{self.node_id}'"
+                )
+                self._conn.commit()
+                task_cols = task_cols | {"node_id"}
+            except Exception:
+                pass
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(node_id)"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
 
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
@@ -1825,10 +1916,12 @@ class SkillStore:
                   worktree: str = "", color: str = "") -> int:
         cur = self._conn.execute("""
             INSERT INTO tasks (title, summary, context, tags, vector,
-                               session_id, cwd, branch, worktree, color)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               session_id, cwd, branch, worktree, color,
+                               node_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (title, summary, context, tags, json.dumps(vector),
-              session_id, cwd, branch, worktree or None, color or None))
+              session_id, cwd, branch, worktree or None, color or None,
+              self.node_id))
         self._conn.commit()
         task_id = cur.lastrowid or 0
         self._mirror_task_vec(task_id, vector)
@@ -3723,6 +3816,144 @@ class SkillStore:
             }))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
+
+    # ------------------------------------------------------------------
+    # M4-3 federation-lite — cross-host read-only views
+    # ------------------------------------------------------------------
+
+    def federation_view(
+        self,
+        remote_db_path: str | Path,
+        alias: str = "remote",
+    ) -> dict:
+        """Open a read-only ATTACH on another host's skill-hub DB and report
+        what's visible (tasks + events counts, distinct ``node_id`` values).
+
+        Intended for a shared/synced filesystem layout (Syncthing, rsync,
+        git-annex). No network protocol — just a SQLite ATTACH against a
+        peer's file. The remote DB is detached before returning so the local
+        connection stays clean.
+
+        Returns a dict with::
+
+            {
+              "alias":        attached schema alias used in queries,
+              "remote_path":  resolved absolute path,
+              "local_node":   self.node_id,
+              "remote_nodes": [<node_id>, ...],   # distinct in remote.tasks ∪ events
+              "tasks":        {"local": N, "remote": N},
+              "events":       {"local": N, "remote": N},
+              "schemas":      {"events_remote": bool, "tasks_remote": bool},
+            }
+        """
+        path = Path(remote_db_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"remote skill-hub DB not found: {path}")
+
+        safe_alias = re.sub(r"[^A-Za-z0-9_]+", "_", alias).strip("_") or "remote"
+        # SQLite ATTACH supports a 'file:' URI with read-only mode.
+        uri = f"file:{path}?mode=ro&immutable=0"
+        try:
+            self._conn.execute(
+                f"ATTACH DATABASE ? AS {safe_alias}", (uri,)
+            )
+        except sqlite3.OperationalError:
+            # Older SQLite builds may reject the URI form for ATTACH; fall
+            # back to a plain path (still respects WAL concurrency).
+            self._conn.execute(
+                f"ATTACH DATABASE ? AS {safe_alias}", (str(path),)
+            )
+
+        try:
+            # Probe schemas — a non-skill-hub DB at this path should still
+            # report cleanly instead of raising deep inside the caller.
+            tbls = {
+                row["name"]
+                for row in self._conn.execute(
+                    f"SELECT name FROM {safe_alias}.sqlite_master "
+                    "WHERE type='table'"
+                ).fetchall()
+            }
+            has_tasks = "tasks" in tbls
+            has_events = "events" in tbls
+
+            local_tasks = self._conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+            ).fetchone()[0]
+            local_events = self._conn.execute(
+                "SELECT COUNT(*) FROM events"
+            ).fetchone()[0]
+            remote_tasks = (
+                self._conn.execute(
+                    f"SELECT COUNT(*) FROM {safe_alias}.tasks"
+                ).fetchone()[0]
+                if has_tasks
+                else 0
+            )
+            remote_events = (
+                self._conn.execute(
+                    f"SELECT COUNT(*) FROM {safe_alias}.events"
+                ).fetchone()[0]
+                if has_events
+                else 0
+            )
+
+            nodes: set[str] = set()
+            if has_tasks:
+                for row in self._conn.execute(
+                    f"SELECT DISTINCT node_id FROM {safe_alias}.tasks "
+                    "WHERE node_id IS NOT NULL"
+                ).fetchall():
+                    nodes.add(row[0])
+            if has_events:
+                for row in self._conn.execute(
+                    f"SELECT DISTINCT node_id FROM {safe_alias}.events "
+                    "WHERE node_id IS NOT NULL"
+                ).fetchall():
+                    nodes.add(row[0])
+
+            return {
+                "alias":        safe_alias,
+                "remote_path":  str(path),
+                "local_node":   self.node_id,
+                "remote_nodes": sorted(nodes),
+                "tasks":        {"local": local_tasks, "remote": remote_tasks},
+                "events":       {"local": local_events, "remote": remote_events},
+                "schemas":      {"events_remote": has_events, "tasks_remote": has_tasks},
+            }
+        finally:
+            try:
+                self._conn.execute(f"DETACH DATABASE {safe_alias}")
+            except sqlite3.OperationalError:
+                pass
+
+    def append_event(
+        self,
+        session_id: str,
+        kind: str,
+        payload: dict | str,
+        tool_name: str | None = None,
+        ts: float | None = None,
+    ) -> int:
+        """Append a row to the M2 event log, stamped with this host's node_id.
+
+        Helper kept minimal — M2 W1 will wire it into the tool decorator;
+        federation-lite (M4-3) only needs the write path + node_id stamp so
+        cross-host queries can group/filter by author.
+        """
+        import time
+
+        if ts is None:
+            ts = time.time()
+        if not isinstance(payload, str):
+            payload = json.dumps(payload, default=str)
+        cur = self._conn.execute(
+            "INSERT INTO events (session_id, ts, kind, tool_name, payload, node_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, ts, kind, tool_name, payload, self.node_id),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
 
 
 # ----------------------------------------------------------------------

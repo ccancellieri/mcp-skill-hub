@@ -6517,7 +6517,7 @@ def main() -> None:
         print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context,")
         print("          exhaustion_save, digest, optimize_context, save_memory,")
-        print("          local_agent")
+        print("          local_agent, autopilot_run, autopilot_stop")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -6612,6 +6612,69 @@ def main() -> None:
     elif cmd == "local_agent":
         result = _cmd_local_agent(" ".join(args))
         print(result.get("message", json.dumps(result)))
+
+    elif cmd == "autopilot_run":
+        # Foreground autopilot loop (issue #21).
+        # Args: [--poll <secs>] [--max <n>] [--drain-and-exit] [--runner-id <id>]
+        poll_interval = 5.0
+        max_claims = 0
+        drain_and_exit = False
+        runner_id = ""
+        i = 0
+        while i < len(args):
+            if args[i] == "--poll" and i + 1 < len(args):
+                try:
+                    poll_interval = float(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--max" and i + 1 < len(args):
+                try:
+                    max_claims = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--drain-and-exit":
+                drain_and_exit = True
+                i += 1
+            elif args[i] == "--runner-id" and i + 1 < len(args):
+                runner_id = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        from .autopilot import AutopilotRunner
+        from .store import DB_PATH
+        runner = AutopilotRunner(
+            DB_PATH,
+            runner_id=runner_id,
+            poll_interval=poll_interval,
+            max_claims=max_claims,
+            drain_and_exit=drain_and_exit,
+        )
+        try:
+            result = runner.run()
+        except KeyboardInterrupt:
+            print("autopilot: interrupted")
+            sys.exit(130)
+        print(
+            f"autopilot[{result.runner_id}] drained={result.drained} "
+            f"failed={result.failed} stopped_by={result.stopped_by}"
+        )
+
+    elif cmd == "autopilot_stop":
+        # Args: [--runner-id <id>]
+        runner_id = ""
+        i = 0
+        while i < len(args):
+            if args[i] == "--runner-id" and i + 1 < len(args):
+                runner_id = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        from .autopilot import request_stop
+        from .store import DB_PATH
+        touched = request_stop(DB_PATH, runner_id)
+        print(f"autopilot_stop: {runner_id or 'all'} flagged ({touched} row(s))")
 
     elif cmd == "session_end":
         # Called by the Stop hook — saves session state + memory + stats
