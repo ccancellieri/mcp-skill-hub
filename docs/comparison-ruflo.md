@@ -1,9 +1,12 @@
 # Comparison: mcp-skill-hub vs ruflo (claude-flow)
 
+<!-- M4-FLIP: Framing pending. This document still describes the parity matrix as of today (2026-05-17). Once issues #20-#24 (M4-1..M4-5) land, rewrite to "absorption complete": skill-hub provides swarm-lite, autopilot-lite, federation-lite, skill import, and agent import natively; ruflo is reference material only. Keep the parity matrix; replace "planned" rows with "shipped in vX.Y". Document the uninstall path as the default rather than a future migration. -->
+
 ## Why this document exists
 
 `ruflo` (npm: `@claude-flow/cli`) and `mcp-skill-hub` overlap in roughly 20% of their surfaces — task tracking, semantic search, session persistence, hooks. The rest is disjoint. This page documents the comparison so a reader can decide whether to install both, neither, or just one.
 
+<!-- M4-FLIP: rewrite this paragraph when issues #20-#24 are merged. New framing: "skill-hub now provides swarm-lite, autopilot-lite, federation-lite, and the ruflo skill/agent importers natively; ruflo is no longer needed alongside." Drop the "roadmap" framing — point at shipped versions instead. -->
 **Project position**: skill-hub is the consolidated tool. The roadmap (milestone **M4**: `m4-ruflo-absorb`) reimplements the ruflo features the maintainer values as native skill-hub primitives. After M4 ships, ruflo is no longer needed alongside.
 
 **Hard constraint**: skill-hub never runtime-depends on ruflo. Read the [no-ruflo-dep gate](#no-ruflo-runtime-dependency) below.
@@ -24,6 +27,7 @@
 
 ---
 
+<!-- M4-FLIP: rewrite the four "planned M4-*" rows below when issues #20-#24 are merged. Replace each "None today; **planned M4-X (...)**" cell with the shipped tool name and entrypoint. Update the "Verdict" column from "Closing in M4" to "Native in skill-hub vX.Y". Keep the table structure intact. -->
 ## Side-by-side on overlapping features
 
 | Feature | skill-hub | ruflo | Verdict |
@@ -47,6 +51,7 @@
 
 ## Where they actively conflict
 
+<!-- M4-FLIP: rewrite these bullets when issues #20-#24 are merged. The importers (M4-4, M4-5) and claims semantics (M1-4) will have shipped; drop the "planned" qualifier and reference the actual command names. -->
 - **Memory store**: running both means two indexes drifting apart. Pick skill-hub as source of truth. If a user has ruflo installed today, importers M4-4 (skills) and M4-5 (agents) move the content into skill-hub once, after which ruflo can be uninstalled.
 - **Task tracking**: `list_tasks` vs `claims_board` diverge. M1-4 absorbs claims semantics into skill-hub's task table.
 
@@ -80,6 +85,7 @@ The only place ruflo is allowed to appear is inside one-shot importer scripts un
 
 ---
 
+<!-- M4-FLIP: when issues #20-#24 are merged, change this heading from "Migration path (after M4 ships)" to "Migration path" (or "Uninstall path"), and verify the commands in the snippet below match the actually-shipped entrypoints (skill_hub import-ruflo-skills / import-ruflo-agents, swarm_launch, etc.). -->
 ## Migration path (after M4 ships)
 
 ```bash
@@ -103,6 +109,7 @@ tar -czf ~/.claude-flow-archive.tar.gz ~/.claude-flow/ && rm -rf ~/.claude-flow/
 
 ---
 
+<!-- M4-FLIP: this section stays after the flip — these are the genuinely out-of-scope features. Re-check the parentheticals reference shipped M4 features by their final names instead of "M4-3 federation". -->
 ## When you might still want ruflo
 
 - Cross-installation federation with strong identity / cryptographic signing (skill-hub's M4-3 federation is intentionally a thin WAL+sync layer, not a protocol).
