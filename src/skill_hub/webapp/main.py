@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
 
 from .middleware.banner import BannerMiddleware
+from .routes import capabilities as capabilities_routes
 from .routes import control as control_routes
 from .routes import control_plugins as control_plugins_routes
 from .routes import cron as cron_routes
@@ -60,6 +61,7 @@ _CORE_NAV: list[dict[str, Any]] = [
     {"key": "cron", "label": "Cron", "href": "/cron"},
     {"key": "memory", "label": "Memory", "href": "/memory"},
     {"key": "experiments", "label": "Experiments", "href": "/experiments"},
+    {"key": "capabilities", "label": "Capabilities", "href": "/status/capabilities"},
 ]
 
 
@@ -216,6 +218,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(cron_routes.router)
     app.include_router(memory_routes.router)
     app.include_router(experiments_routes.router)
+    app.include_router(capabilities_routes.router)
 
     # Seed default cron jobs (no-op if table already populated) and start
     # the background scheduler when cron_jobs_enabled is True.

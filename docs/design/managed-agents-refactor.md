@@ -141,16 +141,70 @@ Every step is reversible by toggling the relevant config knob.
 
 ## Open questions
 
-1. **Event log retention.** Forever? Per-session prune after N days? Coalesce into snapshots? Initial answer: keep all events for 30 days, then snapshot+prune.
+1. **Event log retention.** Forever? Per-session prune after N days? Coalesce into snapshots?
 2. **Replay cost.** A long session's event log could be expensive to replay. Snapshot the projections periodically and replay only the tail?
-3. **Cross-session linking.** Should a `swarm_launch` parent session link to the child sessions via event references? Probably yes — record the spawn as a `tool_invoke` with the child session_id in payload.
+3. **Cross-session linking.** Should a `swarm_launch` parent session link to the child sessions via event references?
 4. **Keyring on headless Linux.** macOS keyring is OS-managed. Linux needs `secret-tool` / `pass`. Should the vault fall back to an encrypted file when no keyring service is available?
-5. **Sandbox & MCP stdio.** stdio MCP servers expect stdin/stdout. A subprocess sandbox makes that nested. The sandbox layer only wraps plan-execution tools, not the MCP transport — confirm scope explicitly in W5 design.
+5. **Sandbox & MCP stdio.** stdio MCP servers expect stdin/stdout. A subprocess sandbox makes that nested. Does the sandbox layer wrap the MCP transport or only plan-execution tools?
+
+## Resolutions
+
+Resolutions below settle the blocker questions (Q1, Q4, Q5) so that W1 / W4 / W5 sub-issues can be filed. Q2 and Q3 stay open intentionally — they need real telemetry from a shipped W1 before a defensible answer exists.
+
+### Q1 — Event log retention: **rolling 30-day retention with periodic snapshots**
+
+- Default: keep raw events for 30 days. Configurable via `event_log_retention_days` (int, default `30`, `0` = forever).
+- After 30 days, events for a closed session are coalesced into a single `session_snapshot` event whose payload is the rebuilt projection diff for that session; the raw events are then deleted.
+- An in-flight session (no `session_end` event) is never pruned regardless of age — open sessions are sacred.
+- Pruning runs as a background job triggered from `session_end` and at server start; never inline with a tool invoke.
+- Implementation hook: a new `events_prune(before_ts, dry_run=)` MCP tool wraps the same logic for manual ops.
+
+Status: **decided.** Unblocks W1.
+
+### Q4 — Keyring on headless Linux: **three-tier fallback with explicit user opt-in**
+
+- Tier A (preferred): OS keyring via `python-keyring` — Keychain on macOS, Secret Service / kwallet on Linux desktop sessions, Credential Manager on Windows.
+- Tier B (headless Linux fallback): file-backed encrypted vault at `${XDG_DATA_HOME:-~/.local/share}/skill-hub/vault.age` encrypted with `age` using a passphrase stored in `${SKILL_HUB_VAULT_PASSPHRASE}` (env var, never written to disk). Activated only when `keyring.get_keyring()` returns `keyring.backends.fail.Keyring`.
+- Tier C (CI / explicit opt-out): pass-through to environment variables, mirroring current behavior. Activated by `vault_backend: env` in config. This is the current behavior — `VOYAGE_API_KEY`, `ANTHROPIC_API_KEY`, etc. are already env-var driven, so Tier C is a no-op migration.
+- Detection order: A → B → C. The chosen backend is logged once at startup and surfaced in `status()`.
+- The W4 migration only moves credentials *from `config.json` into the vault*. Env-var-only setups skip W4 entirely.
+
+Status: **decided.** Unblocks W4.
+
+### Q5 — Sandbox scope: **plan-execution tools only; never the MCP transport**
+
+- W5 wraps **only** the three plan-execution tools: `run_plan`, `execute_plan_step`, `author_plan`. Everything else (search, embeddings, task CRUD, profiles, dashboard, etc.) keeps current in-process behavior.
+- The MCP stdio transport is **out of scope** for W5. Nesting a subprocess sandbox inside an stdio MCP server breaks the stdio contract; sub-MCP-servers stay first-class peers, not sandboxed children.
+- `provision({})` returning a no-op pass-through is the default for the ~37 non-plan-execution tools. Adding a tool to the sandbox set is opt-in via `policy.yml`.
+- Initial sandbox impl: `subprocess` with cwd=temp-dir, `PATH` allowlist, no network. Future modes (e.g., container) can ship later without re-doing the interface.
+
+Status: **decided.** Unblocks W5.
+
+### Q2 — Replay cost: **deferred until W1 telemetry**
+
+W2 will land with naive full-replay. If a session's replay exceeds 500 ms in practice, add a periodic snapshot at `session_end`-1h marks. Measure first, optimize later.
+
+### Q3 — Cross-session linking: **deferred until W1 telemetry**
+
+Tentative direction: record `swarm_launch` as `tool_invoke` with `payload.child_session_ids: [...]`. Final answer waits until W1 events accumulate from real swarm-lite runs (see M4 #20).
 
 ## Decision gates before filing sub-issues
 
-- Open questions 1, 4, 5 must have agreed answers before filing W1 / W4 / W5 sub-issues.
-- Open questions 2, 3 can wait until W1 ships with real volume data.
+| Gate | Status |
+|---|---|
+| Design doc reviewed | **done** (this revision) |
+| Q1 resolved | **done** (rolling 30-day retention) |
+| Q4 resolved | **done** (3-tier fallback) |
+| Q5 resolved | **done** (plan-execution tools only) |
+| Q2, Q3 | deferred — do not block W1/W4/W5 |
+
+Sub-issues to file (one per workstream, all under milestone `M2: Managed Agents`):
+
+- **W1** — Event log: `events` table + `get_events` MCP tool + `events_prune` + per-tool emit decorator.
+- **W2** — Stateless recovery: `wake_session(session_id)` MCP tool + cache-rebuild discipline.
+- **W3** — Uniform tool envelope: `ToolResult` dataclass + decorator + wire-layer adapter.
+- **W4** — Credential vault: `python-keyring` integration + 3-tier backend selection + one-shot config→vault migration.
+- **W5** — Sandbox interface: `provision()` + subprocess backend, scoped to plan-execution tools.
 
 ## References
 

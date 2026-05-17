@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}capabilities{% endblock %}
+{% block content %}
+<style>
+  .cap-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .cap-kpi {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    min-width: 110px;
+  }
+  .cap-kpi-label {
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--color-muted); font-weight: 700;
+  }
+  .cap-kpi-value {
+    font-size: 22px; font-weight: 700; margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .cap-kpi.green  .cap-kpi-value { color: var(--color-good); }
+  .cap-kpi.yellow .cap-kpi-value { color: var(--color-warn); }
+  .cap-kpi.red    .cap-kpi-value { color: var(--color-bad); }
+
+  .cap-backends {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+    margin-bottom: 18px;
+  }
+  .cap-backend {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .cap-backend small { color: var(--color-muted); font-size: 10.5px; }
+
+  .cap-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .cap-table th {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--color-muted); padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--color-border); font-weight: 700;
+  }
+  .cap-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: top;
+  }
+  .cap-table tr:last-child td { border-bottom: none; }
+  .cap-table tr.row-red td    { background: rgba(224, 85, 85, 0.04); }
+  .cap-table tr.row-yellow td { background: rgba(232, 166, 75, 0.04); }
+  .cap-table tr:hover td      { background: rgba(255, 255, 255, 0.03); }
+
+  .cap-name { font-family: ui-monospace, monospace; font-weight: 600; }
+  .cap-deps { color: var(--color-muted); font-size: 11px; }
+  .cap-setup {
+    margin: 4px 0 0; padding: 0; list-style: none;
+    color: var(--color-warn); font-size: 11px;
+  }
+  .cap-setup li::before { content: "→ "; color: var(--color-muted); }
+
+  /* re-use base status-dot palette; map verdicts to dot classes via inline. */
+  .dot-green  { background: var(--color-good); }
+  .dot-yellow { background: var(--color-warn); }
+  .dot-red    { background: var(--color-bad); }
+</style>
+
+<section class="panel">
+  <h1>Capabilities</h1>
+  <p class="muted" style="margin-top:-4px;">
+    Live verdict for every MCP tool based on what backends are reachable
+    right now. Matches <code>status</code> tool output. Click a red row to
+    see the exact setup step you need.
+  </p>
+
+  <div class="cap-summary">
+    <div class="cap-kpi green">
+      <div class="cap-kpi-label">Works now</div>
+      <div class="cap-kpi-value">{{ summary.green }}</div>
+    </div>
+    <div class="cap-kpi yellow">
+      <div class="cap-kpi-label">Degraded</div>
+      <div class="cap-kpi-value">{{ summary.yellow }}</div>
+    </div>
+    <div class="cap-kpi red">
+      <div class="cap-kpi-label">Blocked</div>
+      <div class="cap-kpi-value">{{ summary.red }}</div>
+    </div>
+    <div class="cap-kpi">
+      <div class="cap-kpi-label">Total tools</div>
+      <div class="cap-kpi-value">{{ summary.total }}</div>
+    </div>
+  </div>
+
+  <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--color-muted); margin:0 0 8px;">Backends</h2>
+  <div class="cap-backends">
+    {% for b in backends %}
+    <div class="cap-backend" title="{{ b.setup }}">
+      <span class="status-dot {% if b.ok %}dot-green{% else %}dot-red{% endif %}"></span>
+      <div>
+        <strong>{{ b.label }}</strong><br>
+        <small>{{ b.id }} — {% if b.ok %}ok{% else %}missing{% endif %}</small>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.06em;
+             color:var(--color-muted); margin:0 0 8px;">Tools ({{ summary.total }})</h2>
+  <div style="overflow-x:auto;">
+    <table class="cap-table">
+      <thead>
+        <tr>
+          <th style="width:1%;"></th>
+          <th>Tool</th>
+          <th>Summary</th>
+          <th>Needs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tools %}
+        <tr class="row-{{ t.verdict }}">
+          <td>
+            <span class="status-dot dot-{{ t.verdict }}"
+                  title="{{ t.verdict }}"></span>
+          </td>
+          <td class="cap-name">{{ t.name }}</td>
+          <td>
+            {{ t.summary }}
+            {% if t.setup %}
+            <ul class="cap-setup">
+              {% for s in t.setup %}<li>{{ s }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+          </td>
+          <td class="cap-deps">
+            {% if t.hard %}{{ t.hard|join(", ") }}{% endif %}
+            {% if t.soft %}<br><em>soft:</em> {{ t.soft|join(", ") }}{% endif %}
+            {% if not t.hard and not t.soft %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

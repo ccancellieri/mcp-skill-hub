@@ -389,9 +389,24 @@ def record_feedback(
 
 
 @mcp.tool()
-def teach(rule: str, suggest: str) -> str:
-    """Add a persistent rule mapping task patterns to plugins or skills."""
+def teach(rule: str, suggest: str, cwd: str = "", override_pii: bool = False) -> str:
+    """Add a persistent rule mapping task patterns to plugins or skills.
+
+    The PII gate scans `rule` + `suggest` when `cwd` resolves to a repo whose
+    ``.skill-hub/policy.yml`` declares ``public: true``. Pass ``override_pii=True``
+    to bypass the block (the override is logged to
+    ``<repo>/.skill-hub/pii_overrides.log``).
+    """
     log_tool("teach", rule=rule, suggest=suggest)
+
+    # M1 PII gate
+    _gate_content = "\n".join(filter(None, [rule, suggest]))
+    _allowed, _msg = _enforce_pii_gate(
+        tool="teach", content=_gate_content, cwd=cwd, override=override_pii,
+    )
+    if not _allowed:
+        return _msg
+
     if not embed_available():
         return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
@@ -553,6 +568,23 @@ def _generate_title(summary: str, context: str = "") -> str:
     return first_line[:80]
 
 
+def _enforce_pii_gate(
+    *, tool: str, content: str, cwd: str = "", project: str = "",
+    repo: str = "", override: bool = False,
+) -> tuple[bool, str]:
+    """Thin wrapper over ``pii_gate.enforce`` for save_task/teach.
+
+    Returns (False, refusal_message) when the destination repo is marked
+    ``public: true`` in ``.skill-hub/policy.yml`` and the content contains
+    likely-private values. Otherwise returns (True, "").
+    """
+    from . import pii_gate
+    return pii_gate.enforce(
+        tool=tool, content=content, cwd=cwd, project=project,
+        repo=repo, override=override,
+    )
+
+
 @mcp.tool()
 def save_task(
     title: str,
@@ -564,6 +596,7 @@ def save_task(
     initial_prompt: str = "",
     cwd: str = "",
     repo: str = "",
+    override_pii: bool = False,
 ) -> str:
     """Save an open task for retrieval in future sessions.
 
@@ -591,6 +624,16 @@ def save_task(
     than merging -- callers should deduplicate before saving.
     """
     log_tool("save_task", title=title, tags=tags, project=project, mode=mode)
+
+    # M1 PII gate — refuse save when content carries likely-private values
+    # and the destination repo is marked public in .skill-hub/policy.yml.
+    _gate_content = "\n".join(filter(None, [title, summary, context, tags]))
+    _allowed, _msg = _enforce_pii_gate(
+        tool="save_task", content=_gate_content,
+        cwd=cwd, project=project, repo=repo, override=override_pii,
+    )
+    if not _allowed:
+        return _msg
 
     # Auto-generate title when caller leaves it blank or too short
     if not title or len(title.strip()) < 4:
