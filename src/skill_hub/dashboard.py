@@ -208,6 +208,29 @@ def _db_metrics(store: Any) -> dict[str, Any]:
     except sqlite3.OperationalError:
         out["closed_by_day"] = []
 
+    # M3 — per-repo task counts. Drives the dashboard "Tasks by repo" card so
+    # the user can see at a glance which project owns each open task without
+    # opening every row. NULL repo rows fold into an ``(unassigned)`` bucket.
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(repo, '') as repo, status, COUNT(*) as n "
+            "FROM tasks GROUP BY repo, status ORDER BY repo"
+        ).fetchall()
+        per_repo: dict[str, dict[str, int]] = {}
+        for r in rows:
+            key = r["repo"] or ""
+            per_repo.setdefault(key, {"open": 0, "closed": 0})
+            per_repo[key][r["status"]] = r["n"]
+        out["tasks_by_repo"] = [
+            {"repo": k or "(unassigned)",
+             "open": v.get("open", 0),
+             "closed": v.get("closed", 0)}
+            for k, v in sorted(per_repo.items(),
+                               key=lambda kv: (kv[0] == "", kv[0]))
+        ]
+    except sqlite3.OperationalError:
+        out["tasks_by_repo"] = []
+
     # Interceptions over time.
     try:
         rows = conn.execute(
@@ -369,6 +392,12 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
         for r in vcache["top"]
     ) or "<tr><td colspan=3>—</td></tr>"
 
+    repo_rows = "".join(
+        f"<tr><td>{_esc(r['repo'])}</td>"
+        f"<td>{r['open']:,}</td><td>{r['closed']:,}</td></tr>"
+        for r in db.get("tasks_by_repo", [])
+    ) or "<tr><td colspan=3>no tasks tagged with a repo yet</td></tr>"
+
     log_note = ""
     if logm["log_missing"]:
         log_note = ('<p class="warn">hook-debug.log not found — hook metrics '
@@ -499,6 +528,13 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
 <div class="row">
  <div class="card"><h2>Tasks closed (last 30 days)</h2>
   {spark_closed}
+ </div>
+
+ <div class="card"><h2>Tasks by repo</h2>
+  <table>
+   <tr><th>repo</th><th>open</th><th>closed</th></tr>
+   {repo_rows}
+  </table>
  </div>
 
  <div class="card"><h2>Adaptive auto-approve cache</h2>

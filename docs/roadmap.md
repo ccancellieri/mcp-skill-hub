@@ -68,9 +68,9 @@ Move maintainer feedback rules from memory into callable skill-hub primitives.
 
 - [ ] #15 — `worktree_preflight`: collision check tool
 - [ ] #16 — `sync_check`: cross-repo stale-import detector
-- [ ] #17 — `lint_canary`: rotate through ruff selectors
-- [ ] #18 — memory-rule export: feedback files → per-repo `POLICY.md`
-- [ ] #19 — cross-project task federation: per-repo filter
+- [x] #17 — `lint_canary`: rotate through ruff selectors (core_task + MCP tool, witness-log JSONL)
+- [x] #18 — memory-rule export: feedback files → per-repo `POLICY.md` (`export_policies` MCP tool)
+- [x] #19 — cross-project task federation: per-repo filter on every task tool
 
 ### M4 — Absorb ruflo (claude-flow) features natively, zero runtime dep
 

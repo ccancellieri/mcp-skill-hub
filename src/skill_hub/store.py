@@ -860,6 +860,26 @@ class SkillStore:
         except Exception:
             pass
 
+        # M3 — cross-project task federation: short repo/project name tagged
+        # on every task so callers can answer "what tasks are open for repo X?"
+        # without manual cwd/branch grepping. Auto-captured at save_task time
+        # from the worktree spec or detect_project_from_cwd; can be overridden
+        # by an explicit ``repo=`` kwarg.
+        if "repo" not in task_cols:
+            try:
+                self._conn.execute("ALTER TABLE tasks ADD COLUMN repo TEXT")
+                self._conn.commit()
+                task_cols = task_cols | {"repo"}
+            except Exception:
+                pass
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo)"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
             # S1.3 — enables incremental reindex (skip rows whose file content
@@ -1913,15 +1933,16 @@ class SkillStore:
                   context: str = "", tags: str = "",
                   session_id: str = "",
                   cwd: str = "", branch: str = "",
-                  worktree: str = "", color: str = "") -> int:
+                  worktree: str = "", color: str = "",
+                  repo: str = "") -> int:
         cur = self._conn.execute("""
             INSERT INTO tasks (title, summary, context, tags, vector,
                                session_id, cwd, branch, worktree, color,
-                               node_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               node_id, repo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (title, summary, context, tags, json.dumps(vector),
               session_id, cwd, branch, worktree or None, color or None,
-              self.node_id))
+              self.node_id, repo or None))
         self._conn.commit()
         task_id = cur.lastrowid or 0
         self._mirror_task_vec(task_id, vector)
@@ -2022,10 +2043,11 @@ class SkillStore:
         return cur.rowcount > 0
 
     def list_tasks(self, status: str = "open",
-                   tag: str | None = None) -> list[sqlite3.Row]:
+                   tag: str | None = None,
+                   repo: str | None = None) -> list[sqlite3.Row]:
         cols = (
             "id, title, summary, context, status, tags, color, session_id, "
-            "created_at, updated_at, closed_at"
+            "repo, created_at, updated_at, closed_at"
         )
         where: list[str] = []
         params: list = []
@@ -2040,11 +2062,29 @@ class SkillStore:
                 "(tags = ? OR tags LIKE ? OR tags LIKE ? OR tags LIKE ?)"
             )
             params += [tag, f"{tag} %", f"% {tag}", f"% {tag} %"]
+        if repo:
+            where.append("repo = ?")
+            params.append(repo)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
         return self._conn.execute(
             f"SELECT {cols} FROM tasks{clause} ORDER BY updated_at DESC",
             params,
         ).fetchall()
+
+    def list_tasks_by_repo(self, status: str = "open") -> dict[str, list[sqlite3.Row]]:
+        """Group tasks by repo for dashboard rendering.
+
+        Tasks with no repo land under the ``""`` (empty string) bucket so the
+        caller can decide whether to label them ``"(unassigned)"``.
+        """
+        out: dict[str, list[sqlite3.Row]] = {}
+        for row in self.list_tasks(status=status):
+            try:
+                key = row["repo"] or ""
+            except (IndexError, KeyError):
+                key = ""
+            out.setdefault(key, []).append(row)
+        return out
 
     def get_task(self, task_id: int) -> sqlite3.Row | None:
         return self._conn.execute(

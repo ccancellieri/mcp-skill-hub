@@ -563,6 +563,7 @@ def save_task(
     mode: str = "",
     initial_prompt: str = "",
     cwd: str = "",
+    repo: str = "",
 ) -> str:
     """Save an open task for retrieval in future sessions.
 
@@ -579,6 +580,11 @@ def save_task(
         initial_prompt=<text>   first message to send to the spawned session.
         cwd=<path>              if project is empty, walk up from cwd to find
                                 a .git, then map back to a project name.
+        repo=<name>             explicit per-repo tag (M3 federation). When
+                                empty, auto-derived from the worktree spec or
+                                detect_project_from_cwd(cwd). Used by
+                                ``list_tasks(repo=...)`` and the dashboard's
+                                per-repo grouping.
 
     Parallel-safe: each call creates an independent row (distinct task IDs).
     Two concurrent calls with identical args produce two separate tasks rather
@@ -618,12 +624,26 @@ def save_task(
         vector = embed(f"{title}: {summary}")
     except RuntimeError:
         vector = []
+    # M3 — repo auto-capture. Explicit kwarg wins; otherwise prefer the
+    # worktree spec's project, then detect_project_from_cwd.
+    resolved_repo = (repo or "").strip()
+    if not resolved_repo:
+        if spec is not None:
+            resolved_repo = getattr(spec, "project", "") or ""
+        elif resolved_project:
+            resolved_repo = resolved_project
+        elif cwd:
+            try:
+                resolved_repo = _wt.detect_project_from_cwd(cwd) or ""
+            except Exception:  # noqa: BLE001
+                resolved_repo = ""
     tid = _store.save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
         cwd=(spec.worktree_path if spec else cwd),
         branch=(spec.branch if spec else ""),
         worktree=worktree_blob,
+        repo=resolved_repo,
     )
     task_opts = _store.get_task_options(tid)
     _write_active_task_marker(tid, _session["id"], title,
@@ -1064,6 +1084,55 @@ def compact_master_state(
 
 
 @mcp.tool()
+def export_policies(
+    project_root: str,
+    output_file: str = ".skill-hub/POLICY.md",
+    dry_run: bool = False,
+    force: bool = False,
+) -> str:
+    """Render feedback_* memory files as a per-repo POLICY.md.
+
+    Reads the project's auto-memory ``feedback_*.md`` rules and writes a
+    paraphrased, in-repo policy document at ``<project_root>/<output_file>``.
+    Path references to ``~/.claude/`` / ``.claude/`` are scrubbed so the
+    rendered file is safe to commit.
+
+    Idempotent: rerun with no newer feedback files returns ``noop``. Use
+    ``force=True`` to rewrite anyway. ``dry_run=True`` returns the rendered
+    Markdown without touching disk.
+    """
+    log_tool("export_policies", project_root=project_root, dry_run=dry_run, force=force)
+    from .policy_export import export_policies as _ep
+    result = _ep(
+        project_root=project_root,
+        output_file=output_file,
+        dry_run=dry_run,
+        force=force,
+    )
+    status = result.get("status", "unknown")
+    if status == "dry_run":
+        files = result.get("feedback_files_considered", [])
+        rendered = result.get("rendered", "")
+        return (
+            f"DRY RUN — {len(rendered)} chars rendered from {len(files)} feedback files.\n"
+            f"--- POLICY.md preview ---\n{rendered}"
+        )
+    if status == "written":
+        return (
+            f"Wrote: {result.get('wrote')}\n"
+            f"Backup: {result.get('backup') or '(none — first write)'}\n"
+            f"Delta: {result.get('delta_chars'):+d} chars\n"
+            f"Feedback files folded in: {len(result.get('feedback_files_considered', []))}"
+        )
+    if status == "empty":
+        return (
+            f"Wrote placeholder POLICY.md ({result.get('wrote')}). "
+            "No feedback_* memory files found yet."
+        )
+    return f"{status}: {result.get('reason', '')}"
+
+
+@mcp.tool()
 def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
     """Toggle per-task permissive auto-approve override.
 
@@ -1204,25 +1273,63 @@ _COLOR_GLYPH = {
 
 
 @mcp.tool()
-def list_tasks(status: str = "open") -> str:
-    """List tasks. status: open (default), closed, or all."""
-    log_tool("list_tasks", status=status)
-    rows = _store.list_tasks(status)
+def list_tasks(status: str = "open", repo: str = "",
+               group_by_repo: bool = False) -> str:
+    """List tasks. status: open (default), closed, or all.
+
+    Args:
+        status: open | closed | all.
+        repo:   M3 federation filter — only return tasks tagged with this
+                repo (auto-captured by ``save_task``). Empty string returns
+                all repos. Use this to answer "what tasks are open for repo
+                X right now?" without manual grepping.
+        group_by_repo: when True, render output grouped under per-repo
+                headings (matches the dashboard layout). Otherwise output is
+                a flat list ordered by ``updated_at DESC``.
+    """
+    log_tool("list_tasks", status=status, repo=repo,
+             group_by_repo=group_by_repo)
+    rows = _store.list_tasks(status, repo=(repo or None))
     if not rows:
-        return f"No {status} tasks."
-    lines: list[str] = []
-    for r in rows:
+        scope = f"repo={repo!r} " if repo else ""
+        return f"No {status} tasks{(' for ' + scope).rstrip() if repo else ''}."
+
+    def _fmt(r) -> str:
         state = f"[{r['status'].upper()}]"
         tags = f" ({r['tags']})" if r['tags'] else ""
-        # Glyph keyed on auto-derived/explicit color column. ' ' keeps column
-        # alignment when no colour is set (older rows pre-migration).
         try:
             color = r["color"]
         except (IndexError, KeyError):
             color = None
         glyph = _COLOR_GLYPH.get(color or "", " ")
-        lines.append(f"  {glyph} #{r['id']} {state} {r['title']}{tags} — {r['summary'][:80]}...")
-    return f"{len(lines)} tasks:\n" + "\n".join(lines)
+        return (
+            f"  {glyph} #{r['id']} {state} {r['title']}{tags} — "
+            f"{r['summary'][:80]}..."
+        )
+
+    if not group_by_repo:
+        lines = [_fmt(r) for r in rows]
+        header = f"{len(lines)} tasks"
+        if repo:
+            header += f" (repo={repo})"
+        return f"{header}:\n" + "\n".join(lines)
+
+    # Grouped output — sort repos with named groups first, then unassigned.
+    groups: dict[str, list] = {}
+    for r in rows:
+        try:
+            key = r["repo"] or ""
+        except (IndexError, KeyError):
+            key = ""
+        groups.setdefault(key, []).append(r)
+    named = sorted(k for k in groups if k)
+    ordered = named + ([""] if "" in groups else [])
+    out_lines: list[str] = [f"{len(rows)} tasks across {len(ordered)} repo(s):"]
+    for key in ordered:
+        label = key or "(unassigned)"
+        out_lines.append(f"\n## {label} ({len(groups[key])})")
+        out_lines.extend(_fmt(r) for r in groups[key])
+    return "\n".join(out_lines)
 
 
 @mcp.tool()
@@ -2696,6 +2803,18 @@ _CORE_SCHEDULED_TASKS: dict[str, dict] = {
             "Run index_skills(). Report how many skills were indexed and any errors."
         ),
     },
+    "lint_canary": {
+        "cron": "15 4 * * *",  # Daily 4:15 AM
+        "description": (
+            "Daily lint-canary: rotates through ruff selectors "
+            "(F841/F821/B023/S701/RUF034/RUF006/B026/...) and records findings."
+        ),
+        "enabled_default": False,
+        "prompt": (
+            "Run lint_canary(). Report which selector was checked, how many "
+            "findings were captured, and whether the rotation cursor advanced."
+        ),
+    },
 }
 
 
@@ -2749,6 +2868,29 @@ def disable_core_task(name: str) -> str:
     _store._conn.commit()
     log_tool("disable_core_task", name=name)
     return f"Disabled core:{name}"
+
+
+@mcp.tool()
+def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
+    """M3 #17 — Run one step of the lint-canary cadence.
+
+    Picks the next ruff selector from the rotation list (F841/F821/B023/...),
+    runs ``ruff check --select <selector> <target>``, advances the cursor, and
+    appends a JSONL record to the witness log under
+    ``~/.claude/mcp-skill-hub/state/witness_log.jsonl``.
+
+    Pass ``selectors`` to override (and persist) the rotation list.
+    """
+    from .lint_canary import run_lint_canary, format_run
+
+    run = run_lint_canary(target=target, selectors=selectors)
+    log_tool(
+        "lint_canary",
+        selector=run.selector,
+        findings=run.findings,
+        cursor=run.cursor_after,
+    )
+    return format_run(run)
 
 
 @mcp.tool()

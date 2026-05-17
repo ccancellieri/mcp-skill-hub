@@ -154,6 +154,7 @@ def fanout(
             branch=spec.branch,
             worktree=spec.to_json(),
             color="cyan",
+            repo=spec.project,
         )
         result.task_ids.append(task_id)
         result.worktree_paths.append(spec.worktree_path)
