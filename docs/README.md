@@ -31,6 +31,9 @@ docs/
 │
 ├── plugin-extension-points.md   Third-party plugin extension contract
 ├── unattended.md                Run Claude Code overnight
+├── comparison-ruflo.md          How skill-hub relates to ruflo (claude-flow) + M4 absorption plan
+├── design/                      Long-form designs for in-flight refactors
+│   └── managed-agents-refactor.md   M2 design phase
 └── roadmap.md                   Shipped + upcoming milestones
 ```
 
@@ -48,6 +51,7 @@ docs/
 | **Fine-tune** on my own data | [advanced/fine-tuning.md](advanced/fine-tuning.md) |
 | **Debug** a hook that isn't firing | [reference/logs.md](reference/logs.md) |
 | **Run overnight** without prompts | [unattended.md](unattended.md) |
+| Compare skill-hub with **ruflo (claude-flow)** | [comparison-ruflo.md](comparison-ruflo.md) |
 
 ## 📝 Editing guidance
 

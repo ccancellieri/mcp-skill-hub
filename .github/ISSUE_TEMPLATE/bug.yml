@@ -1,0 +1,65 @@
+name: Bug report
+description: Something doesn't work the way the docs say it should.
+labels: ["kind:bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence: what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps to trigger the bug.
+      placeholder: |
+        1. Start MCP server with `skill_hub serve`
+        2. Call `<tool>` with `<args>`
+        3. Observe ...
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Paste error messages, stack traces, or unexpected output here.
+    validations:
+      required: true
+  - type: input
+    id: hub_version
+    attributes:
+      label: skill-hub version
+      description: Output of `skill_hub --version` (or commit SHA if running from source).
+    validations:
+      required: true
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+    validations:
+      required: true
+  - type: input
+    id: cc_version
+    attributes:
+      label: Claude Code version
+      description: Output of `claude --version`.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: From `~/.skill_hub/logs/` if available.
+      render: shell
+    validations:
+      required: false

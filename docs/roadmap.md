@@ -41,4 +41,48 @@
 
 ## Upcoming
 
+### M1 — Useful Without LLM
+
+Visibility + pure-stdlib tools so skill-hub is obviously useful even with no Ollama / embedding backend.
+
+- [ ] #6 — `no-llm-mode`: explicit flag with visible status
+- [ ] #7 — tool-capability-matrix: every tool declares its dependency tier
+- [ ] #8 — degraded-search: FTS5 keyword fallback when embeddings unavailable
+- [ ] #9 — claims-board: claim / handoff / steal on tasks (no LLM needed)
+- [ ] #10 — witness-log: append-only fix manifest per repo
+- [ ] #11 — worktree-aware tasks: capture branch + worktree path on save
+- [ ] #12 — PII gate: regex scan before `save_task` / `teach` on public repos
+- [ ] #13 — dashboard: `/status/capabilities` view
+
+### M2 — Managed-Agents architectural refactor (design phase)
+
+Selectively apply patterns from Anthropic's Managed Agents post — durable event log, stateless recovery, uniform tool envelope, credential vault, optional sandbox.
+
+- [ ] #14 — tracking issue + `docs/design/managed-agents-refactor.md`
+
+Sub-issues filed in a follow-up batch once the design has settled.
+
+### M3 — Worktree + multi-repo policy enforcement
+
+Move maintainer feedback rules from memory into callable skill-hub primitives.
+
+- [ ] #15 — `worktree_preflight`: collision check tool
+- [ ] #16 — `sync_check`: cross-repo stale-import detector
+- [ ] #17 — `lint_canary`: rotate through ruff selectors
+- [ ] #18 — memory-rule export: feedback files → per-repo `POLICY.md`
+- [ ] #19 — cross-project task federation: per-repo filter
+
+### M4 — Absorb ruflo (claude-flow) features natively, zero runtime dep
+
+Reimplement the ruflo capabilities the maintainer values as native skill-hub primitives. After M4 ships, ruflo can be uninstalled. See [comparison-ruflo.md](comparison-ruflo.md).
+
+- [ ] #20 — swarm-lite: launch N Claude subprocesses, each on a distinct worktree+claim
+- [ ] #21 — autopilot-lite: pick-next-stealable loop
+- [ ] #22 — federation-lite: WAL-mode + node_id for multi-host shared state
+- [ ] #23 — importer: ruflo skills → skill-hub native skill manifests
+- [ ] #24 — importer: ruflo agents → Claude Code subagent definitions
+- [ ] #25 — doc: flip `comparison-ruflo.md` to absorption-complete framing
+
+### Other
+
 - [ ] **OpenSearch backend** — for scaling beyond local use
