@@ -79,14 +79,20 @@ def fanout(
     if limit is None:
         limit = _default_limit()
 
+    # Resolve project to a real repo path up-front so sources that shell out
+    # (e.g. GitHubSource → `gh issue list`) can chdir into the checkout
+    # instead of inheriting an unrelated cwd that isn't a git repo.
+    repo_path = _wt.resolve_project(project)
+
     src = get_source(source)
-    issues = src.fetch(filter=filter, limit=limit, repo=repo)
+    try:
+        issues = src.fetch(filter=filter, limit=limit, repo=repo, cwd=str(repo_path))
+    except TypeError:
+        # Backwards-compat: a custom-registered source may not accept `cwd`.
+        issues = src.fetch(filter=filter, limit=limit, repo=repo)
     if not issues:
         gid = uuid.uuid4().hex[:8]
         return FanoutResult(group_id=gid, directive=render_directive([], gid))
-
-    # Resolve project to a real repo path so prompt synth can read .github/...
-    repo_path = _wt.resolve_project(project)
 
     group_id = uuid.uuid4().hex[:8]
     if store is None:

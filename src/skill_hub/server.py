@@ -1812,16 +1812,21 @@ def run_plan(plan_path: str, dry_run: bool = True, repo_path: str = "") -> str:
         Multi-line run summary with per-step outcomes and a stop reason if halted.
     """
     from .plan_executor import run_plan as _walk
+    from .sandbox import provision as _sbx_provision, SandboxViolation
 
     log_tool("run_plan", plan_path=plan_path, dry_run=dry_run)
+    run_sandboxed = _sbx_provision("run_plan")
     try:
-        result = _walk(
+        result = run_sandboxed(
+            _walk,
             Path(plan_path).expanduser(),
             dry_run=dry_run,
             repo_path=(Path(repo_path).expanduser() if repo_path else None),
         )
     except (FileNotFoundError, ValueError) as e:
         return f"ERROR: {e}"
+    except SandboxViolation as e:
+        return f"ERROR: SandboxViolation: {e}"
     except Exception as e:  # noqa: BLE001
         return f"ERROR: {type(e).__name__}: {e}"
     return result.as_markdown()
@@ -1857,10 +1862,13 @@ def execute_plan_step(
         Markdown status report (see StepResult.as_markdown).
     """
     from .plan_executor import execute_plan_step as _run
+    from .sandbox import provision as _sbx_provision, SandboxViolation
 
     log_tool("execute_plan_step", plan_path=plan_path, step_id=step_id, dry_run=dry_run)
+    run_sandboxed = _sbx_provision("execute_plan_step")
     try:
-        result = _run(
+        result = run_sandboxed(
+            _run,
             Path(plan_path).expanduser(),
             step_id,
             dry_run=dry_run,
@@ -1868,6 +1876,8 @@ def execute_plan_step(
         )
     except (KeyError, FileNotFoundError) as e:
         return f"ERROR: {e}"
+    except SandboxViolation as e:
+        return f"ERROR: SandboxViolation: {e}"
     except Exception as e:  # noqa: BLE001
         return f"ERROR: {type(e).__name__}: {e}"
     return result.as_markdown()
@@ -2969,6 +2979,13 @@ def status(section: str = "summary") -> str:
             lines.append(f"DB:              {skill_count} skills, {len(task_rows)} tasks ({open_tasks} open)")
         except Exception as exc:
             lines.append(f"DB:              error — {exc}")
+
+        try:
+            from . import vault as _vault_mod
+            _v = _vault_mod.Vault.detect(cfg.get("vault_backend"))
+            lines.append(f"Vault backend:   {_v.backend}")
+        except Exception as exc:
+            lines.append(f"Vault backend:   error — {exc}")
 
     # --- Context section ---
     if section in ("context", "full"):

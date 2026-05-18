@@ -102,6 +102,31 @@ def test_github_source_parses_json():
     assert issues[1].title == "Race in worker pool"
 
 
+def test_github_source_runs_gh_with_cwd():
+    """Issue #32: `gh issue list` must chdir into the resolved repo so it
+    doesn't fail with `not a git repository` when invoked from elsewhere."""
+    with patch("skill_hub.fanout.sources.shutil.which", return_value="/usr/bin/gh"), \
+         patch("skill_hub.fanout.sources.subprocess.run",
+               return_value=_DummyProc(_GH_JSON)) as run:
+        GitHubSource().fetch(filter="is:open", cwd="/tmp/some-repo")
+    # subprocess.run called with cwd="/tmp/some-repo"
+    assert run.call_args.kwargs.get("cwd") == "/tmp/some-repo"
+
+
+def test_github_source_runs_gh_with_repo_flag_and_cwd():
+    """Both --repo and cwd can be passed; gh will prefer --repo but cwd
+    is still forwarded so a worktree invocation is unambiguous."""
+    with patch("skill_hub.fanout.sources.shutil.which", return_value="/usr/bin/gh"), \
+         patch("skill_hub.fanout.sources.subprocess.run",
+               return_value=_DummyProc(_GH_JSON)) as run:
+        GitHubSource().fetch(filter="is:open", repo="owner/name",
+                             cwd="/tmp/some-repo")
+    args = run.call_args[0][0]
+    assert "--repo" in args
+    assert args[args.index("--repo") + 1] == "owner/name"
+    assert run.call_args.kwargs.get("cwd") == "/tmp/some-repo"
+
+
 def test_github_source_raises_without_gh_cli():
     with patch("skill_hub.fanout.sources.shutil.which", return_value=None):
         with pytest.raises(RuntimeError, match="gh"):

@@ -37,7 +37,7 @@ class IssueSource(Protocol):
     name: str
 
     def fetch(self, filter: str = "", limit: int | None = None,
-              *, repo: str = "", **kwargs) -> list[Issue]: ...
+              *, repo: str = "", cwd: str = "", **kwargs) -> list[Issue]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -49,12 +49,15 @@ class GitHubSource:
 
     `filter` is passed as a free-form query to `gh issue list --search` so
     callers can use the full GitHub search syntax (`label:bug is:open`,
-    `assignee:@me`, etc.). `repo` defaults to the cwd's git remote.
+    `assignee:@me`, etc.). `repo` (``owner/name``) or `cwd` (a path inside
+    a git checkout) are how `gh` finds the target repo when the caller's
+    own cwd isn't a git repository — at least one must resolve, otherwise
+    `gh` errors with ``not a git repository``.
     """
     name = "gh"
 
     def fetch(self, filter: str = "", limit: int | None = None,
-              *, repo: str = "", **kwargs) -> list[Issue]:
+              *, repo: str = "", cwd: str = "", **kwargs) -> list[Issue]:
         if not shutil.which("gh"):
             raise RuntimeError(
                 "fanout source=gh requires the `gh` CLI; install it and run `gh auth login`."
@@ -68,7 +71,9 @@ class GitHubSource:
             args += ["--search", filter]
         if repo:
             args += ["--repo", repo]
-        res = subprocess.run(args, capture_output=True, text=True, check=False)
+        run_cwd = cwd or None
+        res = subprocess.run(args, capture_output=True, text=True, check=False,
+                             cwd=run_cwd)
         if res.returncode != 0:
             stderr = (res.stderr or "").strip()
             if "authentication" in stderr.lower() or "not authenticated" in stderr.lower():
@@ -111,7 +116,7 @@ class TextSource:
     name = "text"
 
     def fetch(self, filter: str = "", limit: int | None = None,
-              *, repo: str = "", **kwargs) -> list[Issue]:
+              *, repo: str = "", cwd: str = "", **kwargs) -> list[Issue]:
         if not filter:
             return []
         issues: list[Issue] = []

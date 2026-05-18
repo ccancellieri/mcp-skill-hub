@@ -36,6 +36,7 @@ dependencies = [
     "litellm>=1.52",
     "pyyaml>=6.0",
     "croniter>=3.0",
+    "keyring>=24.0",
 ]
 
 [project.optional-dependencies]

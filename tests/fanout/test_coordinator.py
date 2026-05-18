@@ -122,6 +122,88 @@ def test_fanout_empty_source_returns_no_directive(patch_repo_roots, tmp_path: Pa
     assert "no tasks created" in result.directive
 
 
+def test_fanout_gh_source_runs_with_resolved_cwd(patch_repo_roots, tmp_path: Path,
+                                                  monkeypatch):
+    """Issue #32-(1): when source=gh, the coordinator must resolve the
+    project to a real repo path and forward it as `cwd=` to the source so
+    `gh issue list` doesn't fail with `not a git repository`."""
+    captured: dict = {}
+
+    class _SpyGHSource:
+        name = "gh"
+
+        def fetch(self, filter: str = "", limit: int | None = None,
+                  *, repo: str = "", cwd: str = "", **_):
+            captured["filter"] = filter
+            captured["repo"] = repo
+            captured["cwd"] = cwd
+            return []  # empty: no worktrees/tasks created
+
+    monkeypatch.setattr(
+        "skill_hub.fanout.coordinator.get_source",
+        lambda name: _SpyGHSource(),
+    )
+
+    store = SkillStore(db_path=tmp_path / "store.db")
+    fanout(
+        "gh",
+        filter="is:open",
+        project="demo",
+        repo="owner/name",
+        store=store,
+        use_llm=False,
+    )
+
+    expected_repo_path = patch_repo_roots / "demo"
+    assert captured["cwd"] == str(expected_repo_path.resolve())
+    assert captured["repo"] == "owner/name"
+
+
+def test_fanout_does_not_leak_repo_kwarg_into_save_task(patch_repo_roots,
+                                                        tmp_path: Path):
+    """Issue #32-(2): passing `repo=` to fanout() must not surface as a
+    `repo=` kwarg on a downstream save_task call that doesn't recognise it.
+
+    We use a stub store that records save_task kwargs, then assert the
+    coordinator never forwards the user-provided `repo` string (it should
+    only persist the project identifier, via its own dedicated channel)."""
+
+    class _StubStore:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self._conn = None  # prompt_synth tolerates None
+
+        def save_task(self, **kwargs) -> int:
+            # If the coordinator started leaking arbitrary user kwargs into
+            # save_task, an older SkillStore would raise TypeError. We accept
+            # **kwargs here to *capture* what was passed and assert on it.
+            self.calls.append(kwargs)
+            return len(self.calls)
+
+        def list_tasks(self, **_):
+            return []
+
+    stub = _StubStore()
+    fanout(
+        "text",
+        filter="- alpha\n- beta",
+        limit=2,
+        project="demo",
+        repo="owner/name",   # user-provided source kwarg; must NOT leak
+        dry_run=False,
+        use_llm=False,
+        store=stub,
+    )
+    assert len(stub.calls) == 2
+    for call in stub.calls:
+        # The coordinator may pass `repo=<project-identifier>` (e.g. "demo")
+        # but it must NEVER pass through the raw "owner/name" string the
+        # user supplied for source dispatch.
+        assert call.get("repo") != "owner/name", (
+            "user-provided source `repo` leaked into save_task"
+        )
+
+
 def test_fanout_cleanup_removes_tasks_worktrees_branches(patch_repo_roots, tmp_path: Path):
     store = SkillStore(db_path=tmp_path / "store.db")
     result = fanout(
