@@ -225,6 +225,28 @@ The system learns from three signals:
 )
 
 
+# --- M2 W3: uniform tool envelope -----------------------------------------
+# Every @mcp.tool() registration is transparently wrapped with tool_envelope
+# so each invocation produces a ToolResult (stdout / structured / error /
+# elapsed_ms / events_emitted). The wire-level callable still returns the
+# plain str / dict that FastMCP serializes — no client change.
+from .envelope import tool_envelope as _tool_envelope  # noqa: E402
+
+_orig_mcp_tool = mcp.tool
+
+
+def _mcp_tool_with_envelope(*args, **kwargs):
+    raw_decorator = _orig_mcp_tool(*args, **kwargs)
+
+    def deco(fn):
+        return raw_decorator(_tool_envelope(fn))
+
+    return deco
+
+
+mcp.tool = _mcp_tool_with_envelope  # type: ignore[assignment]
+
+
 # ---------------------------------------------------------------------------
 # Search & Load
 
