@@ -58,9 +58,12 @@ Visibility + pure-stdlib tools so skill-hub is obviously useful even with no Oll
 
 Selectively apply patterns from Anthropic's Managed Agents post — durable event log, stateless recovery, uniform tool envelope, credential vault, optional sandbox.
 
-- [x] #14 — tracking issue + `docs/design/managed-agents-refactor.md` (Q1/Q4/Q5 resolved; W1-W5 sub-issues to file)
-
-Sub-issues (W1-W5) to be filed against this milestone now that decision gates are settled.
+- [x] #14 — tracking issue + `docs/design/managed-agents-refactor.md` (Q1/Q4/Q5 resolved)
+- [ ] #27 — W1 event log: `events` table + emit decorator + `get_events` / `events_prune`
+- [ ] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
+- [ ] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
+- [ ] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
+- [ ] #31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools
 
 ### M3 — Worktree + multi-repo policy enforcement
 
