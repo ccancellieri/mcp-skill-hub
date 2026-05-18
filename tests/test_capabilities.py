@@ -80,8 +80,13 @@ def test_matrix_covers_every_mcp_tool():
     """
     import re
     server_py = (SRC / "skill_hub" / "server.py").read_text()
-    pat = re.compile(r"^@mcp\.tool\(\)\s*\n+def\s+([A-Za-z_][A-Za-z0-9_]*)\(",
-                     re.MULTILINE)
+    # Allow extra stacked decorators (e.g. @requires_capability) between
+    # @mcp.tool() and the def — added by issue #7.
+    pat = re.compile(
+        r"^@mcp\.tool\(\)\s*\n(?:@[A-Za-z_][\w.]*\([^)]*\)\s*\n)*"
+        r"def\s+([A-Za-z_][A-Za-z0-9_]*)\(",
+        re.MULTILINE,
+    )
     server_tools = set(pat.findall(server_py))
     matrix_tools = {t.name for t in cap.TOOLS}
     assert server_tools, "no @mcp.tool functions found — regex broken?"
@@ -152,6 +157,114 @@ def test_capabilities_json(app_client, monkeypatch):
     assert "backends" in data and "tools" in data and "summary" in data
     assert len(data["tools"]) == len(cap.TOOLS)
     assert {b["id"] for b in data["backends"]} == set(cap.BACKENDS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Issue #7 — tier registry & @requires_capability decorator
+
+
+def test_tier_registry_covers_every_tool():
+    """Acceptance: registry contains all tools — no ``unknown`` tier."""
+    matrix_tools = {t.name for t in cap.TOOLS}
+    assert set(cap.TIER_REGISTRY.keys()) >= matrix_tools, (
+        f"missing from TIER_REGISTRY: "
+        f"{sorted(matrix_tools - set(cap.TIER_REGISTRY.keys()))}"
+    )
+    for name, tier in cap.TIER_REGISTRY.items():
+        assert tier in ("none", "embedding", "llm"), (
+            f"{name} has invalid tier {tier!r}"
+        )
+
+
+def test_tier_registry_covers_every_mcp_tool_in_server():
+    """Every @mcp.tool in server.py must have a declared tier."""
+    import re
+    server_py = (SRC / "skill_hub" / "server.py").read_text()
+    pat = re.compile(
+        r"^@mcp\.tool\(\)\s*\n(?:@[A-Za-z_][\w.]*\([^)]*\)\s*\n)*"
+        r"def\s+([A-Za-z_][A-Za-z0-9_]*)\(",
+        re.MULTILINE,
+    )
+    server_tools = set(pat.findall(server_py))
+    assert server_tools, "no @mcp.tool functions found — regex broken?"
+    missing = server_tools - set(cap.TIER_REGISTRY.keys())
+    assert not missing, f"server tools without declared tier: {sorted(missing)}"
+
+
+def test_tier_from_spec_priorities():
+    """``llm`` > ``embedding`` > ``none`` when deriving from a ToolSpec."""
+    s_none = cap.ToolSpec("x", "x", hard=(cap.BACKEND_DB,))
+    s_embed = cap.ToolSpec("x", "x", hard=(cap.BACKEND_DB, cap.BACKEND_EMBED))
+    s_llm = cap.ToolSpec(
+        "x", "x", hard=(cap.BACKEND_EMBED, cap.BACKEND_REASON_LLM),
+    )
+    s_soft_only = cap.ToolSpec(
+        "x", "x", hard=(), soft=(cap.BACKEND_REASON_LLM,),
+    )
+    assert cap.tier_from_spec(s_none) == "none"
+    assert cap.tier_from_spec(s_embed) == "embedding"
+    assert cap.tier_from_spec(s_llm) == "llm"
+    # soft deps never promote tier — the tool still works without them.
+    assert cap.tier_from_spec(s_soft_only) == "none"
+
+
+def test_requires_capability_stamps_and_registers():
+    """Decorator records the tier on the function and in TIER_REGISTRY."""
+    @cap.requires_capability("embedding")
+    def _probe_tool_xyz():
+        return None
+
+    assert _probe_tool_xyz.__capability_tier__ == "embedding"
+    assert cap.TIER_REGISTRY["_probe_tool_xyz"] == "embedding"
+    # Cleanup so we don't pollute the registry for other tests.
+    cap.TIER_REGISTRY.pop("_probe_tool_xyz", None)
+
+
+def test_requires_capability_rejects_invalid_tier():
+    with pytest.raises(ValueError):
+        cap.requires_capability("magic")  # type: ignore[arg-type]
+
+
+def test_tier_for_known_and_unknown():
+    # Known tool — looked up via registry.
+    assert cap.tier_for("search_skills") == "embedding"
+    assert cap.tier_for("list_teachings") == "none"
+    assert cap.tier_for("compact_master_state") == "llm"
+    # Unknown tool — must raise so callers can't silently swallow it.
+    with pytest.raises(KeyError):
+        cap.tier_for("definitely_not_a_real_tool_zzz")
+
+
+def test_render_matrix_includes_tier():
+    data = cap.render_matrix()
+    by_name = {t["name"]: t for t in data["tools"]}
+    assert by_name["search_skills"]["tier"] == "embedding"
+    assert by_name["list_teachings"]["tier"] == "none"
+    assert by_name["compact_master_state"]["tier"] == "llm"
+    # All rows must have a tier — no unknowns.
+    for row in data["tools"]:
+        assert row["tier"] in ("none", "embedding", "llm"), row
+
+
+def test_server_tier_decorators_match_registry():
+    """server.py's inline @requires_capability call must match TIER_REGISTRY.
+
+    Catches drift between the inline declaration and the spec table.
+    """
+    import re
+    server_py = (SRC / "skill_hub" / "server.py").read_text()
+    pat = re.compile(
+        r'@requires_capability\("(none|embedding|llm)"\)\s*\n'
+        r'def\s+([A-Za-z_][A-Za-z0-9_]*)\(',
+        re.MULTILINE,
+    )
+    found = pat.findall(server_py)
+    assert found, "no @requires_capability decorators found in server.py"
+    for tier, fname in found:
+        assert cap.TIER_REGISTRY.get(fname) == tier, (
+            f"server.py declares {fname} as {tier!r} but registry says "
+            f"{cap.TIER_REGISTRY.get(fname)!r}"
+        )
 
 
 def test_state_matches_status_tool(monkeypatch):

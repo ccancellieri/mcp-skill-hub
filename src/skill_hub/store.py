@@ -656,6 +656,46 @@ class SkillStore:
                 VALUES (new.id, new.rule, new.action);
             END;
 
+            -- FTS5 full-text search for skills (BM25 fallback when embeddings unavailable).
+            -- ``skills.id`` is TEXT, so we use a contentless FTS table (no content/content_rowid
+            -- linkage) and manage sync via triggers that delete-by-id then re-insert.
+            CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
+                skill_id UNINDEXED, name, description, content,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS skills_fts_insert AFTER INSERT ON skills BEGIN
+                INSERT INTO skills_fts(skill_id, name, description, content)
+                VALUES (new.id, new.name, new.description, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS skills_fts_delete AFTER DELETE ON skills BEGIN
+                DELETE FROM skills_fts WHERE skill_id = old.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS skills_fts_update AFTER UPDATE ON skills BEGIN
+                DELETE FROM skills_fts WHERE skill_id = old.id;
+                INSERT INTO skills_fts(skill_id, name, description, content)
+                VALUES (new.id, new.name, new.description, new.content);
+            END;
+
+            -- FTS5 full-text search for plugins (BM25 fallback when embeddings unavailable).
+            CREATE VIRTUAL TABLE IF NOT EXISTS plugins_fts USING fts5(
+                plugin_id UNINDEXED, short_name, description,
+                tokenize='unicode61 remove_diacritics 2'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS plugins_fts_insert AFTER INSERT ON plugins BEGIN
+                INSERT INTO plugins_fts(plugin_id, short_name, description)
+                VALUES (new.id, new.short_name, new.description);
+            END;
+            CREATE TRIGGER IF NOT EXISTS plugins_fts_delete AFTER DELETE ON plugins BEGIN
+                DELETE FROM plugins_fts WHERE plugin_id = old.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS plugins_fts_update AFTER UPDATE ON plugins BEGIN
+                DELETE FROM plugins_fts WHERE plugin_id = old.id;
+                INSERT INTO plugins_fts(plugin_id, short_name, description)
+                VALUES (new.id, new.short_name, new.description);
+            END;
+
             -- Cron scheduler: job definitions with execution history.
             CREATE TABLE IF NOT EXISTS cron_jobs (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1084,13 +1124,26 @@ class SkillStore:
     def _rebuild_fts_index(self, conn: sqlite3.Connection) -> None:
         """Rebuild FTS5 indexes from existing table content (run after migration).
 
-        FTS5 'rebuild' is idempotent — calling it twice does not corrupt data.
-        This populates the FTS tables for rows that existed before the triggers
-        were created (i.e., on first upgrade of an existing DB).
+        For ``content='...'`` linked tables (tasks_fts, teachings_fts) the FTS5
+        ``'rebuild'`` command is idempotent. For ``skills_fts``/``plugins_fts``
+        we manage sync manually (contentless tables with TEXT primary keys), so
+        we wipe + repopulate on rebuild. Safe to call repeatedly.
         """
         try:
             conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
             conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
+            # Rebuild skills_fts: wipe + repopulate from skills table.
+            conn.execute("DELETE FROM skills_fts")
+            conn.execute(
+                "INSERT INTO skills_fts(skill_id, name, description, content) "
+                "SELECT id, name, description, content FROM skills"
+            )
+            # Rebuild plugins_fts: wipe + repopulate from plugins table.
+            conn.execute("DELETE FROM plugins_fts")
+            conn.execute(
+                "INSERT INTO plugins_fts(plugin_id, short_name, description) "
+                "SELECT id, short_name, description FROM plugins"
+            )
             conn.commit()
         except sqlite3.OperationalError as exc:
             _log.warning("FTS5 rebuild failed (FTS5 may be unavailable): %s", exc)
@@ -2915,6 +2968,116 @@ class SkillStore:
         # Sort so best matches come first (ascending by score = most negative first).
         results.sort(key=lambda x: x["score"])
         return results[:top_k]
+
+    def search_skills_text(self, query: str, top_k: int = 5,
+                           target: str | None = None) -> list[dict]:
+        """BM25 keyword fallback for skill search when embeddings are unavailable.
+
+        Returns rows shaped like :meth:`search` results so callers can swap the
+        two paths without restructuring their result rendering. Empty list on
+        empty query, no matches, or missing FTS5 table.
+        """
+        if not query or not query.strip():
+            return []
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query or safe_query == '""':
+            return []
+        try:
+            if target:
+                rows = self._conn.execute(
+                    """
+                    SELECT s.id, s.name, s.description, s.content, s.plugin,
+                           s.target, s.feedback_score, f.rank AS score
+                    FROM skills_fts f
+                    JOIN skills s ON s.id = f.skill_id
+                    WHERE skills_fts MATCH ? AND s.target = ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (safe_query, target, top_k),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT s.id, s.name, s.description, s.content, s.plugin,
+                           s.target, s.feedback_score, f.rank AS score
+                    FROM skills_fts f
+                    JOIN skills s ON s.id = f.skill_id
+                    WHERE skills_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (safe_query, top_k),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                _log.debug("FTS5 skills table not yet created: %s", exc)
+                return []
+            raise
+
+        return [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "description": r["description"],
+                "content": r["content"],
+                "plugin": r["plugin"],
+                "target": r["target"],
+                "feedback_score": r["feedback_score"],
+                "score": float(r["score"]),
+            }
+            for r in rows
+        ]
+
+    def suggest_plugins_text(self, query: str, top_k: int = 5) -> list[dict]:
+        """BM25 keyword fallback for plugin suggestions when embeddings are unavailable.
+
+        Returns rows shaped like :meth:`suggest_plugins` results so callers can
+        swap the two paths without restructuring rendering. ``embed_score`` is
+        derived from the (negated, clipped) BM25 rank so it sorts the same way.
+        """
+        if not query or not query.strip():
+            return []
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query or safe_query == '""':
+            return []
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT p.id, p.short_name, p.description, f.rank AS score
+                FROM plugins_fts f
+                JOIN plugins p ON p.id = f.plugin_id
+                WHERE plugins_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (safe_query, top_k),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                _log.debug("FTS5 plugins table not yet created: %s", exc)
+                return []
+            raise
+
+        # Convert BM25 rank (more negative = better) into a non-negative
+        # embed_score-like value so the existing shape stays comparable.
+        results: list[dict] = []
+        for r in rows:
+            # Clip and invert so best-match -> highest score; keeps it loosely
+            # in the 0..1 range typical of cosine similarity, without
+            # over-promising semantic precision.
+            bm25 = float(r["score"])
+            pseudo = max(0.0, min(1.0, -bm25 / 10.0))
+            results.append({
+                "plugin_id": r["id"],
+                "short_name": r["short_name"],
+                "description": r["description"],
+                "embed_score": pseudo,
+                "teaching_score": 0.0,
+                "session_score": 0.0,
+                "total_score": pseudo,
+            })
+        return results
 
     def get_skill_usage_stats(self) -> list[dict]:
         """Aggregate skill usage.

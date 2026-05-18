@@ -48,6 +48,7 @@ from . import config as _cfg
 from .embeddings import (
     embed, rerank, compact, rewrite_query, optimize_context,
     EMBED_MODEL, RERANK_MODEL, ollama_available, embed_available,
+    embed_unavailable_reason,
     _generate,
 )
 from .indexer import index_all
@@ -55,6 +56,7 @@ from .activity_log import log_tool, log_llm, log_banner
 from .resource_monitor import should_run_llm, snapshot
 from .store import SkillStore
 from . import dashboard as _dashboard
+from .capabilities import requires_capability
 
 
 def _get_cpu_info() -> int:
@@ -233,6 +235,7 @@ _last_search_state: dict = {"query": "", "vector": [], "skills": []}
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def search_skills(
     query: str,
     top_k: int = 5,
@@ -242,11 +245,41 @@ def search_skills(
     from .activity_log import LOG_FILE
 
     log_tool("search_skills", query=query, top_k=top_k, rerank=use_rerank)
+
+    # Degraded-search fallback: when no embedding backend is available, fall
+    # back to SQLite FTS5 keyword/BM25 search so callers get *something* useful
+    # instead of an error.
     if not embed_available():
-        return (
-            f"No embedding backend available. "
-            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
-        )
+        fts_hits = _store.search_skills_text(query, top_k=top_k)
+        if not fts_hits:
+            return (
+                f"<!-- Skill Hub search: query={query!r} top_k={top_k} mode=keyword-fts5 -->\n"
+                f"No matching skills found via keyword fallback. "
+                f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install "
+                f"sentence-transformers for semantic search."
+            )
+        loaded_ids = [c["id"] for c in fts_hits]
+        _last_search_state["query"] = query
+        _last_search_state["vector"] = []
+        _last_search_state["skills"] = loaded_ids
+        for c in fts_hits:
+            try:
+                _store.log_skill_injection(c["id"], query, _session.get("id"))
+            except Exception:
+                pass
+        max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
+        header = "\n".join([
+            f"<!-- Skill Hub search: query={query!r} top_k={top_k} mode=keyword-fts5 -->",
+            f"<!-- LOADED ({len(fts_hits)}): {', '.join(loaded_ids) or 'none'} -->",
+            "<!-- degraded-search: embeddings unavailable, used FTS5 BM25 fallback -->",
+        ])
+        parts: list[str] = [header]
+        for c in fts_hits:
+            content = (c["content"] or "").strip()
+            if len(content) > max_skill_chars:
+                content = content[:max_skill_chars] + "\n\n<!-- truncated -->"
+            parts.append(f"<!-- skill: {c['id']} -->\n{content}")
+        return "\n\n---\n\n".join(parts)
 
     query_vector = embed(query)
 
@@ -284,7 +317,7 @@ def search_skills(
     not_loaded_ids = [c["id"] for c in not_loaded]
 
     header_lines = [
-        f"<!-- Skill Hub search: query={query!r} top_k={top_k} -->",
+        f"<!-- Skill Hub search: query={query!r} top_k={top_k} mode=vector -->",
         f"<!-- LOADED ({len(loaded)}):     {', '.join(loaded_ids) or 'none'} -->",
         f"<!-- NOT LOADED ({len(not_loaded)}): {', '.join(not_loaded_ids) or 'none'} -->",
         f"<!-- log: tail -f {LOG_FILE} -->",
@@ -318,23 +351,32 @@ def search_skills(
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def suggest_plugins(query: str = "") -> str:
     """Suggest disabled plugins matching the current task."""
     log_tool("suggest_plugins", query=query)
-    if not embed_available():
-        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
 
     used_query = query or _last_search_state.get("query", "")
     if not used_query:
         return "Provide a query or call search_skills first."
 
-    query_vector = embed(used_query) if query else _last_search_state.get("vector", [])
-    if not query_vector:
-        query_vector = embed(used_query)
+    # Degraded-search fallback (M1 #8): when no embedding backend is available,
+    # use FTS5 BM25 keyword search so callers still get ranked suggestions.
+    if not embed_available():
+        suggestions = _store.suggest_plugins_text(used_query)
+        mode_marker = "<!-- mode=keyword-fts5 (degraded-search: embeddings unavailable) -->"
+    else:
+        query_vector = embed(used_query) if query else _last_search_state.get("vector", [])
+        if not query_vector:
+            query_vector = embed(used_query)
+        suggestions = _store.suggest_plugins(query_vector)
+        mode_marker = "<!-- mode=vector -->"
 
-    suggestions = _store.suggest_plugins(query_vector)
     if not suggestions:
-        return "No plugin suggestions for this query. Add teachings with teach() to improve."
+        return (
+            f"{mode_marker}\n"
+            f"No plugin suggestions for this query. Add teachings with teach() to improve."
+        )
 
     # Check current enabled state
     enabled_plugins: dict = {}
@@ -359,7 +401,7 @@ def suggest_plugins(query: str = "") -> str:
                 f"  → to enable: toggle_plugin(\"{s['short_name']}\", enabled=True)"
             )
 
-    return f"Plugin suggestions for \"{used_query}\":\n\n" + "\n".join(lines)
+    return f"{mode_marker}\nPlugin suggestions for \"{used_query}\":\n\n" + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +409,7 @@ def suggest_plugins(query: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def record_feedback(
     skill_id: str,
     helpful: bool,
@@ -389,6 +432,7 @@ def record_feedback(
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def teach(rule: str, suggest: str, cwd: str = "", override_pii: bool = False) -> str:
     """Add a persistent rule mapping task patterns to plugins or skills.
 
@@ -408,7 +452,7 @@ def teach(rule: str, suggest: str, cwd: str = "", override_pii: bool = False) ->
         return _msg
 
     if not embed_available():
-        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
+        return embed_unavailable_reason()
 
     rule_vector = embed(rule)
 
@@ -435,6 +479,7 @@ def teach(rule: str, suggest: str, cwd: str = "", override_pii: bool = False) ->
 
 
 @mcp.tool()
+@requires_capability("none")
 def forget_teaching(teaching_id: int) -> str:
     """Remove a teaching rule by its ID."""
     log_tool("forget_teaching", teaching_id=teaching_id)
@@ -444,6 +489,7 @@ def forget_teaching(teaching_id: int) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_teachings() -> str:
     """List all teaching rules."""
     rows = _store.list_teachings()
@@ -457,6 +503,7 @@ def list_teachings() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def log_session(tool_name: str, plugin_id: str = "") -> str:
     """Record a tool usage in this session for passive learning."""
     log_tool("log_session", tool=tool_name, plugin_id=plugin_id)
@@ -482,6 +529,7 @@ def log_session(tool_name: str, plugin_id: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def close_session(summary: str = "") -> str:
     """Phase M3 — Close the current session and persist its L1 summary.
 
@@ -586,6 +634,7 @@ def _enforce_pii_gate(
 
 
 @mcp.tool()
+@requires_capability("none")
 def save_task(
     title: str,
     summary: str,
@@ -728,6 +777,7 @@ def _slugify_task_name(title: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def close_task(
     task_id: int,
     summary: str = "",
@@ -847,6 +897,7 @@ def close_task(
 # ───────────────────────── Fanout (parallel issue dispatch) ──────────────────
 
 @mcp.tool()
+@requires_capability("none")
 def fanout_issues(
     project: str,
     source: str = "gh",
@@ -901,6 +952,7 @@ def fanout_issues(
 
 
 @mcp.tool()
+@requires_capability("none")
 def fanout_status(group_id: str) -> str:
     """Roll up progress for all tasks in a fanout group.
 
@@ -922,6 +974,7 @@ def fanout_status(group_id: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def fanout_close(group_id: str, summary: str = "") -> str:
     """Close every open task in a fanout group.
 
@@ -949,6 +1002,7 @@ def fanout_close(group_id: str, summary: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def fanout_cleanup(
     group_id: str,
     close_open_tasks: bool = True,
@@ -990,6 +1044,7 @@ def fanout_cleanup(
 # ─────────────────────── Worktree pre-flight (M3-1) ─────────────────────────
 
 @mcp.tool()
+@requires_capability("none")
 def worktree_preflight(
     issue_number: int,
     project: str,
@@ -1030,6 +1085,7 @@ def worktree_preflight(
 
 
 @mcp.tool()
+@requires_capability("none")
 def federation_view(remote_db_path: str, alias: str = "remote") -> str:
     """M4-3 federation-lite — open a peer host's skill-hub DB read-only.
 
@@ -1068,6 +1124,7 @@ def federation_view(remote_db_path: str, alias: str = "remote") -> str:
 # ───────────────────────── Swarm-lite (parallel claim dispatch) ──────────────
 
 @mcp.tool()
+@requires_capability("none")
 def swarm_launch(
     claims: list[dict],
     group_id: str = "",
@@ -1110,6 +1167,7 @@ def swarm_launch(
 
 
 @mcp.tool()
+@requires_capability("none")
 def swarm_reap(
     handles: list[dict],
     timeout_sec: float = 0.0,
@@ -1138,6 +1196,7 @@ def swarm_reap(
 
 
 @mcp.tool()
+@requires_capability("llm")
 def compact_master_state(
     project_root: str,
     output_file: str = ".memory/decisions.md",
@@ -1193,6 +1252,7 @@ def compact_master_state(
 
 
 @mcp.tool()
+@requires_capability("none")
 def export_policies(
     project_root: str,
     output_file: str = ".skill-hub/POLICY.md",
@@ -1242,6 +1302,7 @@ def export_policies(
 
 
 @mcp.tool()
+@requires_capability("none")
 def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
     """Toggle per-task permissive auto-approve override.
 
@@ -1265,6 +1326,7 @@ def set_task_auto_approve(task_id: int, enabled: bool | None = None) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def set_task_options(task_id: int, options: str = "") -> str:
     """Set per-task option overrides as a JSON object.
 
@@ -1307,6 +1369,7 @@ def set_task_options(task_id: int, options: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def claim_task(
     task_id: int,
     agent_id: str,
@@ -1347,6 +1410,7 @@ def claim_task(
 
 
 @mcp.tool()
+@requires_capability("none")
 def handoff_task(
     task_id: int,
     to_agent: str,
@@ -1393,6 +1457,7 @@ def handoff_task(
 
 
 @mcp.tool()
+@requires_capability("none")
 def steal_task(
     task_id: int,
     new_agent_id: str,
@@ -1430,6 +1495,7 @@ def steal_task(
 
 
 @mcp.tool()
+@requires_capability("none")
 def release_task(task_id: int, agent_id: str = "") -> str:
     """Release the claim on a task (clears ``claimed_by``).
 
@@ -1456,6 +1522,7 @@ def release_task(task_id: int, agent_id: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def update_task(task_id: int, summary: str = "", context: str = "",
                 tags: str = "", title: str = "", color: str = "") -> str:
     """Update an open task with new information.
@@ -1494,6 +1561,7 @@ def update_task(task_id: int, summary: str = "", context: str = "",
 
 
 @mcp.tool()
+@requires_capability("none")
 def reopen_task(task_id: int) -> str:
     """Reopen a previously closed task.
 
@@ -1539,6 +1607,7 @@ _COLOR_GLYPH = {
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_tasks(status: str = "open", repo: str = "",
                group_by_repo: bool = False,
                worktree_current: bool = False,
@@ -1625,6 +1694,7 @@ def list_tasks(status: str = "open", repo: str = "",
 
 
 @mcp.tool()
+@requires_capability("none")
 def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True) -> str:
     """Validate a plan YAML file against the plan-executor schema.
 
@@ -1664,6 +1734,7 @@ def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True)
 
 
 @mcp.tool()
+@requires_capability("llm")
 def author_plan(goal: str, repo_path: str = "", preferred_runner: str = "") -> str:
     """Author a plan YAML for the given goal, transparently using the best
     available Opus runner (in_session → claude -p → SDK → API fallback).
@@ -1701,6 +1772,7 @@ def author_plan(goal: str, repo_path: str = "", preferred_runner: str = "") -> s
 
 
 @mcp.tool()
+@requires_capability("none")
 def run_plan(plan_path: str, dry_run: bool = True, repo_path: str = "") -> str:
     """Walk every step of a plan YAML in topological order, stopping on the
     first failed/escalated step.
@@ -1734,6 +1806,7 @@ def run_plan(plan_path: str, dry_run: bool = True, repo_path: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("llm")
 def execute_plan_step(
     plan_path: str,
     step_id: str,
@@ -1779,6 +1852,7 @@ def execute_plan_step(
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def search_context(
     query: str,
     top_k: int = 5,
@@ -1792,8 +1866,81 @@ def search_context(
     namespaces) into the output.
     """
     log_tool("search_context", query=query, top_k=top_k, categories=categories)
+
+    # Degraded-search (M1 #8): when no embedding backend is available, fall
+    # back to FTS5 BM25 across tasks/skills/plugins so the user still gets
+    # ranked keyword hits instead of an error.
     if not embed_available():
-        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
+        cats = {c.strip() for c in categories.split(",")}
+        show_all = "all" in cats
+        parts: list[str] = [
+            "<!-- search_context mode=keyword-fts5 "
+            "(degraded-search: embeddings unavailable) -->",
+        ]
+
+        if show_all or "tasks" in cats:
+            task_hits = _store.search_text(query, tables=["tasks"],
+                                           top_k=top_k, status="open")
+            if task_hits:
+                task_lines = [
+                    f"### Task #{t['id']}: {t['title_or_rule']} (bm25={t['score']:.2f})\n"
+                    f"{t['summary_or_why']}"
+                    for t in task_hits
+                ]
+                parts.append("## Open Tasks (keyword)\n\n" + "\n\n".join(task_lines))
+
+        if show_all or "closed" in cats:
+            closed_hits = _store.search_text(query, tables=["tasks"],
+                                              top_k=3, status="closed")
+            if closed_hits:
+                closed_lines = [
+                    f"### Closed #{t['id']}: {t['title_or_rule']} (bm25={t['score']:.2f})\n"
+                    f"{t['summary_or_why'] or ''}"[:400]
+                    for t in closed_hits
+                ]
+                parts.append("## Related Past Work (keyword)\n\n" + "\n\n".join(closed_lines))
+
+        if show_all or "skills" in cats:
+            skill_hits = _store.search_skills_text(query, top_k=top_k)
+            if skill_hits:
+                skill_lines = [
+                    f"- {s['id']}: {(s['description'] or '')[:100]}"
+                    for s in skill_hits
+                ]
+                parts.append("## Matching Skills (keyword)\n\n" + "\n".join(skill_lines))
+                _last_search_state["skills"] = [s["id"] for s in skill_hits]
+
+        if show_all or "plugins" in cats:
+            plugin_hits = _store.suggest_plugins_text(query, top_k=top_k)
+            if plugin_hits:
+                enabled_plugins: dict = {}
+                if SETTINGS_PATH.exists():
+                    settings = json.loads(SETTINGS_PATH.read_text())
+                    enabled_plugins = settings.get("enabledPlugins", {})
+                disabled = [s for s in plugin_hits[:3]
+                            if not enabled_plugins.get(s["plugin_id"], False)]
+                if disabled:
+                    plug_lines = [
+                        f"- {s['short_name']}: {(s['description'] or '')[:80]}"
+                        for s in disabled
+                    ]
+                    parts.append(
+                        "## Disabled Plugins That May Help (keyword)\n\n"
+                        + "\n".join(plug_lines)
+                        + "\nUse toggle_plugin() to enable."
+                    )
+
+        _last_search_state["query"] = query
+        _last_search_state["vector"] = []
+
+        if len(parts) == 1:
+            return (
+                parts[0] + "\n\n"
+                "No relevant context found via keyword fallback. "
+                "Enable an embedding backend (VOYAGE_API_KEY, Ollama, or "
+                "sentence-transformers) for semantic search."
+            )
+        return "\n\n---\n\n".join(parts)
 
     query_vector = embed(query)
 
@@ -1807,7 +1954,7 @@ def search_context(
     cats = {c.strip() for c in categories.split(",")}
     show_all = "all" in cats
 
-    parts: list[str] = []
+    parts: list[str] = ["<!-- search_context mode=vector -->"]
 
     # 1. Open tasks
     if show_all or "tasks" in cats:
@@ -1904,7 +2051,8 @@ def search_context(
     except Exception:  # noqa: BLE001
         pass
 
-    if not parts:
+    # parts[0] is the mode marker added at the start; len==1 means no real hits.
+    if len(parts) <= 1:
         return "No relevant context found. Try index_skills() and index_plugins() first."
 
     return "\n\n---\n\n".join(parts)
@@ -1915,14 +2063,12 @@ def search_context(
 
 
 @mcp.tool()
+@requires_capability("none")
 def index_skills() -> str:
     """Rebuild the skill index from all plugin directories."""
     log_tool("index_skills")
     if not embed_available():
-        return (
-            f"No embedding backend available. "
-            f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install sentence-transformers."
-        )
+        return embed_unavailable_reason()
 
     count, errors = index_all(_store)
     result = f"Indexed {count} skills."
@@ -1932,11 +2078,12 @@ def index_skills() -> str:
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def index_plugins() -> str:
     """Index plugin descriptions for suggest_plugins()."""
     log_tool("index_plugins")
     if not embed_available():
-        return "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, or install sentence-transformers."
+        return embed_unavailable_reason()
 
     if not SETTINGS_PATH.exists():
         return "Settings file not found."
@@ -2110,6 +2257,7 @@ def _skills_at_sha(cwd: Path, sha: str) -> set[str]:
 
 
 @mcp.tool()
+@requires_capability("none")
 def update_marketplace(name: str = "anthropic-agent-skills",
                        dry_run: bool = False,
                        reindex: bool = True) -> str:
@@ -2241,6 +2389,7 @@ def update_marketplace(name: str = "anthropic-agent-skills",
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_skills(plugin: str = "") -> str:
     """List all indexed skills. Optional plugin filter."""
     rows = _store.list_skills()
@@ -2253,6 +2402,7 @@ def list_skills(plugin: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def toggle_plugin(plugin_name: str, enabled: bool) -> str:
     """Enable or disable a plugin. Takes effect on next session restart."""
     from .plugin_registry import toggle as _toggle
@@ -2266,6 +2416,7 @@ def toggle_plugin(plugin_name: str, enabled: bool) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_profiles() -> str:
     """List saved plugin profiles; active profile prefixed with *."""
     from . import profiles as _prof
@@ -2283,6 +2434,7 @@ def list_profiles() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def create_profile(name: str, plugins: str = "",
                     description: str = "", overwrite: bool = False) -> str:
     """Create or overwrite a plugin profile.
@@ -2316,6 +2468,7 @@ def create_profile(name: str, plugins: str = "",
 
 
 @mcp.tool()
+@requires_capability("none")
 def switch_profile(name: str, dry_run: bool = False) -> str:
     """Switch active profile; writes its plugin map into ~/.claude/settings.json.
 
@@ -2341,6 +2494,7 @@ def switch_profile(name: str, dry_run: bool = False) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def delete_profile(name: str) -> str:
     """Delete a saved profile by name."""
     from . import profiles as _prof
@@ -2354,6 +2508,7 @@ def delete_profile(name: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def route_to_model(
     prompt: str = "",
     complexity: float = 0.5,
@@ -2399,6 +2554,7 @@ def route_to_model(
 
 
 @mcp.tool()
+@requires_capability("none")
 def record_model_reward(
     tier: str,
     success: float,
@@ -2431,6 +2587,7 @@ def record_model_reward(
 
 
 @mcp.tool()
+@requires_capability("none")
 def bandit_stats() -> str:
     """Dump the full ``model_rewards`` table."""
     from .router import bandit as _bandit
@@ -2447,6 +2604,7 @@ def bandit_stats() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def improve_prompt(text: str, rewriters: str = "") -> str:
     """Apply S5 F-PROMPT rewriters and return the enriched prompt.
 
@@ -2468,6 +2626,7 @@ def improve_prompt(text: str, rewriters: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_prompt_rewriters() -> str:
     """List registered prompt rewriters (S5 F-PROMPT)."""
     from .router import rewriters as _rw
@@ -2476,6 +2635,7 @@ def list_prompt_rewriters() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def auto_curate_plugins(stale_days: int = 14) -> str:
     """Suggest plugins to disable — currently enabled but unused in the last N days.
 
@@ -2493,6 +2653,7 @@ def auto_curate_plugins(stale_days: int = 14) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def session_stats() -> str:
     """Show most-used plugins from session history (passive learning data)."""
     rows = _store.get_session_stats()
@@ -2506,6 +2667,7 @@ def session_stats() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def configure(key: str = "", value: str = "") -> str:
     """View or update Skill Hub config. No args = show all. key+value = update.
 
@@ -2563,6 +2725,7 @@ def configure(key: str = "", value: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("llm")
 def optimize_memory(dry_run: bool = True) -> str:
     """Analyze memory files with tier-smart LLM routing. Recommends KEEP/PRUNE/COMPACT/MERGE. dry_run=True for report only.
     """
@@ -2732,6 +2895,7 @@ def optimize_memory(dry_run: bool = True) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def status(section: str = "summary") -> str:
     """Skill Hub health check. section: summary (default), context, resources, tips, full."""
     import httpx
@@ -2755,16 +2919,26 @@ def status(section: str = "summary") -> str:
         lines.append("=== Skill Hub Status ===\n")
         lines.append("MCP server:      running")
 
-        try:
-            resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
-            available = [m["name"] for m in resp.json().get("models", [])]
-            lines.append(f"Ollama:          reachable")
-            embed_ok = any(embed_model in m for m in available)
-            reason_ok = any(reason_model in m for m in available)
-            lines.append(f"Models:          embed={embed_model} ({'ok' if embed_ok else 'MISSING'}), "
-                         f"reason={reason_model} ({'ok' if reason_ok else 'MISSING'})")
-        except Exception:
-            lines.append(f"Ollama:          NOT reachable at {ollama_base}")
+        from . import capabilities as _cap
+        if _cap.no_llm_mode_active():
+            ns = _cap.no_llm_summary()
+            lines.append(
+                f"No-LLM mode:     ON ({ns['available']}/{ns['total']} tools available)"
+            )
+            lines.append(
+                f"                 {ns['disabled']} tool(s) disabled — see /status/capabilities"
+            )
+        else:
+            try:
+                resp = httpx.get(f"{ollama_base}/api/tags", timeout=5.0)
+                available = [m["name"] for m in resp.json().get("models", [])]
+                lines.append(f"Ollama:          reachable")
+                embed_ok = any(embed_model in m for m in available)
+                reason_ok = any(reason_model in m for m in available)
+                lines.append(f"Models:          embed={embed_model} ({'ok' if embed_ok else 'MISSING'}), "
+                             f"reason={reason_model} ({'ok' if reason_ok else 'MISSING'})")
+            except Exception:
+                lines.append(f"Ollama:          NOT reachable at {ollama_base}")
 
         try:
             skill_count = len(_store.list_skills())
@@ -2839,6 +3013,7 @@ def status(section: str = "summary") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def render_dashboard() -> str:
     """Regenerate the benefit/cost HTML dashboard. Returns a clickable file:// URL."""
     log_tool("render_dashboard")
@@ -2855,6 +3030,7 @@ def render_dashboard() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def token_stats() -> str:
     """Show estimated token savings from hook interceptions."""
     totals = _store.get_interception_totals()
@@ -2893,6 +3069,7 @@ def token_stats() -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_models(show_recommendations: bool = False) -> str:
     """List installed Ollama models. show_recommendations=True for hardware guide."""
     import httpx
@@ -2938,6 +3115,7 @@ def list_models(show_recommendations: bool = False) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def pull_model(model: str) -> str:
     """Download an Ollama model. Use configure() to activate it after pulling."""
     import subprocess
@@ -2973,6 +3151,7 @@ def pull_model(model: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def exhaustion_save(context: str = "", namespace: str = "") -> str:
     """Auto-save session state when Claude is exhausted or rate-limited.
 
@@ -2988,6 +3167,7 @@ def exhaustion_save(context: str = "", namespace: str = "") -> str:
 # Plugin extension-points — A5 (scheduled tasks) + A10 (memory optimizer)
 
 @mcp.tool()
+@requires_capability("none")
 def list_plugin_tasks(plugin: str = "") -> str:
     """A5 — List scheduled task templates declared by enabled plugins.
 
@@ -3019,6 +3199,7 @@ def list_plugin_tasks(plugin: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def enable_plugin_task(plugin: str, name: str) -> str:
     """A5 — Enable a scheduled task template declared in a plugin's manifest.
 
@@ -3059,6 +3240,7 @@ def enable_plugin_task(plugin: str, name: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def disable_plugin_task(plugin: str, name: str) -> str:
     """A5 — Disable a previously-enabled plugin scheduled task."""
     out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
@@ -3111,6 +3293,7 @@ _CORE_SCHEDULED_TASKS: dict[str, dict] = {
 
 
 @mcp.tool()
+@requires_capability("none")
 def enable_core_task(name: str) -> str:
     """Enable a built-in core scheduled task (e.g. promote_memory, index_skills).
 
@@ -3145,6 +3328,7 @@ def enable_core_task(name: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def disable_core_task(name: str) -> str:
     """Disable a previously-enabled core scheduled task."""
     out_dir = Path("~/.claude/mcp-skill-hub/scheduled_tasks").expanduser()
@@ -3163,6 +3347,7 @@ def disable_core_task(name: str) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
     """M3 #17 — Run one step of the lint-canary cadence.
 
@@ -3186,6 +3371,7 @@ def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def record_witness(
     issue: str,
     pr: str,
@@ -3234,6 +3420,7 @@ def record_witness(
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_witness(
     repo: str = "",
     since: int = 0,
@@ -3265,6 +3452,7 @@ def list_witness(
 
 
 @mcp.tool()
+@requires_capability("none")
 def sync_check(
     primary: str,
     followers: list[str],
@@ -3303,6 +3491,7 @@ def sync_check(
 
 
 @mcp.tool()
+@requires_capability("none")
 def list_core_tasks() -> str:
     """List all built-in core scheduled tasks with their status (enabled/disabled)."""
     rows = _store._conn.execute(
@@ -3319,6 +3508,7 @@ def list_core_tasks() -> str:
 
 
 @mcp.tool()
+@requires_capability("llm")
 def optimize_plugin_memory(plugin: str, dry_run: bool = True) -> str:
     """A10 — Run plugin-scoped memory optimization.
 
@@ -3365,6 +3555,7 @@ def optimize_plugin_memory(plugin: str, dry_run: bool = True) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def remember_identity(fact: str, tag: str = "") -> str:
     """Phase M4 — Persist a long-lived fact about the user into the L4 identity index.
 
@@ -3395,6 +3586,7 @@ def remember_identity(fact: str, tag: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("llm")
 def promote_memory(dry_run: bool = True) -> str:
     """Phase M4 — Run the memory-promotion rules over the vectors corpus.
 
@@ -3464,6 +3656,7 @@ _SEARCH_PROFILES: dict[str, dict] = {
 
 
 @mcp.tool()
+@requires_capability("embedding")
 def search_context_profile(query: str, profile: str = "default",
                             top_k: int = 5) -> str:
     """Phase M5 — Preset mixes over ``search_context`` / ``search_vectors``.
@@ -3496,6 +3689,7 @@ def search_context_profile(query: str, profile: str = "default",
 
 
 @mcp.tool()
+@requires_capability("none")
 def search_web(query: str, top_k: int = 5) -> str:
     """Search the web via local SearXNG and summarize with local LLM.
 
@@ -3548,6 +3742,7 @@ def search_web(query: str, top_k: int = 5) -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def analyze_router_log(
     top_n: int = 20,
     propose_teachings: bool = True,
@@ -3649,6 +3844,7 @@ def analyze_router_log(
 # Session memory (ported from cookbook session_memory_compaction.ipynb)
 
 @mcp.tool()
+@requires_capability("none")
 def get_session_memory(session_id: str = "") -> str:
     """Return the stored 6-section session memory for a session.
 
@@ -3679,6 +3875,7 @@ def get_session_memory(session_id: str = "") -> str:
 
 
 @mcp.tool()
+@requires_capability("none")
 def rebuild_session_memory(
     session_id: str,
     transcript_path: str = "",
@@ -3721,6 +3918,7 @@ def rebuild_session_memory(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@requires_capability("none")
 def autopilot_run(
     poll_interval: float = 5.0,
     max_claims: int = 0,
@@ -3757,6 +3955,7 @@ def autopilot_run(
 
 
 @mcp.tool()
+@requires_capability("none")
 def autopilot_stop(runner_id: str = "") -> str:
     """Signal one (or every) autopilot runner to exit at its next checkpoint.
 

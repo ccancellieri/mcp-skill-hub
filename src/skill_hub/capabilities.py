@@ -5,16 +5,22 @@ view of "given the current backend state, which tools work?" Each tool
 declares which backends it depends on; this module probes the backends
 once per request and renders a green / yellow / red verdict.
 
-This intentionally does NOT depend on a separate tool-capability-matrix
-(issue #7) — the dependency table lives here as plain data so the
-dashboard view can ship before #7 lands.
+Issue #7 extends this with a coarser ``tier`` axis (``none`` / ``embedding``
+/ ``llm``) so ``status`` / ``list_skills`` / ``--help`` can answer the
+simpler question "does this tool work without an LLM at all?" without
+re-deriving from the full backend matrix on every call. The tier is
+mechanically derived from each ``ToolSpec``'s hard deps and recorded in
+``TIER_REGISTRY`` at import time so no tool can end up ``unknown``. The
+``@requires_capability`` decorator lets server.py declare a tier inline
+on a tool def — useful as an explicit override or as a self-documenting
+annotation visible at the call site.
 """
 from __future__ import annotations
 
 import os
 import shutil
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal, TypeVar
 
 # Backend identifiers used across the matrix. Keep small and stable.
 BACKEND_MCP = "mcp"
@@ -60,8 +66,31 @@ def _check_claude_cli() -> bool:
     return shutil.which("claude") is not None
 
 
+def _no_llm_mode() -> bool:
+    """True when the user has opted out of every LLM-backed feature.
+
+    Centralised so backend probes, ``status``, and the dashboard banner all
+    agree on the answer without each importing config independently.
+    """
+    try:
+        from . import config as _cfg
+        return bool(_cfg.get("no_llm_mode"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# Backends the user explicitly disables when no_llm_mode is on. The remaining
+# backends (mcp/db/git/gh/claude_cli/searxng) are independent of the local LLM
+# stack and continue probing normally.
+_NO_LLM_DISABLED_BACKENDS: frozenset[str] = frozenset({
+    "ollama", "embed", "reason_llm", "voyage",
+})
+
+
 def _check_ollama() -> bool:
     """Daemon reachable, regardless of which models are installed."""
+    if _no_llm_mode():
+        return False
     try:
         from .ollama_client import get_ollama_client
         return get_ollama_client().get_api_base(None) is not None
@@ -70,6 +99,8 @@ def _check_ollama() -> bool:
 
 
 def _check_embed() -> bool:
+    if _no_llm_mode():
+        return False
     try:
         from .embeddings import embed_available
         return bool(embed_available())
@@ -78,6 +109,8 @@ def _check_embed() -> bool:
 
 
 def _check_reason_llm() -> bool:
+    if _no_llm_mode():
+        return False
     try:
         from . import config as _cfg
         from .embeddings import ollama_available
@@ -99,6 +132,8 @@ def _check_searxng() -> bool:
 
 
 def _check_voyage() -> bool:
+    if _no_llm_mode():
+        return False
     if os.environ.get("VOYAGE_API_KEY"):
         return True
     try:
@@ -336,13 +371,23 @@ def _verdict(spec: ToolSpec, available: dict[str, bool]) -> str:
 
 
 def probe_backends() -> dict[str, dict]:
-    """Run every backend probe once and return a name-keyed dict."""
+    """Run every backend probe once and return a name-keyed dict.
+
+    Issue #6 — when ``no_llm_mode`` is on we *skip the probe* for the LLM-tier
+    backends (embed/ollama/reason_llm/voyage) and report them as missing
+    unconditionally. The non-LLM backends still run their normal probe so
+    "DB available?" / "git installed?" remain truthful.
+    """
+    no_llm = _no_llm_mode()
     out: dict[str, dict] = {}
     for bid, b in BACKENDS.items():
-        try:
-            ok = bool(b.check())
-        except Exception:  # noqa: BLE001
+        if no_llm and bid in _NO_LLM_DISABLED_BACKENDS:
             ok = False
+        else:
+            try:
+                ok = bool(b.check())
+            except Exception:  # noqa: BLE001
+                ok = False
         out[bid] = {
             "id": b.id,
             "label": b.label,
@@ -350,6 +395,83 @@ def probe_backends() -> dict[str, dict]:
             "setup": b.setup,
         }
     return out
+
+
+# ---------------------------------------------------------------------------
+# Issue #7 — coarse tier registry ("none" / "embedding" / "llm")
+#
+# A simpler axis on top of the backend-dep matrix. Answers "what does this
+# tool need at minimum?" without enumerating every backend. Used by
+# ``status``, ``list_skills``, and ``--help`` to filter tools by the
+# current install's capability floor.
+
+Tier = Literal["none", "embedding", "llm"]
+
+_F = TypeVar("_F", bound=Callable[..., object])
+
+
+def tier_from_spec(spec: ToolSpec) -> Tier:
+    """Derive the coarse tier from a ToolSpec's *hard* dependencies.
+
+    Hard deps decide tier; soft deps degrade verdict (yellow) but don't
+    change what the tool fundamentally needs. Priority: ``llm`` > ``embedding``
+    > ``none`` — if a tool needs both, the stricter requirement wins.
+    """
+    if BACKEND_REASON_LLM in spec.hard:
+        return "llm"
+    if BACKEND_EMBED in spec.hard:
+        return "embedding"
+    return "none"
+
+
+# Module-level registry consulted by ``status`` and friends. Auto-populated
+# from TOOLS at import time so every declared tool has a tier — no tool can
+# end up ``unknown``. ``requires_capability`` may override an entry inline.
+TIER_REGISTRY: dict[str, Tier] = {
+    spec.name: tier_from_spec(spec) for spec in TOOLS
+}
+
+
+def requires_capability(tier: Tier) -> Callable[[_F], _F]:
+    """Decorator: declare the capability tier a tool needs at minimum.
+
+    Stamps ``__capability_tier__`` on the wrapped function and records the
+    declaration in :data:`TIER_REGISTRY`. The declared tier wins over the
+    one derived from the matching :class:`ToolSpec` (if any), letting
+    server.py call out exceptions inline without editing the spec table.
+
+    Usage in ``server.py``::
+
+        @mcp.tool()
+        @requires_capability("embedding")
+        def search_skills(...): ...
+    """
+    if tier not in ("none", "embedding", "llm"):
+        raise ValueError(f"tier must be none/embedding/llm, got {tier!r}")
+
+    def deco(fn: _F) -> _F:
+        fn.__capability_tier__ = tier  # type: ignore[attr-defined]
+        TIER_REGISTRY[fn.__name__] = tier
+        return fn
+
+    return deco
+
+
+def tier_for(tool_name: str) -> Tier:
+    """Return the declared tier for ``tool_name``.
+
+    Falls back to the spec-derived tier if the tool is in :data:`TOOLS`
+    but somehow missing from :data:`TIER_REGISTRY` (paranoid path —
+    shouldn't happen given the import-time population above). Raises
+    ``KeyError`` for unknown tools so callers can't silently swallow
+    a missing declaration.
+    """
+    if tool_name in TIER_REGISTRY:
+        return TIER_REGISTRY[tool_name]
+    for spec in TOOLS:
+        if spec.name == tool_name:
+            return tier_from_spec(spec)
+    raise KeyError(f"no capability tier declared for tool {tool_name!r}")
 
 
 def render_matrix() -> dict:
@@ -376,6 +498,7 @@ def render_matrix() -> dict:
         tool_rows.append({
             "name": spec.name,
             "summary": spec.summary,
+            "tier": TIER_REGISTRY.get(spec.name, tier_from_spec(spec)),
             "verdict": verdict,
             "hard": list(spec.hard),
             "soft": list(spec.soft),
@@ -391,4 +514,43 @@ def render_matrix() -> dict:
         "backends": list(backends.values()),
         "tools": tool_rows,
         "summary": summary,
+        "no_llm_mode": _no_llm_mode(),
+    }
+
+
+def no_llm_mode_active() -> bool:
+    """Public predicate — True when ``config.no_llm_mode`` is on."""
+    return _no_llm_mode()
+
+
+def no_llm_summary() -> dict:
+    """Counts of tools available vs disabled assuming ``no_llm_mode`` is on.
+
+    Derives the answer from ``TOOLS`` (the single source of truth for
+    "what does this tool need?") so the count stays accurate as new
+    @mcp.tool entries are added. A tool is considered disabled by no_llm_mode
+    iff at least one of its hard deps is in ``_NO_LLM_DISABLED_BACKENDS``.
+
+    Returns::
+        {
+          "available": int,
+          "disabled":  int,
+          "total":     int,
+          "disabled_tools": ["search_skills", ...],
+          "available_tools": ["list_teachings", ...],
+        }
+    """
+    disabled: list[str] = []
+    available: list[str] = []
+    for spec in TOOLS:
+        if any(d in _NO_LLM_DISABLED_BACKENDS for d in spec.hard):
+            disabled.append(spec.name)
+        else:
+            available.append(spec.name)
+    return {
+        "available": len(available),
+        "disabled":  len(disabled),
+        "total":     len(TOOLS),
+        "disabled_tools":  disabled,
+        "available_tools": available,
     }

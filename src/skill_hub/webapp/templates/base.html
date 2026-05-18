@@ -32,6 +32,14 @@
     <a href="/control">→ control panel</a>
   </div>
   {% endif %}
+  {% set _no_llm = (request.state.no_llm_mode if request and request.state else False) %}
+  {% if _no_llm %}
+  <div class="banner-warning" data-testid="no-llm-banner">
+    ⚠ No-LLM mode is ON
+    ({{ request.state.no_llm_available }}/{{ request.state.no_llm_total }} tools available)
+    <a href="/status/capabilities">→ see which tools work</a>
+  </div>
+  {% endif %}
   <main class="content">
     {% block content %}{% endblock %}
   </main>

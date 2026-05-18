@@ -25,6 +25,13 @@ _DEFAULTS = {
     # Empty dict = use global endpoint priority for all models.
     "ollama_model_routing": {},
 
+    # No-LLM mode (issue #6) — explicit opt-in to short-circuit every embed
+    # / Ollama / reason-LLM probe. With this on, ``embed_available()`` and the
+    # capability matrix report the LLM-dependent backends as missing without
+    # any network/disk probing, so the user sees the same "29/40 tools
+    # available" verdict shown in `status` and on the dashboard banner.
+    "no_llm_mode": False,
+
     # Embedding backend cascade
     "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
     "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],

@@ -1166,12 +1166,35 @@ def ollama_available(model: str = EMBED_MODEL) -> bool:
         return False
 
 
+def embed_unavailable_reason() -> str:
+    """User-facing one-line explanation for why ``embed_available()`` is False.
+
+    When ``no_llm_mode`` is on we surface that explicitly so users know the
+    fix is to flip a config flag, not to install a new backend.
+    """
+    if _cfg.get("no_llm_mode"):
+        return (
+            "no_llm_mode is ON — this tool needs an embedding backend and is "
+            "intentionally disabled. Run `configure no_llm_mode false` to re-enable."
+        )
+    return (
+        "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, "
+        "or install sentence-transformers."
+    )
+
+
 def embed_available() -> bool:
     """Return True if at least one embedding backend is usable.
 
     Checks cascade: Voyage (API key set) → Ollama (healthy endpoint) → SentenceTransformers (installed).
     Does NOT make network calls — only checks config and installed packages.
+
+    When ``no_llm_mode`` (issue #6) is on we skip every probe and return False
+    immediately, so LLM-dependent tools degrade gracefully with a clear
+    user-facing message instead of timing out on a missing backend.
     """
+    if _cfg.get("no_llm_mode"):
+        return False
     import os
     priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
     for backend in priority:
