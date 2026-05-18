@@ -45,9 +45,9 @@
 
 Visibility + pure-stdlib tools so skill-hub is obviously useful even with no Ollama / embedding backend.
 
-- [ ] #6 — `no-llm-mode`: explicit flag with visible status
-- [ ] #7 — tool-capability-matrix: every tool declares its dependency tier
-- [ ] #8 — degraded-search: FTS5 keyword fallback when embeddings unavailable
+- [x] #6 — `no-llm-mode`: explicit flag with visible status
+- [x] #7 — tool-capability-matrix: every tool declares its dependency tier
+- [x] #8 — degraded-search: FTS5 keyword fallback when embeddings unavailable
 - [x] #9 — claims-board: claim / handoff / steal on tasks (no LLM needed)
 - [x] #10 — witness-log: append-only fix manifest per repo
 - [x] #11 — worktree-aware tasks: capture branch + worktree path on save
