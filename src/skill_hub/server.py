@@ -680,11 +680,35 @@ def save_task(
                 resolved_repo = _wt.detect_project_from_cwd(cwd) or ""
             except Exception:  # noqa: BLE001
                 resolved_repo = ""
+
+    # M1 #11 — worktree-aware tasks. When the caller didn't spawn a worktree
+    # (spec is None) we still want to record where the task is being authored
+    # so future sessions can answer "what tasks belong to this worktree?"
+    # without manual grepping. Falls back to whatever the caller passed when
+    # git inspection fails (e.g. cwd outside any repo).
+    auto_cwd = cwd or ""
+    auto_branch = ""
+    if spec is not None:
+        auto_cwd = spec.worktree_path
+        auto_branch = spec.branch
+    else:
+        # Only inspect git when we have an explicit cwd -- the MCP server runs
+        # as a daemon so os.getcwd() is meaningless here.
+        if cwd:
+            try:
+                top, br, _ = _wt.capture_worktree_context(cwd)
+                if top:
+                    auto_cwd = top
+                if br:
+                    auto_branch = br
+            except Exception:  # noqa: BLE001
+                pass
+
     tid = _store.save_task(
         title=title, summary=summary, vector=vector,
         context=context, tags=tags, session_id=_session["id"],
-        cwd=(spec.worktree_path if spec else cwd),
-        branch=(spec.branch if spec else ""),
+        cwd=auto_cwd,
+        branch=auto_branch,
         worktree=worktree_blob,
         repo=resolved_repo,
     )
@@ -1274,6 +1298,163 @@ def set_task_options(task_id: int, options: str = "") -> str:
     return f"Task #{task_id} options updated: {json.dumps(new_opts)}"
 
 
+# ──────────────────────── M1 — task claims layer ─────────────────────────────
+#
+# Pure-SQLite ownership transitions so multiple Claude Code sessions (and the
+# future swarm-lite / autopilot-lite subprocesses) can coordinate work-item
+# ownership without an LLM round-trip. Existing single-session task flow is
+# unaffected when ``claimed_by`` stays NULL.
+
+
+@mcp.tool()
+def claim_task(
+    task_id: int,
+    agent_id: str,
+    stealable_after_sec: int = 0,
+) -> str:
+    """Claim an unclaimed open task for ``agent_id``.
+
+    Args:
+        task_id:              The task to claim.
+        agent_id:             Stable identifier for the claiming session /
+                              agent. Required.
+        stealable_after_sec:  When > 0, allow ``steal_task`` to seize the
+                              claim once this many seconds have elapsed.
+                              Use 0 to keep the claim non-stealable.
+
+    Returns the claim_token on success, or a "rejected" message when the
+    task is already claimed / closed / missing.
+    """
+    log_tool("claim_task", task_id=task_id, agent_id=agent_id,
+             stealable_after_sec=stealable_after_sec)
+    if not agent_id:
+        return "claim rejected: agent_id required."
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    after = stealable_after_sec if stealable_after_sec > 0 else None
+    token = _store.claim_task(task_id, agent_id, stealable_after_sec=after)
+    if token is None:
+        claim = _store.get_task_claim(task_id) or {}
+        holder = claim.get("claimed_by")
+        if holder:
+            return (
+                f"Task #{task_id} already claimed by {holder} "
+                f"(since {claim.get('claimed_at')})."
+            )
+        return f"Task #{task_id} cannot be claimed (closed or missing)."
+    return f"Task #{task_id} claimed by {agent_id} (token={token[:8]})."
+
+
+@mcp.tool()
+def handoff_task(
+    task_id: int,
+    to_agent: str,
+    from_agent: str = "",
+    stealable_after_sec: int = 0,
+) -> str:
+    """Hand off a claimed task from its current owner to ``to_agent``.
+
+    Args:
+        task_id:              The task being handed off.
+        to_agent:             New owner agent_id. Required.
+        from_agent:           When set, the handoff only succeeds if it
+                              matches the current owner. Empty string skips
+                              the check (admin/hub paths).
+        stealable_after_sec:  Reset the stealable window for the new owner.
+    """
+    log_tool("handoff_task", task_id=task_id, to_agent=to_agent,
+             from_agent=from_agent)
+    if not to_agent:
+        return "handoff rejected: to_agent required."
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    after = stealable_after_sec if stealable_after_sec > 0 else None
+    token = _store.handoff_task(
+        task_id, to_agent,
+        from_agent=from_agent or None,
+        stealable_after_sec=after,
+    )
+    if token is None:
+        claim = _store.get_task_claim(task_id) or {}
+        holder = claim.get("claimed_by")
+        if holder is None:
+            return f"Task #{task_id} is unclaimed — call claim_task instead."
+        if from_agent and holder != from_agent:
+            return (
+                f"Task #{task_id} handoff rejected: held by {holder!r}, "
+                f"not {from_agent!r}."
+            )
+        return f"Task #{task_id} handoff rejected."
+    return (
+        f"Task #{task_id} handed off to {to_agent} (token={token[:8]})."
+    )
+
+
+@mcp.tool()
+def steal_task(
+    task_id: int,
+    new_agent_id: str,
+    stealable_after_sec: int = 0,
+) -> str:
+    """Steal a stale claim whose ``stealable_at`` has elapsed.
+
+    Fails if the task is unclaimed, still inside the stealable window, or
+    was claimed without a stealable_at expiry.
+    """
+    log_tool("steal_task", task_id=task_id, new_agent_id=new_agent_id)
+    if not new_agent_id:
+        return "steal rejected: new_agent_id required."
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    after = stealable_after_sec if stealable_after_sec > 0 else None
+    token = _store.steal_task(
+        task_id, new_agent_id, stealable_after_sec=after,
+    )
+    if token is None:
+        claim = _store.get_task_claim(task_id) or {}
+        if claim.get("claimed_by") is None:
+            return f"Task #{task_id} is unclaimed — call claim_task instead."
+        if not claim.get("stealable_at"):
+            return (
+                f"Task #{task_id} steal rejected: claim is non-stealable. "
+                f"Owner must release_task or handoff_task."
+            )
+        return (
+            f"Task #{task_id} steal rejected: not yet stealable "
+            f"(stealable_at={claim.get('stealable_at')})."
+        )
+    return f"Task #{task_id} stolen by {new_agent_id} (token={token[:8]})."
+
+
+@mcp.tool()
+def release_task(task_id: int, agent_id: str = "") -> str:
+    """Release the claim on a task (clears ``claimed_by``).
+
+    When ``agent_id`` is set, the release only fires if it matches the
+    current owner. Empty string allows admin-style force-release.
+    """
+    log_tool("release_task", task_id=task_id, agent_id=agent_id)
+    task = _store.get_task(task_id)
+    if task is None:
+        return f"Task #{task_id} not found."
+    ok = _store.release_task(task_id, agent_id=agent_id or None)
+    if not ok:
+        claim = _store.get_task_claim(task_id) or {}
+        holder = claim.get("claimed_by")
+        if holder is None:
+            return f"Task #{task_id} was already unclaimed."
+        if agent_id and holder != agent_id:
+            return (
+                f"Task #{task_id} release rejected: held by {holder!r}, "
+                f"not {agent_id!r}."
+            )
+        return f"Task #{task_id} release rejected."
+    return f"Task #{task_id} released."
+
+
 @mcp.tool()
 def update_task(task_id: int, summary: str = "", context: str = "",
                 tags: str = "", title: str = "", color: str = "") -> str:
@@ -1359,7 +1540,9 @@ _COLOR_GLYPH = {
 
 @mcp.tool()
 def list_tasks(status: str = "open", repo: str = "",
-               group_by_repo: bool = False) -> str:
+               group_by_repo: bool = False,
+               worktree_current: bool = False,
+               cwd: str = "") -> str:
     """List tasks. status: open (default), closed, or all.
 
     Args:
@@ -1371,12 +1554,34 @@ def list_tasks(status: str = "open", repo: str = "",
         group_by_repo: when True, render output grouped under per-repo
                 headings (matches the dashboard layout). Otherwise output is
                 a flat list ordered by ``updated_at DESC``.
+        worktree_current: M1 #11 filter — only return tasks whose recorded
+                ``cwd`` matches the current worktree's ``git rev-parse
+                --show-toplevel``. Requires ``cwd`` to be set (the MCP
+                server runs as a daemon so it cannot trust ``os.getcwd()``).
+        cwd:    explicit working directory used to resolve ``worktree_current``.
+                Ignored when ``worktree_current=False``.
     """
     log_tool("list_tasks", status=status, repo=repo,
-             group_by_repo=group_by_repo)
-    rows = _store.list_tasks(status, repo=(repo or None))
+             group_by_repo=group_by_repo,
+             worktree_current=worktree_current)
+    wt_filter: str | None = None
+    if worktree_current:
+        from . import worktree as _wt
+        if not cwd:
+            return ("list_tasks(worktree_current=True) requires cwd= to be "
+                    "passed -- the MCP server runs as a daemon and cannot "
+                    "trust os.getcwd().")
+        wt_filter = _wt.git_toplevel(cwd)
+        if not wt_filter:
+            return (f"cwd={cwd!r} is not inside a git repository; "
+                    "worktree_current filter unavailable.")
+    rows = _store.list_tasks(status, repo=(repo or None),
+                             worktree_path=wt_filter)
     if not rows:
         scope = f"repo={repo!r} " if repo else ""
+        if worktree_current:
+            return (f"No {status} tasks for current worktree "
+                    f"({wt_filter}).")
         return f"No {status} tasks{(' for ' + scope).rstrip() if repo else ''}."
 
     def _fmt(r) -> str:
@@ -1397,6 +1602,8 @@ def list_tasks(status: str = "open", repo: str = "",
         header = f"{len(lines)} tasks"
         if repo:
             header += f" (repo={repo})"
+        if worktree_current and wt_filter:
+            header += f" (worktree={wt_filter})"
         return f"{header}:\n" + "\n".join(lines)
 
     # Grouped output — sort repos with named groups first, then unassigned.
@@ -2976,6 +3183,85 @@ def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
         cursor=run.cursor_after,
     )
     return format_run(run)
+
+
+@mcp.tool()
+def record_witness(
+    issue: str,
+    pr: str,
+    sha: str,
+    repo: str,
+    fix_kind: str = "fix",
+    fix_summary: str = "",
+) -> str:
+    """M1 #10 — Append a fix-manifest entry to the witness log.
+
+    Records ``(issue, pr, sha, repo, fix_kind, fix_summary)`` as one JSONL
+    line under ``~/.claude/mcp-skill-hub/state/witness_log.jsonl``. The log is
+    append-only; existing entries are never edited or removed by this tool.
+
+    Use this after merging a fix so the dashboard can show a real fix history
+    (vs. relying on memory files). ``fix_kind`` is the conventional-commit
+    label ("feat" / "fix" / "refactor" / etc.).
+    """
+    from .witness import record_witness as _record
+
+    try:
+        rec = _record(
+            issue=issue,
+            pr=pr,
+            sha=sha,
+            repo=repo,
+            fix_kind=fix_kind,
+            fix_summary=fix_summary,
+        )
+    except ValueError as exc:
+        return f"record_witness failed: {exc}"
+    except OSError as exc:
+        return f"record_witness failed: cannot write log ({exc})"
+    log_tool(
+        "record_witness",
+        repo=rec.repo,
+        issue=rec.issue,
+        pr=rec.pr,
+        sha=rec.sha,
+        fix_kind=rec.fix_kind,
+    )
+    return (
+        f"witness recorded: {rec.repo} {rec.fix_kind} {rec.issue} "
+        f"pr={rec.pr} sha={rec.sha}"
+    )
+
+
+@mcp.tool()
+def list_witness(
+    repo: str = "",
+    since: int = 0,
+    limit: int = 0,
+) -> str:
+    """M1 #10 — List recorded fix-manifest entries, newest first.
+
+    Parameters
+    ----------
+    repo:  Optional ``"owner/name"`` filter (exact match). Empty -> all repos.
+    since: Optional minimum epoch-seconds (inclusive). 0 -> all timestamps.
+    limit: Optional max records to return. 0 -> no limit.
+    """
+    from .witness import list_witness as _list, format_witness_list
+
+    records = _list(
+        repo=(repo or None),
+        since=(since or None),
+        limit=(limit or None),
+    )
+    log_tool(
+        "list_witness",
+        repo=repo,
+        since=since,
+        limit=limit,
+        matches=len(records),
+    )
+    return format_witness_list(records)
 
 
 @mcp.tool()

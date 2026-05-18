@@ -6589,6 +6589,65 @@ def main() -> None:
             for r in tasks:
                 print(f"  #{r['id']} [{r['status']}] {r['title']} — {r['summary'][:80]}")
 
+    elif cmd == "close_tasks_for_branch":
+        # M1 #11 -- backing command for the optional post-merge git hook.
+        # Closes every open task whose recorded branch matches ``branch``
+        # *and* whose branch no longer exists in ``cwd``'s repository. The
+        # hook fires after a merge regardless of whether the branch was
+        # deleted, so the existence check is what makes this idempotent and
+        # safe to wire as `.git/hooks/post-merge`.
+        if not args:
+            print("Usage: skill-hub-cli close_tasks_for_branch <branch> "
+                  "[--cwd <path>] [--force]")
+            sys.exit(1)
+        branch = args[0]
+        repo_cwd = ""
+        force = False
+        i = 1
+        while i < len(args):
+            if args[i] == "--cwd" and i + 1 < len(args):
+                repo_cwd = args[i + 1]
+                i += 2
+            elif args[i] == "--force":
+                force = True
+                i += 1
+            else:
+                i += 1
+        from skill_hub import worktree as _wt
+        repo_tag: str | None = None
+        if repo_cwd:
+            # Skip when the branch still exists locally -- the post-merge
+            # hook is best-effort and must not close tasks for branches
+            # the user is actively working on.
+            top = _wt.git_toplevel(repo_cwd)
+            if top and not force:
+                import subprocess as _sp
+                rc = _sp.run(
+                    ["git", "-C", top, "rev-parse", "--verify",
+                     f"refs/heads/{branch}"],
+                    capture_output=True, text=True, check=False, timeout=3,
+                )
+                if rc.returncode == 0:
+                    print(f"Branch {branch!r} still exists in {top}; "
+                          "skipping (use --force to override).")
+                    sys.exit(0)
+            try:
+                repo_tag = _wt.detect_project_from_cwd(repo_cwd) or None
+            except Exception:  # noqa: BLE001
+                repo_tag = None
+        store = SkillStore()
+        rows = store.find_open_tasks_by_branch(branch, repo=repo_tag)
+        closed = 0
+        for row in rows:
+            ok = store.close_task(int(row["id"]),
+                                  compact=f"Auto-closed: branch {branch} "
+                                          "deleted (post-merge hook).")
+            if ok:
+                closed += 1
+        store.close()
+        print(f"Closed {closed} task(s) for branch {branch!r}"
+              + (f" in repo {repo_tag!r}" if repo_tag else "") + ".")
+
     elif cmd == "search_context":
         query = " ".join(args)
         result = _execute_intent({"intent": "search_context", "summary": query}, query)

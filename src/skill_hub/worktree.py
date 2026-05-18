@@ -152,6 +152,65 @@ def detect_project_from_cwd(
 
 
 # ---------------------------------------------------------------------------
+# Git inspection helpers (M1 worktree-aware tasks, issue #11)
+# ---------------------------------------------------------------------------
+
+def _git_rev_parse(cwd: str | Path, *args: str) -> Optional[str]:
+    """Run ``git -C <cwd> rev-parse <args>``; return stripped stdout or None.
+
+    Never raises -- returns None when git is missing, cwd is outside a repo,
+    or any other failure. Used by ``save_task`` to auto-capture worktree
+    metadata without forcing callers to pass it explicitly.
+    """
+    try:
+        rc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", *args],
+            check=False, capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if rc.returncode != 0:
+        return None
+    out = rc.stdout.strip()
+    return out or None
+
+
+def git_toplevel(cwd: str | Path) -> Optional[str]:
+    """Return ``git rev-parse --show-toplevel`` for ``cwd`` or None."""
+    return _git_rev_parse(cwd, "--show-toplevel")
+
+
+def current_branch(cwd: str | Path) -> Optional[str]:
+    """Return ``git rev-parse --abbrev-ref HEAD`` for ``cwd`` or None.
+
+    A detached HEAD yields the literal ``"HEAD"`` -- treated as no branch.
+    """
+    name = _git_rev_parse(cwd, "--abbrev-ref", "HEAD")
+    if not name or name == "HEAD":
+        return None
+    return name
+
+
+def capture_worktree_context(cwd: str | Path) -> tuple[str, str, str]:
+    """Return ``(worktree_path, branch, cwd_absolute)`` for ``cwd``.
+
+    All three values default to empty string when git inspection fails -- e.g.
+    when ``cwd`` is outside any repository. ``worktree_path`` is ``git
+    rev-parse --show-toplevel`` (the active worktree's top-level), not the
+    main repo, so a task created inside ``<repo>/.claude/worktrees/foo``
+    records ``foo`` rather than the parent.
+    """
+    cwd_abs = ""
+    try:
+        cwd_abs = str(Path(cwd).expanduser().resolve())
+    except (OSError, RuntimeError):
+        cwd_abs = str(cwd)
+    top = git_toplevel(cwd) or ""
+    branch = current_branch(cwd) or ""
+    return top, branch, cwd_abs
+
+
+# ---------------------------------------------------------------------------
 # Worktree creation
 # ---------------------------------------------------------------------------
 

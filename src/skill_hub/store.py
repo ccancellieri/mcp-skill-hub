@@ -18,6 +18,7 @@ import re
 import socket
 import sqlite3
 import struct
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -875,6 +876,32 @@ class SkillStore:
         try:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo)"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # M1 — claims layer: lets multiple Claude Code sessions / swarm
+        # subprocesses coordinate ownership of a task without an LLM.
+        # ``claimed_by`` holds the current owner's agent_id (NULL = free);
+        # ``claim_token`` is an opaque per-claim ID used to invalidate stale
+        # release calls; ``claimed_at`` is the moment of the most recent
+        # claim/handoff/steal; ``stealable_at`` is the wall-clock time after
+        # which steal_task() may transfer ownership without consent.
+        for col in ("claimed_by", "claim_token", "claimed_at", "stealable_at"):
+            if col not in task_cols:
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE tasks ADD COLUMN {col} TEXT"
+                    )
+                    self._conn.commit()
+                    task_cols = task_cols | {col}
+                except Exception:
+                    pass
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_claimed_by "
+                "ON tasks(claimed_by)"
             )
             self._conn.commit()
         except Exception:
@@ -2044,10 +2071,12 @@ class SkillStore:
 
     def list_tasks(self, status: str = "open",
                    tag: str | None = None,
-                   repo: str | None = None) -> list[sqlite3.Row]:
+                   repo: str | None = None,
+                   worktree_path: str | None = None,
+                   branch: str | None = None) -> list[sqlite3.Row]:
         cols = (
             "id, title, summary, context, status, tags, color, session_id, "
-            "repo, created_at, updated_at, closed_at"
+            "repo, cwd, branch, created_at, updated_at, closed_at"
         )
         where: list[str] = []
         params: list = []
@@ -2065,9 +2094,39 @@ class SkillStore:
         if repo:
             where.append("repo = ?")
             params.append(repo)
+        if worktree_path:
+            # M1 #11 -- "tasks belonging to this worktree". cwd is the
+            # canonical column (auto-captured by save_task from
+            # `git rev-parse --show-toplevel`).
+            where.append("cwd = ?")
+            params.append(worktree_path)
+        if branch:
+            where.append("branch = ?")
+            params.append(branch)
         clause = f" WHERE {' AND '.join(where)}" if where else ""
         return self._conn.execute(
             f"SELECT {cols} FROM tasks{clause} ORDER BY updated_at DESC",
+            params,
+        ).fetchall()
+
+    def find_open_tasks_by_branch(self, branch: str,
+                                  repo: str | None = None) -> list[sqlite3.Row]:
+        """Return all open tasks recorded against ``branch``.
+
+        Used by the optional post-merge git hook (M1 #11) to close tasks
+        when their branch is deleted. ``repo`` scopes the lookup so two
+        repositories with a same-named branch never collide.
+        """
+        if not branch:
+            return []
+        params: list = [branch]
+        clause = ""
+        if repo:
+            clause = " AND repo = ?"
+            params.append(repo)
+        return self._conn.execute(
+            f"SELECT * FROM tasks WHERE status = 'open' AND branch = ?{clause} "
+            "ORDER BY updated_at DESC",
             params,
         ).fetchall()
 
@@ -2173,6 +2232,188 @@ class SkillStore:
             (session_id, task_id),
         )
         self._conn.commit()
+
+    # ─────────────────────── M1 claims layer ─────────────────────────────
+    #
+    # The four primitives below let multiple Claude Code sessions or swarm
+    # subprocesses agree on who currently owns a task without an LLM in the
+    # loop. They never block — every operation is either a single atomic
+    # ``UPDATE ... WHERE`` with a status-precondition clause or a no-op.
+    #
+    # Contract:
+    #   - A claim is FREE when ``claimed_by IS NULL``.
+    #   - ``claim_task`` succeeds iff the row is currently free.
+    #   - ``handoff_task`` succeeds iff the caller already holds the claim.
+    #   - ``steal_task`` succeeds iff ``stealable_at <= now()``.
+    #   - ``release_task`` succeeds iff the caller currently holds the claim
+    #     (or ``agent_id`` is None, used for force-release in admin paths).
+    # Each successful state transition issues a fresh ``claim_token`` so
+    # racing callers cannot revive a stale lock.
+
+    def claim_task(
+        self,
+        task_id: int,
+        agent_id: str,
+        stealable_after_sec: int | None = None,
+    ) -> str | None:
+        """Atomically claim a free task for ``agent_id``.
+
+        Returns the new claim_token on success, or None when the task is
+        already claimed / does not exist / is closed.
+        """
+        if not agent_id:
+            return None
+        token = uuid.uuid4().hex
+        stealable_clause = ""
+        params: list = [agent_id, token]
+        if stealable_after_sec is not None and stealable_after_sec >= 0:
+            stealable_clause = ", stealable_at = datetime('now', ?)"
+            params.append(f"+{int(stealable_after_sec)} seconds")
+        else:
+            stealable_clause = ", stealable_at = NULL"
+        params.append(task_id)
+        cur = self._conn.execute(
+            f"""
+            UPDATE tasks
+            SET claimed_by = ?, claim_token = ?,
+                claimed_at = datetime('now'),
+                updated_at = datetime('now')
+                {stealable_clause}
+            WHERE id = ? AND claimed_by IS NULL AND status = 'open'
+            """,
+            params,
+        )
+        self._conn.commit()
+        return token if cur.rowcount > 0 else None
+
+    def handoff_task(
+        self,
+        task_id: int,
+        to_agent: str,
+        from_agent: str | None = None,
+        stealable_after_sec: int | None = None,
+    ) -> str | None:
+        """Transfer a claim from the current owner to ``to_agent``.
+
+        When ``from_agent`` is supplied, the handoff only succeeds if it
+        matches the current ``claimed_by``. When omitted, any caller who
+        knows the task_id can hand off (intended for admin / hub paths).
+        Returns the new claim_token on success, else None.
+        """
+        if not to_agent:
+            return None
+        token = uuid.uuid4().hex
+        where = "id = ? AND claimed_by IS NOT NULL AND status = 'open'"
+        params: list = [to_agent, token]
+        stealable_clause = ", stealable_at = NULL"
+        if stealable_after_sec is not None and stealable_after_sec >= 0:
+            stealable_clause = ", stealable_at = datetime('now', ?)"
+            params.append(f"+{int(stealable_after_sec)} seconds")
+        params.append(task_id)
+        if from_agent:
+            where += " AND claimed_by = ?"
+            params.append(from_agent)
+        cur = self._conn.execute(
+            f"""
+            UPDATE tasks
+            SET claimed_by = ?, claim_token = ?,
+                claimed_at = datetime('now'),
+                updated_at = datetime('now')
+                {stealable_clause}
+            WHERE {where}
+            """,
+            params,
+        )
+        self._conn.commit()
+        return token if cur.rowcount > 0 else None
+
+    def steal_task(
+        self,
+        task_id: int,
+        new_agent_id: str,
+        stealable_after_sec: int | None = None,
+    ) -> str | None:
+        """Forcefully take over a claim whose ``stealable_at`` has elapsed.
+
+        Returns the new claim_token on success, else None (task free, not
+        yet stealable, or missing).
+        """
+        if not new_agent_id:
+            return None
+        token = uuid.uuid4().hex
+        stealable_clause = ", stealable_at = NULL"
+        params: list = [new_agent_id, token]
+        if stealable_after_sec is not None and stealable_after_sec >= 0:
+            stealable_clause = ", stealable_at = datetime('now', ?)"
+            params.append(f"+{int(stealable_after_sec)} seconds")
+        params.append(task_id)
+        cur = self._conn.execute(
+            f"""
+            UPDATE tasks
+            SET claimed_by = ?, claim_token = ?,
+                claimed_at = datetime('now'),
+                updated_at = datetime('now')
+                {stealable_clause}
+            WHERE id = ?
+              AND claimed_by IS NOT NULL
+              AND status = 'open'
+              AND stealable_at IS NOT NULL
+              AND stealable_at <= datetime('now')
+            """,
+            params,
+        )
+        self._conn.commit()
+        return token if cur.rowcount > 0 else None
+
+    def release_task(
+        self,
+        task_id: int,
+        agent_id: str | None = None,
+    ) -> bool:
+        """Clear the claim on a task.
+
+        When ``agent_id`` is supplied, only release if it matches the
+        current ``claimed_by`` (prevents accidental cross-agent release).
+        Returns True on a real state change, False otherwise (already
+        free, wrong agent, or missing task).
+        """
+        params: list = [task_id]
+        where = "id = ? AND claimed_by IS NOT NULL"
+        if agent_id:
+            where += " AND claimed_by = ?"
+            params.append(agent_id)
+        cur = self._conn.execute(
+            f"""
+            UPDATE tasks
+            SET claimed_by = NULL, claim_token = NULL,
+                claimed_at = NULL, stealable_at = NULL,
+                updated_at = datetime('now')
+            WHERE {where}
+            """,
+            params,
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_task_claim(self, task_id: int) -> dict | None:
+        """Return the current claim metadata for a task, or None if missing.
+
+        Always returns a dict with all four claim columns (any of which may
+        be None) so callers can pattern-match on `claimed_by is None`.
+        """
+        row = self._conn.execute(
+            "SELECT claimed_by, claim_token, claimed_at, stealable_at "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "claimed_by":   row["claimed_by"],
+            "claim_token":  row["claim_token"],
+            "claimed_at":   row["claimed_at"],
+            "stealable_at": row["stealable_at"],
+        }
 
     def touch_task_activity(self, task_id: int) -> None:
         """Update last_activity_at = now() for a task. Best-effort, never raises."""
