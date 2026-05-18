@@ -62,8 +62,8 @@ Selectively apply patterns from Anthropic's Managed Agents post — durable even
 - [ ] #27 — W1 event log: `events` table + emit decorator + `get_events` / `events_prune`
 - [ ] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
 - [x] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
-- [ ] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
-- [ ] #31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools
+- [x] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
+- [x] #31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools
 
 ### M3 — Worktree + multi-repo policy enforcement
 
