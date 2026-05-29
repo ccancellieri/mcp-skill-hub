@@ -1245,6 +1245,53 @@ class SkillStore:
         """)
         self._conn.commit()
 
+        # Issue #37 — typed task↔issue links + bidirectional sync table.
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS task_issue_links (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id         INTEGER NOT NULL,
+                repo            TEXT NOT NULL DEFAULT '',
+                issue_number    INTEGER NOT NULL,
+                url             TEXT,
+                state           TEXT,
+                last_synced_at  TEXT,
+                writeback_done  INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(task_id, repo, issue_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_til_task
+                ON task_issue_links(task_id);
+            CREATE INDEX IF NOT EXISTS idx_til_issue
+                ON task_issue_links(repo, issue_number);
+        """)
+        self._conn.commit()
+
+        # One-time idempotent tag migration: for every task with tag `issue:<n>`,
+        # parse the number and create a typed link row.  INSERT OR IGNORE ensures
+        # re-running is safe.
+        task_col_names = {r[1] for r in self._conn.execute("PRAGMA table_info(tasks)")}
+        _repo_sel = "repo" if "repo" in task_col_names else "''"
+        rows = self._conn.execute(
+            f"SELECT id, tags, {_repo_sel} AS repo FROM tasks WHERE tags LIKE '%issue:%'"
+        ).fetchall()
+        for row in rows:
+            tags_str = row["tags"] or ""
+            task_repo = row["repo"] or ""
+            for part in tags_str.split():
+                if part.startswith("issue:"):
+                    # Tag is `issue:<id>` where <id> may carry a source prefix
+                    # (e.g. `issue:gh:123`, `issue:text:0001`) or be a bare
+                    # number (`issue:123`). Take the trailing numeric segment.
+                    try:
+                        num = int(part[6:].rsplit(":", 1)[-1])
+                    except ValueError:
+                        continue
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO task_issue_links "
+                        "(task_id, repo, issue_number) VALUES (?, ?, ?)",
+                        (row["id"], task_repo, num),
+                    )
+        self._conn.commit()
+
         # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
         self._rebuild_fts_index(self._conn)
 
@@ -2389,6 +2436,69 @@ class SkillStore:
         return self._conn.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
+
+    # ------------------------------------------------------------------
+    # Issue #37 — typed task↔issue link store methods
+    # ------------------------------------------------------------------
+
+    def link_task_issue(
+        self,
+        task_id: int,
+        issue_number: int,
+        repo: str = "",
+        url: str | None = None,
+    ) -> None:
+        """Create a typed link between a task and a GitHub issue (INSERT OR IGNORE)."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO task_issue_links "
+            "(task_id, repo, issue_number, url) VALUES (?, ?, ?, ?)",
+            (task_id, repo or "", issue_number, url),
+        )
+        self._conn.commit()
+
+    def get_issue_links(self, task_id: int) -> list[dict]:
+        """Return all issue links for a task as plain dicts."""
+        rows = self._conn.execute(
+            "SELECT * FROM task_issue_links WHERE task_id = ? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_all_issue_links(self, repo: str = "") -> list[dict]:
+        """Return all issue link rows, optionally filtered by repo."""
+        if repo:
+            rows = self._conn.execute(
+                "SELECT * FROM task_issue_links WHERE repo = ? ORDER BY id",
+                (repo,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM task_issue_links ORDER BY id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_link_state(
+        self,
+        link_id: int,
+        state: str,
+        *,
+        writeback_done: int | None = None,
+    ) -> None:
+        """Update the last-known issue state (and optionally writeback_done) for a link."""
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if writeback_done is not None:
+            self._conn.execute(
+                "UPDATE task_issue_links SET state = ?, last_synced_at = ?, "
+                "writeback_done = ? WHERE id = ?",
+                (state, now, writeback_done, link_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE task_issue_links SET state = ?, last_synced_at = ? WHERE id = ?",
+                (state, now, link_id),
+            )
+        self._conn.commit()
 
     def get_open_task_for_session(self, session_id: str) -> sqlite3.Row | None:
         """Return the most recently created open task for a session, if any."""

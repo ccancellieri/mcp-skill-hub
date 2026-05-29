@@ -162,6 +162,24 @@ def fanout(
             color="cyan",
             repo=spec.project,
         )
+
+        # Typed task↔issue link (issue #37): extract numeric issue number from
+        # the scoped id (e.g. "gh:123" → 123, "text:0001" → 1). Skip if the id
+        # does not carry a parseable integer — non-GitHub sources may not have
+        # numeric GitHub issue numbers.
+        if issue.source in ("gh", "github") and ":" in issue.id:
+            _num_str = issue.id.split(":", 1)[1]
+            try:
+                _issue_num = int(_num_str)
+                store.link_task_issue(  # type: ignore[attr-defined]
+                    task_id,
+                    _issue_num,
+                    repo=repo or "",
+                    url=issue.url or None,
+                )
+            except (ValueError, Exception):  # noqa: BLE001
+                pass  # non-fatal: the freeform tag still exists
+
         result.task_ids.append(task_id)
         result.worktree_paths.append(spec.worktree_path)
         result.prompt_qualities.append(quality)

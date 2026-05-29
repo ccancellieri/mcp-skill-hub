@@ -375,6 +375,14 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
+    # Issue #37 — task↔issue bidirectional sync writeback mode.
+    # Controls whether skill-hub writes back to GitHub when a locally-closed task
+    # has an open linked issue.  Valid values:
+    #   "off"     — (default) never write to GitHub; safe for read-only use.
+    #   "comment" — post a completion comment on the linked issue (idempotent).
+    #   "close"   — post a comment and close the linked issue.
+    "task_issue_writeback": "off",
+
     # M2 W1 — event log retention.
     # Raw events for closed sessions older than this many days are coalesced
     # into a single session_snapshot row and deleted.  Set to 0 to keep forever.
