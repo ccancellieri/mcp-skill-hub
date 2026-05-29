@@ -1122,28 +1122,45 @@ class SkillStore:
         self._rebuild_fts_index(self._conn)
 
     def _rebuild_fts_index(self, conn: sqlite3.Connection) -> None:
-        """Rebuild FTS5 indexes from existing table content (run after migration).
+        """Repair FTS5 indexes ONLY when they have drifted from their sources.
 
-        For ``content='...'`` linked tables (tasks_fts, teachings_fts) the FTS5
-        ``'rebuild'`` command is idempotent. For ``skills_fts``/``plugins_fts``
-        we manage sync manually (contentless tables with TEXT primary keys), so
-        we wipe + repopulate on rebuild. Safe to call repeatedly.
+        All four FTS tables (skills_fts/plugins_fts/tasks_fts/teachings_fts) are
+        kept current incrementally by the AFTER INSERT/UPDATE/DELETE triggers
+        created in ``_migrate``. The expensive part — wiping ``skills_fts`` and
+        re-tokenising every skill's ``content`` column — previously ran on EVERY
+        connection. Because ``SkillStore`` is constructed at module import
+        (``server.py``: ``_store = SkillStore()``), that synchronous re-index
+        blocked the MCP stdio ``initialize`` handshake on large catalogs (the
+        client gives up after ~30s) AND rewrote the whole FTS index into the WAL
+        on every open across the webapp/CLI/hooks, ballooning it to gigabytes.
+
+        Now we only repopulate when a cheap row-count check shows real drift
+        (e.g. rows that predate the triggers); in steady state this is a no-op.
         """
         try:
+            def _count(sql: str) -> int:
+                row = conn.execute(sql).fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+
+            # tasks/teachings: small tables — the idempotent FTS5 'rebuild' is cheap.
             conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
             conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
-            # Rebuild skills_fts: wipe + repopulate from skills table.
-            conn.execute("DELETE FROM skills_fts")
-            conn.execute(
-                "INSERT INTO skills_fts(skill_id, name, description, content) "
-                "SELECT id, name, description, content FROM skills"
-            )
-            # Rebuild plugins_fts: wipe + repopulate from plugins table.
-            conn.execute("DELETE FROM plugins_fts")
-            conn.execute(
-                "INSERT INTO plugins_fts(plugin_id, short_name, description) "
-                "SELECT id, short_name, description FROM plugins"
-            )
+
+            # skills_fts / plugins_fts hold large content — repopulate only on drift.
+            if _count("SELECT count(*) FROM skills_fts") != _count("SELECT count(*) FROM skills"):
+                conn.execute("DELETE FROM skills_fts")
+                conn.execute(
+                    "INSERT INTO skills_fts(skill_id, name, description, content) "
+                    "SELECT id, name, description, content FROM skills"
+                )
+                _log.info("skills_fts drift detected — index repopulated")
+            if _count("SELECT count(*) FROM plugins_fts") != _count("SELECT count(*) FROM plugins"):
+                conn.execute("DELETE FROM plugins_fts")
+                conn.execute(
+                    "INSERT INTO plugins_fts(plugin_id, short_name, description) "
+                    "SELECT id, short_name, description FROM plugins"
+                )
+                _log.info("plugins_fts drift detected — index repopulated")
             conn.commit()
         except sqlite3.OperationalError as exc:
             _log.warning("FTS5 rebuild failed (FTS5 may be unavailable): %s", exc)

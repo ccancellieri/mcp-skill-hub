@@ -9,7 +9,6 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 from skill_hub.services.base import Service, Status  # noqa: E402
-from skill_hub.services.monitor import PressureTracker  # noqa: E402
 from skill_hub.services.registry import ServiceRegistry, start_reconciler  # noqa: E402
 
 
@@ -37,6 +36,73 @@ class _FakeService(Service):
         self.stops += 1
         self._state = "stopped"
         return True, "ok"
+
+
+class _SlowStartService(_FakeService):
+    """A service whose start() blocks — mimics Ollama/SearXNG subprocess timeouts."""
+
+    def __init__(self, name: str, start_delay: float):
+        super().__init__(name)
+        self._delay = start_delay
+
+    def start(self):
+        time.sleep(self._delay)
+        return super().start()
+
+
+class _StubPressure:
+    def sample(self):
+        import skill_hub.services.monitor as m
+        return m.ResourceSample(0, 0, 0.0, 1, False, time.time())
+
+    def sustained_seconds(self):
+        return 0.0
+
+    def last_sample(self):
+        return None
+
+
+def test_reconciler_does_not_block_caller_on_slow_startup_align(tmp_path):
+    """start_reconciler() must return promptly even if startup_align is slow.
+
+    Regression: startup_align() ran synchronously on the CALLER's thread before
+    the daemon thread was spawned. Because the MCP server runs it during
+    `import skill_hub.server` (before `mcp.run(transport="stdio")`), a slow
+    service.start() — e.g. Ollama down → blocking `brew services`/`docker run`
+    timeouts — stalled the import past the client's ~30s `initialize` handshake
+    window, so the server was abandoned/orphaned before it ever served MCP.
+
+    Alignment must happen in the background thread, not block the caller.
+    """
+    slow = _SlowStartService("slow", start_delay=2.0)
+    reg = ServiceRegistry([slow])
+    cfg = {"services": {"slow": {"enabled": True, "auto_start": True}}}
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{}")
+
+    t0 = time.time()
+    handle = start_reconciler(
+        reg,
+        _StubPressure(),
+        config_path=cfg_path,
+        load_config=lambda: dict(cfg),
+        interval_sec=0.05,
+    )
+    elapsed = time.time() - t0
+    try:
+        assert elapsed < 0.5, (
+            f"start_reconciler blocked the caller for {elapsed:.2f}s on a slow "
+            "startup_align — this stalls the MCP stdio handshake"
+        )
+        # Alignment still runs, just off the caller's thread.
+        t1 = time.time()
+        while time.time() - t1 < 5:
+            if slow.starts >= 1:
+                break
+            time.sleep(0.05)
+        assert slow.starts >= 1, "startup_align never ran in the background thread"
+    finally:
+        handle.stop()
 
 
 def test_reconciler_picks_up_config_changes(tmp_path):
