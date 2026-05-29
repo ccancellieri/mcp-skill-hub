@@ -4161,6 +4161,64 @@ def events_prune(before_ts: float = 0.0, dry_run: bool = False) -> str:
     )
 
 
+@mcp.tool()
+@requires_capability("none")
+def issue_sync(repo: str = "", dry_run: bool = False) -> str:
+    """Reconcile linked GitHub issues with their skill-hub tasks.
+
+    For each task↔issue link:
+    - If the GitHub issue is CLOSED and the local task is OPEN: close the task
+      locally (issue wins).
+    - If the local task is CLOSED and the GitHub issue is OPEN: optionally write
+      back a comment or close the issue, controlled by config
+      ``task_issue_writeback`` (default "off" = no GitHub writes).
+
+    Args:
+        repo:    Optional GitHub repo filter ("owner/name"). Empty = all repos.
+        dry_run: Report what would happen without making any changes.
+    """
+    from . import issue_sync as _issue_sync
+    from . import config as _cfg
+
+    log_tool("issue_sync", repo=repo, dry_run=dry_run)
+    writeback = str(_cfg.load_config().get("task_issue_writeback") or "off")
+
+    sid = _session.get("id", "")
+
+    def _emit(kind: str, tool_name: str | None, payload: dict) -> None:
+        try:
+            _store.append_event(session_id=sid, kind=kind,
+                                tool_name=tool_name, payload=payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+    report = _issue_sync.reconcile(
+        _store,
+        repo=repo,
+        dry_run=dry_run,
+        writeback=writeback,
+        emit=_emit,
+    )
+
+    mode = "dry_run" if dry_run else "live"
+    lines = [
+        f"issue_sync [{mode}]: checked={report['checked']} "
+        f"tasks_closed={report['tasks_closed']} "
+        f"issues_commented={report['issues_commented']} "
+        f"issues_closed={report['issues_closed']} "
+        f"writeback={report['writeback']}",
+    ]
+    for entry in report["drift"]:
+        direction = entry.get("direction", "?")
+        tid = entry.get("task_id")
+        num = entry.get("issue_number")
+        r = entry.get("repo") or ""
+        action = entry.get("action") or entry.get("writeback_mode", "")
+        ref = f"{r}#{num}" if r else f"#{num}"
+        lines.append(f"  drift [{direction}] task={tid} issue={ref} action={action}")
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()
