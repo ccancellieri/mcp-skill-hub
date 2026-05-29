@@ -11,6 +11,32 @@ from . import config as _cfg
 from .activity_log import get_logger, log_llm, llm_timer
 from .llm import LLMError, get_provider
 
+# Known embedding dimensions for common models — used to resolve the active
+# vector dim WITHOUT loading the model (constraint #33 / issue #35).
+KNOWN_EMBED_DIMS: dict[str, int] = {
+    "all-MiniLM-L6-v2": 384,
+    "nomic-embed-text": 768,
+    "nomic-embed-text:latest": 768,
+    "mxbai-embed-large": 1024,
+    "voyage-3-lite": 512,
+    "voyage-3": 1024,
+    "voyage-2": 1024,
+}
+
+
+def expected_embedding_dim() -> int | None:
+    """Best-effort embedding dim for the configured backend WITHOUT loading a model.
+
+    Returns None when the active model is unknown so the caller can defer.
+    """
+    st = str(_cfg.get("sentence_transformers_model") or "all-MiniLM-L6-v2").split("/")[-1]
+    if st in KNOWN_EMBED_DIMS:
+        return KNOWN_EMBED_DIMS[st]
+    em = _cfg.get("embed_model")
+    if em and str(em) in KNOWN_EMBED_DIMS:
+        return KNOWN_EMBED_DIMS[str(em)]
+    return None
+
 _ST_CACHE_LOCK = threading.Lock()
 
 # These module-level names are kept for backwards compatibility with imports,

@@ -72,8 +72,10 @@ try:  # Optional: sqlite-vec native ANN extension.
 except ImportError:  # pragma: no cover
     sqlite_vec = None  # type: ignore
 
-# Nomic-embed-text produces 768-d vectors. Keep in sync with embed_model.
-VEC_DIM = 768
+# Default dim (nomic-embed-text). The active dim is resolved per-store
+# instance in SkillStore._vec_dim; this alias is kept for backwards compat.
+DEFAULT_VEC_DIM = 768
+VEC_DIM = DEFAULT_VEC_DIM  # back-compat alias — use self._vec_dim inside SkillStore
 
 DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
 SESSION_CONTEXT_FILE = Path.home() / ".claude" / "mcp-skill-hub" / "session-context.md"
@@ -228,6 +230,10 @@ class SkillStore:
         # Legacy in-process vector cache (still used when vec engine unavailable).
         self._vec_cache: dict[str, tuple[list[float], float]] = {}
         self._vec_cache_valid: bool = False
+        # Active vector dimension — resolved per-store in _migrate (issue #35).
+        # None until the first write or until existing data is inspected.
+        self._vec_dim: int | None = None
+        self._vec_dim_warned: bool = False
         self._migrate()
         if self._vec_engine == "sqlite-vec":
             try:
@@ -235,6 +241,118 @@ class SkillStore:
             except Exception as exc:  # noqa: BLE001
                 _log.warning("vec0 backfill failed: %s", exc)
                 self._vec_engine = "legacy"
+
+    # ------------------------------------------------------------------
+    # Meta table helpers (issue #35)
+    # ------------------------------------------------------------------
+
+    def _meta_get(self, key: str) -> str | None:
+        """Read a value from the meta table; returns None if missing or table absent."""
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+            return row[0] if row else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _meta_set(self, key: str, value: str) -> None:
+        """Write a key/value pair to the meta table."""
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def _detect_embedding_dim(self) -> int | None:
+        """Infer the embedding dim from existing stored vectors without loading a model."""
+        try:
+            row = self._conn.execute(
+                "SELECT vector FROM embeddings WHERE vector IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if row:
+                return len(json.loads(row[0]))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            row = self._conn.execute(
+                "SELECT vector FROM tasks WHERE vector IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if row:
+                return len(json.loads(row[0]))
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _vec0_declared_dim(self, table: str) -> int | None:
+        """Return the dimension declared in the CREATE VIRTUAL TABLE … vec0(…) DDL."""
+        try:
+            row = self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if row and row[0]:
+                m = re.search(r"(?:bit|float)\[(\d+)\]", row[0])
+                if m:
+                    return int(m.group(1))
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _ensure_vec_tables(self, dim: int) -> None:
+        """Create the six vec0 virtual tables at ``dim`` if they do not exist yet.
+
+        Sets ``self._vec_dim`` on first call. Skips (with a one-time warning) when
+        ``dim`` differs from the already-established dim — the mismatch was already
+        logged by the write path before this call.
+        """
+        if self._vec_engine != "sqlite-vec":
+            return
+        if self._vec_dim is None:
+            self._vec_dim = dim
+            self._meta_set("vec_dim", str(dim))
+        if dim != self._vec_dim:
+            return
+        d = self._vec_dim
+        # S1.1 + S6 F-MEM — skills / tasks / teachings (binary KNN + float32 rerank)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_bin USING vec0(
+                skill_id TEXT PRIMARY KEY,
+                embedding bit[{d}]
+            )
+        """)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_f32 USING vec0(
+                skill_id TEXT PRIMARY KEY,
+                embedding float[{d}]
+            )
+        """)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_bin USING vec0(
+                task_id INTEGER PRIMARY KEY,
+                embedding bit[{d}]
+            )
+        """)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_f32 USING vec0(
+                task_id INTEGER PRIMARY KEY,
+                embedding float[{d}]
+            )
+        """)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_bin USING vec0(
+                teaching_id INTEGER PRIMARY KEY,
+                embedding bit[{d}]
+            )
+        """)
+        self._conn.execute(f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_f32 USING vec0(
+                teaching_id INTEGER PRIMARY KEY,
+                embedding float[{d}]
+            )
+        """)
+        self._conn.commit()
 
     def _migrate(self) -> None:
         self._conn.executescript("""
@@ -947,6 +1065,14 @@ class SkillStore:
         except Exception:
             pass
 
+        # meta table: simple key/value store for persistent store-level config.
+        # Created before the vec0 block so vec_dim can be persisted across restarts.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta "
+            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        self._conn.commit()
+
         skill_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "content_hash" not in skill_cols:
             # S1.3 — enables incremental reindex (skip rows whose file content
@@ -956,53 +1082,52 @@ class SkillStore:
             )
             self._conn.commit()
 
+        # M5/#35 — resolve the active vector dim WITHOUT loading a model (see #33).
+        # Priority: detected from existing embedding rows > persisted in meta >
+        # defer entirely for a fresh/empty DB (first write sets the dim lazily).
+        #
+        # Note: expected_embedding_dim() is NOT used here — applying it eagerly
+        # on a fresh/empty DB would lock tables at the config-default dim before
+        # any data has been written, rejecting vectors from a different model.
+        # Instead, _ensure_vec_tables(len(vector)) is called on first write and
+        # both creates the tables and sets self._vec_dim atomically.
+        detected = self._detect_embedding_dim()
+        persisted = self._meta_get("vec_dim")
+        resolved: int | None = (
+            detected if detected is not None
+            else (int(persisted) if persisted else None)
+        )
+
         # S1.1 — sqlite-vec virtual tables for ANN. Binary is primary (fast
         # Hamming KNN), float32 is the rerank oracle. Only created when the
         # extension loaded successfully; everything else stays legacy.
-        if self._vec_engine == "sqlite-vec":
-            try:
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_bin USING vec0(
-                        skill_id TEXT PRIMARY KEY,
-                        embedding bit[{VEC_DIM}]
-                    )
-                """)
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS skills_vec_f32 USING vec0(
-                        skill_id TEXT PRIMARY KEY,
-                        embedding float[{VEC_DIM}]
-                    )
-                """)
-                # S6 F-MEM — unified vec0 store for tasks + teachings. Same
-                # binary-KNN + float32-rerank path as skills.
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_bin USING vec0(
-                        task_id INTEGER PRIMARY KEY,
-                        embedding bit[{VEC_DIM}]
-                    )
-                """)
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS tasks_vec_f32 USING vec0(
-                        task_id INTEGER PRIMARY KEY,
-                        embedding float[{VEC_DIM}]
-                    )
-                """)
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_bin USING vec0(
-                        teaching_id INTEGER PRIMARY KEY,
-                        embedding bit[{VEC_DIM}]
-                    )
-                """)
-                self._conn.execute(f"""
-                    CREATE VIRTUAL TABLE IF NOT EXISTS teachings_vec_f32 USING vec0(
-                        teaching_id INTEGER PRIMARY KEY,
-                        embedding float[{VEC_DIM}]
-                    )
-                """)
+        if self._vec_engine == "sqlite-vec" and resolved is not None:
+            # Rebuild if existing vec0 tables were built at a different dim.
+            cur_dim = self._vec0_declared_dim("skills_vec_f32")
+            if cur_dim is not None and cur_dim != resolved:
+                _log.warning(
+                    "embedding dim changed %s→%s — rebuilding vec0 indexes",
+                    cur_dim, resolved,
+                )
+                for _t in (
+                    "skills_vec_bin", "skills_vec_f32",
+                    "tasks_vec_bin", "tasks_vec_f32",
+                    "teachings_vec_bin", "teachings_vec_f32",
+                ):
+                    try:
+                        self._conn.execute(f"DROP TABLE IF EXISTS {_t}")
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("drop %s failed: %s", _t, exc)
                 self._conn.commit()
+            self._vec_dim = resolved
+            self._meta_set("vec_dim", str(resolved))
+            try:
+                self._ensure_vec_tables(resolved)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("vec0 table creation failed: %s", exc)
                 self._vec_engine = "legacy"
+        # If resolved is None (empty DB, unknown model): defer — vec0 tables are
+        # created lazily on first write via _ensure_vec_tables(len(vector)).
 
         emb_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(embeddings)")}
         if "norm" not in emb_cols:
@@ -1443,18 +1568,31 @@ class SkillStore:
         # Invalidate in-process vector cache so the next search reloads
         self._vec_cache_valid = False
         # Mirror into vec0 tables (binary + float32). Best-effort — never blocks
-        # the primary write.
-        if self._vec_engine == "sqlite-vec" and len(vector) == VEC_DIM:
+        # the primary write. Lazy-create vec0 tables on first write (#35).
+        if self._vec_engine == "sqlite-vec":
             try:
-                self._write_vec_rows(skill_id, vector)
+                self._ensure_vec_tables(len(vector))
             except Exception as exc:  # noqa: BLE001
-                _log.debug("vec0 upsert failed for %s: %s", skill_id, exc)
+                _log.debug("vec0 ensure failed for %s: %s", skill_id, exc)
+            if self._vec_dim is None or len(vector) != self._vec_dim:
+                if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and not self._vec_dim_warned:
+                    _log.warning(
+                        "embedding dim mismatch: expected %d, got %d for %s — skipping vec0 write",
+                        self._vec_dim, len(vector), skill_id,
+                    )
+                    self._vec_dim_warned = True
+            else:
+                try:
+                    self._write_vec_rows(skill_id, vector)
+                except Exception as exc:  # noqa: BLE001
+                    _log.debug("vec0 upsert failed for %s: %s", skill_id, exc)
 
     def _write_vec_rows(self, skill_id: str, vector: list[float]) -> None:
         """Mirror a float32 embedding into both vec0 virtual tables."""
         from .embeddings import quantize_binary
         bin_blob = quantize_binary(vector)
-        f32_blob = struct.pack(f"{VEC_DIM}f", *vector)
+        dim = self._vec_dim if self._vec_dim is not None else len(vector)
+        f32_blob = struct.pack(f"{dim}f", *vector)
         self._conn.execute("DELETE FROM skills_vec_bin WHERE skill_id = ?", (skill_id,))
         self._conn.execute(
             "INSERT INTO skills_vec_bin (skill_id, embedding) VALUES (?, vec_bit(?))",
@@ -1474,6 +1612,11 @@ class SkillStore:
         present (cheap idempotent) and rows with wrong dimensionality.
         Covers: skills/embeddings, tasks, teachings (S1 + S6).
         """
+        # If vec dim is not yet resolved (fresh/empty DB), the vec0 tables have
+        # not been created yet — skip backfill; they will be created lazily on
+        # the first write via _ensure_vec_tables(len(vector)).
+        if self._vec_dim is None:
+            return
         # Skills
         existing = {
             row[0] for row in self._conn.execute(
@@ -1492,7 +1635,7 @@ class SkillStore:
                 vec = json.loads(row["vector"])
             except (TypeError, ValueError):
                 continue
-            if len(vec) != VEC_DIM:
+            if self._vec_dim is None or len(vec) != self._vec_dim:
                 continue
             try:
                 self._write_vec_rows(sid, vec)
@@ -1542,7 +1685,7 @@ class SkillStore:
                 vec = json.loads(row["vector"])
             except (TypeError, ValueError):
                 continue
-            if len(vec) != VEC_DIM:
+            if self._vec_dim is None or len(vec) != self._vec_dim:
                 continue
             try:
                 self._write_secondary_vec_rows(rid, vec, id_col, bin_tbl, f32_tbl)
@@ -1566,7 +1709,8 @@ class SkillStore:
         """
         from .embeddings import quantize_binary
         bin_blob = quantize_binary(vector)
-        f32_blob = struct.pack(f"{VEC_DIM}f", *vector)
+        dim = self._vec_dim if self._vec_dim is not None else len(vector)
+        f32_blob = struct.pack(f"{dim}f", *vector)
         self._conn.execute(f"DELETE FROM {bin_tbl} WHERE {id_col} = ?", (row_id,))
         self._conn.execute(
             f"INSERT INTO {bin_tbl} ({id_col}, embedding) VALUES (?, vec_bit(?))",
@@ -1651,7 +1795,7 @@ class SkillStore:
         cosine rerank → feedback boost. Otherwise falls back to the legacy
         in-process cache path.
         """
-        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+        if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and len(query_vector) == self._vec_dim:
             try:
                 return self._search_vec(query_vector, top_k, similarity_threshold, target)
             except Exception as exc:  # noqa: BLE001
@@ -1786,7 +1930,7 @@ class SkillStore:
         Uses the vec0 binary-KNN + float32 rerank path when available (S6);
         falls back to the in-Python cosine loop otherwise.
         """
-        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+        if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and len(query_vector) == self._vec_dim:
             vec_results = self._search_teachings_vec(query_vector, min_sim)
             if vec_results is not None:
                 return vec_results
@@ -2109,7 +2253,19 @@ class SkillStore:
 
     def _mirror_task_vec(self, task_id: int, vector: list[float]) -> None:
         """Best-effort mirror of a task vector into vec0 tables (S6)."""
-        if self._vec_engine != "sqlite-vec" or len(vector) != VEC_DIM:
+        if self._vec_engine != "sqlite-vec":
+            return
+        try:
+            self._ensure_vec_tables(len(vector))
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("vec0 ensure failed for task %d: %s", task_id, exc)
+        if self._vec_dim is None or len(vector) != self._vec_dim:
+            if self._vec_dim is not None and not self._vec_dim_warned:
+                _log.warning(
+                    "embedding dim mismatch: expected %d, got %d for task %d — skipping",
+                    self._vec_dim, len(vector), task_id,
+                )
+                self._vec_dim_warned = True
             return
         try:
             self._write_secondary_vec_rows(
@@ -2120,7 +2276,19 @@ class SkillStore:
 
     def _mirror_teaching_vec(self, teaching_id: int, vector: list[float]) -> None:
         """Best-effort mirror of a teaching rule vector into vec0 tables (S6)."""
-        if self._vec_engine != "sqlite-vec" or len(vector) != VEC_DIM:
+        if self._vec_engine != "sqlite-vec":
+            return
+        try:
+            self._ensure_vec_tables(len(vector))
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("vec0 ensure failed for teaching %d: %s", teaching_id, exc)
+        if self._vec_dim is None or len(vector) != self._vec_dim:
+            if self._vec_dim is not None and not self._vec_dim_warned:
+                _log.warning(
+                    "embedding dim mismatch: expected %d, got %d for teaching %d — skipping",
+                    self._vec_dim, len(vector), teaching_id,
+                )
+                self._vec_dim_warned = True
             return
         try:
             self._write_secondary_vec_rows(
@@ -2667,7 +2835,7 @@ class SkillStore:
         if query_vector is None:
             return []
 
-        if self._vec_engine == "sqlite-vec" and len(query_vector) == VEC_DIM:
+        if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and len(query_vector) == self._vec_dim:
             vec_results = self._search_tasks_vec(query_vector, top_k, status, min_sim)
             if vec_results is not None:
                 return vec_results
