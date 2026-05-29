@@ -1292,6 +1292,36 @@ class SkillStore:
                     )
         self._conn.commit()
 
+        # Issue #38 — Claude Code task projection: stable-key dedup + source tracking.
+        # claude_task_key: stable hash or cid:<id> string (see claude_tasks.stable_key).
+        # claude_task_id: the task_id from the Claude tool response (may be None).
+        task_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        if "claude_task_key" not in task_cols:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN claude_task_key TEXT"
+                )
+                self._conn.commit()
+                task_cols = task_cols | {"claude_task_key"}
+            except Exception:
+                pass
+        if "claude_task_id" not in task_cols:
+            try:
+                self._conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN claude_task_id TEXT"
+                )
+                self._conn.commit()
+            except Exception:
+                pass
+        try:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_claude_key "
+                "ON tasks(claude_task_key) WHERE claude_task_key IS NOT NULL"
+            )
+            self._conn.commit()
+        except Exception:
+            pass
+
         # Rebuild FTS5 indexes from existing data (idempotent — safe to call repeatedly).
         self._rebuild_fts_index(self._conn)
 
@@ -2522,6 +2552,68 @@ class SkillStore:
         if not row:
             return None
         return int(row["id"] if isinstance(row, dict) else row[0])
+
+    _CLAUDE_COMPLETION_STATUSES = frozenset(
+        {"completed", "done", "complete", "cancelled", "canceled", "stopped"}
+    )
+
+    def project_claude_task(
+        self,
+        *,
+        key: str,
+        title: str,
+        status: str,
+        claude_id: str | None = None,
+        session_id: str = "",
+        cwd: str = "",
+        branch: str = "",
+        summary: str = "",
+    ) -> dict:
+        """Upsert a skill-hub task row keyed by a stable Claude task hash.
+
+        Returns a dict with keys ``action`` (``"created"``, ``"updated"``,
+        ``"closed"``, ``"noop"``) and ``task_id`` (int or None).
+        """
+        row = self._conn.execute(
+            "SELECT id, status, title, summary FROM tasks WHERE claude_task_key = ?",
+            (key,),
+        ).fetchone()
+
+        if status in self._CLAUDE_COMPLETION_STATUSES:
+            if row is not None and row["status"] == "open":
+                tid = int(row["id"])
+                self.close_task(tid, compact="auto-closed: Claude task completed")
+                return {"action": "closed", "task_id": tid}
+            return {"action": "noop", "task_id": row["id"] if row else None}
+
+        # Open / in-progress / pending path.
+        if row is not None:
+            tid = int(row["id"])
+            changed = (title and title != row["title"]) or (
+                summary and summary != row["summary"]
+            )
+            if changed:
+                self.update_task(tid, title=title or "", summary=summary or "")
+            else:
+                self.touch_task_activity(tid)
+            return {"action": "updated", "task_id": tid}
+
+        # Create new task.
+        tid = self.save_task(
+            title=title or "(untitled Claude task)",
+            summary=summary,
+            vector=[],
+            tags="src:claude-task",
+            session_id=session_id,
+            cwd=cwd,
+            branch=branch,
+        )
+        self._conn.execute(
+            "UPDATE tasks SET claude_task_key = ?, claude_task_id = ? WHERE id = ?",
+            (key, claude_id, tid),
+        )
+        self._conn.commit()
+        return {"action": "created", "task_id": tid}
 
     def find_resumable_task_by_cwd_branch(
         self, cwd: str, branch: str, window_days: int
