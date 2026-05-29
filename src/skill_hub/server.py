@@ -157,6 +157,19 @@ if (_cfg.load_config().get("services") or {}).get("auto_reconcile", True):
     )
     _atexit.register(_reconciler.stop)
 
+# M2 W1 — background prune at startup (off critical path, same as startup_align).
+import threading as _threading  # noqa: E402
+
+try:
+    _t_prune = _threading.Thread(
+        target=lambda: _store.events_prune(),
+        name="events-prune-startup",
+        daemon=True,
+    )
+    _t_prune.start()
+except Exception:  # noqa: BLE001
+    pass
+
 # In-process session tracking
 _session = {
     "id": str(uuid.uuid4()),
@@ -245,6 +258,42 @@ def _mcp_tool_with_envelope(*args, **kwargs):
 
 
 mcp.tool = _mcp_tool_with_envelope  # type: ignore[assignment]
+
+
+# --- M2 W1: wire emit hook into envelope -----------------------------------
+# Set up a closure that reads the current session id from _session["id"] and
+# calls _store.append_event.  The hook is non-fatal by design: a failure here
+# must never break the tool call that triggered it.
+from .envelope import set_emit_hook as _set_emit_hook  # noqa: E402
+
+
+def _make_emit_hook():
+    def _emit(kind: str, tool_name: str | None, payload: dict) -> "int | None":
+        try:
+            sid = _session.get("id", "")
+            return _store.append_event(
+                session_id=sid,
+                kind=kind,
+                tool_name=tool_name,
+                payload=payload,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+    return _emit
+
+
+_set_emit_hook(_make_emit_hook())
+
+# Emit session_start for this process boot (session already in _session["id"]).
+try:
+    _store.append_event(
+        session_id=_session["id"],
+        kind="session_start",
+        tool_name=None,
+        payload={"source": "server_boot"},
+    )
+except Exception:  # noqa: BLE001
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +644,27 @@ def close_session(summary: str = "") -> str:
         )
     except Exception as exc:  # noqa: BLE001
         return f"close_session: session:log write failed: {exc}"
+    # M2 W1 — emit session_end before rotating the session id.
+    try:
+        _store.append_event(
+            session_id=sid,
+            kind="session_end",
+            tool_name=None,
+            payload={"topic": topic, "summary": text},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    # Kick off a background prune (non-blocking — daemon thread, fire-and-forget).
+    try:
+        import threading as _threading
+        _t = _threading.Thread(
+            target=lambda: _store.events_prune(),
+            name="events-prune",
+            daemon=True,
+        )
+        _t.start()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from . import plugin_hooks
         plugin_hooks.dispatch(
@@ -603,10 +673,21 @@ def close_session(summary: str = "") -> str:
         )
     except Exception:  # noqa: BLE001
         pass
-    _session["id"] = str(uuid.uuid4())
+    new_sid = str(uuid.uuid4())
+    _session["id"] = new_sid
     _session["topic"] = ""
     _session["topic_vector"] = []
     _session["tool_chain"] = []
+    # Emit session_start for the fresh session.
+    try:
+        _store.append_event(
+            session_id=new_sid,
+            kind="session_start",
+            tool_name=None,
+            payload={"source": "close_session_rotate"},
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return f"Session closed → session:log (new id={_session['id'][:8]})"
 
 
@@ -4012,6 +4093,72 @@ def _store_db_path() -> str:
     """Resolve the SkillStore SQLite file used by the autopilot board."""
     from .store import DB_PATH
     return str(DB_PATH)
+
+
+# ---------------------------------------------------------------------------
+# M2 W1 — Event log tools
+
+
+@mcp.tool()
+@requires_capability("none")
+def get_events(
+    session_id: str = "",
+    since: float = 0.0,
+    kind: str = "",
+    limit: int = 200,
+) -> str:
+    """Query the M2 W1 event log.
+
+    All parameters are optional; omitting ``session_id`` returns events across
+    all sessions (bounded by ``limit``).
+
+    Args:
+        session_id: Filter to one session.  Empty = all sessions.
+        since:      Unix timestamp lower bound (inclusive).  0 = no bound.
+        kind:       Filter by event kind (tool_invoke | tool_result |
+                    session_start | session_end | config_change |
+                    session_snapshot).  Empty = all kinds.
+        limit:      Maximum number of rows to return (capped at 10 000).
+    """
+    log_tool("get_events", session_id=session_id[:36], kind=kind, limit=limit)
+    rows = _store.get_events(session_id=session_id, since=since, kind=kind, limit=limit)
+    if not rows:
+        return "No events found."
+    lines = []
+    for r in rows:
+        ts_str = f"{r['ts']:.3f}"
+        name_str = f" [{r['tool_name']}]" if r.get("tool_name") else ""
+        lines.append(
+            f"id={r['id']} ts={ts_str} kind={r['kind']}{name_str} "
+            f"session={r['session_id'][:12]} payload={r['payload'][:120]}"
+        )
+    return f"{len(rows)} event(s):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
+def events_prune(before_ts: float = 0.0, dry_run: bool = False) -> str:
+    """Prune the event log: coalesce closed-session events older than the retention window.
+
+    Retention is controlled by config ``event_log_retention_days`` (default 30;
+    ``0`` = keep forever).  ``before_ts`` overrides the config window when > 0.
+
+    In-flight sessions (no ``session_end`` event) are never pruned.
+    Already-coalesced sessions (only ``session_snapshot`` rows) are skipped.
+
+    Args:
+        before_ts: Unix timestamp cutoff.  Events older than this are eligible.
+                   0 = use the config retention window.
+        dry_run:   If True, report candidates without deleting anything.
+    """
+    log_tool("events_prune", dry_run=dry_run, before_ts=before_ts)
+    result = _store.events_prune(before_ts=before_ts, dry_run=dry_run)
+    mode = "dry_run" if dry_run else "pruned"
+    return (
+        f"events_prune [{mode}]: candidates={result['candidates']} "
+        f"rows_deleted={result['rows_deleted']} "
+        f"snapshots_written={result['snapshots_written']}"
+    )
 
 
 def main() -> None:
