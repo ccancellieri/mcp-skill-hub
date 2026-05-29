@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -18,7 +17,7 @@ from .ollama import OllamaDaemon, OllamaModel
 from .searxng import SearxngContainer
 
 if TYPE_CHECKING:
-    from .monitor import PressureTracker, ResourceSample
+    from .monitor import PressureTracker
 
 log = logging.getLogger(__name__)
 
@@ -262,13 +261,19 @@ def start_reconciler(
     stop_event = threading.Event()
     last_mtime = [0.0]
 
-    # Align OS state to config at startup.
-    try:
-        registry.startup_align(load_config())
-    except Exception as e:  # noqa: BLE001
-        log.warning("startup_align failed: %s", e)
-
     def _loop() -> None:
+        # Align OS state to config FIRST, but inside the daemon thread — never
+        # on the caller's thread. startup_align() calls svc.start() on every
+        # auto_start service, and those can block on subprocess timeouts (e.g.
+        # Ollama down → `brew services` 5s+15s, SearXNG `docker run`). Doing it
+        # synchronously here would stall `import skill_hub.server` past the MCP
+        # stdio `initialize` handshake window (~30s), so the client times out
+        # and the server is killed/orphaned before `mcp.run()` is ever reached.
+        try:
+            registry.startup_align(load_config())
+        except Exception as e:  # noqa: BLE001
+            log.warning("startup_align failed: %s", e)
+
         while not stop_event.is_set():
             try:
                 sample = pressure.sample()
