@@ -7,6 +7,7 @@ startup latency must stay minimal.
 from __future__ import annotations
 
 import hashlib
+import re
 
 CLAUDE_TASK_TOOLS = frozenset(
     {"TodoWrite", "TaskCreate", "TaskUpdate", "TaskComplete", "TaskStop"}
@@ -122,3 +123,23 @@ def stable_key(
     raw = f"{identity.strip().lower()}|{cwd}|{branch}"
     digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
     return f"txt:{digest}"
+
+
+def memory_stable_key(memory_path: str) -> str:
+    """Compute a stable dedup key for a MEMORY.md-sourced task.
+
+    Keyed by the canonical (absolute or relative) memory file path so the
+    same entry always maps to the same task, regardless of title changes.
+    Prefix ``mem:`` distinguishes these from Claude tool keys (``cid:``/``txt:``).
+    """
+    digest = hashlib.sha256(memory_path.strip().encode()).hexdigest()[:16]
+    return f"mem:{digest}"
+
+
+# Markers that indicate a MEMORY.md entry has been completed.  The pattern is
+# intentionally word-boundary anchored to avoid false positives on phrases
+# like "not yet shipped" (which _classify_color already handles via DEFERRED).
+MEMORY_DONE_PATTERN = re.compile(
+    r"\b(SHIPPED|DONE|COMPLETE|VERIFIED|CLOSED)\b",
+    re.IGNORECASE,
+)
