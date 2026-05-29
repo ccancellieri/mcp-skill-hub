@@ -19,11 +19,14 @@ Only writes to cache when:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HOOK_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HOOK_DIR))
+sys.path.insert(0, str(_HOOK_DIR.parent / "src"))
 import verdict_cache  # noqa: E402
 
 LOG = Path.home() / ".claude" / "mcp-skill-hub" / "logs" / "hook-debug.log"
@@ -58,6 +61,79 @@ def _update_task_activity(session_id: str) -> None:
             store.close()
     except Exception as exc:
         log(f"heartbeat  error={exc}")
+
+
+def _maybe_observe_claude_task(data: dict) -> None:
+    """Project Claude Code task tool calls into skill-hub tasks. Never raises."""
+    try:
+        from skill_hub import claude_tasks as _ct
+        tool_name = data.get("tool_name", "")
+        if tool_name not in _ct.CLAUDE_TASK_TOOLS:
+            return
+        tool_input = data.get("tool_input") or {}
+        tool_response = data.get("tool_response") or {}
+        if isinstance(tool_response, str):
+            tool_response = {}
+        parsed = _ct.parse_claude_tasks(tool_name, tool_input, tool_response)
+        if not parsed:
+            return
+        session_id = data.get("session_id", "")
+        cwd = data.get("cwd") or os.getcwd()
+        branch = ""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=cwd, timeout=2,
+            )
+            if result.returncode == 0:
+                branch = result.stdout.strip()
+        except Exception:
+            pass
+
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            for item in parsed:
+                key = _ct.stable_key(
+                    item["identity"],
+                    cwd=cwd,
+                    branch=branch,
+                    claude_id=item.get("claude_id"),
+                )
+                status = item["status"]
+                is_completion = status in _ct._COMPLETION_STATUSES
+                event_kind = (
+                    "claude_task.completed" if is_completion else "claude_task.observed"
+                )
+                payload = {
+                    "key": key,
+                    "title": item["title"],
+                    "status": status,
+                    "claude_id": item.get("claude_id"),
+                    "tool_name": tool_name,
+                }
+                store.append_event(
+                    session_id, event_kind, tool_name, payload
+                )
+                result_info = store.project_claude_task(
+                    key=key,
+                    title=item["title"],
+                    status=status,
+                    claude_id=item.get("claude_id"),
+                    session_id=session_id,
+                    cwd=cwd,
+                    branch=branch,
+                    summary="",
+                )
+                log(
+                    f"claude_task  action={result_info.get('action')}  "
+                    f"key={key[:20]}  title=\"{item['title'][:40]}\""
+                )
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001
+        log(f"claude_task  error={exc}")
 
 
 def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
@@ -151,6 +227,7 @@ def main() -> int:
     # erroring out shouldn't propagate as a teaching.
     if event == "PostToolUse":
         _maybe_auto_teach_from_feedback(tool_name, tool_input)
+        _maybe_observe_claude_task(data)
 
     if tool_name != "Bash":
         return 0
