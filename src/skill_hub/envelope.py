@@ -84,10 +84,67 @@ now so wiring W1 later does not break this module's public surface.
 from __future__ import annotations
 
 import functools
+import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar
+
+_log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# W1 emit hook — module-level, settable after import.
+#
+# Default is a no-op so the envelope stays import-safe without a store.
+# server.py calls set_emit_hook() after _store is created.  The hook receives
+# (kind, tool_name, payload) and returns int|None (the event id, or None on
+# failure).
+# ---------------------------------------------------------------------------
+
+_EmitFn = Callable[[str, str | None, dict], "int | None"]
+
+
+def _noop_emit(kind: str, tool_name: str | None, payload: dict) -> None:
+    return None
+
+
+_emit_hook: _EmitFn = _noop_emit  # type: ignore[assignment]
+
+
+def set_emit_hook(fn: _EmitFn) -> None:
+    """Replace the active emit hook.
+
+    ``fn(kind, tool_name, payload) -> int | None``.
+    Called by server.py once the store is ready.  Safe to call from any thread.
+    """
+    global _emit_hook
+    _emit_hook = fn
+
+
+def _safe_args(args: tuple, kwargs: dict, cap: int = 2048) -> dict:
+    """Build a JSON-safe, size-capped representation of call arguments."""
+    try:
+        raw: dict[str, Any] = {}
+        if args:
+            raw["args"] = [str(a)[:200] for a in args]
+        if kwargs:
+            raw["kwargs"] = {k: str(v)[:200] for k, v in kwargs.items()}
+        serialised = json.dumps(raw, default=str)
+        if len(serialised) > cap:
+            serialised = serialised[:cap]
+        return json.loads(serialised)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _call_emit(kind: str, tool_name: str | None, payload: dict) -> int | None:
+    """Invoke the active hook, swallowing any exception (non-fatal by design)."""
+    try:
+        return _emit_hook(kind, tool_name, payload)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("emit hook raised (non-fatal): %s", exc)
+        return None
 
 
 @dataclass
@@ -190,28 +247,42 @@ def tool_envelope(fn: F) -> F:
     attributes other decorators have stamped on the inner function.
     """
 
+    name = fn.__name__
+
     def _run(args: tuple, kwargs: dict) -> ToolResult:
+        safe = _safe_args(args, kwargs)
+        inv_id = _call_emit("tool_invoke", name, {"args": safe})
+        events: list[int] = []
+        if inv_id is not None:
+            events.append(inv_id)
+
         start = time.monotonic()
         try:
             raw = fn(*args, **kwargs)
             stdout, structured = _coerce_stdout(raw)
             elapsed = int((time.monotonic() - start) * 1000)
+            res_id = _call_emit("tool_result", name, {"ok": True, "error": None, "elapsed_ms": elapsed})
+            if res_id is not None:
+                events.append(res_id)
             result = ToolResult(
                 stdout=stdout,
                 structured=structured,
                 error=None,
                 elapsed_ms=elapsed,
-                events_emitted=[],
+                events_emitted=events,
             )
         except Exception as exc:  # noqa: BLE001 — envelope must never re-raise
             elapsed = int((time.monotonic() - start) * 1000)
             err_msg = f"{type(exc).__name__}: {exc}"
+            res_id = _call_emit("tool_result", name, {"ok": False, "error": err_msg, "elapsed_ms": elapsed})
+            if res_id is not None:
+                events.append(res_id)
             result = ToolResult(
                 stdout=f"ERROR: {err_msg}",
                 structured=None,
                 error=err_msg,
                 elapsed_ms=elapsed,
-                events_emitted=[],
+                events_emitted=events,
             )
         _LOCAL.last_result = result
         wrapper.last_result = result  # type: ignore[attr-defined]
@@ -231,4 +302,4 @@ def tool_envelope(fn: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
-__all__ = ["ToolResult", "tool_envelope", "get_last_result"]
+__all__ = ["ToolResult", "tool_envelope", "get_last_result", "set_emit_hook"]

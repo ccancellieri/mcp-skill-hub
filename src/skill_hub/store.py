@@ -4565,26 +4565,209 @@ class SkillStore:
         payload: dict | str,
         tool_name: str | None = None,
         ts: float | None = None,
-    ) -> int:
-        """Append a row to the M2 event log, stamped with this host's node_id.
+        source: str | None = None,
+    ) -> int | None:
+        """Append a row to the M2 W1 event log.
 
-        Helper kept minimal — M2 W1 will wire it into the tool decorator;
-        federation-lite (M4-3) only needs the write path + node_id stamp so
-        cross-host queries can group/filter by author.
+        Exception-safe: any failure is logged at DEBUG level and returns None
+        so a failed event append never breaks a tool call.  Returns the new
+        row id on success.
+
+        ``source`` overrides the ``node_id`` column; defaults to
+        ``self.node_id``.  Payload is JSON-encoded (best-effort: large values
+        are truncated, un-serialisable objects fall back to str()).
         """
         import time
 
-        if ts is None:
-            ts = time.time()
-        if not isinstance(payload, str):
-            payload = json.dumps(payload, default=str)
-        cur = self._conn.execute(
-            "INSERT INTO events (session_id, ts, kind, tool_name, payload, node_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, ts, kind, tool_name, payload, self.node_id),
-        )
-        self._conn.commit()
-        return int(cur.lastrowid or 0)
+        try:
+            if ts is None:
+                ts = time.time()
+            node = source if source is not None else self.node_id
+            if not isinstance(payload, str):
+                try:
+                    serialised = json.dumps(payload, default=str)
+                except Exception:  # noqa: BLE001
+                    serialised = json.dumps({"_raw": str(payload)[:1000]})
+            else:
+                serialised = payload
+            # Cap payload at 64 KB so a single runaway event can't bloat the DB.
+            if len(serialised) > 65536:
+                serialised = serialised[:65536]
+            cur = self._conn.execute(
+                "INSERT INTO events (session_id, ts, kind, tool_name, payload, node_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, ts, kind, tool_name, serialised, node),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("append_event failed (non-fatal): %s", exc)
+            return None
+
+    def get_events(
+        self,
+        session_id: str = "",
+        since: float = 0.0,
+        kind: str = "",
+        limit: int = 200,
+    ) -> list[dict]:
+        """Query the event log with optional filters.
+
+        All filters are ANDed.  Empty ``session_id`` returns events across
+        all sessions (still bounded by ``limit``).  Results are ordered by
+        ``ts`` ascending.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if since > 0.0:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        safe_limit = max(1, min(int(limit), 10000))
+        params.append(safe_limit)
+        try:
+            rows = self._conn.execute(
+                f"SELECT id, session_id, ts, kind, tool_name, payload, node_id "
+                f"FROM events {where} ORDER BY ts ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_events failed: %s", exc)
+            return []
+
+    def events_prune(
+        self,
+        before_ts: float = 0.0,
+        dry_run: bool = False,
+        retention_days: int | None = None,
+    ) -> dict:
+        """Prune closed sessions whose events are older than the retention window.
+
+        Rules:
+        * ``retention_days`` defaults to the config value ``event_log_retention_days``
+          (default 30).  ``0`` = keep forever (no-op).
+        * ``before_ts`` overrides the config window when > 0.
+        * A session is "closed" iff it has at least one ``session_end`` event.
+        * Sessions whose only rows are already ``session_snapshot`` kind are
+          skipped (re-run guard).
+        * Closed sessions whose latest event ``ts`` < cutoff: coalesce all raw
+          events into one ``session_snapshot`` row then delete the originals.
+        * In-flight sessions (no ``session_end``) are never pruned.
+        * ``dry_run=True``: report candidates + counts, delete nothing.
+
+        Returns a summary dict with keys ``candidates``, ``rows_deleted``,
+        ``snapshots_written``, ``dry_run``.
+        """
+        import time
+
+        try:
+            from . import config as _cfg
+            _ret = _cfg.get("event_log_retention_days")
+            cfg_days = int(_ret) if _ret is not None else 30
+        except Exception:  # noqa: BLE001
+            cfg_days = 30
+        if retention_days is not None:
+            cfg_days = retention_days
+
+        if cfg_days == 0:
+            return {"candidates": 0, "rows_deleted": 0, "snapshots_written": 0, "dry_run": dry_run}
+
+        now = time.time()
+        cutoff = before_ts if before_ts > 0.0 else (now - cfg_days * 86400.0)
+
+        try:
+            # Sessions that have a session_end event.
+            closed_rows = self._conn.execute(
+                "SELECT DISTINCT session_id FROM events WHERE kind = 'session_end'"
+            ).fetchall()
+            closed_sessions = {r[0] for r in closed_rows}
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("events_prune: closed session query failed: %s", exc)
+            return {"candidates": 0, "rows_deleted": 0, "snapshots_written": 0, "dry_run": dry_run, "error": str(exc)}
+
+        candidates: list[str] = []
+        for sid in closed_sessions:
+            try:
+                # Skip sessions that are already fully coalesced (only snapshots).
+                kinds = self._conn.execute(
+                    "SELECT DISTINCT kind FROM events WHERE session_id = ?", (sid,)
+                ).fetchall()
+                kind_set = {r[0] for r in kinds}
+                if kind_set and kind_set.issubset({"session_snapshot"}):
+                    continue
+
+                # Check if the latest event for this session is older than cutoff.
+                latest_row = self._conn.execute(
+                    "SELECT MAX(ts) AS max_ts FROM events WHERE session_id = ?", (sid,)
+                ).fetchone()
+                if not latest_row or latest_row[0] is None or latest_row[0] >= cutoff:
+                    continue
+                candidates.append(sid)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("events_prune: per-session check failed for %s: %s", sid, exc)
+
+        rows_deleted = 0
+        snapshots_written = 0
+
+        for sid in candidates:
+            try:
+                raw_rows = self._conn.execute(
+                    "SELECT id, ts, kind, tool_name, payload FROM events WHERE session_id = ?",
+                    (sid,),
+                ).fetchall()
+                if not raw_rows:
+                    continue
+
+                # Build compact summary.
+                kind_counts: dict[str, int] = {}
+                tool_tallies: dict[str, int] = {}
+                ts_values: list[float] = []
+                for r in raw_rows:
+                    kind_counts[r["kind"]] = kind_counts.get(r["kind"], 0) + 1
+                    if r["tool_name"]:
+                        tool_tallies[r["tool_name"]] = tool_tallies.get(r["tool_name"], 0) + 1
+                    if r["ts"] is not None:
+                        ts_values.append(float(r["ts"]))
+
+                snapshot_payload = json.dumps({
+                    "kind_counts": kind_counts,
+                    "tool_tallies": tool_tallies,
+                    "first_ts": min(ts_values) if ts_values else None,
+                    "last_ts": max(ts_values) if ts_values else None,
+                    "raw_row_count": len(raw_rows),
+                })
+                snapshot_ts = max(ts_values) if ts_values else now
+
+                if not dry_run:
+                    self._conn.execute(
+                        "DELETE FROM events WHERE session_id = ?", (sid,)
+                    )
+                    self._conn.execute(
+                        "INSERT INTO events (session_id, ts, kind, tool_name, payload, node_id) "
+                        "VALUES (?, ?, 'session_snapshot', NULL, ?, ?)",
+                        (sid, snapshot_ts, snapshot_payload, self.node_id),
+                    )
+                    self._conn.commit()
+                    snapshots_written += 1
+                    rows_deleted += len(raw_rows)
+                else:
+                    rows_deleted += len(raw_rows)  # reported as "would delete"
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("events_prune: coalesce failed for %s: %s", sid, exc)
+
+        return {
+            "candidates": len(candidates),
+            "rows_deleted": rows_deleted,
+            "snapshots_written": snapshots_written if not dry_run else 0,
+            "dry_run": dry_run,
+        }
 
 
 # ----------------------------------------------------------------------

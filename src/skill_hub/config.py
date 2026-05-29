@@ -375,6 +375,11 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
+    # M2 W1 — event log retention.
+    # Raw events for closed sessions older than this many days are coalesced
+    # into a single session_snapshot row and deleted.  Set to 0 to keep forever.
+    "event_log_retention_days": 30,
+
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,
 
