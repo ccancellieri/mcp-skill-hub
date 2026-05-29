@@ -2615,6 +2615,149 @@ class SkillStore:
         self._conn.commit()
         return {"action": "created", "task_id": tid}
 
+    # Cosine threshold for treating two tasks as "same work" during vector
+    # dedup fallback.  0.85 was chosen because:
+    #   - 0.90+ is near-duplicate text (too strict; misses paraphrases)
+    #   - 0.80-  is topically related but not the same task (too loose)
+    #   - 0.85 sits in the "same task, different wording" sweet spot seen in
+    #     sentence-transformer benchmarks for short task titles.
+    MEMORY_DEDUP_SIM_THRESHOLD = 0.85
+
+    def project_memory_task(
+        self,
+        *,
+        key: str,
+        title: str,
+        summary: str = "",
+        tags: str = "",
+        color: str = "",
+        vector: list[float] | None = None,
+        close: bool = False,
+    ) -> dict:
+        """Upsert a skill-hub task row sourced from a MEMORY.md entry.
+
+        Dedup order:
+        1. Exact stable-key match (``claude_task_key = key``).
+        2. Vector-similarity fallback at ``MEMORY_DEDUP_SIM_THRESHOLD`` for
+           tasks that pre-date stable-key support (no ``claude_task_key``).
+
+        When ``close=True`` the matched / created task is immediately closed
+        (used when the MEMORY.md entry is detected as SHIPPED/DONE).
+
+        Returns a dict with ``action`` (``"created"``, ``"updated"``,
+        ``"closed"``, ``"noop"``) and ``task_id``.
+        """
+        vec = vector or []
+
+        # --- Tier 1: exact stable-key match ---
+        row = self._conn.execute(
+            "SELECT id, status, title, summary FROM tasks WHERE claude_task_key = ?",
+            (key,),
+        ).fetchone()
+
+        if row is None and vec:
+            # --- Tier 2: vector-similarity fallback (no window restriction) ---
+            hit = self._find_open_task_by_vector(vec, self.MEMORY_DEDUP_SIM_THRESHOLD)
+            if hit is not None:
+                existing_row, _score = hit
+                # Adopt this pre-existing task: stamp the stable key so future
+                # runs skip the similarity scan.
+                self._conn.execute(
+                    "UPDATE tasks SET claude_task_key = ? WHERE id = ?",
+                    (key, existing_row["id"]),
+                )
+                self._conn.commit()
+                row = self._conn.execute(
+                    "SELECT id, status, title, summary FROM tasks WHERE id = ?",
+                    (existing_row["id"],),
+                ).fetchone()
+
+        if close:
+            if row is not None and row["status"] == "open":
+                tid = int(row["id"])
+                self.close_task(tid, compact="auto-closed: memory entry marked done")
+                return {"action": "closed", "task_id": tid}
+            return {"action": "noop", "task_id": row["id"] if row else None}
+
+        if row is not None:
+            tid = int(row["id"])
+            changed = (title and title != row["title"]) or (
+                summary and summary != row["summary"]
+            )
+            if changed:
+                kw: dict = {"title": title or "", "summary": summary or ""}
+                if tags:
+                    kw["tags"] = tags
+                if color:
+                    kw["color"] = color
+                if vec:
+                    kw["vector"] = vec
+                self.update_task(tid, **kw)
+            else:
+                self.touch_task_activity(tid)
+            return {"action": "updated", "task_id": tid}
+
+        # Create new task.
+        tid = self.save_task(
+            title=title or "(untitled memory task)",
+            summary=summary,
+            vector=vec,
+            context="",
+            tags=tags or "src:memory",
+            session_id="",
+            color=color or "",
+        )
+        self._conn.execute(
+            "UPDATE tasks SET claude_task_key = ? WHERE id = ?",
+            (key, tid),
+        )
+        self._conn.commit()
+        return {"action": "created", "task_id": tid}
+
+    def _find_open_task_by_vector(
+        self, query_vec: list[float], threshold: float
+    ) -> tuple[sqlite3.Row, float] | None:
+        """Return the top-1 open task whose cosine similarity to query_vec
+        meets ``threshold``, searching across ALL time (no window).
+
+        Returns None if no match or if query_vec is empty.
+        """
+        if not query_vec:
+            return None
+        import math
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' "
+            "AND vector IS NOT NULL AND vector != '[]'"
+        ).fetchall()
+        if not rows:
+            return None
+        qn = math.sqrt(sum(v * v for v in query_vec)) or 1.0
+        best_row, best_score = None, 0.0
+        for r in rows:
+            try:
+                v = json.loads(r["vector"])
+                if not v or len(v) != len(query_vec):
+                    continue
+                dot = sum(a * b for a, b in zip(query_vec, v))
+                vn = math.sqrt(sum(x * x for x in v)) or 1.0
+                score = dot / (qn * vn)
+                if score > best_score:
+                    best_row, best_score = r, score
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if best_row is not None and best_score >= threshold:
+            return best_row, best_score
+        return None
+
+    def find_open_task_by_stable_key(self, key: str) -> sqlite3.Row | None:
+        """Return the open task whose ``claude_task_key`` matches ``key``, or None."""
+        if not key:
+            return None
+        return self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' AND claude_task_key = ?",
+            (key,),
+        ).fetchone()
+
     def find_resumable_task_by_cwd_branch(
         self, cwd: str, branch: str, window_days: int
     ) -> sqlite3.Row | None:

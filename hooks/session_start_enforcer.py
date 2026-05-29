@@ -146,13 +146,36 @@ def _read_memory_frontmatter(path: Path) -> dict:
     return out
 
 
+def _find_memory_index() -> Path | None:
+    """Return the first MEMORY.md found, or None."""
+    default = Path.home() / ".claude" / "projects" / "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
+    if default.exists():
+        return default
+    candidates = list(Path.home().glob(".claude/projects/*/memory/MEMORY.md"))
+    return candidates[0] if candidates else None
+
+
+def _scan_memory_links(
+    text: str,
+) -> list[tuple[str, str, str]]:
+    """Return all ``- [link_text](link_target) — description`` links found in text."""
+    import re
+    link_re = re.compile(
+        r"^[-*]\s+\[([^\]]+)\]\(([^)]+)\)\s*[—–-]+\s*(.+)$", re.MULTILINE
+    )
+    return [
+        (m.group(1).strip(), m.group(2).strip(), m.group(3).strip())
+        for m in link_re.finditer(text)
+    ]
+
+
 def _ensure_open_tasks() -> str:
     """Scan MEMORY.md for PARTIAL/DEFERRED/ongoing entries that have no open task.
 
-    Creates open tasks directly (Python API, no LLM cost) for any work that
-    is tracked in memory but missing from the task list. Title comes from
-    the linked memory file's YAML frontmatter ``name`` (falls back to the
-    link text); colour is auto-classified from the description.
+    Creates open tasks via ``project_memory_task`` (stable-key + vector-similarity
+    dedup) so repeated sessions never produce duplicate tasks for the same work.
+    Title comes from the linked memory file's YAML frontmatter ``name`` key,
+    falling back to the link text.
 
     Opt-out via config ``task_auto_create_enabled`` (default True).
     """
@@ -165,15 +188,12 @@ def _ensure_open_tasks() -> str:
 
     try:
         from skill_hub.store import SkillStore
+        from skill_hub.claude_tasks import memory_stable_key
         import re
 
-        memory_index = Path.home() / ".claude" / "projects" / "-Users-ccancellieri-work-code" / "memory" / "MEMORY.md"
-        # Fall back to scanning memory dirs that might exist
-        if not memory_index.exists():
-            memory_dirs = list(Path.home().glob(".claude/projects/*/memory/MEMORY.md"))
-            if not memory_dirs:
-                return ""
-            memory_index = memory_dirs[0]
+        memory_index = _find_memory_index()
+        if memory_index is None:
+            return ""
 
         memory_dir = memory_index.parent
         text = memory_index.read_text(encoding="utf-8", errors="replace")
@@ -183,67 +203,52 @@ def _ensure_open_tasks() -> str:
             r"PARTIAL|DEFERRED|WIP|ongoing|in.progress|wave-\d+ files remain|not yet|remain",
             re.IGNORECASE,
         )
-        # Extract lines with links: - [title](file.md) — description
-        link_re = re.compile(
-            r"^[-*]\s+\[([^\]]+)\]\(([^)]+)\)\s*[—–-]+\s*(.+)$", re.MULTILINE)
 
-        candidates: list[tuple[str, str, str]] = []  # (link_text, link_target, description)
-        for m in link_re.finditer(text):
-            link_text = m.group(1).strip()
-            link_target = m.group(2).strip()
-            desc = m.group(3).strip()
-            if partial_pattern.search(desc):
-                candidates.append((link_text, link_target, desc))
+        candidates: list[tuple[str, str, str]] = [
+            (lt, tgt, desc)
+            for lt, tgt, desc in _scan_memory_links(text)
+            if partial_pattern.search(desc)
+        ]
 
         if not candidates:
             return ""
 
         store = SkillStore()
-        # Get all open task titles (lower-cased for fuzzy dedup)
-        open_rows = store.list_tasks(status="open")
-        open_titles_lower = {dict(r)["title"].lower() for r in open_rows}
-
         created: list[str] = []
-        for link_text, link_target, desc in candidates:
-            # Resolve the linked memory file and pull its frontmatter for a
-            # human title; fall back to the link text when frontmatter is
-            # missing (older memories) or unreadable.
-            mem_path = memory_dir / link_target
-            fm = _read_memory_frontmatter(mem_path)
-            title = (fm.get("name") or link_text).strip()
-            full_desc = (fm.get("description") or "").strip()
-            classify_text = f"{full_desc}\n{desc}"
+        try:
+            for link_text, link_target, desc in candidates:
+                mem_path = memory_dir / link_target
+                fm = _read_memory_frontmatter(mem_path)
+                title = (fm.get("name") or link_text).strip()
+                full_desc = (fm.get("description") or "").strip()
+                classify_text = f"{full_desc}\n{desc}"
 
-            # Skip if a task with a very similar title already exists (substring match)
-            title_lower = title.lower()
-            already_exists = any(
-                title_lower in existing or existing in title_lower
-                for existing in open_titles_lower
-            )
-            if already_exists:
-                continue
+                # Derive tags from description keywords
+                tags_raw = [
+                    w.lower()
+                    for w in re.findall(
+                        r"\b(geoid|dynastore|mcp-skill-hub|pyright|duckdb|iceberg|ogc|stac|airflow|fao)\b",
+                        classify_text, re.IGNORECASE,
+                    )
+                ]
+                tags = "src:memory," + ",".join(dict.fromkeys(tags_raw)) if tags_raw else "src:memory"
 
-            # Derive tags from description keywords
-            tags_raw = []
-            for word in re.findall(r"\b(geoid|dynastore|mcp-skill-hub|pyright|duckdb|iceberg|ogc|stac|airflow|fao)\b", classify_text, re.IGNORECASE):
-                tags_raw.append(word.lower())
-            tags = ",".join(dict.fromkeys(tags_raw))  # dedup, preserve order
+                color = _classify_color(classify_text)
 
-            color = _classify_color(classify_text)
+                # Stable key is derived from the canonical memory file path.
+                key = memory_stable_key(str(mem_path))
 
-            store.save_task(
-                title=title,
-                summary=f"[auto-created from memory index]\n{desc}",
-                vector=[],
-                context="",
-                tags=tags,
-                session_id="",
-                color=color,
-            )
-            open_titles_lower.add(title_lower)
-            created.append(title)
-
-        store.close()
+                result = store.project_memory_task(
+                    key=key,
+                    title=title,
+                    summary=f"[auto-created from memory index]\n{desc}",
+                    tags=tags,
+                    color=color,
+                )
+                if result["action"] == "created":
+                    created.append(title)
+        finally:
+            store.close()
 
         if not created:
             return ""
@@ -254,6 +259,62 @@ def _ensure_open_tasks() -> str:
     except Exception as exc:
         try:
             log(f"ensure_open_tasks error: {exc}")
+        except Exception:
+            pass
+        return ""
+
+
+def _close_shipped_memory_tasks() -> str:
+    """Close auto-created tasks whose MEMORY.md entry is now SHIPPED/DONE.
+
+    Scans MEMORY.md for entries whose description contains a completion
+    marker (SHIPPED / DONE / COMPLETE / VERIFIED / CLOSED) and closes any
+    open skill-hub task that was projected from that memory entry.
+
+    Returns an advisory string when tasks were closed, otherwise "".
+    Opt-out via config ``task_auto_create_enabled`` (default True).
+    """
+    try:
+        from skill_hub import config as _cfg
+        if _cfg.get("task_auto_create_enabled") is False:
+            return ""
+    except Exception:
+        pass
+
+    try:
+        from skill_hub.store import SkillStore
+        from skill_hub.claude_tasks import memory_stable_key, MEMORY_DONE_PATTERN
+
+        memory_index = _find_memory_index()
+        if memory_index is None:
+            return ""
+
+        memory_dir = memory_index.parent
+        text = memory_index.read_text(encoding="utf-8", errors="replace")
+
+        closed_titles: list[str] = []
+        store = SkillStore()
+        try:
+            for _link_text, link_target, desc in _scan_memory_links(text):
+                if not MEMORY_DONE_PATTERN.search(desc):
+                    continue
+                mem_path = memory_dir / link_target
+                key = memory_stable_key(str(mem_path))
+                result = store.project_memory_task(key=key, title="", close=True)
+                if result["action"] == "closed":
+                    closed_titles.append(_link_text)
+        finally:
+            store.close()
+
+        if not closed_titles:
+            return ""
+        names = "; ".join(f'"{t}"' for t in closed_titles[:3])
+        extra = f" (+{len(closed_titles)-3} more)" if len(closed_titles) > 3 else ""
+        return f"AUTO-CLOSED: {len(closed_titles)} task(s) — memory entries are done — {names}{extra}."
+
+    except Exception as exc:
+        try:
+            log(f"close_shipped_tasks error: {exc}")
         except Exception:
             pass
         return ""
@@ -601,6 +662,10 @@ def main():
     if tasks_msg:
         log(f"AUTO-TASKS  msg=\"{tasks_msg[:120]}\"")
 
+    shipped_msg = _close_shipped_memory_tasks()
+    if shipped_msg:
+        log(f"AUTO-CLOSED  msg=\"{shipped_msg[:120]}\"")
+
     # Heartbeat: update last_activity_at for the session's open task
     _update_task_activity(session_id)
 
@@ -646,6 +711,8 @@ def main():
         system_msg = drift_msg + "\n\n" + system_msg
     if tasks_msg:
         system_msg = tasks_msg + "\n\n" + system_msg
+    if shipped_msg:
+        system_msg = shipped_msg + "\n\n" + system_msg
     if teach_advisory:
         system_msg = teach_advisory + "\n\n" + system_msg
     if housekeeping_msg:
