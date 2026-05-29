@@ -23,8 +23,7 @@ hooks/
 ├── intercept-task-commands.sh   UserPromptSubmit: zero-token task interception
 ├── intercept_task_commands.py   ↳ cross-platform Python equivalent
 ├── session-end.sh               Stop: session memory + stats
-├── session_end.py               ↳ cross-platform Python equivalent
-└── session-logger.sh            Stop: passive tool usage logging
+└── session_end.py               ↳ cross-platform Python equivalent
 ```
 
 ## Dual skill index

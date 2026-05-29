@@ -97,8 +97,10 @@ _DEFAULT_VECTOR_INDEXES: dict[str, dict] = {
     "skills":              {"default_level": "L3", "half_life_days": 365.0},
     "user:identity":       {"default_level": "L4", "half_life_days": 3650.0},
     "user:preferences":    {"default_level": "L3", "half_life_days": 365.0},
-    "tasks:active":        {"default_level": "L1", "half_life_days": 14.0},
-    "tasks:retrospective": {"default_level": "L3", "half_life_days": 365.0},
+    # NB: tasks are vectorised directly into tasks.vector + tasks_vec_bin/f32
+    # (see _mirror_task_vec), not via a ``vectors`` namespace — so the former
+    # "tasks:active"/"tasks:retrospective" seed entries were never populated and
+    # have been dropped.
     "habits:tool-chains":  {"default_level": "L2", "half_life_days": 60.0},
     "habits:prompts":      {"default_level": "L2", "half_life_days": 60.0},
     "session:log":         {"default_level": "L1", "half_life_days": 3.0},
