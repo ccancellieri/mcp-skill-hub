@@ -2749,6 +2749,61 @@ def list_prompt_rewriters() -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def team_plan(task_kind: str, effort: str = "xhigh", estimate: bool = False) -> str:
+    """Return a specialized team orchestration plan for the given task kind.
+
+    ``task_kind`` must be one of: review, arch, issues, implement.
+    ``effort`` controls the model floor and verification loops:
+    low | medium | high | xhigh (default).
+    ``estimate`` appends a heuristic cost projection when True.
+    """
+    from .team import policy
+
+    try:
+        plan = policy.resolve_team_plan(task_kind, effort)
+    except ValueError as exc:
+        return str(exc)
+
+    lines: list[str] = [
+        f"task_kind : {plan['task_kind']}",
+        f"effort    : {plan['effort']}",
+        f"substrate : {plan['substrate']}",
+        f"loops     : {plan['loops']}",
+        "",
+        "roster:",
+    ]
+    for entry in plan["roles"]:
+        role_label = entry["role"]
+        if "lens" in entry:
+            role_label = f"{entry['role']}({entry['lens']})"
+        lines.append(
+            f"  {role_label:<36} -> {entry['agent']:<32}  [{entry['cc_model']} / {entry['tier']}]"
+        )
+
+    if estimate:
+        try:
+            est = policy.estimate_cost(task_kind, effort)
+        except ValueError as exc:
+            return "\n".join(lines) + f"\n\nestimate error: {exc}"
+
+        lines += [
+            "",
+            "estimate (heuristic ±50%):",
+            f"  agent_calls       : {est['agent_calls']}",
+            f"  token_budget_low  : {est['token_budget_low']:,}",
+            f"  token_budget_high : {est['token_budget_high']:,}",
+            f"  rough_minutes_low : {est['rough_minutes_low']}",
+            f"  rough_minutes_high: {est['rough_minutes_high']}",
+            "  assumptions:",
+        ]
+        for assumption in est["assumptions"]:
+            lines.append(f"    - {assumption}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
 def auto_curate_plugins(stale_days: int = 14) -> str:
     """Suggest plugins to disable — currently enabled but unused in the last N days.
 

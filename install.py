@@ -357,6 +357,31 @@ def step_install_commands(step: int, total: int):
         print("  No .md files found in commands/")
 
 
+def step_install_agents(step: int, total: int):
+    """Copy agents/*.md to ~/.claude/agents/ (idempotent).
+
+    These specialized role definitions are discovered as both Agent subagents
+    and agent-team teammates (a teammate honors a definition's model + tools).
+    """
+    print(f"[{step}/{total}] Installing agent definitions...")
+    src_dir = SCRIPT_DIR / "agents"
+    if not src_dir.exists():
+        print("  No agents/ directory found — skipped.")
+        return
+    dst_dir = HOME / ".claude" / "agents"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    installed = 0
+    for src in sorted(src_dir.glob("*.md")):
+        dst = dst_dir / src.name
+        shutil.copy(src, dst)
+        print(f"  + {src.name}")
+        installed += 1
+    if installed:
+        print(f"  Installed {installed} agent(s) to {dst_dir}")
+    else:
+        print("  No .md files found in agents/")
+
+
 def step_seed_allowlist(step: int, total: int):
     """Copy examples/skill-hub-allow.yml to ~/.claude/ if not present."""
     print(f"[{step}/{total}] Seeding global allow-list...")
@@ -841,6 +866,7 @@ def main():
 
     # Core steps
     total += 1  # +1 for allow-list seeding
+    total += 1  # +1 for agent-definition install
     step = 1
     step_install_package(step, total); step += 1
     interactive = mode == "interactive"
@@ -850,6 +876,7 @@ def main():
     seed_auto_proceed_defaults()
     step_install_hooks(step, total); step += 1
     step_install_commands(step, total); step += 1
+    step_install_agents(step, total); step += 1
 
     # Optional steps
     if do_searxng:

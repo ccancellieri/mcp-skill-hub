@@ -266,6 +266,48 @@ close_task(47, remove_worktree=True)           # also tears down the worktree
 
 ---
 
+## /team — specialized orchestration
+
+Skill Hub is the **intelligence layer** on top of Claude Code's native agent primitives — subagents, agent teams, and the Workflow tool. It does not re-implement orchestration; it supplies specialized role definitions, a model·effort policy, and an upfront prompt-refactor step, then delegates execution entirely to the native substrate. The `/team` command is the single entry point for all of this.
+
+Before spawning a single agent, `/team` calls `improve_prompt` to sharpen the working brief. It then calls `team_plan` to resolve the full roster: which agent types run, at what model tier, in what order, with how many verification loops. The roster is deterministic given `(kind, effort)` — pass `--estimate` to see it without executing anything.
+
+| `/team <kind>` | Task shape | Substrate | Notes |
+|---|---|---|---|
+| `review` | adversarial — 4 lens reviewers challenge each other | agent team | requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`; falls back to parallel subagents |
+| `arch` | adversarial — competing hypotheses + devil's-advocate debate | agent team | same fallback |
+| `issues` | deterministic triage pipeline | Workflow tool | fetch → classify → draft; resumable; cheap |
+| `implement` | deterministic build pipeline | Workflow tool | design → build → verify → clean → PR |
+
+The `--effort` flag sets both the model floor and the number of verification loops (default `xhigh`):
+
+| Effort | Model floor | Verification loops |
+|---|---|---|
+| `low` | haiku / sonnet | 0 |
+| `medium` | sonnet | 1 |
+| `high` | sonnet / opus | 2 |
+| `xhigh` (default) | opus | 3 |
+
+Accuracy-critical roles (`team-arch-analyst`, `team-reviewer`, `team-human-voice-writer`) reach Opus at `xhigh`. Mechanical roles (`team-code-implementer`, `team-mechanical-refactorer`, `team-github-operator`) cap at sonnet or haiku — they do not need Opus-level judgement.
+
+The six agent types and their assignments:
+
+- **team-arch-analyst** (opus) — read-only deep architecture and code analysis; cites `file:line`; never edits
+- **team-reviewer** (opus at xhigh) — adversarial review; refute-by-default; severity ratings
+- **team-code-implementer** (sonnet) — implements a clear spec following existing patterns; no scope creep
+- **team-mechanical-refactorer** (sonnet) — behavior-preserving rename/simplify; smallest diff
+- **team-human-voice-writer** (opus) — first-person engineer prose; no AI attribution, no emoji, no "recommendations" tables
+- **team-github-operator** (haiku) — `gh` inspect/fetch/triage/post; posts only pre-written prose, never authors it
+
+```
+/team review 142                                  # adversarial 4-lens review of PR 142
+/team arch src/skill_hub/router                   # architecture analysis with devil's advocate
+/team issues mcp-skill-hub label:bug --estimate   # preview triage plan + cost, no execution
+/team implement 49 --effort high                  # build pipeline, high effort (2 verify loops)
+```
+
+---
+
 ## 🔧 Requirements
 
 - **Python 3.10+**, **Ollama**, **~5 GB disk** for models (more for larger reasoning models)
