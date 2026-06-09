@@ -7,7 +7,11 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from skill_hub.fanout.directive import DispatchSpec, render_directive
+from skill_hub.fanout.directive import (
+    DEFAULT_SUBAGENT_TYPE,
+    DispatchSpec,
+    render_directive,
+)
 
 
 def test_render_directive_empty():
@@ -30,6 +34,25 @@ def test_render_directive_shapes_agent_calls():
     assert "task #1" in out and "task #2" in out
     # Quoted prompt content should be JSON-escaped (no naked unescaped quote).
     assert '"quotes \\" ok"' in out
+
+
+def test_render_directive_uses_specialized_implementer_by_default():
+    """Fan-out converged on the /team roles: no bare general-purpose agent."""
+    spec = DispatchSpec(description="d", prompt="p",
+                        worktree_path="/tmp/x", branch="cc/x", task_id=1)
+    out = render_directive([spec], "G")
+    assert DEFAULT_SUBAGENT_TYPE == "team-code-implementer"
+    assert 'subagent_type: "team-code-implementer"' in out
+    assert "general-purpose" not in out
+    # Points heavier issues at the full native pipeline.
+    assert "/team implement" in out
+
+
+def test_render_directive_subagent_type_override():
+    spec = DispatchSpec(description="d", prompt="p",
+                        worktree_path="/tmp/x", branch="cc/x", task_id=1)
+    out = render_directive([spec], "G", subagent_type="team-arch-analyst")
+    assert 'subagent_type: "team-arch-analyst"' in out
 
 
 def test_render_directive_includes_rollup_pointer():

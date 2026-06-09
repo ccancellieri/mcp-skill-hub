@@ -86,6 +86,33 @@ def _get_tier_to_model_id() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Plan-step kind → tier (single source of truth)
+#
+# Migrated here from plan_executor.validator so the team policy layer owns ALL
+# model-per-work routing. The plan validator imports these back, keeping one
+# authoritative table instead of two drifting copies.
+# ---------------------------------------------------------------------------
+KIND_TIER_MAP: dict[str, str] = {
+    "architecture": "tier_smart",
+    "integration":  "tier_smart",
+    "boilerplate":  "tier_mid",
+    "tests":        "tier_mid",
+    "docs":         "tier_mid",
+    "summarize":    "tier_mid",
+    "commit":       "tier_mid",
+    "review":       "tier_smart",
+    "plan":         "tier_planner",
+}
+
+VALID_KINDS: frozenset[str] = frozenset(KIND_TIER_MAP)
+
+
+def tier_for_kind(kind: str, default: str = "tier_mid") -> str:
+    """Return the model-tier floor for a plan-step kind (default tier_mid)."""
+    return KIND_TIER_MAP.get(kind, default)
+
+
+# ---------------------------------------------------------------------------
 # Verification loops per effort
 # ---------------------------------------------------------------------------
 _LOOPS: dict[str, int] = {

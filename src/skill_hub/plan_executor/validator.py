@@ -11,26 +11,10 @@ from typing import Any
 
 import yaml
 
-
-VALID_KINDS: frozenset[str] = frozenset({
-    "architecture", "integration", "boilerplate", "tests", "docs",
-    # Added for tiered in-session routing: summarize/commit → Haiku (tier_mid);
-    # review → Sonnet (tier_smart); plan → Opus (tier_planner, falls back to
-    # tier_smart when planner model not configured — see runner.py).
-    "summarize", "commit", "review", "plan",
-})
-
-TIER_MAP: dict[str, str] = {
-    "architecture": "tier_smart",
-    "integration":  "tier_smart",
-    "boilerplate":  "tier_mid",
-    "tests":        "tier_mid",
-    "docs":         "tier_mid",
-    "summarize":    "tier_mid",
-    "commit":       "tier_mid",
-    "review":       "tier_smart",
-    "plan":         "tier_planner",
-}
+# Kind→tier routing is owned by the team policy layer (single source of truth).
+# The validator only needs the kind enum; TIER_MAP is re-exported from the
+# package __init__ straight off the policy layer.
+from ..team.policy import VALID_KINDS
 
 VALID_TIERS: frozenset[str] = frozenset(
     {"tier_cheap", "tier_mid", "tier_smart", "tier_planner"}

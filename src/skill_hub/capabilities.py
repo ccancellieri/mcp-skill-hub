@@ -246,7 +246,7 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("release_task", "Release the claim on a task",
              hard=(BACKEND_DB,)),
-    # --- Fanout / swarm ---
+    # --- Fanout ---
     ToolSpec("fanout_issues", "Fan out N GitHub issues into worktree tasks",
              hard=(BACKEND_DB, BACKEND_GIT, BACKEND_GH),
              soft=(BACKEND_CLAUDE_CLI,)),
@@ -256,10 +256,6 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("fanout_cleanup", "Remove worktrees for a fanout group",
              hard=(BACKEND_DB, BACKEND_GIT)),
-    ToolSpec("swarm_launch", "Launch N Claude subprocesses on claims",
-             hard=(BACKEND_DB, BACKEND_CLAUDE_CLI)),
-    ToolSpec("swarm_reap", "Poll swarm subprocess handles",
-             hard=(BACKEND_DB,)),
     # --- Worktree / policy ---
     ToolSpec("worktree_preflight", "Check worktree/branch/PR collision",
              hard=(BACKEND_GIT,), soft=(BACKEND_GH,)),
@@ -275,15 +271,18 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("federation_view", "Read tasks from a remote skill-hub DB",
              hard=(BACKEND_DB,)),
-    # --- Planning ---
+    # --- Planning / team orchestration ---
     ToolSpec("validate_plan", "Static validation of a plan YAML",
              hard=()),
-    ToolSpec("author_plan", "Draft a plan from a goal",
-             hard=(BACKEND_REASON_LLM,)),
-    ToolSpec("run_plan", "Run/dry-run a plan YAML",
-             hard=(), soft=(BACKEND_CLAUDE_CLI,)),
-    ToolSpec("execute_plan_step", "Execute one plan step",
-             hard=(BACKEND_REASON_LLM,)),
+    ToolSpec("team_plan", "Resolve a specialized /team roster + cost estimate",
+             hard=()),
+    # --- Events / issue sync ---
+    ToolSpec("get_events", "Query the append-only event log",
+             hard=(BACKEND_DB,)),
+    ToolSpec("events_prune", "Prune old rows from the event log",
+             hard=(BACKEND_DB,)),
+    ToolSpec("issue_sync", "Sync skill-hub tasks with GitHub issues",
+             hard=(BACKEND_DB,), soft=(BACKEND_GH,)),
     # --- Profiles / plugins ---
     ToolSpec("list_profiles", "List session profiles",
              hard=(BACKEND_DB,)),
@@ -352,11 +351,6 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("enable_plugin_task", "Enable a plugin scheduled task",
              hard=()),
     ToolSpec("disable_plugin_task", "Disable a plugin scheduled task",
-             hard=()),
-    # --- Autopilot ---
-    ToolSpec("autopilot_run", "Run one autopilot iteration",
-             hard=(BACKEND_DB,), soft=(BACKEND_CLAUDE_CLI,)),
-    ToolSpec("autopilot_stop", "Stop the autopilot loop",
              hard=()),
 )
 

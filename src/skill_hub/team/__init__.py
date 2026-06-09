@@ -6,6 +6,21 @@ Public API:
     policy.estimate_cost(task_kind, effort)
 """
 from . import policy
-from .policy import VALID_ROLES, estimate_cost, resolve_team_plan
+from .policy import (
+    KIND_TIER_MAP,
+    VALID_KINDS,
+    VALID_ROLES,
+    estimate_cost,
+    resolve_team_plan,
+    tier_for_kind,
+)
 
-__all__ = ["VALID_ROLES", "estimate_cost", "policy", "resolve_team_plan"]
+__all__ = [
+    "KIND_TIER_MAP",
+    "VALID_KINDS",
+    "VALID_ROLES",
+    "estimate_cost",
+    "policy",
+    "resolve_team_plan",
+    "tier_for_kind",
+]
