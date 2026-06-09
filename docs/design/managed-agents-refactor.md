@@ -1,7 +1,9 @@
 # Design — Managed-Agents architectural refactor
 
-Status: **design phase**.
+Status: **mostly shipped; W5 retired.** W1 (event log), W3 (tool envelope), and W4 (credential vault) landed. **W5 (the sandbox) shipped under #31, then was removed in PR #52** along with the plan-execution stepper it was designed to guard — see the note below. W2 (stateless recovery) is still open.
 Tracking issue: see milestone `M2: Managed Agents`.
+
+> **W5 retired (PR #52, 2026-06-09).** The sandbox in W5 existed to isolate the in-process plan-execution tools `run_plan` / `execute_plan_step` / `author_plan`. Those tools have been removed: skill-hub no longer runs its own plan-execution loop. Plan *authoring and execution* are now handled by Claude Code's native Workflow tool and the `/team implement` pipeline, each of which already runs in its own harness-managed worktree — so an in-process sandbox has nothing left to wrap. The surviving plan tool is `validate_plan` (lint-only; no execution, no sandbox needed). The W5 design below is retained as historical record; references to `run_plan` / `execute_plan_step` / `author_plan` describe tools that no longer exist.
 
 ## Problem statement
 
@@ -110,7 +112,7 @@ Backwards compatibility: existing MCP responses are derived from `ToolResult.std
 - `vault.get(ref) -> str` reads from OS keyring.
 - One-shot migration: on first start after upgrade, if `voyage_api_key` is a literal in config, prompt the user (or via env flag) to move into keyring, then strip from config.
 
-### W5 — Sandbox interface
+### W5 — Sandbox interface *(retired in PR #52 — see the note at the top; kept for historical record)*
 
 Optional opt-in via `policy.yml`:
 
@@ -143,7 +145,7 @@ Every step is reversible by toggling the relevant config knob.
 
 1. **Event log retention.** Forever? Per-session prune after N days? Coalesce into snapshots?
 2. **Replay cost.** A long session's event log could be expensive to replay. Snapshot the projections periodically and replay only the tail?
-3. **Cross-session linking.** Should a `swarm_launch` parent session link to the child sessions via event references?
+3. **Cross-session linking.** Should a parent session link to its child sessions via event references? *(Originally framed around `swarm_launch`, retired in PR #52; the question now applies to native subagent / Workflow dispatch instead.)*
 4. **Keyring on headless Linux.** macOS keyring is OS-managed. Linux needs `secret-tool` / `pass`. Should the vault fall back to an encrypted file when no keyring service is available?
 5. **Sandbox & MCP stdio.** stdio MCP servers expect stdin/stdout. A subprocess sandbox makes that nested. Does the sandbox layer wrap the MCP transport or only plan-execution tools?
 
@@ -171,7 +173,7 @@ Status: **decided.** Unblocks W1.
 
 Status: **decided.** Unblocks W4.
 
-### Q5 — Sandbox scope: **plan-execution tools only; never the MCP transport**
+### Q5 — Sandbox scope: **plan-execution tools only; never the MCP transport** *(moot — W5 and the plan-execution tools were retired in PR #52)*
 
 - W5 wraps **only** the three plan-execution tools: `run_plan`, `execute_plan_step`, `author_plan`. Everything else (search, embeddings, task CRUD, profiles, dashboard, etc.) keeps current in-process behavior.
 - The MCP stdio transport is **out of scope** for W5. Nesting a subprocess sandbox inside an stdio MCP server breaks the stdio contract; sub-MCP-servers stay first-class peers, not sandboxed children.
@@ -186,7 +188,7 @@ W2 will land with naive full-replay. If a session's replay exceeds 500 ms in pra
 
 ### Q3 — Cross-session linking: **deferred until W1 telemetry**
 
-Tentative direction: record `swarm_launch` as `tool_invoke` with `payload.child_session_ids: [...]`. Final answer waits until W1 events accumulate from real swarm-lite runs (see M4 #20).
+Tentative direction: record a dispatch as `tool_invoke` with `payload.child_session_ids: [...]`. Final answer waits until W1 events accumulate from real runs. *(Originally scoped to `swarm_launch` / swarm-lite #20, retired in PR #52; reframe around native subagent / Workflow dispatch when revisited.)*
 
 ## Decision gates before filing sub-issues
 
@@ -204,7 +206,7 @@ Sub-issues to file (one per workstream, all under milestone `M2: Managed Agents`
 - **W2** — Stateless recovery: `wake_session(session_id)` MCP tool + cache-rebuild discipline.
 - **W3** — Uniform tool envelope: `ToolResult` dataclass + decorator + wire-layer adapter.
 - **W4** — Credential vault: `python-keyring` integration + 3-tier backend selection + one-shot config→vault migration.
-- **W5** — Sandbox interface: `provision()` + subprocess backend, scoped to plan-execution tools.
+- **W5** — Sandbox interface: `provision()` + subprocess backend, scoped to plan-execution tools. *(Shipped under #31, then retired in PR #52 with the plan-execution tools — see the note at the top.)*
 
 ## References
 

@@ -63,7 +63,7 @@ Selectively apply patterns from Anthropic's Managed Agents post — durable even
 - [ ] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
 - [x] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
 - [x] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
-- [x] #31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools
+- [x] ~~#31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools~~ — **shipped, then removed (PR #52).** It guarded the in-process plan-execution stepper (`author_plan` / `run_plan` / `execute_plan_step`), which has itself been retired in favour of Claude Code's native Workflow tool and `/team` subagents — those run in their own harness-managed worktrees, so an in-process sandbox no longer has anything to wrap. `validate_plan` (lint-only) is the surviving plan tool.
 
 ### M3 — Worktree + multi-repo policy enforcement
 
@@ -77,14 +77,16 @@ Move maintainer feedback rules from memory into callable skill-hub primitives.
 
 ### M4 — Absorb ruflo (claude-flow) features natively, zero runtime dep
 
-Reimplement the ruflo capabilities the maintainer values as native skill-hub primitives. After M4 ships, ruflo can be uninstalled. See [comparison-ruflo.md](comparison-ruflo.md).
+Reimplement the ruflo capabilities the maintainer values as native skill-hub primitives, so ruflo can be uninstalled. All six issues shipped (2026-05-17); the orchestration pieces were then superseded — see the note below and [comparison-ruflo.md](comparison-ruflo.md).
 
-- [ ] #20 — swarm-lite: launch N Claude subprocesses, each on a distinct worktree+claim
-- [ ] #21 — autopilot-lite: pick-next-stealable loop
-- [ ] #22 — federation-lite: WAL-mode + node_id for multi-host shared state
-- [ ] #23 — importer: ruflo skills → skill-hub native skill manifests
-- [ ] #24 — importer: ruflo agents → Claude Code subagent definitions
-- [ ] #25 — doc: flip `comparison-ruflo.md` to absorption-complete framing
+- [x] ~~#20 — swarm-lite: launch N Claude subprocesses, each on a distinct worktree+claim~~ — shipped, then **retired (PR #52)**; superseded by native subagents + the Workflow tool, orchestrated by `/team`.
+- [x] ~~#21 — autopilot-lite: pick-next-stealable loop~~ — shipped, then **retired (PR #52)**; superseded by native `/loop` + the Workflow tool.
+- [x] #22 — federation-lite: WAL-mode + node_id for multi-host shared state (`federation_view` — kept)
+- [x] #23 — importer: ruflo skills → skill-hub native skill manifests (`scripts/import_ruflo_skills.py` — kept)
+- [x] #24 — importer: ruflo agents → Claude Code subagent definitions (`scripts/import_ruflo_agents.py` — kept)
+- [x] #25 — doc: reframe `comparison-ruflo.md` — absorbed from ruflo, then superseded by the native `/team` layer
+
+> **Convergence note (PR #52).** The home-grown in-process engines (swarm, autopilot, the `author_plan`/`run_plan`/`execute_plan_step` stepper, and the W5 sandbox) were retired. skill-hub no longer runs its own agent loop: it is the *intelligence layer* — role definitions, model·effort policy (`team_plan`), and prompt refactoring (`improve_prompt`) — over Claude Code's native subagents, agent teams, and Workflow tool, driven by `/team`. The ruflo importers and federation-lite remain.
 
 ### Other
 

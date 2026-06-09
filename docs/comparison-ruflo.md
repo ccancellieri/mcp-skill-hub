@@ -1,13 +1,15 @@
 # Comparison: mcp-skill-hub vs ruflo (claude-flow)
 
-<!-- M4-FLIP: Framing pending. This document still describes the parity matrix as of today (2026-05-17). Once issues #20-#24 (M4-1..M4-5) land, rewrite to "absorption complete": skill-hub provides swarm-lite, autopilot-lite, federation-lite, skill import, and agent import natively; ruflo is reference material only. Keep the parity matrix; replace "planned" rows with "shipped in vX.Y". Document the uninstall path as the default rather than a future migration. -->
-
 ## Why this document exists
 
 `ruflo` (npm: `@claude-flow/cli`) and `mcp-skill-hub` overlap in roughly 20% of their surfaces — task tracking, semantic search, session persistence, hooks. The rest is disjoint. This page documents the comparison so a reader can decide whether to install both, neither, or just one.
 
-<!-- M4-FLIP: rewrite this paragraph when issues #20-#24 are merged. New framing: "skill-hub now provides swarm-lite, autopilot-lite, federation-lite, and the ruflo skill/agent importers natively; ruflo is no longer needed alongside." Drop the "roadmap" framing — point at shipped versions instead. -->
-**Project position**: skill-hub is the consolidated tool. The roadmap (milestone **M4**: `m4-ruflo-absorb`) reimplements the ruflo features the maintainer values as native skill-hub primitives. After M4 ships, ruflo is no longer needed alongside.
+**Project position**: skill-hub is the consolidated tool. It went through two moves on the overlapping surface:
+
+1. **Absorbed from ruflo (milestone M4).** The ruflo features the maintainer valued — swarm-lite, autopilot-lite, federation-lite, and the skill/agent importers — were reimplemented as native skill-hub primitives, with zero runtime dependency on ruflo. After M4, ruflo could be uninstalled.
+2. **Then superseded by the native `/team` layer (PR #52).** Once Claude Code shipped first-class **subagents** (`Agent` with `isolation: "worktree"`), **agent teams**, and the **Workflow tool**, skill-hub's home-grown in-process orchestration engines (swarm, autopilot, the `author_plan`/`run_plan`/`execute_plan_step` stepper, and the W5 sandbox) became redundant and were **retired**. skill-hub no longer runs its own agent loop. It is now the *intelligence layer* over those native primitives: role definitions, a model·effort policy (`team_plan`), and upfront prompt refactoring (`improve_prompt`), all driven by the `/team` command.
+
+What remains from the ruflo absorption: **federation-lite** (`federation_view`) and the **importers** (`scripts/import_ruflo_{skills,agents}.py`).
 
 **Hard constraint**: skill-hub never runtime-depends on ruflo. Read the [no-ruflo-dep gate](#no-ruflo-runtime-dependency) below.
 
@@ -17,9 +19,9 @@
 
 |  | **mcp-skill-hub** | **ruflo (claude-flow)** |
 |---|---|---|
-| Core purpose | Make a single interactive Claude Code session faster and smarter | Orchestrate many Claude/LLM agents at once |
-| Scale | One session (you ↔ Claude) | Swarm of N agents working in parallel |
-| Mode | Passive infrastructure | Active coordinator |
+| Core purpose | Make a single interactive Claude Code session faster and smarter; orchestrate Claude Code's *native* agents via `/team` when parallel work is needed | Orchestrate many Claude/LLM agents at once with its own engine |
+| Scale | One session (you ↔ Claude), fanning out to native subagents / agent teams on demand | Swarm of N agents working in parallel |
+| Mode | Passive infrastructure + policy layer over native orchestration | Active coordinator with its own runtime |
 | Surface area | ~40 MCP tools, focused | 300+ MCP tools, broad |
 | Required deps | Python + FastMCP + optional Ollama | Node 20+, optional API keys |
 | Local-LLM-first | Yes — Ollama is a first-class provider | No — provider, but one of many |
@@ -27,12 +29,11 @@
 
 ---
 
-<!-- M4-FLIP: rewrite the four "planned M4-*" rows below when issues #20-#24 are merged. Replace each "None today; **planned M4-X (...)**" cell with the shipped tool name and entrypoint. Update the "Verdict" column from "Closing in M4" to "Native in skill-hub vX.Y". Keep the table structure intact. -->
 ## Side-by-side on overlapping features
 
 | Feature | skill-hub | ruflo | Verdict |
 |---|---|---|---|
-| **Task save/reopen** | `save_task` / `list_tasks` — tied to *conversation* | `claims_claim` / `claims_board` — tied to *work item across agents* | Skill-hub for solo bookmarks; M1-4 adds claims-semantics natively |
+| **Task save/reopen** | `save_task` / `list_tasks` — tied to *conversation* | `claims_claim` / `claims_board` — tied to *work item across agents* | Skill-hub for solo bookmarks; claims semantics absorbed into the task table |
 | **Session restore** | `save_task` resumes context | `session_save` / `session_restore` resumes any agent | Both fine; skill-hub simpler |
 | **Semantic search** | `search_skills`, `search_context` — over skills + memory | `memory_search_unified`, `embeddings_search` — over agent DB | Skill-hub faster (indexed locally); both LLM-optional |
 | **Teaching rules** | `teach()` / `list_teachings` / `forget_teaching` — Claude-only | No equivalent | Skill-hub only |
@@ -40,33 +41,32 @@
 | **Token-saving** | `token_stats`, `optimize_context`, hook interception | Indirect via `agentdb_consolidate` | Skill-hub only |
 | **Local LLM (Ollama)** | First-class: `list_models`, `pull_model`, dashboard | One provider among many | Skill-hub first-class |
 | **Dashboard** | `/control` FastAPI suite | No native dashboard | Skill-hub only |
-| **Parallel agents** | None today; **planned M4-1 (swarm-lite)** | `agent_spawn` × N, `swarm_init`, `hive-mind_*` | Closing in M4 |
-| **Worktree isolation** | None today; **planned M1-6 (worktree-aware tasks) + M3-1 (preflight)** | `isolation: worktree` on `Agent` calls | Closing in M1 + M3 |
-| **Headless autopilot** | None today; **planned M4-2 (autopilot-lite)** | `autopilot_enable` — work overnight | Closing in M4 |
-| **Cross-machine federation** | None today; **planned M4-3 (federation-lite via WAL+sync)** | `ruflo federation init` | Closing in M4 |
-| **Witness / fix manifest** | None today; **planned M1-5 (witness-log)** | `witness` skill (ADR-103) | Closing in M1 |
+| **Parallel agents** | **Native** — `/team` orchestrates Claude Code subagents (`Agent` with `isolation: "worktree"`), agent teams, and the Workflow tool, with a model·effort policy via `team_plan`. (Briefly shipped as in-process `swarm_launch`; retired in PR #52.) | `agent_spawn` × N, `swarm_init`, `hive-mind_*` | Native via `/team`; skill-hub adds the role + model·effort policy on top |
+| **Worktree isolation** | **Native** — `isolation: "worktree"` on `Agent` calls + `worktree_preflight` collision check | `isolation: worktree` on `Agent` calls | Parity; skill-hub adds the preflight |
+| **Headless autopilot** | **Native** — `/loop` + the Workflow tool for unattended runs. (Briefly shipped as in-process `autopilot_run`; retired in PR #52.) | `autopilot_enable` — work overnight | Native via `/loop` + Workflow |
+| **Cross-machine federation** | **Native (thin)** — `federation_view` ATTACHes a peer SQLite DB read-only (WAL + `node_id`) | `ruflo federation init` | Skill-hub keeps a thin WAL+sync layer, not a protocol |
+| **Witness / fix manifest** | **Native** — `record_witness` / `list_witness` append-only fix manifest per repo | `witness` skill (ADR-103) | Parity |
 | **Performance / neural training** | None | `performance_*`, `neural_train`, `daa_*` | Out of scope for skill-hub |
 
 ---
 
 ## Where they actively conflict
 
-<!-- M4-FLIP: rewrite these bullets when issues #20-#24 are merged. The importers (M4-4, M4-5) and claims semantics (M1-4) will have shipped; drop the "planned" qualifier and reference the actual command names. -->
-- **Memory store**: running both means two indexes drifting apart. Pick skill-hub as source of truth. If a user has ruflo installed today, importers M4-4 (skills) and M4-5 (agents) move the content into skill-hub once, after which ruflo can be uninstalled.
-- **Task tracking**: `list_tasks` vs `claims_board` diverge. M1-4 absorbs claims semantics into skill-hub's task table.
+- **Memory store**: running both means two indexes drifting apart. Pick skill-hub as source of truth. If a user has ruflo installed, the importers (`scripts/import_ruflo_skills.py`, `scripts/import_ruflo_agents.py`) move the content into skill-hub once, after which ruflo can be uninstalled.
+- **Task tracking**: `list_tasks` vs `claims_board` diverge. skill-hub's task table is the single source of truth; the claims semantics live there.
 
 ---
 
-## Why skill-hub absorbs rather than bridges
+## Why skill-hub absorbed rather than bridged
 
 A bridge means skill-hub runtime-depends on ruflo. That couples two release cycles, adds Node-on-Python install pain, and gives users no clean uninstall path. Absorbing means:
 
-1. The ruflo capability becomes a native skill-hub primitive (subprocess.Popen for swarm, SQLite WAL for federation, etc.).
+1. The ruflo capability becomes a native skill-hub primitive (SQLite WAL for federation, importer scripts for skills/agents).
 2. The user runs the importer once during migration.
 3. The user uninstalls `@claude-flow/cli`.
 4. Nothing in skill-hub still references ruflo.
 
-This pattern is documented in milestone M4 (`m4-ruflo-absorb` label).
+**Post-script (PR #52).** The orchestration half of the absorption — swarm-lite and autopilot-lite, which had been reimplemented as in-process engines — was then retired outright. Claude Code's native subagents, agent teams, and Workflow tool do the orchestration; skill-hub keeps only the policy and intelligence layer (`/team`, `team_plan`, `improve_prompt`) on top of them. Running your own agent loop inside an MCP server is strictly worse than letting the harness do it — fewer moving parts, no subprocess bookkeeping, native worktree isolation. Federation-lite and the importers, which are not orchestration, were kept.
 
 ---
 
@@ -85,22 +85,21 @@ The only place ruflo is allowed to appear is inside one-shot importer scripts un
 
 ---
 
-<!-- M4-FLIP: when issues #20-#24 are merged, change this heading from "Migration path (after M4 ships)" to "Migration path" (or "Uninstall path"), and verify the commands in the snippet below match the actually-shipped entrypoints (skill_hub import-ruflo-skills / import-ruflo-agents, swarm_launch, etc.). -->
-## Migration path (after M4 ships)
+## Migration path (ruflo → skill-hub)
 
 ```bash
-# 1. Confirm skill-hub has M4 features
+# 1. Install / update skill-hub
 pip install -U mcp-skill-hub
 skill_hub --version
 
 # 2. Run the importers (read-only against your ruflo install)
-skill_hub import-ruflo-skills        # → ~/.skill_hub/skills/imported_ruflo/
-skill_hub import-ruflo-agents        # → ~/.skill_hub/agents/
+python scripts/import_ruflo_skills.py        # → ~/.skill_hub/skills/imported_ruflo/
+python scripts/import_ruflo_agents.py        # → ~/.skill_hub/agents/
 
 # 3. Smoke-test in a Claude Code session
-#    - The ruflo-style swarm: `swarm_launch(...)` via skill-hub
+#    - Parallel work: `/team implement <issue>` (orchestrates native subagents)
 #    - An imported agent: Agent({ subagent_type: "ruflo-core:coder" })
-#    - Claims board: `claim_task` / `list_tasks --claimed`
+#    - Shared state across machines: `federation_view(remote_db_path=...)`
 
 # 4. Uninstall ruflo
 npm uninstall -g @claude-flow/cli
@@ -109,11 +108,10 @@ tar -czf ~/.claude-flow-archive.tar.gz ~/.claude-flow/ && rm -rf ~/.claude-flow/
 
 ---
 
-<!-- M4-FLIP: this section stays after the flip — these are the genuinely out-of-scope features. Re-check the parentheticals reference shipped M4 features by their final names instead of "M4-3 federation". -->
 ## When you might still want ruflo
 
-- Cross-installation federation with strong identity / cryptographic signing (skill-hub's M4-3 federation is intentionally a thin WAL+sync layer, not a protocol).
+- Cross-installation federation with strong identity / cryptographic signing (skill-hub's `federation_view` is intentionally a thin WAL+sync layer, not a protocol).
 - Neural training / Q-Learning routing / multi-armed bandit at the swarm tier (skill-hub keeps the bandit at single-session model-routing only).
 - Plugin marketplace with IPFS distribution (skill-hub's `suggest_plugins` is local-first).
 
-If those aren't on your list, M4 absorbs everything you'll use.
+If those aren't on your list, skill-hub plus Claude Code's native orchestration covers everything you'll use.
