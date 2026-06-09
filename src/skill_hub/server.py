@@ -1224,80 +1224,6 @@ def federation_view(remote_db_path: str, alias: str = "remote") -> str:
     )
 
 
-# ───────────────────────── Swarm-lite (parallel claim dispatch) ──────────────
-
-@mcp.tool()
-@requires_capability("none")
-def swarm_launch(
-    claims: list[dict],
-    group_id: str = "",
-    claude_binary: str = "",
-) -> str:
-    """Spawn one `claude` subprocess per claim, each cwd'd to its worktree.
-
-    Provides the "swarm" capability without depending on claude-flow/ruflo.
-    Each claim dict must carry:
-
-    * ``claim_id``       — stable id from the claims board (m1-#9)
-    * ``worktree_path``  — existing worktree directory (m1-#6)
-    * ``task_summary``   — optional human description used in the prompt
-    * ``prompt``         — optional override of the default prompt
-
-    Returns a multi-line string with one row per spawned subprocess
-    (claim_id, pid, log path) plus the assigned ``group_id``. Use
-    ``swarm_reap`` to poll for completion and collect exit codes.
-    """
-    from .swarm import swarm_launch as _launch, SwarmError
-
-    log_tool("swarm_launch", count=len(claims or []), group_id=group_id or None)
-    try:
-        handles = _launch(
-            claims,
-            group_id=group_id or None,
-            claude_binary=(claude_binary or None),
-        )
-    except SwarmError as exc:
-        return f"swarm_launch failed: {exc}"
-
-    gid = Path(handles[0].log_path).parent.name if handles else (group_id or "")
-    lines = [f"swarm group `{gid}` — launched {len(handles)} subprocess(es):"]
-    for h in handles:
-        lines.append(
-            f"  claim={h.claim_id} pid={h.pid} status={h.status} "
-            f"log={h.log_path}"
-        )
-    return "\n".join(lines)
-
-
-@mcp.tool()
-@requires_capability("none")
-def swarm_reap(
-    handles: list[dict],
-    timeout_sec: float = 0.0,
-) -> str:
-    """Poll swarm subprocess handles; return updated status + exit codes.
-
-    ``handles`` is the list-of-dicts form of what ``swarm_launch`` returned
-    (callers persist these between MCP calls). ``timeout_sec`` of 0 performs
-    a single non-blocking sweep; >0 waits up to that many seconds for any
-    still-running children.
-    """
-    from .swarm import swarm_reap as _reap, SwarmHandle
-
-    log_tool("swarm_reap", count=len(handles or []), timeout=timeout_sec)
-    if not handles:
-        return "swarm_reap: no handles provided"
-    objs = [SwarmHandle(**h) if isinstance(h, dict) else h for h in handles]
-    _reap(objs, timeout=(timeout_sec or None))
-    lines = ["swarm reap result:"]
-    for h in objs:
-        rc = "?" if h.returncode is None else str(h.returncode)
-        lines.append(
-            f"  claim={h.claim_id} status={h.status} rc={rc} pid={h.pid}"
-        )
-    return "\n".join(lines)
-
-
 @mcp.tool()
 @requires_capability("llm")
 def compact_master_state(
@@ -1465,10 +1391,9 @@ def set_task_options(task_id: int, options: str = "") -> str:
 
 # ──────────────────────── M1 — task claims layer ─────────────────────────────
 #
-# Pure-SQLite ownership transitions so multiple Claude Code sessions (and the
-# future swarm-lite / autopilot-lite subprocesses) can coordinate work-item
-# ownership without an LLM round-trip. Existing single-session task flow is
-# unaffected when ``claimed_by`` stays NULL.
+# Pure-SQLite ownership transitions so multiple Claude Code sessions can
+# coordinate work-item ownership without an LLM round-trip. Existing
+# single-session task flow is unaffected when ``claimed_by`` stays NULL.
 
 
 @mcp.tool()
@@ -1814,7 +1739,7 @@ def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True)
         On success: "OK: <plan_id> — N steps (S smart, M mid)".
         On failure: multi-line "INVALID:" report with one error per line.
     """
-    from .plan_executor import validate_plan_file, PlanValidationError, TIER_MAP
+    from .plan_executor import PlanValidationError, TIER_MAP, validate_plan_file
 
     log_tool("validate_plan", plan_path=plan_path)
     try:
@@ -1834,134 +1759,6 @@ def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True)
         f"OK: {plan['plan_id']} — {len(steps)} steps "
         f"({smart} smart, {mid} mid)"
     )
-
-
-@mcp.tool()
-@requires_capability("llm")
-def author_plan(goal: str, repo_path: str = "", preferred_runner: str = "") -> str:
-    """Author a plan YAML for the given goal, transparently using the best
-    available Opus runner (in_session → claude -p → SDK → API fallback).
-
-    Resolution: HUB_PLAN_RUNNER env var > preferred_runner arg > auto-chain.
-    The in-session runner returns a directive for the calling agent instead
-    of a file path — the agent then authors the YAML itself using its own
-    Read/Glob/Grep tools and calls validate_plan.
-
-    Args:
-        goal: One-line plan goal (used for the YAML filename slug).
-        repo_path: Target repo root. Defaults to cwd.
-        preferred_runner: Force a specific runner: in_session|cli|sdk|api.
-
-    Returns:
-        Markdown report with the runner used, plan path (or directive), and
-        validation attempt count. Writes to ~/.claude/plans/<slug>.yaml.
-    """
-    from .plan_executor import author_plan as _author
-    from .plan_executor import RunnerFailed
-
-    log_tool("author_plan", goal=goal[:80], repo_path=repo_path,
-             runner=preferred_runner or "auto")
-    try:
-        result = _author(
-            goal,
-            repo_path=(Path(repo_path).expanduser() if repo_path else None),
-            preferred_runner=(preferred_runner or None) or None,  # type: ignore[arg-type]
-        )
-    except RunnerFailed as e:
-        return f"ERROR: {e}"
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    return result.as_markdown()
-
-
-@mcp.tool()
-@requires_capability("none")
-def run_plan(plan_path: str, dry_run: bool = True, repo_path: str = "") -> str:
-    """Walk every step of a plan YAML in topological order, stopping on the
-    first failed/escalated step.
-
-    Steps already marked ``done`` in the sidecar state are skipped (idempotent
-    resume). Default is dry_run=True — pass dry_run=False to actually apply
-    changes and run acceptance commands.
-
-    Args:
-        plan_path: Path to the plan YAML.
-        dry_run: Preview only. Default True.
-        repo_path: Root for file resolution. Defaults to cwd.
-
-    Returns:
-        Multi-line run summary with per-step outcomes and a stop reason if halted.
-    """
-    from .plan_executor import run_plan as _walk
-    from .sandbox import provision as _sbx_provision, SandboxViolation
-
-    log_tool("run_plan", plan_path=plan_path, dry_run=dry_run)
-    run_sandboxed = _sbx_provision("run_plan")
-    try:
-        result = run_sandboxed(
-            _walk,
-            Path(plan_path).expanduser(),
-            dry_run=dry_run,
-            repo_path=(Path(repo_path).expanduser() if repo_path else None),
-        )
-    except (FileNotFoundError, ValueError) as e:
-        return f"ERROR: {e}"
-    except SandboxViolation as e:
-        return f"ERROR: SandboxViolation: {e}"
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    return result.as_markdown()
-
-
-@mcp.tool()
-@requires_capability("llm")
-def execute_plan_step(
-    plan_path: str,
-    step_id: str,
-    dry_run: bool = True,
-    repo_path: str = "",
-) -> str:
-    """Execute one step from a plan YAML via the right model tier.
-
-    - Resolves the step, checks depends_on via a sidecar .state.json file.
-    - Maps step.kind → tier (architecture/integration → tier_smart; others → tier_mid).
-    - Honors step.model_hint if set.
-    - Builds a file-scoped context bundle (target files + protocols_ref + pattern_ref).
-    - Calls the resolved model via litellm with a strict JSON-output contract.
-    - If dry_run=False, writes returned file contents to disk and runs the
-      acceptance command. On failure, retries once on tier_smart before marking
-      the step failed.
-    - Records a bandit reward (kind=task_class, plan_id=domain).
-
-    Args:
-        plan_path: Path to the plan YAML (typically ~/.claude/plans/<slug>.yaml).
-        step_id: Which step to run.
-        dry_run: Default True — preview only, no file writes, no acceptance run.
-        repo_path: Root for resolving files. Defaults to cwd.
-
-    Returns:
-        Markdown status report (see StepResult.as_markdown).
-    """
-    from .plan_executor import execute_plan_step as _run
-    from .sandbox import provision as _sbx_provision, SandboxViolation
-
-    log_tool("execute_plan_step", plan_path=plan_path, step_id=step_id, dry_run=dry_run)
-    run_sandboxed = _sbx_provision("execute_plan_step")
-    try:
-        result = run_sandboxed(
-            _run,
-            Path(plan_path).expanduser(),
-            step_id,
-            dry_run=dry_run,
-            repo_path=(Path(repo_path).expanduser() if repo_path else None),
-        )
-    except (KeyError, FileNotFoundError) as e:
-        return f"ERROR: {e}"
-    except SandboxViolation as e:
-        return f"ERROR: SandboxViolation: {e}"
-    except Exception as e:  # noqa: BLE001
-        return f"ERROR: {type(e).__name__}: {e}"
-    return result.as_markdown()
 
 
 @mcp.tool()
@@ -2745,6 +2542,61 @@ def list_prompt_rewriters() -> str:
     from .router import rewriters as _rw
 
     return "rewriters:\n" + "\n".join(f"  - {n}" for n in _rw.available())
+
+
+@mcp.tool()
+@requires_capability("none")
+def team_plan(task_kind: str, effort: str = "xhigh", estimate: bool = False) -> str:
+    """Return a specialized team orchestration plan for the given task kind.
+
+    ``task_kind`` must be one of: review, arch, issues, implement.
+    ``effort`` controls the model floor and verification loops:
+    low | medium | high | xhigh (default).
+    ``estimate`` appends a heuristic cost projection when True.
+    """
+    from .team import policy
+
+    try:
+        plan = policy.resolve_team_plan(task_kind, effort)
+    except ValueError as exc:
+        return str(exc)
+
+    lines: list[str] = [
+        f"task_kind : {plan['task_kind']}",
+        f"effort    : {plan['effort']}",
+        f"substrate : {plan['substrate']}",
+        f"loops     : {plan['loops']}",
+        "",
+        "roster:",
+    ]
+    for entry in plan["roles"]:
+        role_label = entry["role"]
+        if "lens" in entry:
+            role_label = f"{entry['role']}({entry['lens']})"
+        lines.append(
+            f"  {role_label:<36} -> {entry['agent']:<32}  [{entry['cc_model']} / {entry['tier']}]"
+        )
+
+    if estimate:
+        try:
+            est = policy.estimate_cost(task_kind, effort)
+        except ValueError as exc:
+            return "\n".join(lines) + f"\n\nestimate error: {exc}"
+
+        lines += [
+            "",
+            "estimate (heuristic ±50%):",
+            f"  agent_calls       : {est['agent_calls']}",
+            f"  token_budget_low  : {est['token_budget_low']:,}",
+            f"  token_budget_high : {est['token_budget_high']:,}",
+            f"  rough_minutes_low : {est['rough_minutes_low']}",
+            f"  rough_minutes_high: {est['rough_minutes_high']}",
+            "  assumptions:",
+        ]
+        for assumption in est["assumptions"]:
+            lines.append(f"    - {assumption}")
+
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -4030,69 +3882,6 @@ def rebuild_session_memory(
     path = _sm.write_memory(session_id, memory)
     preview = memory[:500]
     return f"Saved {len(memory)} chars to {path}.\n\nPreview:\n{preview}"
-
-
-# ---------------------------------------------------------------------------
-# Autopilot-lite (issue #21 / M4-2) — drain the claims board in a loop.
-# Pure SQLite + subprocess; no ruflo runtime dependency.
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-@requires_capability("none")
-def autopilot_run(
-    poll_interval: float = 5.0,
-    max_claims: int = 0,
-    drain_and_exit: bool = True,
-    runner_id: str = "",
-) -> str:
-    """Foreground loop: pick the next stealable claim, run it, repeat.
-
-    The default mode (``drain_and_exit=True``) returns once the queue is
-    empty so this tool can be called interactively without blocking the
-    MCP session. Set it to ``False`` and run the CLI binary instead
-    (``skill-hub-cli autopilot_run``) for true overnight operation.
-    """
-    from .autopilot import AutopilotRunner
-    log_tool(
-        "autopilot_run",
-        poll_interval=poll_interval,
-        max_claims=max_claims,
-        drain_and_exit=drain_and_exit,
-    )
-    runner = AutopilotRunner(
-        _store_db_path(),
-        runner_id=runner_id,
-        poll_interval=poll_interval,
-        max_claims=max_claims,
-        drain_and_exit=drain_and_exit,
-    )
-    result = runner.run()
-    return (
-        f"autopilot[{result.runner_id}] drained={result.drained} "
-        f"failed={result.failed} stopped_by={result.stopped_by} "
-        f"claims={','.join(str(i) for i in result.claim_ids) or 'none'}"
-    )
-
-
-@mcp.tool()
-@requires_capability("none")
-def autopilot_stop(runner_id: str = "") -> str:
-    """Signal one (or every) autopilot runner to exit at its next checkpoint.
-
-    Empty ``runner_id`` stops all runners. The flag lives in SQLite so a
-    runner in a separate process picks it up on its next poll cycle.
-    """
-    from .autopilot import request_stop
-    log_tool("autopilot_stop", runner_id=runner_id)
-    touched = request_stop(_store_db_path(), runner_id)
-    target = runner_id or "all runners"
-    return f"autopilot_stop: {target} flagged ({touched} row(s))"
-
-
-def _store_db_path() -> str:
-    """Resolve the SkillStore SQLite file used by the autopilot board."""
-    from .store import DB_PATH
-    return str(DB_PATH)
 
 
 # ---------------------------------------------------------------------------
