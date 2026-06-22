@@ -277,6 +277,69 @@ def dispatch_async(actions: list[list[str]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolution
+# ---------------------------------------------------------------------------
+
+# The four behaviours the orchestrator can be in. ``orchestrator_mode`` is the
+# single source of truth; the legacy boolean keys derive a mode only when it is
+# unset, so pre-existing configs keep their behaviour.
+VALID_MODES = ("off", "offer", "auto", "everywhere")
+
+
+def resolve_mode(get=None) -> str:
+    """Resolve the effective orchestrator mode.
+
+    A valid ``orchestrator_mode`` string wins. When it is absent (``None``) the
+    mode is derived from the legacy keys so existing configs are unchanged:
+
+        orchestrator_enabled is False          -> "off"
+        orchestrator_auto_init is True          -> "everywhere"
+        orchestrator_auto_init_roots non-empty  -> "auto"
+        otherwise                               -> "offer"
+
+    *get* is an injectable ``config.get``-style accessor (defaults to the real
+    one); the indirection keeps the function trivially testable.
+    """
+    if get is None:
+        from .. import config as _cfg
+        get = _cfg.get
+    try:
+        raw = get("orchestrator_mode")
+        if isinstance(raw, str) and raw.lower() in VALID_MODES:
+            return raw.lower()
+    except Exception:
+        pass
+    try:
+        if not get("orchestrator_enabled"):
+            return "off"
+        if get("orchestrator_auto_init"):
+            return "everywhere"
+        roots = get("orchestrator_auto_init_roots") or []
+        if isinstance(roots, list) and len(roots) > 0:
+            return "auto"
+    except Exception:
+        pass
+    return "offer"
+
+
+def _root_under_parents(root: Path, parents: set[Path]) -> bool:
+    """True when *root* equals or is nested under any folder in *parents*.
+
+    A path-boundary guard prevents ``/work/code`` from matching ``/work/codex``:
+    nesting requires the parent to be an actual ancestor directory.
+    """
+    for parent in parents:
+        if root == parent:
+            return True
+        try:
+            root.relative_to(parent)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Core evaluate
 # ---------------------------------------------------------------------------
 
@@ -298,9 +361,7 @@ def evaluate(
     - ``provision_actions``: argv lists collected for async dispatch by the caller.
     """
     try:
-        from .. import config as _cfg
-        enabled = _cfg.get("orchestrator_enabled")
-        if not enabled:
+        if resolve_mode() == "off":
             return OrchestratorResult()
     except Exception:
         pass  # if config is unreachable, proceed anyway
@@ -324,21 +385,25 @@ def _evaluate_inner(
 
     try:
         from .. import config as _cfg
-        auto_init_global: bool = bool(_cfg.get("orchestrator_auto_init"))
+        mode = resolve_mode(_cfg.get)
         auto_init_roots_raw = _cfg.get("orchestrator_auto_init_roots") or []
         _pct = _cfg.get("orchestrator_probe_cache_secs")
         probe_cache_ttl = float(_pct if _pct is not None else 60.0)
     except Exception:
-        auto_init_global = False
+        mode = "offer"
         auto_init_roots_raw = []
         probe_cache_ttl = 60.0
 
-    auto_init_roots: set[Path] = set()
-    for r in (auto_init_roots_raw if isinstance(auto_init_roots_raw, list) else []):
-        try:
-            auto_init_roots.add(Path(r).expanduser().resolve())
-        except Exception:
-            pass
+    # "everywhere" auto-inits any eligible project; "auto" only those under a
+    # configured parent folder; "offer" never auto-inits.
+    auto_init_global = mode == "everywhere"
+    auto_init_parents: set[Path] = set()
+    if mode == "auto":
+        for r in (auto_init_roots_raw if isinstance(auto_init_roots_raw, list) else []):
+            try:
+                auto_init_parents.add(Path(r).expanduser().resolve())
+            except Exception:
+                pass
 
     targets = resolve_targets(cwd, message)
 
@@ -405,7 +470,7 @@ def _evaluate_inner(
                     logger.debug("cap %s directive_ready failed for %s: %s", cap.id, root, exc)
             else:
                 # Index absent — check autonomy policy.
-                may_auto_init = auto_init_global or (root in auto_init_roots)
+                may_auto_init = auto_init_global or _root_under_parents(root, auto_init_parents)
                 if may_auto_init:
                     try:
                         argv = cap.provision_init(root)

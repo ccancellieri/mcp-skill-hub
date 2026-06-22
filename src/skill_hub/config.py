@@ -384,10 +384,19 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
-    # Tooling orchestrator — per-turn tool-readiness steering
-    "orchestrator_enabled": True,           # master switch
-    "orchestrator_auto_init": False,        # allow automatic first-time init globally
-    "orchestrator_auto_init_roots": [],     # allowlist of roots that may auto-init
+    # Tooling orchestrator — per-turn tool-readiness steering.
+    # ``orchestrator_mode`` is the single source of truth for behaviour:
+    #   "off"        — disabled; evaluate() returns nothing.
+    #   "offer"      — surface offer/steer directives; never auto-provision.
+    #   "auto"       — auto-init projects whose root is under an auto-init folder.
+    #   "everywhere" — auto-init any unindexed code project explored.
+    # When the key is absent it is derived from the legacy booleans below, so
+    # existing configs keep their behaviour. ``orchestrator_auto_init_roots`` is
+    # the list of parent folders enabling auto-init in "auto" mode (prefix match).
+    "orchestrator_mode": None,              # off | offer | auto | everywhere (None → derive from legacy keys)
+    "orchestrator_enabled": True,           # (legacy) master switch — derives mode when mode unset
+    "orchestrator_auto_init": False,        # (legacy) global auto-init — derives mode when mode unset
+    "orchestrator_auto_init_roots": [],     # parent folders that may auto-init (prefix match in "auto" mode)
     "orchestrator_sync_ttl_secs": 300,      # min interval between auto-refreshes (seconds)
     "orchestrator_probe_cache_secs": 60,    # probe-result cache TTL (keeps the hook fast)
 

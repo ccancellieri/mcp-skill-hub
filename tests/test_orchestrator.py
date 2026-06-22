@@ -328,6 +328,150 @@ class TestCodegraphNodeCount:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolution
+# ---------------------------------------------------------------------------
+
+def _fake_get(overrides: dict):
+    """A config.get-style accessor over defaults + overrides."""
+    from skill_hub import config as _cfg
+    merged = _cfg._DEFAULTS.copy()
+    merged.update(overrides)
+    return lambda k: merged.get(k)
+
+
+class TestResolveMode:
+    def test_explicit_mode_wins(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        for m in ("off", "offer", "auto", "everywhere"):
+            assert resolve_mode(_fake_get({"orchestrator_mode": m})) == m
+
+    def test_explicit_mode_case_insensitive(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({"orchestrator_mode": "AUTO"})) == "auto"
+
+    def test_invalid_mode_falls_back_to_derivation(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        # garbage mode + plain enabled config -> derived "offer"
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": "banana",
+            "orchestrator_enabled": True,
+            "orchestrator_auto_init": False,
+            "orchestrator_auto_init_roots": [],
+        })) == "offer"
+
+    def test_derive_off_when_disabled(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": False,
+        })) == "off"
+
+    def test_derive_everywhere_from_legacy_auto_init(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": True,
+        })) == "everywhere"
+
+    def test_derive_auto_from_legacy_roots(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": False,
+            "orchestrator_auto_init_roots": ["/some/root"],
+        })) == "auto"
+
+    def test_derive_offer_default(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": False, "orchestrator_auto_init_roots": [],
+        })) == "offer"
+
+
+class TestRootUnderParents:
+    def test_exact_match(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(tmp_path, {tmp_path}) is True
+
+    def test_nested_child(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        child = tmp_path / "a" / "b"
+        assert _root_under_parents(child, {tmp_path}) is True
+
+    def test_sibling_prefix_does_not_match(self):
+        # /work/code must NOT match /work/codex — boundary guard.
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(Path("/work/codex"), {Path("/work/code")}) is False
+
+    def test_unrelated_does_not_match(self):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(Path("/elsewhere"), {Path("/work/code")}) is False
+
+    def test_empty_parents_never_matches(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(tmp_path, set()) is False
+
+
+class TestEvaluateModes:
+    """End-to-end mode behaviour through evaluate()."""
+
+    def _setup(self, monkeypatch, overrides):
+        monkeypatch.setattr("skill_hub.config.get", _fake_get(overrides))
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.engine.dispatch_async", lambda actions: None
+        )
+        _engine._probe_cache.clear()
+
+    def test_off_mode_returns_empty(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "off"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert result.directive == ""
+        assert result.provision_actions == []
+        assert result.decisions == []
+
+    def test_offer_mode_offers_no_init(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "offer"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert result.directive != ""
+        assert [a for a in result.provision_actions if "init" in a] == []
+
+    def test_everywhere_mode_queues_init(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "everywhere"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a], (
+            f"expected init action, got {result.provision_actions}"
+        )
+
+    def test_auto_mode_inits_when_under_parent(self, tmp_path, monkeypatch):
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        _make_code_project(proj)
+        self._setup(monkeypatch, {
+            "orchestrator_mode": "auto",
+            "orchestrator_auto_init_roots": [str(tmp_path)],  # parent of proj
+        })
+        result = evaluate(str(proj), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a], (
+            "project under an auto-init parent should queue init"
+        )
+
+    def test_auto_mode_offers_when_outside_parent(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {
+            "orchestrator_mode": "auto",
+            "orchestrator_auto_init_roots": ["/some/other/place"],
+        })
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a] == [], (
+            "project outside every auto-init parent must only offer"
+        )
+        assert result.directive != ""
+
+
+# ---------------------------------------------------------------------------
 # Autonomy policy
 # ---------------------------------------------------------------------------
 

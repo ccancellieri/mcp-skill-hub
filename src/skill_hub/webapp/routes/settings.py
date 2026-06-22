@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from ... import config as _config
+from ...orchestrator.engine import VALID_MODES, resolve_mode
 
 router = APIRouter()
 
@@ -405,6 +406,13 @@ def _coerce(original: Any, raw: str | None) -> Any:
 def settings_page(request: Request) -> Any:
     cfg = _config.load_config()
     groups = _group_config(cfg)
+
+    # Orchestrator panel data — resolved inline so the template renders live state.
+    orch_mode_stored = _config.get("orchestrator_mode")
+    orch_mode_effective = resolve_mode(_config.get)
+    orch_roots: list[str] = _config.get("orchestrator_auto_init_roots") or []
+    orch_roots_text = "\n".join(orch_roots)
+
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -416,6 +424,11 @@ def settings_page(request: Request) -> Any:
             "nav_groups": _NAV_GROUPS,
             "field_hints": _FIELD_HINTS,
             "active_tab": "settings",
+            # Orchestrator panel
+            "orch_valid_modes": VALID_MODES,
+            "orch_mode_stored": orch_mode_stored,
+            "orch_mode_effective": orch_mode_effective,
+            "orch_roots_text": orch_roots_text,
         },
     )
 
