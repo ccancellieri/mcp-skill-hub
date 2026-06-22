@@ -339,8 +339,11 @@ def _evaluate_inner(
                 # Index exists — always queue a TTL-debounced refresh.
                 try:
                     argv = cap.provision_refresh(root)
-                    provision_actions.append(argv)
-                    action_taken = "refresh_queued"
+                    if argv:
+                        provision_actions.append(argv)
+                        action_taken = "refresh_queued"
+                    else:
+                        action_taken = "tool_unavailable"
                 except Exception as exc:
                     logger.debug("cap %s provision_refresh failed for %s: %s", cap.id, root, exc)
 
@@ -354,8 +357,11 @@ def _evaluate_inner(
                 if may_auto_init:
                     try:
                         argv = cap.provision_init(root)
-                        provision_actions.append(argv)
-                        action_taken = "init_queued"
+                        if argv:
+                            provision_actions.append(argv)
+                            action_taken = "init_queued"
+                        else:
+                            action_taken = "tool_unavailable"
                     except Exception as exc:
                         logger.debug("cap %s provision_init failed for %s: %s", cap.id, root, exc)
                 else:
@@ -425,8 +431,11 @@ def ensure_tooling_core(
             from .registry import CODEGRAPH
             try:
                 argv = CODEGRAPH.provision_refresh(root)
-                dispatch_async([argv])
-                action = "refresh_dispatched"
+                if argv:
+                    dispatch_async([argv])
+                    action = "refresh_dispatched"
+                else:
+                    action = "tool_unavailable"
             except Exception as exc:
                 logger.debug("ensure_tooling_core: refresh dispatch failed: %s", exc)
                 action = "error"
@@ -440,6 +449,8 @@ def ensure_tooling_core(
             from .registry import CODEGRAPH
             try:
                 argv = CODEGRAPH.provision_init(root)
+                if not argv:
+                    raise RuntimeError("codegraph executable not found in a trusted location")
                 # Blocking — this is the explicit, user-confirmed path.
                 result = subprocess.run(
                     argv,

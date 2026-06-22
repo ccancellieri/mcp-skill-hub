@@ -133,6 +133,56 @@ class TestRegistrySignals:
 
 
 # ---------------------------------------------------------------------------
+# Hardened binary resolution (PATH-hijack defense)
+# ---------------------------------------------------------------------------
+
+class TestCodegraphBinResolution:
+    def test_resolves_only_within_trusted_dirs(self, monkeypatch):
+        from skill_hub.orchestrator import registry as _reg
+
+        captured: dict[str, str | None] = {}
+
+        def _fake_which(name, path=None):
+            captured["name"] = name
+            captured["path"] = path
+            return "/opt/homebrew/bin/codegraph"
+
+        monkeypatch.setattr(_reg.shutil, "which", _fake_which)
+        assert _reg._resolve_codegraph_bin() == "/opt/homebrew/bin/codegraph"
+        # The PATH passed to which() must be the fixed trusted set, never the
+        # inherited environment PATH (which an attacker could poison).
+        assert captured["name"] == "codegraph"
+        for trusted in _reg._CODEGRAPH_TRUSTED_DIRS:
+            assert trusted in captured["path"]
+
+    def test_returns_none_when_not_installed(self, monkeypatch):
+        from skill_hub.orchestrator import registry as _reg
+
+        monkeypatch.setattr(_reg.shutil, "which", lambda name, path=None: None)
+        assert _reg._resolve_codegraph_bin() is None
+
+    def test_provision_argv_none_when_tool_missing(self, monkeypatch, tmp_path):
+        from skill_hub.orchestrator import registry as _reg
+
+        monkeypatch.setattr(_reg.shutil, "which", lambda name, path=None: None)
+        assert _reg._codegraph_refresh_argv(tmp_path) is None
+        assert _reg._codegraph_init_argv(tmp_path) is None
+
+    def test_provision_argv_present_when_tool_found(self, monkeypatch, tmp_path):
+        from skill_hub.orchestrator import registry as _reg
+
+        monkeypatch.setattr(
+            _reg.shutil, "which", lambda name, path=None: "/usr/local/bin/codegraph"
+        )
+        assert _reg._codegraph_refresh_argv(tmp_path) == [
+            "/usr/local/bin/codegraph", "sync", str(tmp_path),
+        ]
+        assert _reg._codegraph_init_argv(tmp_path) == [
+            "/usr/local/bin/codegraph", "init", str(tmp_path),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # probe_codegraph
 # ---------------------------------------------------------------------------
 

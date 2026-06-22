@@ -11,6 +11,7 @@ here, not changing the engine.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,17 +82,39 @@ def _signals_codegraph(message: str, root: Path) -> bool:
 # Provision helpers
 # ---------------------------------------------------------------------------
 
-# Resolve from PATH so the feature works on Linux / Intel macs, not just
-# Apple-Silicon Homebrew; fall back to the common Homebrew path.
-_CODEGRAPH_BIN = shutil.which("codegraph") or "/opt/homebrew/bin/codegraph"
+# Resolve the codegraph executable from a hardened, fixed set of trusted
+# directories rather than the inherited PATH, so a poisoned PATH entry (e.g. a
+# malicious "codegraph" earlier in PATH) cannot hijack the subprocess we spawn.
+# Covers the standard install locations across Linux, Intel mac, and Apple
+# Silicon Homebrew. Resolution is deferred to first use so a tool installed
+# after import is still found.
+_CODEGRAPH_TRUSTED_DIRS = (
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/opt/homebrew/bin",
+    "/opt/local/bin",
+)
 
 
-def _codegraph_refresh_argv(root: Path) -> list[str]:
-    return [_CODEGRAPH_BIN, "sync", str(root)]
+def _resolve_codegraph_bin() -> str | None:
+    """Locate the ``codegraph`` executable in a trusted directory.
+
+    Returns the absolute path, or ``None`` when it is not installed in any
+    trusted location. Callers must treat ``None`` as "tool unavailable" and
+    skip provisioning rather than falling back to an unverified path.
+    """
+    return shutil.which("codegraph", path=os.pathsep.join(_CODEGRAPH_TRUSTED_DIRS))
 
 
-def _codegraph_init_argv(root: Path) -> list[str]:
-    return [_CODEGRAPH_BIN, "init", str(root)]
+def _codegraph_refresh_argv(root: Path) -> list[str] | None:
+    bin_path = _resolve_codegraph_bin()
+    return [bin_path, "sync", str(root)] if bin_path else None
+
+
+def _codegraph_init_argv(root: Path) -> list[str] | None:
+    bin_path = _resolve_codegraph_bin()
+    return [bin_path, "init", str(root)] if bin_path else None
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +147,10 @@ class Capability:
         scope:               Eligibility predicate ``(root) -> bool`` — whether
                              this capability can apply to the target directory at all.
         probe:               ``(root) -> Readiness`` — cheap filesystem/status check.
-        provision_refresh:   ``(root) -> list[str]`` — argv for an in-place refresh.
-        provision_init:      ``(root) -> list[str]`` — argv for first-time setup.
+        provision_refresh:   ``(root) -> list[str] | None`` — argv for an in-place
+                             refresh, or ``None`` when the tool is unavailable.
+        provision_init:      ``(root) -> list[str] | None`` — argv for first-time
+                             setup, or ``None`` when the tool is unavailable.
         directive_ready:     Format string (or ``(root, readiness) -> str`` callable)
                              for when the tool is present and fresh.
         directive_missing:   Format string (or ``(root, readiness) -> str`` callable)
@@ -138,8 +163,8 @@ class Capability:
     signals: Callable[[str, Path], bool]
     scope: Callable[[Path], bool]
     probe: Callable[[Path], Readiness]
-    provision_refresh: Callable[[Path], list[str]]
-    provision_init: Callable[[Path], list[str]]
+    provision_refresh: Callable[[Path], list[str] | None]
+    provision_init: Callable[[Path], list[str] | None]
     directive_ready: str | Callable[[Path, Readiness], str]
     directive_missing: str | Callable[[Path, Readiness], str]
     probe_cache_ttl: float = 60.0
