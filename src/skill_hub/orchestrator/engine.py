@@ -77,19 +77,58 @@ _last_dispatch: dict[tuple[str, ...], float] = {}
 # Index directory name produced by `codegraph init`.
 _CODEGRAPH_DIR = ".codegraph"
 
+# SQLite database file inside the index directory.
+_CODEGRAPH_DB = "codegraph.db"
+
 # Default sync TTL in seconds (overridden by config at call sites).
 _DEFAULT_SYNC_TTL = 300.0
+
+
+def _codegraph_node_count(index_dir: Path) -> int | None:
+    """Return the node count in the code-graph database, cheaply.
+
+    Returns:
+        - ``0``    when the index is definitively empty/unusable — the
+          ``codegraph.db`` file is missing, or its ``nodes`` table holds no
+          rows. This is the "scaffold but never indexed" state a bare
+          ``codegraph init`` leaves behind (``init -i`` populates it instead).
+        - ``>0``   the confirmed node count.
+        - ``None`` when the count cannot be determined cheaply (database locked,
+          or an unexpected schema). Callers must treat ``None`` as "unknown" and
+          preserve the legacy presence-based behaviour rather than downgrading —
+          so a future codegraph schema change can never make the probe nag.
+
+    Read-only and subprocess-free: opens the SQLite file in ``mode=ro`` with a
+    sub-second timeout, so it stays within the tier-1 hot-path budget.
+    """
+    db_path = index_dir / _CODEGRAPH_DB
+    if not db_path.exists():
+        return 0
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.25)
+        try:
+            row = con.execute("SELECT count(*) FROM nodes").fetchone()
+            return int(row[0]) if row else None
+        finally:
+            con.close()
+    except Exception:
+        return None
 
 
 def probe_codegraph(root: Path) -> Readiness:
     """Probe code-graph index readiness for *root*.
 
-    Uses filesystem mtime only — no subprocess on the hot path.
+    No subprocess on the hot path. A ``codegraph status`` call is intentionally
+    avoided to keep p99 latency within the sub-10ms tier-1 budget. Readiness has
+    two cheap components:
 
-    A ``codegraph status`` call is intentionally avoided here to keep
-    p99 latency within the sub-10ms tier-1 budget.  Freshness is determined
-    by comparing the ``.codegraph/`` directory mtime against the configured
-    sync TTL.
+    - **presence**: the ``.codegraph/`` directory exists *and* its database holds
+      at least one node. A present-but-empty index (bare ``init`` with no
+      indexing) is reported as *not present*, so the orchestrator offers to
+      (re-)index rather than steering to an empty graph.
+    - **freshness**: the ``.codegraph/`` directory mtime against the configured
+      sync TTL.
     """
     index_dir = root / _CODEGRAPH_DIR
     if not index_dir.exists():
@@ -103,6 +142,18 @@ def probe_codegraph(root: Path) -> Readiness:
                          detail=f"stat failed: {exc}")
 
     stale_age = time.time() - index_mtime
+
+    # Reject a present-but-empty index. Only a *confirmed* zero count downgrades
+    # presence; an unknown count (None) preserves the legacy presence behaviour.
+    node_count = _codegraph_node_count(index_dir)
+    if node_count == 0:
+        return Readiness(
+            present=False,
+            fresh=False,
+            stale_age=stale_age,
+            detail=f"{_CODEGRAPH_DIR} present but empty (0 nodes) — needs indexing",
+        )
+
     try:
         from .. import config as _cfg
         _ttl = _cfg.get("orchestrator_sync_ttl_secs")
@@ -111,11 +162,12 @@ def probe_codegraph(root: Path) -> Readiness:
         sync_ttl = _DEFAULT_SYNC_TTL
 
     fresh = stale_age <= sync_ttl
+    count_str = f", {node_count} nodes" if node_count else ""
     return Readiness(
         present=True,
         fresh=fresh,
         stale_age=stale_age,
-        detail=f"index age {int(stale_age)}s (ttl {int(sync_ttl)}s)",
+        detail=f"index age {int(stale_age)}s (ttl {int(sync_ttl)}s){count_str}",
     )
 
 

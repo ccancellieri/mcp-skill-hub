@@ -30,17 +30,35 @@ from skill_hub.orchestrator import engine as _engine
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _make_code_project(tmp_path: Path, *, with_codegraph: bool = False) -> Path:
+def _make_code_project(
+    tmp_path: Path, *, with_codegraph: bool = False, node_count: int = 5
+) -> Path:
     """Create a minimal code project in *tmp_path*.
 
     Writes a ``pyproject.toml`` and a ``.git/`` directory so that
     ``is_code_project()`` and ``_resolve_project_root()`` both recognise it.
+
+    When *with_codegraph* is set, the ``.codegraph/`` index is populated with a
+    ``codegraph.db`` holding *node_count* nodes (a non-empty, usable index by
+    default — matching ``codegraph init -i``). The probe rejects an empty index,
+    so the database must hold at least one node for the index to read as ready.
     """
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "test"\n')
     (tmp_path / ".git").mkdir()
     if with_codegraph:
         cg = tmp_path / ".codegraph"
         cg.mkdir()
+        import sqlite3
+        con = sqlite3.connect(cg / "codegraph.db")
+        try:
+            con.execute("CREATE TABLE nodes (id INTEGER PRIMARY KEY, name TEXT)")
+            con.executemany(
+                "INSERT INTO nodes (name) VALUES (?)",
+                [(f"sym_{i}",) for i in range(node_count)],
+            )
+            con.commit()
+        finally:
+            con.close()
         now = time.time()
         os.utime(cg, (now, now))
     return tmp_path
