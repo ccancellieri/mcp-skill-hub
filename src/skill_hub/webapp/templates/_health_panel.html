@@ -1,0 +1,202 @@
+{# System-health fragment: metrics + issues with action buttons + detail tables.
+   POST actions target #health-panel and swap this whole fragment back in. #}
+{% set m = snap.mem %}
+
+{% if flash %}
+<div class="health-flash">{{ flash }}</div>
+{% endif %}
+
+{# ---- headline metrics ------------------------------------------------- #}
+<div class="monitor-bar">
+  <div class="monitor-metric">
+    <span class="metric-label">RAM</span>
+    <span class="metric-value{% if m.ram_pct >= 90 %} crit{% elif m.ram_pct >= 75 %} warn{% endif %}">
+      {{ m.ram_pct }}% &middot; {{ '{:,}'.format(m.ram_used_mb) }} / {{ '{:,}'.format(m.ram_total_mb) }} MB
+    </span>
+  </div>
+  <div class="monitor-metric">
+    <span class="metric-label">Swap</span>
+    <span class="metric-value{% if m.swap_pct >= 80 %} crit{% elif m.swap_pct >= 50 %} warn{% endif %}">
+      {{ m.swap_pct }}% &middot; {{ '{:,}'.format(m.swap_used_mb) }} / {{ '{:,}'.format(m.swap_total_mb) }} MB
+    </span>
+  </div>
+  <div class="monitor-metric">
+    <span class="metric-label">CPU load 1m</span>
+    <span class="metric-value{% if m.load_pct >= 120 %} crit{% elif m.load_pct >= 80 %} warn{% endif %}">
+      {{ '%.2f'|format(m.cpu_load_1m) }} / {{ m.cpu_count }} ({{ m.load_pct }}%)
+    </span>
+  </div>
+  <div class="monitor-metric">
+    <span class="metric-label">Docker</span>
+    <span class="metric-value">{{ snap.docker|length }} up &middot; ~{{ '{:,}'.format(snap.docker_mem_mb) }} MB</span>
+  </div>
+</div>
+
+{# ---- actionable issues ------------------------------------------------ #}
+{% if snap.issues %}
+<div class="health-issues">
+  {% for iss in snap.issues %}
+  <div class="health-issue sev-{{ iss.severity }}">
+    <div class="issue-text">
+      <strong>{{ iss.title }}</strong>
+      <span class="muted">{{ iss.detail }}</span>
+    </div>
+    {% if iss.action %}
+    <button class="btn sm"
+            hx-post="/health/action/{{ iss.action }}"
+            hx-target="#health-panel"
+            hx-swap="innerHTML"
+            {% if iss.severity in ('warn','crit') %}hx-confirm="{{ iss.action_label }} — proceed?"{% endif %}>
+      {{ iss.action_label or "Fix" }}
+    </button>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="health-issue sev-ok">
+  <div class="issue-text"><strong>✓ No issues detected</strong>
+    <span class="muted">Memory, swap, CPU load and background processes all look healthy.</span></div>
+</div>
+{% endif %}
+
+{# ---- watcher status --------------------------------------------------- #}
+<div class="health-watcher muted">
+  Background health watcher:
+  {% if watcher.running %}<span class="tag status-ok">● running</span>{% else %}<span class="tag">○ off</span>{% endif %}
+  {% if watcher.last_actions %}— last auto-action: {{ watcher.last_actions|join('; ') }}{% endif %}
+</div>
+
+<div class="health-grid">
+  {# ---- Claude processes ---------------------------------------------- #}
+  <div class="card">
+    <div class="card-head">
+      <h3>Claude Code processes ({{ snap.claude|length }})</h3>
+      {% if snap.stale_daemon_count %}
+      <button class="btn sm danger"
+              hx-post="/health/action/kill-daemons"
+              hx-target="#health-panel" hx-swap="innerHTML"
+              hx-confirm="Kill {{ snap.stale_daemon_count }} stale Claude process(es)?">
+        Kill {{ snap.stale_daemon_count }} stale
+      </button>
+      {% endif %}
+    </div>
+    <table class="health-table">
+      <thead><tr><th>PID</th><th>kind</th><th>ver</th><th>age</th><th>CPU</th><th>RSS</th><th></th></tr></thead>
+      <tbody>
+      {% for c in snap.claude %}
+        <tr class="{% if c.stale %}row-stale{% endif %}">
+          <td>{{ c.pid }}</td>
+          <td>{{ c.kind }}</td>
+          <td>{{ c.version or '—' }}</td>
+          <td>{{ c.age }}</td>
+          <td>{{ c.cpu_pct }}%</td>
+          <td>{{ c.rss_mb }}M</td>
+          <td>
+            {% if c.stale %}
+            <button class="btn xs danger"
+                    title="{{ c.reason }}"
+                    hx-post="/health/action/kill-daemons?pids={{ c.pid }}"
+                    hx-target="#health-panel" hx-swap="innerHTML"
+                    hx-confirm="Kill PID {{ c.pid }} ({{ c.reason }})?">kill</button>
+            {% elif c.kind == 'daemon' %}<span class="muted">root</span>
+            {% else %}<span class="muted">active</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {# ---- Docker containers --------------------------------------------- #}
+  <div class="card">
+    <div class="card-head">
+      <h3>Docker containers ({{ snap.docker|length }})</h3>
+      <div class="btn-row">
+        {% set nonessential = snap.docker|rejectattr('essential')|list %}
+        {% if nonessential %}
+        <button class="btn sm"
+                hx-post="/health/action/stop-nonessential"
+                hx-target="#health-panel" hx-swap="innerHTML"
+                hx-confirm="Stop {{ nonessential|length }} non-essential container(s)? (keeps catalog/DB/ES)">
+          Stop non-essential
+        </button>
+        {% endif %}
+        {% if snap.docker %}
+        <button class="btn sm danger"
+                hx-post="/health/action/stop-docker"
+                hx-target="#health-panel" hx-swap="innerHTML"
+                hx-confirm="Stop ALL {{ snap.docker|length }} containers (including catalog/DB/ES)?">
+          Stop all
+        </button>
+        {% endif %}
+      </div>
+    </div>
+    {% if snap.docker %}
+    <table class="health-table">
+      <thead><tr><th>name</th><th>mem</th><th>CPU</th><th></th><th></th></tr></thead>
+      <tbody>
+      {% for d in snap.docker %}
+        <tr>
+          <td>{{ d.name }}</td>
+          <td>{{ d.mem_mb }}M</td>
+          <td>{{ d.cpu_pct }}%</td>
+          <td>{% if d.essential %}<span class="tag status-ok">keep</span>{% endif %}</td>
+          <td>
+            <button class="btn xs"
+                    hx-post="/health/action/stop-docker?names={{ d.name }}"
+                    hx-target="#health-panel" hx-swap="innerHTML"
+                    hx-confirm="Stop {{ d.name }}?">stop</button>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No running containers (or docker unavailable).</p>
+    {% endif %}
+  </div>
+
+  {# ---- Top processes ------------------------------------------------- #}
+  <div class="card">
+    <div class="card-head"><h3>Top processes by CPU</h3></div>
+    {% if snap.top %}
+    <table class="health-table">
+      <thead><tr><th>PID</th><th>name</th><th>CPU</th><th>RSS</th></tr></thead>
+      <tbody>
+      {% for t in snap.top %}
+        <tr><td>{{ t.pid }}</td><td>{{ t.name }}</td><td>{{ t.cpu_pct }}%</td><td>{{ t.rss_mb }}M</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted">psutil unavailable.</p>{% endif %}
+  </div>
+</div>
+
+<style>
+.health-flash{background:var(--color-accent-soft,#1e293b);border:1px solid var(--color-border,#334155);
+  padding:8px 12px;border-radius:8px;margin:8px 0;font-size:13px}
+.health-issues{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.health-issue{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:10px 14px;border-radius:8px;border-left:4px solid var(--color-border,#334155);
+  background:var(--color-surface,#0f172a)}
+.health-issue .issue-text{display:flex;flex-direction:column;gap:2px}
+.health-issue.sev-crit{border-left-color:#ef4444}
+.health-issue.sev-warn{border-left-color:#f59e0b}
+.health-issue.sev-info{border-left-color:#3b82f6}
+.health-issue.sev-ok{border-left-color:#22c55e}
+.health-watcher{margin:8px 0;font-size:12px}
+.health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:14px}
+.health-grid .card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px}
+.health-grid .card-head h3{margin:0;font-size:14px}
+.btn-row{display:flex;gap:6px}
+.health-table{width:100%;border-collapse:collapse;font-size:12px}
+.health-table th{text-align:left;color:var(--color-muted,#94a3b8);font-weight:500;padding:3px 6px}
+.health-table td{padding:3px 6px;border-top:1px solid var(--color-border,#1e293b)}
+.health-table tr.row-stale{background:rgba(245,158,11,.10)}
+.metric-value.crit{color:#ef4444;font-weight:600}
+.metric-value.warn{color:#f59e0b}
+.btn.xs{font-size:11px;padding:1px 7px}
+.btn.danger{background:#7f1d1d;border-color:#991b1b;color:#fecaca}
+.btn.xs.danger{background:#7f1d1d;border-color:#991b1b;color:#fecaca}
+</style>

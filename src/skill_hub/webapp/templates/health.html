@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}health{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>System Health</h1>
+  <p class="muted">
+    Live view of what is slowing the machine down — swap, RAM, CPU load, stale
+    Claude Code processes and Docker containers — with one-click fixes.
+    Refreshes every 5s.
+  </p>
+
+  <div id="health-panel"
+       hx-get="/health/panel"
+       hx-trigger="load, every 5s [not(document.querySelector('#health-panel:hover'))]"
+       hx-swap="innerHTML">
+    <div class="monitor-bar placeholder">Loading system health…</div>
+  </div>
+</section>
+{% endblock %}

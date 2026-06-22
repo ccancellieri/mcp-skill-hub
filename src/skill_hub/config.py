@@ -550,6 +550,15 @@ _MONITOR_DEFAULTS = {
 _DEFAULTS["services"] = _SERVICE_DEFAULTS
 _DEFAULTS["monitor"] = _MONITOR_DEFAULTS
 
+# System-health panel + background watcher (skill_hub.system_health).
+_SYSTEM_HEALTH_DEFAULTS = {
+    "watcher_enabled": True,    # run the advisory background sampler
+    "auto_cleanup": False,      # also auto-run safe remediations (kill stale, purge)
+    "interval_seconds": 120,    # sampling cadence
+    "swap_pct_trigger": 85.0,   # auto-purge when swap crosses this (auto_cleanup only)
+}
+_DEFAULTS["system_health"] = _SYSTEM_HEALTH_DEFAULTS
+
 # Worktree-driven parallel sessions (skill_hub.worktree).
 _WORKTREE_DEFAULTS = {
     "repo_roots":   ["~/work/code"],
