@@ -276,6 +276,40 @@ def route(
         except Exception:
             pass
 
+    # ── Tooling orchestrator — per-turn readiness steering ──────────────────
+    # Non-fatal by contract: any exception degrades silently; the route path
+    # must never raise or slow because of orchestrator failures.
+    try:
+        from ..orchestrator import evaluate as _orch_evaluate, dispatch_async as _orch_dispatch
+        _orch_result = _orch_evaluate(
+            cwd or os.getcwd(),
+            prompt,
+            session={"id": session_id} if session_id else None,
+        )
+        if _orch_result.directive:
+            existing = output.get("systemMessage", "")
+            output["systemMessage"] = (
+                (existing + "\n" + _orch_result.directive) if existing else _orch_result.directive
+            )
+        _orch_dispatch(_orch_result.provision_actions)
+        if _orch_result.decisions:
+            try:
+                from ..store import SkillStore as _SkillStore
+                _orch_store = _SkillStore()
+                try:
+                    _orch_store.append_event(
+                        session_id=session_id or "",
+                        kind="orchestrator_decision",
+                        payload={"decisions": _orch_result.decisions},
+                        tool_name=None,
+                    )
+                finally:
+                    _orch_store.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     if "systemMessage" not in output and "userMessage" not in output:
         return {}
 
