@@ -34,12 +34,41 @@ from skill_hub.orchestrator.registry import _signals_codegraph, probe_codegraph
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_code_project(tmp_path: Path, *, with_codegraph: bool = False) -> Path:
-    """Create a minimal code project directory."""
+def _write_codegraph_db(cg: Path, *, node_count: int) -> None:
+    """Create a codegraph.db with a ``nodes`` table holding *node_count* rows.
+
+    Mirrors the real index's relevant shape closely enough for the probe's
+    cheap ``SELECT count(*) FROM nodes`` readiness check.
+    """
+    import sqlite3
+    con = sqlite3.connect(cg / "codegraph.db")
+    try:
+        con.execute("CREATE TABLE nodes (id INTEGER PRIMARY KEY, name TEXT)")
+        con.executemany(
+            "INSERT INTO nodes (name) VALUES (?)",
+            [(f"sym_{i}",) for i in range(node_count)],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _make_code_project(
+    tmp_path: Path, *, with_codegraph: bool = False, node_count: int = 5
+) -> Path:
+    """Create a minimal code project directory.
+
+    When *with_codegraph* is set, the ``.codegraph/`` index is populated with a
+    ``codegraph.db`` holding *node_count* nodes — a non-empty (usable) index by
+    default, matching what ``codegraph init -i`` produces. Pass ``node_count=0``
+    to simulate the present-but-never-indexed state a bare ``codegraph init``
+    leaves behind.
+    """
     (tmp_path / ".git").mkdir()
     if with_codegraph:
         cg = tmp_path / ".codegraph"
         cg.mkdir()
+        _write_codegraph_db(cg, node_count=node_count)
         # Set mtime to now so it appears fresh.
         now = time.time()
         import os
@@ -230,6 +259,72 @@ class TestProbeCodegraph:
     def test_returns_readiness_type(self, tmp_path):
         r = probe_codegraph(tmp_path)
         assert isinstance(r, Readiness)
+
+    def test_empty_index_reported_not_present(self, tmp_path):
+        # A present-but-never-indexed .codegraph (bare `init`, 0 nodes) must be
+        # reported as not-present so the orchestrator offers to (re-)index
+        # rather than steering Claude to an empty graph.
+        _make_code_project(tmp_path, with_codegraph=True, node_count=0)
+        r = probe_codegraph(tmp_path)
+        assert r.present is False
+        assert r.fresh is False
+        assert "0 nodes" in r.detail
+
+    def test_missing_db_reported_not_present(self, tmp_path):
+        # .codegraph/ dir without a codegraph.db is an unusable scaffold.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".codegraph").mkdir()
+        r = probe_codegraph(tmp_path)
+        assert r.present is False
+
+    def test_populated_index_reports_node_count(self, tmp_path):
+        _make_code_project(tmp_path, with_codegraph=True, node_count=7)
+        r = probe_codegraph(tmp_path)
+        assert r.present is True
+        assert "7 nodes" in r.detail
+
+    def test_unreadable_db_preserves_legacy_presence(self, tmp_path):
+        # Unexpected schema → count is unknown (None) → do NOT downgrade; a future
+        # codegraph schema change must never make the probe nag.
+        (tmp_path / ".git").mkdir()
+        cg = tmp_path / ".codegraph"
+        cg.mkdir()
+        import sqlite3
+        con = sqlite3.connect(cg / "codegraph.db")
+        try:
+            con.execute("CREATE TABLE not_nodes (id INTEGER)")
+            con.commit()
+        finally:
+            con.close()
+        r = probe_codegraph(tmp_path)
+        assert r.present is True
+
+
+class TestCodegraphNodeCount:
+    def test_missing_db_is_zero(self, tmp_path):
+        from skill_hub.orchestrator import engine as eng
+        (tmp_path / ".codegraph").mkdir()
+        assert eng._codegraph_node_count(tmp_path / ".codegraph") == 0
+
+    def test_counts_populated_nodes(self, tmp_path):
+        from skill_hub.orchestrator import engine as eng
+        cg = tmp_path / ".codegraph"
+        cg.mkdir()
+        _write_codegraph_db(cg, node_count=4)
+        assert eng._codegraph_node_count(cg) == 4
+
+    def test_unexpected_schema_is_none(self, tmp_path):
+        from skill_hub.orchestrator import engine as eng
+        import sqlite3
+        cg = tmp_path / ".codegraph"
+        cg.mkdir()
+        con = sqlite3.connect(cg / "codegraph.db")
+        try:
+            con.execute("CREATE TABLE other (id INTEGER)")
+            con.commit()
+        finally:
+            con.close()
+        assert eng._codegraph_node_count(cg) is None
 
 
 # ---------------------------------------------------------------------------
