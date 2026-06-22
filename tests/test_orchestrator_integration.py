@@ -89,6 +89,14 @@ def _orch_enabled_config(**extra):
     })
 
 
+def _mark_index_stale(tmp_path: Path) -> None:
+    """Backdate the db and drop a newer ``.dirty`` so the index reads as stale."""
+    cg = tmp_path / ".codegraph"
+    now = time.time()
+    os.utime(cg / "codegraph.db", (now - 30, now - 30))
+    (cg / ".dirty").write_text(str(int(now * 1000)))
+
+
 # ---------------------------------------------------------------------------
 # 1. Route injection — missing index (offer path)
 # ---------------------------------------------------------------------------
@@ -202,12 +210,17 @@ class TestRouteInjectionPresentIndex:
 
     def test_refresh_action_queued(self, tmp_path, monkeypatch):
         _make_code_project(tmp_path, with_codegraph=True)
+        _mark_index_stale(tmp_path)  # only a stale index warrants an auto-sync
         _engine._probe_cache.clear()
         _engine._last_dispatch.clear()
 
         dispatched: list[list[str]] = []
 
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
+        # "everywhere" mode authorises the auto-sync (offer mode would only surface it).
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            _orch_enabled_config(orchestrator_mode="everywhere"),
+        )
 
         def _recording_dispatch(actions: list[list[str]]) -> None:
             dispatched.extend(actions)
@@ -245,8 +258,13 @@ class TestRouteInjectionPresentIndex:
     def test_refresh_argv_shape(self, tmp_path, monkeypatch):
         """The queued refresh argv must contain 'codegraph' and 'sync'."""
         _make_code_project(tmp_path, with_codegraph=True)
+        _mark_index_stale(tmp_path)
         _engine._probe_cache.clear()
         _engine._last_dispatch.clear()
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            _orch_enabled_config(orchestrator_mode="everywhere"),
+        )
 
         result = evaluate(
             str(tmp_path),

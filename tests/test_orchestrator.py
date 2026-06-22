@@ -243,10 +243,11 @@ class TestProbeCodegraph:
     def test_stale_when_old(self, tmp_path, monkeypatch):
         _make_code_project(tmp_path, with_codegraph=True)
         import os
-        # Backdate the .codegraph dir by 1000 seconds
+        # Freshness is measured from the db build time, so backdate the db file
+        # (not the directory) by 1000s past the 300s TTL.
         old_time = time.time() - 1000
-        cg = tmp_path / ".codegraph"
-        os.utime(cg, (old_time, old_time))
+        db = tmp_path / ".codegraph" / "codegraph.db"
+        os.utime(db, (old_time, old_time))
         monkeypatch.setattr(
             "skill_hub.config.get",
             lambda k: 300 if k == "orchestrator_sync_ttl_secs" else None,
@@ -255,6 +256,45 @@ class TestProbeCodegraph:
         assert r.present is True
         assert r.fresh is False
         assert r.stale_age is not None and r.stale_age > 300
+
+    def test_stale_when_dirty_after_index(self, tmp_path, monkeypatch):
+        # A .dirty marker newer than the db means source changed since the last
+        # index build — stale regardless of how recent the build was.
+        _make_code_project(tmp_path, with_codegraph=True)
+        import os
+        cg = tmp_path / ".codegraph"
+        now = time.time()
+        # Index built 5s ago (well within any TTL)...
+        os.utime(cg / "codegraph.db", (now - 5, now - 5))
+        # ...but a file was edited 1s ago, after that build.
+        (cg / ".dirty").write_text(str(int((now - 1) * 1000)))
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            lambda k: 300 if k == "orchestrator_sync_ttl_secs" else None,
+        )
+        r = probe_codegraph(tmp_path)
+        assert r.present is True
+        assert r.fresh is False
+        assert r.pending_edits is not None and r.pending_edits > 0
+        assert "needs sync" in r.detail
+
+    def test_fresh_when_dirty_before_index(self, tmp_path, monkeypatch):
+        # A .dirty marker OLDER than the db means the index already absorbed the
+        # last edit — fresh.
+        _make_code_project(tmp_path, with_codegraph=True)
+        import os
+        cg = tmp_path / ".codegraph"
+        now = time.time()
+        os.utime(cg / "codegraph.db", (now, now))
+        (cg / ".dirty").write_text(str(int((now - 100) * 1000)))
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            lambda k: 300 if k == "orchestrator_sync_ttl_secs" else None,
+        )
+        r = probe_codegraph(tmp_path)
+        assert r.present is True
+        assert r.fresh is True
+        assert r.pending_edits == 0.0
 
     def test_returns_readiness_type(self, tmp_path):
         r = probe_codegraph(tmp_path)
@@ -325,6 +365,199 @@ class TestCodegraphNodeCount:
         finally:
             con.close()
         assert eng._codegraph_node_count(cg) is None
+
+
+class TestWorktreeMismatch:
+    """A linked worktree borrowing an ancestor checkout's index is the silent
+    wrong-branch trap — the probe must flag it distinctly."""
+
+    def _make_worktree_under_indexed_main(self, tmp_path):
+        # Main checkout: .git DIR + populated .codegraph/.
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / ".git").mkdir()
+        cg = main / ".codegraph"
+        cg.mkdir()
+        _write_codegraph_db(cg, node_count=5)
+        # Linked worktree nested under main: .git FILE, no .codegraph of its own.
+        wt = main / ".worktrees" / "feature"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /somewhere/.git/worktrees/feature\n")
+        return main, wt
+
+    def test_worktree_with_ancestor_index_is_flagged(self, tmp_path):
+        main, wt = self._make_worktree_under_indexed_main(tmp_path)
+        r = probe_codegraph(wt)
+        assert r.present is False
+        assert r.worktree_mismatch is True
+        assert r.ancestor_index == str(main / ".codegraph")
+        assert "worktree" in r.detail
+
+    def test_main_checkout_is_not_flagged_as_worktree(self, tmp_path):
+        main, _ = self._make_worktree_under_indexed_main(tmp_path)
+        r = probe_codegraph(main)
+        assert r.present is True
+        assert r.worktree_mismatch is False
+
+    def test_plain_missing_index_is_not_worktree_mismatch(self, tmp_path):
+        # A normal project (no .git FILE, no ancestor index) → generic missing.
+        _make_code_project(tmp_path, with_codegraph=False)
+        r = probe_codegraph(tmp_path)
+        assert r.present is False
+        assert r.worktree_mismatch is False
+
+    def test_worktree_directive_warns_and_offers_local_index(self, tmp_path):
+        from skill_hub.orchestrator.registry import CODEGRAPH
+        _, wt = self._make_worktree_under_indexed_main(tmp_path)
+        r = probe_codegraph(wt)
+        directive = CODEGRAPH.format_directive_missing(wt, r)
+        assert "worktree" in directive
+        assert "init -i" in directive
+        assert "offer" in directive.lower()
+
+
+# ---------------------------------------------------------------------------
+# Mode resolution
+# ---------------------------------------------------------------------------
+
+def _fake_get(overrides: dict):
+    """A config.get-style accessor over defaults + overrides."""
+    from skill_hub import config as _cfg
+    merged = _cfg._DEFAULTS.copy()
+    merged.update(overrides)
+    return lambda k: merged.get(k)
+
+
+class TestResolveMode:
+    def test_explicit_mode_wins(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        for m in ("off", "offer", "auto", "everywhere"):
+            assert resolve_mode(_fake_get({"orchestrator_mode": m})) == m
+
+    def test_explicit_mode_case_insensitive(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({"orchestrator_mode": "AUTO"})) == "auto"
+
+    def test_invalid_mode_falls_back_to_derivation(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        # garbage mode + plain enabled config -> derived "offer"
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": "banana",
+            "orchestrator_enabled": True,
+            "orchestrator_auto_init": False,
+            "orchestrator_auto_init_roots": [],
+        })) == "offer"
+
+    def test_derive_off_when_disabled(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": False,
+        })) == "off"
+
+    def test_derive_everywhere_from_legacy_auto_init(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": True,
+        })) == "everywhere"
+
+    def test_derive_auto_from_legacy_roots(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": False,
+            "orchestrator_auto_init_roots": ["/some/root"],
+        })) == "auto"
+
+    def test_derive_offer_default(self):
+        from skill_hub.orchestrator.engine import resolve_mode
+        assert resolve_mode(_fake_get({
+            "orchestrator_mode": None, "orchestrator_enabled": True,
+            "orchestrator_auto_init": False, "orchestrator_auto_init_roots": [],
+        })) == "offer"
+
+
+class TestRootUnderParents:
+    def test_exact_match(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(tmp_path, {tmp_path}) is True
+
+    def test_nested_child(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        child = tmp_path / "a" / "b"
+        assert _root_under_parents(child, {tmp_path}) is True
+
+    def test_sibling_prefix_does_not_match(self):
+        # /work/code must NOT match /work/codex — boundary guard.
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(Path("/work/codex"), {Path("/work/code")}) is False
+
+    def test_unrelated_does_not_match(self):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(Path("/elsewhere"), {Path("/work/code")}) is False
+
+    def test_empty_parents_never_matches(self, tmp_path):
+        from skill_hub.orchestrator.engine import _root_under_parents
+        assert _root_under_parents(tmp_path, set()) is False
+
+
+class TestEvaluateModes:
+    """End-to-end mode behaviour through evaluate()."""
+
+    def _setup(self, monkeypatch, overrides):
+        monkeypatch.setattr("skill_hub.config.get", _fake_get(overrides))
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.engine.dispatch_async", lambda actions: None
+        )
+        _engine._probe_cache.clear()
+
+    def test_off_mode_returns_empty(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "off"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert result.directive == ""
+        assert result.provision_actions == []
+        assert result.decisions == []
+
+    def test_offer_mode_offers_no_init(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "offer"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert result.directive != ""
+        assert [a for a in result.provision_actions if "init" in a] == []
+
+    def test_everywhere_mode_queues_init(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {"orchestrator_mode": "everywhere"})
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a], (
+            f"expected init action, got {result.provision_actions}"
+        )
+
+    def test_auto_mode_inits_when_under_parent(self, tmp_path, monkeypatch):
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        _make_code_project(proj)
+        self._setup(monkeypatch, {
+            "orchestrator_mode": "auto",
+            "orchestrator_auto_init_roots": [str(tmp_path)],  # parent of proj
+        })
+        result = evaluate(str(proj), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a], (
+            "project under an auto-init parent should queue init"
+        )
+
+    def test_auto_mode_offers_when_outside_parent(self, tmp_path, monkeypatch):
+        _make_code_project(tmp_path)
+        self._setup(monkeypatch, {
+            "orchestrator_mode": "auto",
+            "orchestrator_auto_init_roots": ["/some/other/place"],
+        })
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "init" in a] == [], (
+            "project outside every auto-init parent must only offer"
+        )
+        assert result.directive != ""
 
 
 # ---------------------------------------------------------------------------
@@ -405,32 +638,67 @@ class TestAutonomyPolicy:
             f"expected an init action in provision_actions, got: {result.provision_actions}"
         )
 
-    def test_present_index_always_queues_refresh(self, tmp_path, monkeypatch):
-        """When the index is present, a refresh must be queued regardless of
-        the auto_init setting."""
+    def _mark_stale(self, tmp_path):
+        """Make a present index read as stale (source edited after the build)."""
+        import os
+        cg = tmp_path / ".codegraph"
+        now = time.time()
+        os.utime(cg / "codegraph.db", (now - 30, now - 30))
+        (cg / ".dirty").write_text(str(int(now * 1000)))
+
+    def test_present_fresh_index_queues_no_refresh(self, tmp_path, monkeypatch):
+        """A fresh, trustworthy index needs no sync — no action queued."""
         _make_code_project(tmp_path, with_codegraph=True)
         _engine._probe_cache.clear()
-
+        _engine._last_dispatch.clear()
         monkeypatch.setattr(
             "skill_hub.config.get",
-            self._config_get({
-                "orchestrator_enabled": True,
-                "orchestrator_auto_init": False,
-                "orchestrator_auto_init_roots": [],
-                "orchestrator_sync_ttl_secs": 300,
-                "orchestrator_probe_cache_secs": 60,
-            }),
+            self._config_get({"orchestrator_mode": "everywhere",
+                              "orchestrator_sync_ttl_secs": 300}),
         )
-        # Patch subprocess.Popen so nothing actually runs.
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: None)
-        # Reset debounce so the refresh isn't skipped.
-        _engine._last_dispatch.clear()
 
         result = evaluate(str(tmp_path), "explore the code")
-        refresh_actions = [a for a in result.provision_actions if "sync" in a]
-        assert refresh_actions, (
-            f"expected a refresh action in provision_actions, got: {result.provision_actions}"
+        assert [a for a in result.provision_actions if "sync" in a] == [], (
+            f"fresh index should not queue a sync, got: {result.provision_actions}"
         )
+
+    def test_stale_index_auto_syncs_in_everywhere_mode(self, tmp_path, monkeypatch):
+        """A stale index auto-syncs when the mode permits it."""
+        _make_code_project(tmp_path, with_codegraph=True)
+        self._mark_stale(tmp_path)
+        _engine._probe_cache.clear()
+        _engine._last_dispatch.clear()
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            self._config_get({"orchestrator_mode": "everywhere",
+                              "orchestrator_sync_ttl_secs": 300}),
+        )
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: None)
+
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "sync" in a], (
+            f"stale index in everywhere mode must queue a sync, got: {result.provision_actions}"
+        )
+
+    def test_stale_index_offers_only_in_offer_mode(self, tmp_path, monkeypatch):
+        """In offer mode a stale index surfaces a directive but auto-runs nothing."""
+        _make_code_project(tmp_path, with_codegraph=True)
+        self._mark_stale(tmp_path)
+        _engine._probe_cache.clear()
+        _engine._last_dispatch.clear()
+        monkeypatch.setattr(
+            "skill_hub.config.get",
+            self._config_get({"orchestrator_mode": "offer",
+                              "orchestrator_sync_ttl_secs": 300}),
+        )
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: None)
+
+        result = evaluate(str(tmp_path), "explore the code")
+        assert [a for a in result.provision_actions if "sync" in a] == [], (
+            "offer mode must not auto-run sync"
+        )
+        assert "STALE" in result.directive and "sync" in result.directive
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from .routes import memory as memory_routes
 from .routes import intents as intents_routes
 from .routes import logs as logs_routes
 from .routes import questions as questions_routes
+from .routes import orchestrator_settings as orchestrator_settings_routes
 from .routes import settings as settings_routes
 from .routes import skills as skills_routes
 from .routes import task_logs as task_logs_routes
@@ -204,6 +205,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(control_routes.router)
     app.include_router(control_plugins_routes.router)
     app.include_router(settings_routes.router)
+    app.include_router(orchestrator_settings_routes.router)
     app.include_router(verdicts_routes.router)
     app.include_router(tasks_routes.router)
     app.include_router(task_logs_routes.router)

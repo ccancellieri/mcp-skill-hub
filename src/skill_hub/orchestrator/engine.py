@@ -35,12 +35,25 @@ class Readiness:
         fresh:      The index is recent enough to be trusted.
         stale_age:  Seconds since the index was last updated, or None if unknown.
         detail:     Human-readable explanation (for logging and directives).
+        worktree_mismatch: *root* is a git worktree with no index of its own, and
+                    the only reachable index belongs to a different checkout
+                    (found by walking up the directory tree). Querying it would
+                    return that other tree's branch, not this worktree's.
+        ancestor_index: Path (as str) to the ancestor ``.codegraph/`` that would
+                    be (mis)used when ``worktree_mismatch`` is True; else None.
+        pending_edits: Seconds between the last source edit (codegraph's
+                    ``.dirty`` marker) and the last index build. >0 means the
+                    index is behind the working tree and a ``sync`` is due.
+                    None when no reliable dirty marker is available.
     """
 
     present: bool
     fresh: bool
     stale_age: float | None
     detail: str
+    worktree_mismatch: bool = False
+    ancestor_index: str | None = None
+    pending_edits: float | None = None
 
 
 @dataclass
@@ -80,8 +93,70 @@ _CODEGRAPH_DIR = ".codegraph"
 # SQLite database file inside the index directory.
 _CODEGRAPH_DB = "codegraph.db"
 
+# Marker file codegraph's file-watch hook rewrites (a millisecond epoch) on every
+# source edit. Comparing it against the db build time tells us whether the index
+# is behind the working tree — the only freshness signal that survives edits the
+# orchestrator never saw.
+_CODEGRAPH_DIRTY = ".dirty"
+
 # Default sync TTL in seconds (overridden by config at call sites).
 _DEFAULT_SYNC_TTL = 300.0
+
+
+def _read_dirty_ts(index_dir: Path) -> float | None:
+    """Return the last-edit timestamp (epoch seconds) from codegraph's ``.dirty``.
+
+    codegraph writes a millisecond epoch into ``.codegraph/.dirty`` whenever a
+    tracked source file changes. We normalise it to seconds. Falls back to the
+    marker file's own mtime if the contents are unparseable, and returns ``None``
+    when there is no marker at all (older codegraph, or hook not installed) so the
+    caller drops back to the age-vs-TTL heuristic.
+    """
+    dirty = index_dir / _CODEGRAPH_DIRTY
+    try:
+        if not dirty.exists():
+            return None
+        raw = dirty.read_text().strip()
+        if raw:
+            val = float(raw)
+            # Heuristic: values past ~2001-in-ms are millisecond epochs.
+            return val / 1000.0 if val > 1e12 else val
+    except Exception:
+        pass
+    try:
+        return dirty.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _is_git_worktree(root: Path) -> bool:
+    """True when *root* is a *linked* git worktree (its ``.git`` is a file).
+
+    A primary checkout has a ``.git`` directory; a linked worktree has a ``.git``
+    *file* containing a ``gitdir:`` pointer. That distinction is exactly what lets
+    us warn when a worktree would silently borrow another checkout's index.
+    """
+    try:
+        return (root / ".git").is_file()
+    except OSError:
+        return False
+
+
+def _ancestor_codegraph(root: Path) -> Path | None:
+    """Return the nearest ancestor ``.codegraph/`` (with a db), or None.
+
+    codegraph resolves a query by walking up to the first ``.codegraph/`` it
+    finds, so a worktree with none of its own silently answers from whichever
+    ancestor checkout has one. We reproduce that walk to detect the trap.
+    """
+    for parent in root.parents:
+        cg = parent / _CODEGRAPH_DIR
+        try:
+            if cg.is_dir() and (cg / _CODEGRAPH_DB).exists():
+                return cg
+        except OSError:
+            continue
+    return None
 
 
 def _codegraph_node_count(index_dir: Path) -> int | None:
@@ -132,16 +207,26 @@ def probe_codegraph(root: Path) -> Readiness:
     """
     index_dir = root / _CODEGRAPH_DIR
     if not index_dir.exists():
+        # A linked worktree with no index of its own is the silent-wrong-answer
+        # trap: codegraph walks up and answers from the ancestor checkout's
+        # index, i.e. a different branch. Surface that distinctly so the
+        # orchestrator can offer a worktree-local index instead of a bare
+        # "not indexed" nudge.
+        if _is_git_worktree(root):
+            ancestor = _ancestor_codegraph(root)
+            if ancestor is not None:
+                return Readiness(
+                    present=False, fresh=False, stale_age=None,
+                    detail=(
+                        f"{root} is a git worktree with no index of its own; the "
+                        f"reachable index at {ancestor} belongs to a different "
+                        f"checkout/branch — queries would read that tree, not this one"
+                    ),
+                    worktree_mismatch=True,
+                    ancestor_index=str(ancestor),
+                )
         return Readiness(present=False, fresh=False, stale_age=None,
                          detail=f"{_CODEGRAPH_DIR} not found under {root}")
-
-    try:
-        index_mtime = index_dir.stat().st_mtime
-    except OSError as exc:
-        return Readiness(present=True, fresh=False, stale_age=None,
-                         detail=f"stat failed: {exc}")
-
-    stale_age = time.time() - index_mtime
 
     # Reject a present-but-empty index. Only a *confirmed* zero count downgrades
     # presence; an unknown count (None) preserves the legacy presence behaviour.
@@ -150,9 +235,22 @@ def probe_codegraph(root: Path) -> Readiness:
         return Readiness(
             present=False,
             fresh=False,
-            stale_age=stale_age,
+            stale_age=None,
             detail=f"{_CODEGRAPH_DIR} present but empty (0 nodes) — needs indexing",
         )
+
+    # "Last indexed" = the db build time, not the directory mtime. The directory
+    # mtime moves whenever codegraph touches its sidecar files (.dirty, -wal),
+    # so it would read "fresh" while the actual graph is days old. The db file
+    # mtime is the honest signal.
+    db_path = index_dir / _CODEGRAPH_DB
+    try:
+        db_mtime = db_path.stat().st_mtime
+    except OSError as exc:
+        return Readiness(present=True, fresh=False, stale_age=None,
+                         detail=f"stat failed: {exc}")
+
+    index_age = time.time() - db_mtime
 
     try:
         from .. import config as _cfg
@@ -161,13 +259,32 @@ def probe_codegraph(root: Path) -> Readiness:
     except Exception:
         sync_ttl = _DEFAULT_SYNC_TTL
 
-    fresh = stale_age <= sync_ttl
     count_str = f", {node_count} nodes" if node_count else ""
+
+    # Definitive staleness: source edited *after* the index was built. This beats
+    # the age heuristic — an index touched 10s ago is still stale if a file
+    # changed 5s ago.
+    dirty_ts = _read_dirty_ts(index_dir)
+    if dirty_ts is not None and dirty_ts > db_mtime + 1.0:
+        pending = dirty_ts - db_mtime
+        return Readiness(
+            present=True,
+            fresh=False,
+            stale_age=index_age,
+            detail=(
+                f"index built {int(index_age)}s ago but source edited "
+                f"{int(pending)}s later — needs sync{count_str}"
+            ),
+            pending_edits=pending,
+        )
+
+    fresh = index_age <= sync_ttl
     return Readiness(
         present=True,
         fresh=fresh,
-        stale_age=stale_age,
-        detail=f"index age {int(stale_age)}s (ttl {int(sync_ttl)}s){count_str}",
+        stale_age=index_age,
+        detail=f"index age {int(index_age)}s (ttl {int(sync_ttl)}s){count_str}",
+        pending_edits=0.0 if dirty_ts is not None else None,
     )
 
 
@@ -277,6 +394,69 @@ def dispatch_async(actions: list[list[str]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolution
+# ---------------------------------------------------------------------------
+
+# The four behaviours the orchestrator can be in. ``orchestrator_mode`` is the
+# single source of truth; the legacy boolean keys derive a mode only when it is
+# unset, so pre-existing configs keep their behaviour.
+VALID_MODES = ("off", "offer", "auto", "everywhere")
+
+
+def resolve_mode(get=None) -> str:
+    """Resolve the effective orchestrator mode.
+
+    A valid ``orchestrator_mode`` string wins. When it is absent (``None``) the
+    mode is derived from the legacy keys so existing configs are unchanged:
+
+        orchestrator_enabled is False          -> "off"
+        orchestrator_auto_init is True          -> "everywhere"
+        orchestrator_auto_init_roots non-empty  -> "auto"
+        otherwise                               -> "offer"
+
+    *get* is an injectable ``config.get``-style accessor (defaults to the real
+    one); the indirection keeps the function trivially testable.
+    """
+    if get is None:
+        from .. import config as _cfg
+        get = _cfg.get
+    try:
+        raw = get("orchestrator_mode")
+        if isinstance(raw, str) and raw.lower() in VALID_MODES:
+            return raw.lower()
+    except Exception:
+        pass
+    try:
+        if not get("orchestrator_enabled"):
+            return "off"
+        if get("orchestrator_auto_init"):
+            return "everywhere"
+        roots = get("orchestrator_auto_init_roots") or []
+        if isinstance(roots, list) and len(roots) > 0:
+            return "auto"
+    except Exception:
+        pass
+    return "offer"
+
+
+def _root_under_parents(root: Path, parents: set[Path]) -> bool:
+    """True when *root* equals or is nested under any folder in *parents*.
+
+    A path-boundary guard prevents ``/work/code`` from matching ``/work/codex``:
+    nesting requires the parent to be an actual ancestor directory.
+    """
+    for parent in parents:
+        if root == parent:
+            return True
+        try:
+            root.relative_to(parent)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Core evaluate
 # ---------------------------------------------------------------------------
 
@@ -298,9 +478,7 @@ def evaluate(
     - ``provision_actions``: argv lists collected for async dispatch by the caller.
     """
     try:
-        from .. import config as _cfg
-        enabled = _cfg.get("orchestrator_enabled")
-        if not enabled:
+        if resolve_mode() == "off":
             return OrchestratorResult()
     except Exception:
         pass  # if config is unreachable, proceed anyway
@@ -324,21 +502,25 @@ def _evaluate_inner(
 
     try:
         from .. import config as _cfg
-        auto_init_global: bool = bool(_cfg.get("orchestrator_auto_init"))
+        mode = resolve_mode(_cfg.get)
         auto_init_roots_raw = _cfg.get("orchestrator_auto_init_roots") or []
         _pct = _cfg.get("orchestrator_probe_cache_secs")
         probe_cache_ttl = float(_pct if _pct is not None else 60.0)
     except Exception:
-        auto_init_global = False
+        mode = "offer"
         auto_init_roots_raw = []
         probe_cache_ttl = 60.0
 
-    auto_init_roots: set[Path] = set()
-    for r in (auto_init_roots_raw if isinstance(auto_init_roots_raw, list) else []):
-        try:
-            auto_init_roots.add(Path(r).expanduser().resolve())
-        except Exception:
-            pass
+    # "everywhere" auto-inits any eligible project; "auto" only those under a
+    # configured parent folder; "offer" never auto-inits.
+    auto_init_global = mode == "everywhere"
+    auto_init_parents: set[Path] = set()
+    if mode == "auto":
+        for r in (auto_init_roots_raw if isinstance(auto_init_roots_raw, list) else []):
+            try:
+                auto_init_parents.add(Path(r).expanduser().resolve())
+            except Exception:
+                pass
 
     targets = resolve_targets(cwd, message)
 
@@ -388,16 +570,25 @@ def _evaluate_inner(
             directive_text = ""
 
             if readiness.present:
-                # Index exists — always queue a TTL-debounced refresh.
-                try:
-                    argv = cap.provision_refresh(root)
-                    if argv:
-                        provision_actions.append(argv)
-                        action_taken = "refresh_queued"
-                    else:
-                        action_taken = "tool_unavailable"
-                except Exception as exc:
-                    logger.debug("cap %s provision_refresh failed for %s: %s", cap.id, root, exc)
+                # Auto-running `sync` is an action, so it follows the same
+                # autonomy gate as init: only in "everywhere", or in "auto" for a
+                # root under a configured parent. "offer" surfaces a stale index
+                # but leaves the sync for the human to run.
+                may_auto = auto_init_global or _root_under_parents(root, auto_init_parents)
+                if readiness.fresh:
+                    action_taken = "none"  # index trustworthy — nothing to do
+                elif may_auto:
+                    try:
+                        argv = cap.provision_refresh(root)
+                        if argv:
+                            provision_actions.append(argv)
+                            action_taken = "refresh_queued"
+                        else:
+                            action_taken = "tool_unavailable"
+                    except Exception as exc:
+                        logger.debug("cap %s provision_refresh failed for %s: %s", cap.id, root, exc)
+                else:
+                    action_taken = "refresh_offer"  # stale; human-initiated sync
 
                 try:
                     directive_text = cap.format_directive_ready(root, readiness)
@@ -405,7 +596,7 @@ def _evaluate_inner(
                     logger.debug("cap %s directive_ready failed for %s: %s", cap.id, root, exc)
             else:
                 # Index absent — check autonomy policy.
-                may_auto_init = auto_init_global or (root in auto_init_roots)
+                may_auto_init = auto_init_global or _root_under_parents(root, auto_init_parents)
                 if may_auto_init:
                     try:
                         argv = cap.provision_init(root)

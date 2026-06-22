@@ -2,6 +2,119 @@
 {% block title %}settings{% endblock %}
 {% block content %}
 <style>
+  /* ── Orchestrator panel ───────────────────────────────────────────────── */
+  .orch-panel { display: flex; flex-direction: column; gap: 20px; }
+
+  .orch-status-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: rgba(58,160,255,0.06);
+    border: 1px solid rgba(58,160,255,0.18);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+  }
+  .orch-status-label { color: var(--color-muted); }
+  .orch-mode-badge {
+    display: inline-flex; align-items: center;
+    padding: 2px 10px; border-radius: 12px; font-size: 11px;
+    font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    background: rgba(58,160,255,0.18); color: var(--color-accent);
+  }
+  .orch-mode-badge.mode-off { background: rgba(224,85,85,0.16); color: var(--color-bad); }
+  .orch-mode-badge.mode-offer { background: rgba(232,166,75,0.18); color: var(--color-warn); }
+  .orch-mode-badge.mode-auto { background: rgba(58,160,255,0.18); color: var(--color-accent); }
+  .orch-mode-badge.mode-everywhere { background: rgba(74,211,107,0.16); color: var(--color-good); }
+
+  /* Mode selector */
+  .orch-modes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  @media (max-width: 600px) { .orch-modes { grid-template-columns: 1fr; } }
+
+  .orch-mode-card {
+    position: relative;
+    display: flex; flex-direction: column; gap: 5px;
+    padding: 11px 13px;
+    border-radius: var(--radius-md);
+    border: 2px solid var(--color-border);
+    background: var(--color-surface);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    user-select: none;
+  }
+  .orch-mode-card input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    width: 0; height: 0;
+    pointer-events: none;
+  }
+  .orch-mode-card:hover { border-color: rgba(58,160,255,0.35); }
+  .orch-mode-card.selected { border-color: var(--color-accent); background: rgba(58,160,255,0.07); }
+  .orch-mode-card.selected[data-mode="off"] { border-color: var(--color-bad); background: rgba(224,85,85,0.06); }
+  .orch-mode-card.selected[data-mode="offer"] { border-color: var(--color-warn); background: rgba(232,166,75,0.06); }
+  .orch-mode-card.selected[data-mode="everywhere"] { border-color: var(--color-good); background: rgba(74,211,107,0.06); }
+
+  .orch-mode-name {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 700; color: var(--color-fg);
+  }
+  .orch-mode-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--color-muted);
+  }
+  .orch-mode-card.selected[data-mode="off"] .orch-mode-dot { background: var(--color-bad); }
+  .orch-mode-card.selected[data-mode="offer"] .orch-mode-dot { background: var(--color-warn); }
+  .orch-mode-card.selected[data-mode="auto"] .orch-mode-dot { background: var(--color-accent); }
+  .orch-mode-card.selected[data-mode="everywhere"] .orch-mode-dot { background: var(--color-good); }
+
+  .orch-mode-desc { font-size: 11px; color: var(--color-muted); line-height: 1.5; }
+  .orch-mode-card.selected .orch-mode-desc { color: var(--color-fg); }
+
+  /* Folder editor */
+  .orch-roots-wrap {
+    display: flex; flex-direction: column; gap: 8px;
+    transition: opacity 0.2s;
+  }
+  .orch-roots-wrap.dimmed { opacity: 0.38; pointer-events: none; }
+  .orch-roots-label {
+    font-size: 11px; font-weight: 700; color: var(--color-muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .orch-roots-badge {
+    font-size: 10px; font-weight: 500; padding: 1px 7px;
+    border-radius: 8px; background: rgba(58,160,255,0.14); color: var(--color-accent);
+    text-transform: none; letter-spacing: 0;
+  }
+  .orch-roots-hint { font-size: 11px; color: var(--color-muted); line-height: 1.5; }
+  .orch-roots-textarea {
+    width: 100%;
+    min-height: 90px;
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    background: #070c11;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-fg);
+    padding: 8px 10px;
+    resize: vertical;
+    line-height: 1.6;
+    transition: border-color 0.15s;
+  }
+  .orch-roots-textarea:focus { outline: none; border-color: var(--color-accent); }
+  .orch-roots-textarea:disabled { opacity: 0.38; }
+
+  /* Save row */
+  .orch-save-row {
+    display: flex; align-items: center; gap: 10px; padding-top: 4px;
+  }
+  .orch-save-status { font-size: 12px; min-width: 0; }
+  .orch-save-status .status.ok  { color: var(--color-good); }
+  .orch-save-status .status.err { color: var(--color-bad); }
+  .orch-saving-txt {
+    font-size: 11px; color: var(--color-muted);
+    opacity: 0; transition: opacity 0.15s; white-space: nowrap;
+  }
+  .htmx-request .orch-saving-txt { opacity: 1 !important; }
+
   /* ── Layout ──────────────────────────────────────────────────────────── */
   .settings-wrap {
     display: grid;
@@ -255,13 +368,8 @@
   <span class="muted" style="font-size:12px;font-weight:400">— <code>~/.claude/mcp-skill-hub/config.json</code></span>
 </div>
 
-<form hx-post="/settings/save"
-      hx-target="#s-save-out"
-      hx-swap="innerHTML"
-      hx-trigger="change delay:1200ms, submit"
-      hx-indicator=".s-saving-txt"
-      x-data="settingsPage('{{ ns.first }}')"
-      @htmx:after-swap.window="onSaved()">
+{# Orchestrator panel uses its own form with a separate POST endpoint. #}
+<div x-data="settingsPage('__orchestrator__')" style="display:contents">
 
   <div class="settings-wrap">
 
@@ -275,6 +383,16 @@
                type="text">
       </div>
       <div class="s-nav-list">
+        {# ── Orchestrator entry (always first) ── #}
+        <div class="s-nav-group" x-show="!navQ">Orchestrator</div>
+        <div class="s-nav-item"
+             :class="{ active: active === '__orchestrator__' }"
+             x-show="!navQ || 'tooling orchestrator'.includes(navQ.toLowerCase())"
+             @click="switchSection('__orchestrator__')">
+          <span>Tooling Orchestrator</span>
+          <span class="s-nav-badge">1</span>
+        </div>
+
         {% set ns2 = namespace(last_group='') %}
         {% for prefix, label in buckets %}
           {% set entries = groups[prefix] %}
@@ -298,11 +416,18 @@
     {# ── Right panel ── #}
     <div class="s-panel">
       <div class="s-panel-head">
+        {# Orchestrator header #}
+        <div class="s-panel-title-area"
+             x-show="active === '__orchestrator__'">
+          <div class="s-panel-title">Tooling Orchestrator</div>
+          <div class="s-panel-help">Controls when and how the orchestrator indexes code projects for CodeGraph and similar tools. Choose a mode that matches your autonomy preferences.</div>
+        </div>
+
         {% for prefix, label in buckets %}
           {% if groups[prefix] %}
             <div class="s-panel-title-area"
                  x-show="active === '{{ prefix }}'"
-                 {% if prefix != ns.first %}style="display:none"{% endif %}>
+                 style="display:none">
               <div class="s-panel-title" style="display:flex;align-items:center;gap:7px">
                 {{ label }}
                 {% if bucket_help and bucket_help[prefix] %}
@@ -319,22 +444,174 @@
             </div>
           {% endif %}
         {% endfor %}
-        <div class="s-panel-actions">
+
+        {# Actions area — orchestrator has its own save; generic settings keep theirs #}
+        <div class="s-panel-actions" x-show="active === '__orchestrator__'">
+          <span class="orch-saving-txt">Saving…</span>
+          <div class="orch-save-status" style="opacity:0" id="orch-save-wrap">
+            <div id="orch-save-out"></div>
+          </div>
+          <button type="button"
+                  class="btn sm"
+                  hx-post="/settings/orchestrator"
+                  hx-include="#orch-form"
+                  hx-target="#orch-save-out"
+                  hx-swap="innerHTML"
+                  hx-indicator=".orch-saving-txt"
+                  @htmx:after-swap.window="orchOnSaved()">Save</button>
+        </div>
+
+        <div class="s-panel-actions" x-show="active !== '__orchestrator__'">
           <span class="s-saving-txt">Saving…</span>
           <div class="s-save-status" style="opacity:0">
             <div id="s-save-out"></div>
           </div>
-          <button type="submit" class="btn sm">Save</button>
+          <button type="submit" form="settings-generic-form" class="btn sm">Save</button>
         </div>
       </div>
 
       <div class="s-panel-body">
+        {# ── Orchestrator panel ── #}
+        <div x-show="active === '__orchestrator__'"
+             x-data="orchPanel('{{ orch_mode_effective }}')"
+             id="orch-panel-body">
+
+          {# Hidden form for htmx submission — collects orchestrator fields only #}
+          <form id="orch-form" style="display:none">
+            <input id="orch-mode-input" type="hidden" name="orchestrator_mode" :value="selectedMode">
+            <textarea id="orch-roots-input" name="orchestrator_auto_init_roots"
+                      style="display:none" :value="rootsText"></textarea>
+          </form>
+
+          <div class="orch-panel">
+
+            {# Current effective mode badge #}
+            <div class="orch-status-row" role="status" aria-live="polite">
+              <span class="orch-status-label">Active mode:</span>
+              <span class="orch-mode-badge" :class="'mode-' + selectedMode" x-text="selectedMode"></span>
+              {% if orch_mode_stored is none %}
+                <span style="font-size:11px;color:var(--color-muted)">(derived from legacy config)</span>
+              {% endif %}
+            </div>
+
+            {# Mode selector cards #}
+            <fieldset style="border:none;padding:0;margin:0">
+              <legend style="font-size:11px;font-weight:700;color:var(--color-muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">
+                Select mode
+              </legend>
+              <div class="orch-modes" role="radiogroup" aria-label="Orchestrator mode">
+
+                {# off #}
+                <label class="orch-mode-card"
+                       data-mode="off"
+                       :class="{ selected: selectedMode === 'off' }"
+                       @click="selectedMode = 'off'">
+                  <input type="radio" name="orchestrator_mode" value="off"
+                         :checked="selectedMode === 'off'"
+                         @change="selectedMode = 'off'"
+                         aria-describedby="orch-desc-off">
+                  <div class="orch-mode-name">
+                    <span class="orch-mode-dot"></span>
+                    Off
+                  </div>
+                  <div class="orch-mode-desc" id="orch-desc-off">
+                    Orchestrator disabled — injects nothing and takes no action.
+                  </div>
+                </label>
+
+                {# offer #}
+                <label class="orch-mode-card"
+                       data-mode="offer"
+                       :class="{ selected: selectedMode === 'offer' }"
+                       @click="selectedMode = 'offer'">
+                  <input type="radio" name="orchestrator_mode" value="offer"
+                         :checked="selectedMode === 'offer'"
+                         @change="selectedMode = 'offer'"
+                         aria-describedby="orch-desc-offer">
+                  <div class="orch-mode-name">
+                    <span class="orch-mode-dot"></span>
+                    Offer
+                  </div>
+                  <div class="orch-mode-desc" id="orch-desc-offer">
+                    Surfaces a suggestion to index a project but never runs automatically. Safe default.
+                  </div>
+                </label>
+
+                {# auto #}
+                <label class="orch-mode-card"
+                       data-mode="auto"
+                       :class="{ selected: selectedMode === 'auto' }"
+                       @click="selectedMode = 'auto'">
+                  <input type="radio" name="orchestrator_mode" value="auto"
+                         :checked="selectedMode === 'auto'"
+                         @change="selectedMode = 'auto'"
+                         aria-describedby="orch-desc-auto">
+                  <div class="orch-mode-name">
+                    <span class="orch-mode-dot"></span>
+                    Auto
+                  </div>
+                  <div class="orch-mode-desc" id="orch-desc-auto">
+                    Auto-indexes projects only when located inside one of the configured parent folders below.
+                  </div>
+                </label>
+
+                {# everywhere #}
+                <label class="orch-mode-card"
+                       data-mode="everywhere"
+                       :class="{ selected: selectedMode === 'everywhere' }"
+                       @click="selectedMode = 'everywhere'">
+                  <input type="radio" name="orchestrator_mode" value="everywhere"
+                         :checked="selectedMode === 'everywhere'"
+                         @change="selectedMode = 'everywhere'"
+                         aria-describedby="orch-desc-everywhere">
+                  <div class="orch-mode-name">
+                    <span class="orch-mode-dot"></span>
+                    Everywhere
+                  </div>
+                  <div class="orch-mode-desc" id="orch-desc-everywhere">
+                    Auto-indexes any code project you explore, with no folder restriction.
+                  </div>
+                </label>
+
+              </div>
+            </fieldset>
+
+            {# Auto-init roots editor — only active and visually enabled for "auto" mode #}
+            <div class="orch-roots-wrap" :class="{ dimmed: selectedMode !== 'auto' }">
+              <div class="orch-roots-label">
+                Parent folders
+                <span class="orch-roots-badge">auto mode only</span>
+              </div>
+              <div class="orch-roots-hint">
+                One absolute path per line. In <strong>auto</strong> mode, any project nested under one of these folders will be automatically indexed.
+              </div>
+              <textarea class="orch-roots-textarea"
+                        aria-label="Parent folders for auto mode"
+                        placeholder="/Users/you/work/code&#10;/Users/you/projects"
+                        :disabled="selectedMode !== 'auto'"
+                        x-model="rootsText"
+                        @input="syncHiddenInputs()"
+                        rows="4">{{ orch_roots_text }}</textarea>
+            </div>
+
+          </div>{# /orch-panel #}
+        </div>{# /orch-panel-body #}
+
+        {# ── Generic settings sections (wrapped in their own form) ── #}
+        <form id="settings-generic-form"
+              hx-post="/settings/save"
+              hx-target="#s-save-out"
+              hx-swap="innerHTML"
+              hx-trigger="submit"
+              hx-indicator=".s-saving-txt"
+              @htmx:after-swap.window="genericOnSaved()"
+              style="display:contents">
         {% for prefix, label in buckets %}
           {% set entries = groups[prefix] %}
           {% if entries %}
           <div data-prefix="{{ prefix }}"
                x-show="active === '{{ prefix }}'"
-               {% if prefix != ns.first %}style="display:none"{% endif %}>
+               style="display:none">
             <div class="s-field-bar">
               <input type="text"
                      x-model="fieldQ"
@@ -451,19 +728,45 @@
           </div>
           {% endif %}
         {% endfor %}
-      </div>
-    </div>
+        </form>
 
-  </div>
-</form>
+      </div>{# /s-panel-body #}
+    </div>{# /s-panel #}
+
+  </div>{# /settings-wrap #}
+</div>{# /outer Alpine x-data #}
 
 <script>
+function orchPanel(initialMode) {
+  return {
+    selectedMode: initialMode,
+    rootsText: document.getElementById('orch-roots-input')
+               ? document.getElementById('orch-roots-input').value
+               : '{{ orch_roots_text | replace("\n", "\\n") }}',
+
+    syncHiddenInputs() {
+      const ri = document.getElementById('orch-roots-input');
+      if (ri) ri.value = this.rootsText;
+    },
+
+    init() {
+      // Keep Alpine model and hidden input in sync.
+      this.$watch('selectedMode', v => {
+        const mi = document.getElementById('orch-mode-input');
+        if (mi) mi.value = v;
+      });
+      this.$watch('rootsText', () => this.syncHiddenInputs());
+    }
+  };
+}
+
 function settingsPage(initial) {
   return {
     active: initial,
     navQ: '',
     fieldQ: '',
-    fadeTimer: null,
+    _orchFadeTimer: null,
+    _genericFadeTimer: null,
 
     switchSection(prefix) {
       this.active = prefix;
@@ -481,15 +784,26 @@ function settingsPage(initial) {
       return n;
     },
 
-    onSaved() {
+    orchOnSaved() {
+      const wrap = document.getElementById('orch-save-wrap');
+      if (!wrap) return;
+      wrap.style.opacity = '1';
+      clearTimeout(this._orchFadeTimer);
+      this._orchFadeTimer = setTimeout(() => { wrap.style.opacity = '0'; }, 3500);
+    },
+
+    genericOnSaved() {
       const el = document.getElementById('s-save-out');
       if (!el) return;
       el.parentElement.style.opacity = '1';
-      clearTimeout(this.fadeTimer);
-      this.fadeTimer = setTimeout(() => {
+      clearTimeout(this._genericFadeTimer);
+      this._genericFadeTimer = setTimeout(() => {
         el.parentElement.style.opacity = '0';
       }, 3000);
-    }
+    },
+
+    // Alias for backward compatibility — htmx triggers onSaved on the outer scope.
+    onSaved() { this.genericOnSaved(); }
   };
 }
 </script>
