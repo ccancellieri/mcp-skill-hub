@@ -1,0 +1,211 @@
+{# Activity Sync tab panel — issue links, drift warnings, event stream. #}
+{# Rendered into the HTMX swap target on the /control page (like control_graphcode.html). #}
+
+<section class="activity-panel">
+
+  {% if error %}
+  <div class="card" style="border-color:var(--color-error,#ef4444);margin-bottom:16px">
+    <p style="color:var(--color-error,#ef4444);font-size:13px;margin:0">
+      <strong>Error loading activity data:</strong> {{ error }}
+    </p>
+  </div>
+  {% endif %}
+
+  {# ── Drift warnings ─────────────────────────────────────────── #}
+  {% if drift %}
+  <div class="card" style="border-color:var(--color-warn,#f59e0b);margin-bottom:16px">
+    <h2 style="color:var(--color-warn,#f59e0b);margin-bottom:8px">
+      {{ drift | length }} sync drift warning{{ 's' if drift | length != 1 else '' }}
+    </h2>
+    <p class="muted" style="margin-bottom:12px;font-size:12px">
+      Task and issue states disagree. The direction shows which side is ahead.
+    </p>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="text-align:left">Task</th>
+            <th style="text-align:left">Issue</th>
+            <th style="text-align:left">Task state</th>
+            <th style="text-align:left">Issue state</th>
+            <th style="text-align:left">Direction</th>
+            <th style="text-align:left">Last synced</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for d in drift %}
+          <tr>
+            <td style="text-align:left">
+              <span class="muted" style="font-size:11px">#{{ d.task_id }}</span>
+              <span style="margin-left:4px;font-size:13px">{{ d.task_title }}</span>
+            </td>
+            <td style="text-align:left">
+              {% if d.url %}
+              <a href="{{ d.url }}" target="_blank" rel="noopener"
+                 style="color:var(--color-accent);font-size:13px"
+                 aria-label="GitHub issue {{ d.issue_number }} in {{ d.repo or 'this repo' }}">
+                {{ d.repo or '' }}#{{ d.issue_number }}
+              </a>
+              {% else %}
+              <span class="muted">{{ d.repo or '' }}#{{ d.issue_number }}</span>
+              {% endif %}
+            </td>
+            <td style="text-align:left">
+              <span class="tag {% if d.task_status == 'open' %}status-running{% else %}status-stopped{% endif %}"
+                    style="font-size:11px">{{ d.task_status }}</span>
+            </td>
+            <td style="text-align:left">
+              <span class="tag {% if d.issue_state == 'open' %}status-running{% elif d.issue_state == 'closed' %}status-stopped{% else %}status-unavailable{% endif %}"
+                    style="font-size:11px">{{ d.issue_state or '?' }}</span>
+            </td>
+            <td style="text-align:left;font-size:12px;color:var(--color-warn,#f59e0b)">
+              {{ d.drift_direction }}
+            </td>
+            <td style="text-align:left">
+              <span class="tag {{ d.sync_age_css }}" style="font-size:11px">{{ d.sync_age_label }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card" style="margin-bottom:16px;padding:10px 16px">
+    <p class="muted" style="font-size:12px;margin:0">
+      <span style="color:var(--color-success,#22c55e);font-weight:600">&#10003;</span>
+      No sync drift detected across {{ links | length }} link{{ 's' if links | length != 1 else '' }}.
+    </p>
+  </div>
+  {% endif %}
+
+  {# ── Per-task issue links ────────────────────────────────────── #}
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Task ↔ Issue Links</h2>
+      <span class="tag status-transitioning" style="font-size:11px">{{ links | length }} link{{ 's' if links | length != 1 else '' }}</span>
+    </div>
+
+    {% if links %}
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="text-align:left">Task</th>
+            <th style="text-align:left">Issue</th>
+            <th style="text-align:left">Task state</th>
+            <th style="text-align:left">Issue state</th>
+            <th style="text-align:left">Sync freshness</th>
+            <th style="text-align:left">Writeback</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for link in links %}
+          <tr {% if link.is_drift %}style="background:rgba(245,158,11,.06)"{% endif %}>
+            <td style="text-align:left">
+              <a href="/tasks" style="color:var(--color-accent);font-size:12px"
+                 aria-label="View task {{ link.task_id }}">#{{ link.task_id }}</a>
+              <span style="margin-left:6px;font-size:13px">{{ link.task_title }}</span>
+            </td>
+            <td style="text-align:left">
+              {% if link.url %}
+              <a href="{{ link.url }}" target="_blank" rel="noopener"
+                 style="color:var(--color-accent);font-size:13px"
+                 aria-label="GitHub issue {{ link.issue_number }}">
+                {{ link.repo or '' }}#{{ link.issue_number }}
+              </a>
+              {% else %}
+              <span class="muted" style="font-size:13px">{{ link.repo or '' }}#{{ link.issue_number }}</span>
+              {% endif %}
+            </td>
+            <td style="text-align:left">
+              <span class="tag {% if link.task_status == 'open' %}status-running{% else %}status-stopped{% endif %}"
+                    style="font-size:11px">{{ link.task_status }}</span>
+            </td>
+            <td style="text-align:left">
+              {% if link.issue_state %}
+              <span class="tag {% if link.issue_state == 'open' %}status-running{% elif link.issue_state == 'closed' %}status-stopped{% else %}status-unavailable{% endif %}"
+                    style="font-size:11px">{{ link.issue_state }}</span>
+              {% else %}
+              <span class="muted" style="font-size:11px">not fetched</span>
+              {% endif %}
+            </td>
+            <td style="text-align:left">
+              <span class="tag {{ link.sync_age_css }}" style="font-size:11px"
+                    title="Last synced: {{ link.last_synced_at or 'never' }}">{{ link.sync_age_label }}</span>
+            </td>
+            <td style="text-align:left;font-size:11px;color:var(--color-muted)">
+              {% if link.writeback_done %}done{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted" style="font-size:13px">
+      No task↔issue links found. Links are created when <code>issue_sync</code> runs or when
+      tasks are saved with an <code>issue:gh:N</code> tag.
+    </p>
+    {% endif %}
+  </div>
+
+  {# ── Event stream timeline ───────────────────────────────────── #}
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Recent Events</h2>
+      <span class="tag status-transitioning" style="font-size:11px">{{ events | length }} shown</span>
+      <span class="muted" style="font-size:11px;margin-left:auto">newest first &middot; limit 50</span>
+    </div>
+
+    {% if events %}
+    <div style="overflow-x:auto">
+      <table style="font-size:12px">
+        <thead>
+          <tr>
+            <th style="text-align:left">Time (UTC)</th>
+            <th style="text-align:left">Kind</th>
+            <th style="text-align:left">Tool</th>
+            <th style="text-align:left">Session</th>
+            <th style="text-align:left">Payload preview</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for evt in events %}
+          <tr>
+            <td style="text-align:left;white-space:nowrap;color:var(--color-muted)">{{ evt.ts_label }}</td>
+            <td style="text-align:left">
+              <span class="tag
+                {% if 'close' in evt.kind %}status-stopped
+                {% elif 'open' in evt.kind or 'creat' in evt.kind %}status-running
+                {% elif 'error' in evt.kind or 'fail' in evt.kind %}status-unavailable
+                {% else %}status-transitioning{% endif %}"
+                    style="font-size:10px;white-space:nowrap">{{ evt.kind }}</span>
+            </td>
+            <td style="text-align:left;font-family:ui-monospace,monospace;color:var(--color-muted)">
+              {{ evt.tool_name or '—' }}
+            </td>
+            <td style="text-align:left;font-family:ui-monospace,monospace;color:var(--color-muted)">
+              {{ evt.session_id }}{% if evt.session_id %}&hellip;{% endif %}
+            </td>
+            <td style="text-align:left;color:var(--color-muted);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="{{ evt.payload_preview }}">{{ evt.payload_preview }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted" style="font-size:13px">
+      No events recorded yet. Events are appended whenever MCP tools run or issue sync executes.
+    </p>
+    {% endif %}
+  </div>
+
+</section>
+
+<style>
+.activity-panel .sync-fresh  { background:rgba(34,197,94,.15);  color:var(--color-success,#22c55e); }
+.activity-panel .sync-stale  { background:rgba(245,158,11,.15); color:var(--color-warn,#f59e0b); }
+.activity-panel .sync-unseen { background:rgba(100,116,139,.15); color:var(--color-muted); }
+</style>

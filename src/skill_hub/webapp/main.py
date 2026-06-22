@@ -20,6 +20,7 @@ from .routes import control as control_routes
 from .routes import control_plugins as control_plugins_routes
 from .routes import control_graphcode as control_graphcode_routes
 from .routes import control_chrome as control_chrome_routes
+from .routes import control_activity as control_activity_routes
 from .routes import cron as cron_routes
 from .routes import dashboard as dashboard_routes
 from .routes import memory as memory_routes
@@ -208,6 +209,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(control_plugins_routes.router)
     app.include_router(control_graphcode_routes.router)
     app.include_router(control_chrome_routes.router)
+    app.include_router(control_activity_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(orchestrator_settings_routes.router)
     app.include_router(verdicts_routes.router)
