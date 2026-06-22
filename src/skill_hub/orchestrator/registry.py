@@ -113,8 +113,13 @@ def _codegraph_refresh_argv(root: Path) -> list[str] | None:
 
 
 def _codegraph_init_argv(root: Path) -> list[str] | None:
+    # ``init`` alone only creates the empty .codegraph/ scaffold — the graph has
+    # zero nodes until a full index runs, and ``sync`` ("changes since last
+    # index") is a no-op on a never-indexed project. The ``-i`` flag runs the
+    # initial indexing as part of init, so the index is actually queryable
+    # afterwards rather than just present-but-empty.
     bin_path = _resolve_codegraph_bin()
-    return [bin_path, "init", str(root)] if bin_path else None
+    return [bin_path, "init", "-i", str(root)] if bin_path else None
 
 
 # ---------------------------------------------------------------------------
