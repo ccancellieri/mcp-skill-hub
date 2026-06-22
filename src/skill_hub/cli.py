@@ -789,7 +789,14 @@ def _execute_local_command(cmd: dict, cwd: str | None = None) -> str | None:
         output = result.stdout
         if result.returncode != 0 and result.stderr:
             output += f"\n(stderr: {result.stderr.strip()})"
-        # Truncate very long output
+        # Structure-aware compression of command output (logs/search/JSON) keeps the
+        # signal — errors, tracebacks, first/last — instead of a blunt tail-chop.
+        # No-ops for prose or when the 'compression' extra isn't installed.
+        if len(output) > 5000:
+            from .compression import maybe_compress
+
+            output = maybe_compress(output, context=shell_cmd)
+        # Hard ceiling backstop for whatever didn't compress (e.g. plain prose).
         if len(output) > 5000:
             output = output[:5000] + f"\n... (truncated, {len(output)} chars total)"
         log_detail(f"local_cmd_done: {shell_cmd} ({len(output)} chars)")

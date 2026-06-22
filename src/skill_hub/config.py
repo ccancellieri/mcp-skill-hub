@@ -116,6 +116,14 @@ _DEFAULTS = {
     # Compaction
     "compact_max_input_chars": 4000,
 
+    # Deterministic compression (optional `headroom-ai` dependency) — structure-aware
+    # reduction of tool outputs / logs / JSON / search results as a free, fast,
+    # offline alternative to the local-LLM compaction tax and to blunt char-truncation.
+    # Auto-no-ops when `headroom-ai` is not installed. Prose/code are left for the LLM.
+    "compression_enabled": True,        # master switch for the compression pre-stage
+    "compression_min_tokens": 200,      # skip payloads below ~this token count
+    "compression_context_aware": True,  # pass the user query as relevance context
+
     # Conversation digest — periodic context compaction
     "digest_every_n_messages": 5,       # produce a digest every N messages
     "digest_stale_threshold": 0.3,      # similarity below this = "stale" topic

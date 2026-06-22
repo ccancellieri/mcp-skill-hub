@@ -42,7 +42,10 @@ dependencies = [
 [project.optional-dependencies]
 sentence_transformers = ["sentence-transformers>=2.7.0"]
 voyage = ["voyageai>=0.3.0"]
-all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0"]
+# Deterministic, structure-aware content compression (SmartCrusher/log/search/diff).
+# Core wheel only — no torch/tree-sitter; the ML "Kompress" path is left disabled.
+compression = ["headroom-ai>=0.27,<1.0"]
+all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0", "headroom-ai>=0.27,<1.0"]
 
 [project.urls]
 Repository = "https://github.com/ccancellieri/mcp-skill-hub"
