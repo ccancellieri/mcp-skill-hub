@@ -623,6 +623,42 @@ def retrieve_compressed(hash: str) -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def ensure_tooling(path: str, init: bool = False, refresh: bool = True) -> str:
+    """Probe and optionally provision dev-tooling readiness for a directory path.
+
+    Checks whether the code-graph index for *path* is present and up to date.
+    When *refresh* is True (default) and an index already exists, a background
+    sync is dispatched (fire-and-forget, non-blocking).
+    When *init* is True and no index exists, ``codegraph init`` is run blocking
+    — use this only after the user has confirmed they want initialization.
+
+    Idempotent: safe to call multiple times; repeated calls within the sync-TTL
+    window are debounced automatically.
+
+    Returns a human-readable readiness summary including the steering directive.
+    """
+    log_tool("ensure_tooling", path=path, init=init, refresh=refresh)
+    try:
+        from .orchestrator import ensure_tooling_core
+        result = ensure_tooling_core(path, init=init, refresh=refresh)
+        status = "present" if result["present"] else "absent"
+        freshness = "fresh" if result["fresh"] else "stale"
+        action = result["action"]
+        directive = result.get("directive", "")
+        summary_parts = [
+            f"path: {result['path']}",
+            f"index: {status} ({freshness})",
+            f"action: {action}",
+        ]
+        if directive:
+            summary_parts.append(directive)
+        return " | ".join(summary_parts)
+    except Exception as exc:  # noqa: BLE001
+        return f"ensure_tooling: error probing {path}: {exc}"
+
+
+@mcp.tool()
+@requires_capability("none")
 def close_session(summary: str = "") -> str:
     """Phase M3 — Close the current session and persist its L1 summary.
 

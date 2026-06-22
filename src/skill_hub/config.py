@@ -8,6 +8,7 @@ Default config is optimized for minimal resource usage.
 
 import json
 from pathlib import Path
+from typing import Any
 
 CONFIG_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
 
@@ -383,6 +384,13 @@ _DEFAULTS = {
     # Cap how many characters of memory are injected as systemMessage.
     "session_memory_inject_max_chars": 8000,
 
+    # Tooling orchestrator — per-turn tool-readiness steering
+    "orchestrator_enabled": True,           # master switch
+    "orchestrator_auto_init": False,        # allow automatic first-time init globally
+    "orchestrator_auto_init_roots": [],     # allowlist of roots that may auto-init
+    "orchestrator_sync_ttl_secs": 300,      # min interval between auto-refreshes (seconds)
+    "orchestrator_probe_cache_secs": 60,    # probe-result cache TTL (keeps the hook fast)
+
     # Issue #37 — task↔issue bidirectional sync writeback mode.
     # Controls whether skill-hub writes back to GitHub when a locally-closed task
     # has an open linked issue.  Valid values:
@@ -673,8 +681,12 @@ def save_config(config: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(config, indent=2))
 
 
-def get(key: str) -> str | int | float | bool:
-    """Get a single config value."""
+def get(key: str) -> Any:
+    """Get a single config value.
+
+    Returns ``Any`` because values span scalars and lists; callers coerce with
+    ``int()`` / ``float()`` / ``str()`` at the use site.
+    """
     return load_config().get(key, _DEFAULTS.get(key))
 
 

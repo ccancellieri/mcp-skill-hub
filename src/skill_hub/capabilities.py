@@ -352,6 +352,11 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("disable_plugin_task", "Disable a plugin scheduled task",
              hard=()),
+    # --- Compression & tooling orchestration ---
+    ToolSpec("retrieve_compressed", "Rehydrate content behind a reversible-compression marker",
+             hard=()),
+    ToolSpec("ensure_tooling", "Probe and provision dev tooling (e.g. code index) for a path",
+             hard=()),
 )
 
 
