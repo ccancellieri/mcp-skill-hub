@@ -104,6 +104,7 @@ def test_session_close_writes_session_log_vector(isolated_store, monkeypatch):
 
 def test_postcompact_optimize_returns_systemmessage(monkeypatch):
     """The CLI verb wraps optimize_memory output in a systemMessage payload."""
+    import types
     from skill_hub import cli
     from skill_hub import config as _cfg_mod
 
@@ -111,9 +112,13 @@ def test_postcompact_optimize_returns_systemmessage(monkeypatch):
     monkeypatch.setattr(_cfg_mod, "get",
                         lambda k, default=None: False if k == "postcompact_optimize_apply"
                                                 else default)
-    # Stub the heavy server function so the test stays fast and offline.
-    monkeypatch.setattr("skill_hub.server.optimize_memory",
-                        lambda dry_run=True: f"REPORT (dry_run={dry_run})")
+    # Stub optimize_memory via a fake module in sys.modules so that
+    # cli._cmd_postcompact_optimize's lazy `from .server import optimize_memory`
+    # resolves to our stub without importing the real server (which opens the
+    # live DB at module level via its module-level SkillStore() call).
+    fake_server = types.ModuleType("skill_hub.server")
+    fake_server.optimize_memory = lambda dry_run=True: f"REPORT (dry_run={dry_run})"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
 
     result = cli._cmd_postcompact_optimize(session_id="s-1")
     assert result["decision"] == "allow"
@@ -122,13 +127,16 @@ def test_postcompact_optimize_returns_systemmessage(monkeypatch):
 
 
 def test_postcompact_optimize_truncates_huge_report(monkeypatch):
+    import types
     from skill_hub import cli
     from skill_hub import config as _cfg_mod
 
     monkeypatch.setattr(_cfg_mod, "get",
                         lambda k, default=None: default)
-    monkeypatch.setattr("skill_hub.server.optimize_memory",
-                        lambda dry_run=True: "X" * 8000)
+    # Same stub approach — avoid importing the real server module.
+    fake_server = types.ModuleType("skill_hub.server")
+    fake_server.optimize_memory = lambda dry_run=True: "X" * 8000  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
 
     result = cli._cmd_postcompact_optimize(session_id="s-1")
     assert "(truncated)" in result["systemMessage"]
