@@ -22,11 +22,8 @@ sys.path.insert(0, str(SRC))
 # Safety guard
 # ---------------------------------------------------------------------------
 
-def test_server_not_imported():
-    """skill_hub.server must never be imported — it opens the live DB at module level."""
-    assert "skill_hub.server" not in sys.modules, (
-        "skill_hub.server must not be imported — it opens the live DB on import"
-    )
+def test_server_not_imported(assert_server_not_imported):  # noqa: PT019
+    """skill_hub.server must not be imported at collection time — it opens the live DB."""
 
 
 # ---------------------------------------------------------------------------

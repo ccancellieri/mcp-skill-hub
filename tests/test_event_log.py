@@ -28,13 +28,12 @@ import pytest
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
-# Guard: ensure we never import server (which builds a module-level SkillStore
-# against the live DB).
-def test_server_not_imported():
-    import sys
-    assert "skill_hub.server" not in sys.modules, (
-        "skill_hub.server must not be imported — it opens the live DB on import"
-    )
+# Guard: ensure this module's imports never drag in skill_hub.server (which
+# builds a module-level SkillStore against the live DB).  The fixture checks
+# against the sys.modules snapshot taken before any test ran, so it is immune
+# to other test files that legitimately import the server later in the suite.
+def test_server_not_imported(assert_server_not_imported):  # noqa: PT019
+    pass
 
 
 # ---------------------------------------------------------------------------
