@@ -1,0 +1,85 @@
+{# Chrome tab panel — status-only, no subprocess, no launcher. #}
+<section class="chrome-panel">
+
+  <div class="row">
+
+    <div class="card">
+      <h2>chrome-devtools-mcp plugin</h2>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <span class="status-dot {% if chrome_enabled %}dot-running{% else %}dot-stopped{% endif %}"></span>
+        <span class="tag {% if chrome_enabled %}status-running{% else %}status-stopped{% endif %}">
+          {% if chrome_enabled %}enabled{% else %}disabled{% endif %}
+        </span>
+      </div>
+      <p class="muted">
+        Enable or disable this plugin in the
+        <a href="/control" style="color:var(--color-accent)">Control &rarr; Plugins tab</a>
+        and restart Claude Code to apply.
+      </p>
+      <p class="muted" style="margin-top:6px">
+        Connection mode: <strong style="color:var(--color-fg)">isolated sandbox (default)</strong>
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Chrome Intents queue</h2>
+      <p class="muted" style="margin-bottom:8px">
+        {% if total_intents == 0 %}No intents recorded yet.{% else %}{{ total_intents }} intent{{ 's' if total_intents != 1 else '' }} total.{% endif %}
+        &nbsp;<a href="/intents" style="color:var(--color-accent)">View all &rarr;</a>
+      </p>
+      {% if intents %}
+      <table style="font-size:12px">
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>URL / note</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for intent in intents %}
+          <tr>
+            <td style="text-align:left;font-family:ui-monospace,monospace">{{ intent.action }}</td>
+            <td style="text-align:left;word-break:break-all;max-width:280px">
+              {{ intent.url[:60] }}{% if intent.url | length > 60 %}&hellip;{% endif %}
+              {% if intent.note %}<span class="muted">&nbsp;({{ intent.note[:30] }})</span>{% endif %}
+            </td>
+            <td style="text-align:left">
+              <span class="tag {% if intent.status == 'pending' %}status-transitioning{% elif intent.status == 'done' %}status-running{% else %}status-stopped{% endif %}">
+                {{ intent.status }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <div class="card" style="margin-top:4px">
+    <h2>Sandbox vs. real Chrome session</h2>
+    <p class="muted">
+      By default, chrome-devtools-mcp launches an isolated browser instance &mdash;
+      no access to your personal tabs, history, or saved passwords.
+    </p>
+    <p class="muted">
+      To connect to a running Chrome window (with remote-debugging enabled),
+      start Chrome with the flag below and configure the plugin accordingly:
+    </p>
+    <pre style="background:var(--color-border);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;overflow-x:auto;margin:8px 0;color:var(--color-fg)">--remote-debugging-port=9222</pre>
+    <p class="muted">
+      Then pass
+      <code style="background:rgba(125,136,150,.15);border-radius:3px;padding:2px 5px;font-family:ui-monospace,monospace;font-size:12px;color:var(--color-accent)">--browserUrl=http://127.0.0.1:9222</code>
+      to the MCP server.
+      Real-profile launcher support is a planned future feature.
+    </p>
+    <p class="muted" style="margin-top:8px">
+      <a href="https://github.com/ccancellieri/mcp-skill-hub/blob/main/docs/features/browser-automation.md"
+         target="_blank" rel="noopener"
+         style="color:var(--color-accent)">Browser-automation guide &rarr;</a>
+    </p>
+  </div>
+
+</section>

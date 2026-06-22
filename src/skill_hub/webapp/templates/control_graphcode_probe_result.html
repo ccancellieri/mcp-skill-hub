@@ -1,0 +1,15 @@
+{# Probe result fragment — rendered into #cg-probe-result. #}
+{% set action_msg = none %}
+<table style="width:100%;border-collapse:collapse;font-size:13px">
+  <thead>
+    <tr>
+      <th style="text-align:left">Path</th>
+      <th style="text-align:left">Status</th>
+      <th style="text-align:left">Index info</th>
+      <th style="text-align:left">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% include "_graphcode_row.html" with context %}
+  </tbody>
+</table>
