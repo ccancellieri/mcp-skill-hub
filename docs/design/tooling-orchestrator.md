@@ -1,7 +1,13 @@
 # Tooling Orchestrator — design
 
-**Status:** approved design (pre-implementation)
+**Status:** implemented (P1 shipped; mode control, freshness, and worktree
+awareness landed on top of the original slice)
 **Date:** 2026-06-22
+
+> **Implementation note.** Sections below marked _“(shipped)”_ describe behaviour
+> that has changed since the original approved design. The two material deltas:
+> auto-refresh is now gated by an explicit **mode** rather than always-on, and
+> readiness now detects **stale** indexes and **git-worktree/branch mismatches**.
 
 ## Problem
 
@@ -105,27 +111,56 @@ URL/UI tasks) drop in without touching the engine.
 ### 2. Readiness + provisioning engine
 
 - **Probe** results are cached per `(capability, root)` with a TTL to keep the hook
-  fast; probes are cheap status queries.
-- **Refresh** of an already-initialized target is **always automatic** (cheap, safe),
-  TTL-debounced via `sync_ttl`, dispatched async.
-- **Init** of a not-yet-initialized target follows the **offer policy** (below);
-  the default is to surface an offer rather than act.
+  fast; probes are cheap, **subprocess-free** filesystem/SQLite reads (no
+  `codegraph status` call on the hot path).
+- **Refresh** of an already-initialized target is dispatched async, TTL-debounced
+  via `sync_ttl`. _(shipped)_ It is now **gated by mode** rather than always-on:
+  `auto`/`everywhere` auto-run it, `offer` only surfaces a "run sync" directive.
+  A *fresh* index queues nothing.
+- **Init** of a not-yet-initialized target follows the **mode policy** (below);
+  the default (`offer`) surfaces an offer rather than acting.
 - All probe/provision calls are wrapped and **non-fatal**: a failure is logged once
   and never breaks the prompt path nor enters a retry loop.
+
+#### Readiness signals _(shipped)_
+
+`probe_codegraph` reports more than present/absent:
+
+- **Present-but-empty rejection.** A `.codegraph/` scaffold with zero nodes (a bare
+  `init` with no indexing) reads as *not present*, so the orchestrator offers to
+  index rather than steering at an empty graph. Only a *confirmed* zero downgrades
+  presence; an unknown count (e.g. a future schema) preserves legacy behaviour.
+- **Honest freshness.** Freshness is measured from the **`codegraph.db` build time**,
+  not the `.codegraph/` directory mtime (which moves whenever codegraph touches its
+  sidecar files, so a days-old graph could read as fresh). In addition, codegraph's
+  `.dirty` marker — a millisecond epoch its file-watch hook rewrites on every source
+  edit — is compared against the build time: a `.dirty` *newer* than the build means
+  source changed since indexing, so the index is **stale** regardless of age.
+- **Worktree/branch mismatch.** codegraph resolves a query by walking up to the
+  nearest ancestor `.codegraph/`. A linked git worktree (its `.git` is a *file*) with
+  no index of its own therefore silently answers from the *parent checkout's* index —
+  a different branch's code. The probe detects this (`worktree_mismatch`,
+  `ancestor_index`) and the directive warns + offers a **worktree-local** init instead
+  of a bare "not indexed" nudge.
 
 ### 3. Route injection & directive format
 
 The orchestrator's output rides the additional-context channel the router already
-returns, so it is transparent. Two shapes:
+returns, so it is transparent. Four shapes _(shipped)_:
 
-- **Ready:** `[tooling] <root> is indexed (refreshed <age> ago) — prefer the indexed
+- **Ready (fresh):** `[tooling] <root> is indexed (built <age>) — prefer the indexed
   code-graph queries (search / callers / impact) over raw text search.`
+- **Ready (stale):** `[tooling] <root> has a code-graph index but it is STALE (<why>).
+  Run \`codegraph sync <root>\` … code-graph results may reflect pre-edit code.`
 - **Missing:** `[tooling] <root> is not indexed but the task is about to explore it;
   offer to initialize it (via ensure_tooling) before falling back to text search.`
+- **Worktree mismatch:** `[tooling] <root> is a git worktree with no code-graph index
+  of its own. The only reachable index is <ancestor> (a different checkout/branch) …
+  offer to initialize a worktree-local index (\`codegraph init -i <root>\`).`
 
-The "missing" directive surfaces *to the assistant*, so the assistant asks the user —
-keeping a human in the loop and honoring the established ask-before-initialize
-convention.
+The "missing" / "stale" / "mismatch" directives surface *to the assistant*, so it asks
+the user — keeping a human in the loop and honoring the established
+ask-before-initialize convention.
 
 ### 4. `ensure_tooling` MCP tool
 
@@ -142,34 +177,54 @@ dashboard panel and the status summary. This is also the spine for a later learn
 loop: correlate "the orchestrator steered toward tool X" with the post-tool observer
 ("did the assistant then call tool X?") to measure whether steering actually lands.
 
-## Provisioning autonomy policy
+## Provisioning autonomy policy _(shipped: mode-based)_
 
-- **Refresh / sync of an existing index → always automatic.** This is the
-  "keep it updated" behavior.
-- **First-time init of a new project → offer, do not auto-run.** The orchestrator
-  injects an offer; the assistant confirms with the user. This honors the established
-  ask-before-initialize convention and avoids surprise indexing cost.
-- **Escape hatch:** `orchestrator_auto_init_roots` — an allowlist of trusted roots
-  that may be initialized automatically. Empty by default.
+Autonomy is now a single **mode** with four settings, configurable from the web
+control panel (Settings → Tooling Orchestrator) or `orchestrator_mode` in config.
+Both *init* (first-time) and *sync* (refresh of a stale index) follow the same gate:
+
+| Mode | First-time init | Auto-sync of a stale index | Steering directives |
+|---|---|---|---|
+| `off` | — | — | none (orchestrator silent) |
+| `offer` | offer only | offer only | yes |
+| `auto` | auto, **only** for a root under a configured parent folder | same | yes |
+| `everywhere` | auto, anywhere eligible | auto, anywhere | yes |
+
+- **`offer` (default).** Surface an offer / "run sync" directive; the assistant
+  confirms with the user. Honors the ask-before-initialize convention; no surprise cost.
+- **`auto`.** Acts automatically, but scoped to `orchestrator_auto_init_roots` — an
+  allowlist of **parent folders** (prefix match, with a boundary guard so `/work/code`
+  does not match `/work/codex`). Projects outside every parent fall back to *offer*.
+- **`everywhere`.** Acts for any eligible project.
+- A **fresh** index never triggers a sync in any mode; only a stale one does.
 
 ## Configuration
 
+`orchestrator_mode` is the single source of truth. The legacy boolean keys still
+derive a mode when `orchestrator_mode` is unset, so pre-existing configs are unchanged
+(`enabled=False`→`off`; `auto_init=True`→`everywhere`; non-empty roots→`auto`; else
+`offer`).
+
 | Key | Default | Meaning |
 |---|---|---|
-| `orchestrator_enabled` | `True` | Master switch. |
-| `orchestrator_auto_init` | `False` | Allow automatic first-time init globally. |
-| `orchestrator_auto_init_roots` | `[]` | Allowlist of roots that may auto-init. |
-| `orchestrator_sync_ttl_secs` | `300` | Min interval between auto-refreshes of a target. |
+| `orchestrator_mode` | _unset_ → derived | `off` / `offer` / `auto` / `everywhere`. |
+| `orchestrator_auto_init_roots` | `[]` | Parent folders that may auto-init/sync in `auto` mode (prefix match). |
+| `orchestrator_sync_ttl_secs` | `300` | Min interval between auto-refreshes; also the age threshold for the freshness fallback. |
 | `orchestrator_probe_cache_secs` | `60` | Probe-result cache TTL (keeps the hook fast). |
+| `orchestrator_enabled` | `True` | Legacy master switch (derives `off` when false). |
+| `orchestrator_auto_init` | `False` | Legacy global auto-init (derives `everywhere` when true). |
 
 ## Phasing
 
-- **P1 (this slice):** engine + code-graph capability + route injection
-  (offer-on-missing, auto-refresh) + `ensure_tooling` tool + decision logging.
+- **P1 (shipped):** engine + code-graph capability + route injection + `ensure_tooling`
+  tool + decision logging. Extended post-design with: present-but-empty rejection,
+  honest freshness (db-build-time + `.dirty`), git-worktree/branch-mismatch detection,
+  the four-way `orchestrator_mode` control, and a Settings → Tooling Orchestrator panel.
 - **P2:** generalize the registry (web-search reachability, embedding-model
-  availability, headless-browser on URL/UI tasks) + the config flags above.
+  availability, headless-browser on URL/UI tasks — see
+  [browser-automation](../features/browser-automation.md)) + further capability entries.
 - **P3:** background freshness daemon (the deferred continuous-watch option) +
-  dashboard panel + usage-feedback correlation.
+  richer dashboard panel + usage-feedback correlation.
 
 ## Success criteria
 
