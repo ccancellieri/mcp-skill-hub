@@ -21,14 +21,20 @@
     </span>
   </div>
   <div class="monitor-metric">
+    <span class="metric-label">Swap activity</span>
+    <span class="metric-value{% if m.thrashing %} crit{% endif %}">
+      {% if m.thrashing %}⚠ paging {{ (m.swap_out_rate + m.swap_in_rate)|round|int }} pg/s{% else %}idle (not paging){% endif %}
+    </span>
+  </div>
+  <div class="monitor-metric">
+    <span class="metric-label">Compressor</span>
+    <span class="metric-value{% if m.compressor_mb >= 4000 %} warn{% endif %}">{{ '{:,}'.format(m.compressor_mb) }} MB</span>
+  </div>
+  <div class="monitor-metric">
     <span class="metric-label">CPU load 1m</span>
     <span class="metric-value{% if m.load_pct >= 120 %} crit{% elif m.load_pct >= 80 %} warn{% endif %}">
       {{ '%.2f'|format(m.cpu_load_1m) }} / {{ m.cpu_count }} ({{ m.load_pct }}%)
     </span>
-  </div>
-  <div class="monitor-metric">
-    <span class="metric-label">Docker</span>
-    <span class="metric-value">{{ snap.docker|length }} up &middot; ~{{ '{:,}'.format(snap.docker_mem_mb) }} MB</span>
   </div>
 </div>
 
@@ -68,6 +74,48 @@
 </div>
 
 <div class="health-grid">
+  {# ---- Swap holders (generic, ranked by footprint) ------------------- #}
+  <div class="card">
+    <div class="card-head">
+      <h3>What holds swap ({{ snap.swap_consumers|length }})</h3>
+      <button class="btn sm"
+              hx-post="/health/action/purge-memory"
+              hx-target="#health-panel" hx-swap="innerHTML"
+              hx-confirm="Purge inactive memory? (swap only fully clears on reboot)">
+        Purge memory
+      </button>
+    </div>
+    {% if snap.swap_consumers %}
+    <table class="health-table">
+      <thead><tr><th>PID</th><th>process</th><th>swap/cmprs</th><th>RSS</th><th></th></tr></thead>
+      <tbody>
+      {% for c in snap.swap_consumers %}
+        <tr>
+          <td>{{ c.pid }}</td>
+          <td>{{ c.name[:40] }}</td>
+          <td>{{ '{:,}'.format(c.swap_mb) }}M</td>
+          <td>{{ '{:,}'.format(c.rss_mb) }}M</td>
+          <td>
+            {% if c.is_system %}<span class="muted">system</span>
+            {% else %}
+            <button class="btn xs danger"
+                    title="Gracefully quit to free its memory"
+                    hx-post="/health/action/terminate?pid={{ c.pid }}"
+                    hx-target="#health-panel" hx-swap="innerHTML"
+                    hx-confirm="Quit {{ c.name[:40] }} (PID {{ c.pid }})? It holds ~{{ c.swap_mb }}M.">quit</button>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:6px">
+      macOS has no swappiness knob — the only lever is committed memory.
+      Quitting the largest non-system holder frees the most; a reboot clears swap entirely.
+    </p>
+    {% else %}<p class="muted">No swap-consumer data (psutil/top unavailable).</p>{% endif %}
+  </div>
+
   {# ---- Claude processes ---------------------------------------------- #}
   <div class="card">
     <div class="card-head">

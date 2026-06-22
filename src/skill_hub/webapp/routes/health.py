@@ -99,6 +99,22 @@ async def action_purge_memory(request: Request) -> Any:
     return _panel(request, flash=flash)
 
 
+@router.post("/health/action/terminate", response_class=HTMLResponse)
+async def action_terminate(request: Request) -> Any:
+    """Gracefully terminate a single user process by pid (generic swap lever).
+
+    Refuses system/root processes server-side, so this stays safe even though
+    it can target any pid the swap-consumer ranking surfaces.
+    """
+    data = await _form_or_query(request)
+    pid_raw = data.get("pid")
+    if not pid_raw or not str(pid_raw).isdigit():
+        return _panel(request, flash="⚠ no valid pid given")
+    res = sh.terminate_process(int(pid_raw), hard=str(data.get("hard", "")).lower() in ("1", "true"))
+    flash = ("✓ " if res.get("ok") else "⚠ ") + str(res.get("note") or "")
+    return _panel(request, flash=flash)
+
+
 def _fmt_kill(res: dict) -> str:
     if res.get("note") and not res.get("killed"):
         return res["note"]

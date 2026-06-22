@@ -355,6 +355,82 @@ class MemInfo:
     cpu_load_1m: float
     cpu_count: int
     load_pct: float
+    # Swap/compression dynamics (appended with defaults to keep positional
+    # construction stable for existing callers/tests).
+    compressor_mb: int = 0       # physical RAM the compressor currently holds
+    swap_out_rate: float = 0.0   # pages/sec written to swap (live thrash signal)
+    swap_in_rate: float = 0.0    # pages/sec read back from swap
+    thrashing: bool = False      # actively paging right now, not just holding swap
+
+
+# Active swap is what hurts: a machine can sit at 90% swap and feel fine if it
+# is not paging. THRASH_PAGES_PER_S is the pages/sec (in+out) above which we
+# call it actively thrashing.
+THRASH_PAGES_PER_S = 200.0
+_swap_rate_cache: dict = {"t": None, "out": None, "in": None}
+
+
+def _vm_counts() -> tuple[dict[str, int], int]:
+    """Return (vm_stat counters, page_size_bytes). macOS-specific; empty on others."""
+    cp = _run(["vm_stat"])
+    if cp.returncode != 0:
+        return {}, 4096
+    page = 4096
+    head = cp.stdout.splitlines()[:1]
+    if head:
+        mm = re.search(r"page size of (\d+) bytes", head[0])
+        if mm:
+            page = int(mm.group(1))
+    counts: dict[str, int] = {}
+    for line in cp.stdout.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            v = v.strip().rstrip(".")
+            if v.isdigit():
+                counts[k.strip()] = int(v)
+    return counts, page
+
+
+def _swap_dynamics() -> tuple[int, float, float]:
+    """Return (compressor_mb, swap_out_rate, swap_in_rate).
+
+    Rates are pages/sec sampled across successive calls (cached). The first
+    call after start returns 0 rates — there is no prior sample to diff.
+    On non-macOS this falls back to /proc/vmstat where available.
+    """
+    system = platform.system()
+    out_ctr = in_ctr = None
+    compressor_mb = 0
+    if system == "Darwin":
+        counts, page = _vm_counts()
+        compressor_mb = counts.get("Pages occupied by compressor", 0) * page // 1024 // 1024
+        out_ctr = counts.get("Swapouts")
+        in_ctr = counts.get("Swapins")
+    elif system == "Linux":
+        try:
+            with open("/proc/vmstat") as f:
+                vms = {}
+                for line in f:
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1].isdigit():
+                        vms[parts[0]] = int(parts[1])
+            out_ctr = vms.get("pswpout")
+            in_ctr = vms.get("pswpin")
+        except OSError:
+            pass
+
+    out_rate = in_rate = 0.0
+    now = time.monotonic()
+    prev = _swap_rate_cache
+    if out_ctr is not None and prev["t"] is not None and prev["out"] is not None:
+        dt = now - prev["t"]
+        if dt > 0:
+            out_rate = max(0.0, (out_ctr - prev["out"]) / dt)
+            if in_ctr is not None and prev["in"] is not None:
+                in_rate = max(0.0, (in_ctr - prev["in"]) / dt)
+    if out_ctr is not None:
+        _swap_rate_cache.update(t=now, out=out_ctr, **({"in": in_ctr} if in_ctr is not None else {}))
+    return compressor_mb, round(out_rate, 1), round(in_rate, 1)
 
 
 def memory_info() -> MemInfo:
@@ -374,6 +450,7 @@ def memory_info() -> MemInfo:
         load_1m = os.getloadavg()[0]
     except (OSError, AttributeError):
         load_1m = 0.0
+    compressor_mb, out_rate, in_rate = _swap_dynamics()
     return MemInfo(
         ram_used_mb=ram_used_mb,
         ram_total_mb=ram_total_mb,
@@ -384,6 +461,10 @@ def memory_info() -> MemInfo:
         cpu_load_1m=round(load_1m, 2),
         cpu_count=cpu_count,
         load_pct=round(100 * load_1m / cpu_count, 1) if cpu_count else 0.0,
+        compressor_mb=compressor_mb,
+        swap_out_rate=out_rate,
+        swap_in_rate=in_rate,
+        thrashing=(out_rate + in_rate) >= THRASH_PAGES_PER_S,
     )
 
 
@@ -426,6 +507,140 @@ def top_processes(n: int = 8) -> list[TopProc]:
 
 
 # --------------------------------------------------------------------------- #
+# Swap consumers (generic — ranked by footprint, no hard-coded app names)
+# --------------------------------------------------------------------------- #
+@dataclass
+class SwapConsumer:
+    pid: int
+    name: str
+    swap_mb: int       # compressed/swapped footprint (macOS cmprs / Linux VmSwap)
+    rss_mb: int
+    is_system: bool    # root/Apple-owned — never an auto-cleanup target
+
+
+def _looks_system(user: str | None, name: str) -> bool:
+    if user and (user == "root" or user.startswith("_")):
+        return True
+    low = name.lower()
+    return any(s in low for s in ("kernel", "windowserver", "launchd", "/system/"))
+
+
+def _parse_size_mb(s: str) -> int:
+    """Parse a top size token like '14G', '433M', '512K', '1024B' -> MB."""
+    m = re.match(r"([\d.]+)\s*([BKMGT]?)", s.strip(), re.IGNORECASE)
+    if not m:
+        return 0
+    val = float(m.group(1))
+    unit = (m.group(2) or "B").upper()
+    factor = {"B": 1 / 1024 / 1024, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}
+    return int(val * factor.get(unit, 1))
+
+
+def _usernames() -> dict[int, str]:
+    return {pid: meta[0] for pid, meta in _pid_meta().items()}
+
+
+def _pid_meta() -> dict[int, tuple[str, str]]:
+    """Map pid -> (username, name). ``top`` truncates names; psutil gives the full one."""
+    out: dict[int, tuple[str, str]] = {}
+    try:
+        import psutil
+        for p in psutil.process_iter(["pid", "username", "name"]):
+            try:
+                out[p.info["pid"]] = (p.info.get("username") or "", p.info.get("name") or "")
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def top_swap_consumers(n: int = 10) -> list[SwapConsumer]:
+    """Rank processes by swapped/compressed footprint — who actually holds swap.
+
+    Generic and name-agnostic: the panel/watcher act on the *ranking*, never on
+    a hard-coded component list. macOS reads the compressor footprint (``cmprs``)
+    via ``top``; Linux reads ``VmSwap`` from ``/proc``.
+    """
+    system = platform.system()
+    meta = _pid_meta()
+    out: list[SwapConsumer] = []
+    if system == "Darwin":
+        cp = _run(
+            ["top", "-l", "1", "-o", "cmprs", "-stats", "pid,command,cmprs,mem",
+             "-n", str(max(n, 1))],
+            timeout=15.0,
+        )
+        if cp.returncode != 0:
+            return []
+        started = False
+        for line in cp.stdout.splitlines():
+            if line.strip().startswith("PID"):
+                started = True
+                continue
+            if not started:
+                continue
+            parts = line.split()
+            if len(parts) < 4 or not parts[0].isdigit():
+                continue
+            pid = int(parts[0])
+            rss_mb = _parse_size_mb(parts[-1])
+            swap_mb = _parse_size_mb(parts[-2])
+            user, full_name = meta.get(pid, ("", ""))
+            name = full_name or " ".join(parts[1:-2]) or "?"
+            out.append(SwapConsumer(pid, name, swap_mb, rss_mb,
+                                    _looks_system(user, name)))
+    elif system == "Linux":
+        try:
+            import psutil
+            for p in psutil.process_iter(["pid", "name"]):
+                pid = p.info["pid"]
+                try:
+                    with open(f"/proc/{pid}/status") as f:
+                        swap_kb = 0
+                        for line in f:
+                            if line.startswith("VmSwap:"):
+                                swap_kb = int(line.split()[1])
+                                break
+                    rss_mb = int(p.memory_info().rss / 1024 / 1024)
+                except (OSError, Exception):  # noqa: BLE001
+                    continue
+                if swap_kb <= 0:
+                    continue
+                user = meta.get(pid, ("", ""))[0]
+                name = p.info.get("name") or "?"
+                out.append(SwapConsumer(pid, name, swap_kb // 1024, rss_mb,
+                                        _looks_system(user, name)))
+        except Exception:  # noqa: BLE001
+            return []
+    out.sort(key=lambda c: -c.swap_mb)
+    return out[:n]
+
+
+def terminate_process(pid: int, hard: bool = False) -> dict:
+    """Gracefully terminate any *user* process by pid (generic cleanup lever).
+
+    Refuses this process, PID<=1, and system/root-owned processes — so the
+    generic "free the biggest swap holder" action can never take down the OS.
+    Many apps respawn helper subprocesses; quitting the owning app frees more.
+    """
+    if pid <= 1 or pid == os.getpid():
+        return {"ok": False, "note": "refused (self/init)"}
+    consumers = {c.pid: c for c in top_swap_consumers(200)}
+    c = consumers.get(pid)
+    name = c.name if c else str(pid)
+    if c and c.is_system:
+        return {"ok": False, "note": f"refused: {name} is a system process"}
+    # Double-check ownership even if not in the swap list.
+    user = _usernames().get(pid)
+    if _looks_system(user, name):
+        return {"ok": False, "note": f"refused: {name} is system/root-owned"}
+    ok = _kill_pid(pid, hard=hard)
+    return {"ok": ok, "pid": pid, "name": name,
+            "note": f"sent {'SIGKILL' if hard else 'SIGTERM'} to {name} ({pid})"}
+
+
+# --------------------------------------------------------------------------- #
 # Aggregate snapshot + issues
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -446,6 +661,7 @@ class HealthSnapshot:
     issues: list[Issue]
     stale_daemon_count: int
     docker_mem_mb: int
+    swap_consumers: list[SwapConsumer] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -456,6 +672,7 @@ class HealthSnapshot:
             "issues": [asdict(i) for i in self.issues],
             "stale_daemon_count": self.stale_daemon_count,
             "docker_mem_mb": self.docker_mem_mb,
+            "swap_consumers": [asdict(c) for c in self.swap_consumers],
         }
 
 
@@ -464,6 +681,7 @@ def health_snapshot(include_top: bool = True) -> HealthSnapshot:
     claude = scan_claude_processes()
     docker = scan_docker()
     top = top_processes() if include_top else []
+    swap_consumers = top_swap_consumers() if include_top else []
     issues: list[Issue] = []
 
     stale = [c for c in claude if c.stale]
@@ -499,15 +717,43 @@ def health_snapshot(include_top: bool = True) -> HealthSnapshot:
             action_label="Stop all anyway",
         ))
 
-    if mem.swap_total_mb and mem.swap_pct >= 80:
+    # Swap pressure — distinguish *actively paging* (the real perf killer) from
+    # simply *holding* swap while idle (harmless). Point at the biggest holder
+    # generically rather than naming any component.
+    if mem.swap_total_mb and (mem.swap_pct >= 80 or mem.thrashing):
+        biggest = next((c for c in swap_consumers if not c.is_system), None)
+        who = (f" Largest holder: {biggest.name} (~{biggest.swap_mb} MB)."
+               if biggest else "")
+        if mem.thrashing:
+            issues.append(Issue(
+                severity="crit",
+                title=f"Actively swapping — {mem.swap_out_rate + mem.swap_in_rate:.0f} pages/s "
+                      f"(swap {mem.swap_pct:.0f}%)",
+                detail="The machine is paging to disk right now — the direct cause of "
+                       f"slowness. The only fix is to free committed memory.{who} "
+                       "Purge reclaims cache; quitting the largest holder frees the most.",
+                action="purge-memory",
+                action_label="Purge inactive memory",
+            ))
+        else:
+            issues.append(Issue(
+                severity="warn",
+                title=f"Swap {mem.swap_pct:.0f}% full ({mem.swap_used_mb}/{mem.swap_total_mb} MB), not paging",
+                detail="Swap is full but the machine is not actively paging, so impact "
+                       f"is limited for now.{who} Reduce committed memory to keep headroom; "
+                       "swap only fully clears on reboot.",
+                action="purge-memory",
+                action_label="Purge inactive memory",
+            ))
+
+    if mem.compressor_mb >= 4000:
         issues.append(Issue(
-            severity="crit",
-            title=f"Swap {mem.swap_pct:.0f}% full ({mem.swap_used_mb}/{mem.swap_total_mb} MB)",
-            detail="RAM is exhausted and the machine is swapping to disk — the #1 "
-                   "cause of slowness. Free RAM (stop Docker, kill stale procs), "
-                   "then purge inactive memory. A reboot fully clears swap.",
-            action="purge-memory",
-            action_label="Purge inactive memory",
+            severity="info",
+            title=f"Memory compressor holding {mem.compressor_mb} MB",
+            detail="macOS is compressing anonymous memory to avoid swap. Large and "
+                   "growing compressor + swap together mean genuine memory shortage — "
+                   "the lever is committed memory, not a tunable (macOS has no swappiness).",
+            action=None,
         ))
 
     if mem.ram_total_mb and mem.ram_pct >= 90:
@@ -530,6 +776,7 @@ def health_snapshot(include_top: bool = True) -> HealthSnapshot:
     return HealthSnapshot(
         mem=mem, claude=claude, docker=docker, top=top, issues=issues,
         stale_daemon_count=len(stale), docker_mem_mb=docker_mem,
+        swap_consumers=swap_consumers,
     )
 
 
@@ -697,9 +944,10 @@ def start_health_watcher(
     Advisory by default: it samples every ``interval_s`` seconds, caches the
     snapshot, and logs warnings. With ``auto_cleanup=True`` it additionally runs
     the *safe* remediations automatically — kill stale (old-version/orphaned)
-    Claude processes, and purge inactive memory when swap crosses
-    ``swap_pct_trigger``. It never stops Docker on its own (that is the user's
-    call via the panel).
+    Claude processes, and purge inactive memory when the machine is actively
+    thrashing or swap crosses ``swap_pct_trigger``. The trigger is generic
+    (driven by swap pressure, not by any named component) and it never kills
+    user apps or stops containers on its own — those stay one-click in the panel.
     """
     import threading
 
@@ -723,7 +971,10 @@ def start_health_watcher(
                         res = kill_stale_claude()
                         if res.get("killed"):
                             actions.append(f"killed stale claude {res['killed']}")
-                    if snap.mem.swap_total_mb and snap.mem.swap_pct >= swap_pct_trigger:
+                    swap_pressure = snap.mem.swap_total_mb and (
+                        snap.mem.thrashing or snap.mem.swap_pct >= swap_pct_trigger
+                    )
+                    if swap_pressure:
                         res = purge_memory()
                         actions.append(f"purge_memory: {res.get('note')}")
                     if actions:

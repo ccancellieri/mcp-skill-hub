@@ -20,7 +20,13 @@ def fake_snapshot(monkeypatch):
         ram_used_mb=15000, ram_total_mb=16000, ram_pct=93.7,
         swap_used_mb=19000, swap_total_mb=20000, swap_pct=95.0,
         cpu_load_1m=21.0, cpu_count=12, load_pct=175.0,
+        compressor_mb=4600, swap_out_rate=900.0, swap_in_rate=1000.0, thrashing=True,
     )
+    consumers = [
+        sh.SwapConsumer(18441, "com.apple.Virtualization.VirtualMachine", 14336, 8106, False),
+        sh.SwapConsumer(16984, "com.docker.backend", 7084, 7056, False),
+        sh.SwapConsumer(644, "sysextd", 1969, 1970, True),
+    ]
     claude = [
         sh.ClaudeProc(111, 1, "2.1.183", "session", 300000, "3d", 5.0, 140,
                       "abc", True, "old version 2.1.183 (current 2.1.185)", "claude --resume abc"),
@@ -38,7 +44,8 @@ def fake_snapshot(monkeypatch):
     monkeypatch.setattr(sh, "scan_claude_processes", lambda: claude)
     monkeypatch.setattr(sh, "scan_docker", lambda: docker)
     monkeypatch.setattr(sh, "top_processes", lambda n=8: [])
-    return mem, claude, docker
+    monkeypatch.setattr(sh, "top_swap_consumers", lambda n=10: consumers)
+    return mem, claude, docker, consumers
 
 
 @pytest.fixture
@@ -67,15 +74,62 @@ def test_panel_shows_metrics_and_issues(client):
     assert "kill-daemons" in r.text
     # Non-essential containers -> stop-nonessential action present.
     assert "stop-nonessential" in r.text
+    # Generic swap-holders section ranks by footprint and offers per-process quit.
+    assert "What holds swap" in r.text
+    assert "Virtualization.VirtualMachine" in r.text
+    assert "/health/action/terminate?pid=18441" in r.text
+    # System process gets no quit button.
+    assert "/health/action/terminate?pid=644" not in r.text
+
+
+def test_thrashing_drives_crit_issue(client):
+    j = client.get("/health/json").json()
+    titles = [i["title"] for i in j["issues"]]
+    # Active paging is reported as the crit signal, not just "swap full".
+    assert any("Actively swapping" in t for t in titles)
+    swap_issue = next(i for i in j["issues"] if "Actively swapping" in i["title"])
+    # Points at the biggest non-system holder, generically.
+    assert "VirtualMachine" in swap_issue["detail"]
 
 
 def test_json_snapshot_shape(client):
     j = client.get("/health/json").json()
-    assert set(j.keys()) >= {"mem", "claude", "docker", "issues", "stale_daemon_count"}
+    assert set(j.keys()) >= {"mem", "claude", "docker", "issues",
+                             "stale_daemon_count", "swap_consumers"}
     assert j["stale_daemon_count"] == 1
-    titles = [i["title"] for i in j["issues"]]
-    assert any("Swap" in t for t in titles)
+    assert j["mem"]["thrashing"] is True
+    assert j["swap_consumers"][0]["swap_mb"] == 14336
     assert any("non-essential" in i["detail"] for i in j["issues"])
+
+
+def test_terminate_refuses_system_process(monkeypatch):
+    # Guard is server-side: even targeting a root process is refused.
+    monkeypatch.setattr(sh, "top_swap_consumers",
+                        lambda n=200: [sh.SwapConsumer(644, "sysextd", 1969, 1970, True)])
+    monkeypatch.setattr(sh, "_usernames", lambda: {644: "root"})
+    res = sh.terminate_process(644)
+    assert res["ok"] is False
+    assert "system" in res["note"]
+
+
+def test_terminate_refuses_self_and_init():
+    assert sh.terminate_process(1)["ok"] is False
+    import os
+    assert sh.terminate_process(os.getpid())["ok"] is False
+
+
+def test_terminate_action_endpoint(client, monkeypatch):
+    got = {}
+
+    def _fake_term(pid, hard=False):
+        got["pid"] = pid
+        return {"ok": True, "name": "node", "note": f"sent SIGTERM to node ({pid})"}
+
+    monkeypatch.setattr(sh, "terminate_process", _fake_term)
+    r = client.post("/health/action/terminate?pid=49697")
+    assert r.status_code == 200
+    assert got["pid"] == 49697
+    assert "SIGTERM to node" in r.text
 
 
 def test_kill_daemons_action_invokes_killer(client, monkeypatch):
