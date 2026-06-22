@@ -4010,6 +4010,157 @@ def events_prune(before_ts: float = 0.0, dry_run: bool = False) -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def wake_session(session_id: str) -> str:
+    """Stateless recovery — M2 W2.
+
+    Replays the event log for ``session_id`` to restore in-memory state after a
+    server restart or mid-invoke kill.
+
+    Recovery steps
+    --------------
+    1. Read all events for the session in chronological order.
+    2. Replay ``record_model_reward`` tool_invoke events whose tool_result was
+       never written (i.e. the server was killed during the call).  These are
+       re-applied directly to the ``model_rewards`` table so the bandit state is
+       consistent with what the session had accumulated.
+    3. Invalidate the in-process vector cache so the next search reloads from
+       the persistent ``embeddings`` table — the table itself is always current;
+       only the in-memory cache needs eviction.
+    4. Detect the most-recent in-flight tool_invoke (any tool) with no matching
+       tool_result and report it in the output so the caller can decide whether
+       to re-invoke it.
+
+    Out of scope (per design)
+    -------------------------
+    * Snapshotting / replay-cost optimization — measure first.
+    * Cross-session linking.
+
+    Args:
+        session_id: The session to recover.  Must be a non-empty string.
+    """
+    import time as _time
+
+    if not session_id:
+        return "error: session_id is required"
+
+    log_tool("wake_session", session_id=session_id[:36])
+    t_start = _time.monotonic()
+
+    # ------------------------------------------------------------------
+    # Step 1: load events in order
+    # ------------------------------------------------------------------
+    events = _store.get_events(session_id=session_id, limit=10000)
+    if not events:
+        return f"wake_session: no events found for session {session_id!r}"
+
+    elapsed_load_ms = int((_time.monotonic() - t_start) * 1000)
+
+    # ------------------------------------------------------------------
+    # Step 2: detect in-flight tool_invoke (no matching tool_result)
+    # ------------------------------------------------------------------
+    # Walk events in order, track last seen invoke id per tool_name.
+    # An "in-flight" invoke has a tool_invoke but no subsequent tool_result
+    # with the same tool_name (we match positionally — within the ordered
+    # stream, each invoke is expected to be followed by its result before the
+    # next invoke of the same tool, but we only track the most-recent unpaired
+    # one across the entire session).
+    invoke_stack: dict[str, dict] = {}   # tool_name -> last unmatched invoke event
+    replay_targets: list[dict] = []      # record_model_reward invokes with no result
+
+    for ev in events:
+        kind = ev.get("kind", "")
+        tool_name = ev.get("tool_name") or ""
+        if kind == "tool_invoke" and tool_name:
+            invoke_stack[tool_name] = ev
+        elif kind == "tool_result" and tool_name:
+            invoke_stack.pop(tool_name, None)
+
+    # Remaining entries in invoke_stack are in-flight (no tool_result).
+    in_flight = list(invoke_stack.values())
+
+    # Identify record_model_reward invokes that never got a result — replay them.
+    for ev in in_flight:
+        if ev.get("tool_name") == "record_model_reward":
+            replay_targets.append(ev)
+
+    # ------------------------------------------------------------------
+    # Step 3: replay record_model_reward in-flight invokes
+    # ------------------------------------------------------------------
+    import json as _json
+    from .router import bandit as _bandit
+
+    replayed = 0
+    replay_errors: list[str] = []
+    for ev in replay_targets:
+        try:
+            payload = _json.loads(ev.get("payload") or "{}")
+            kw = payload.get("kwargs") or payload.get("args") or {}
+            if isinstance(kw, dict):
+                tier = str(kw.get("tier", ""))
+                task_class = str(kw.get("task_class", ""))
+                domain = str(kw.get("domain", "_none"))
+                success_raw = kw.get("success", "0.5")
+                success = float(success_raw)
+                if tier and task_class:
+                    _bandit.record_reward(_store, tier, task_class, domain, success)
+                    replayed += 1
+                else:
+                    # If task_class was omitted, try to derive it from complexity.
+                    complexity_raw = kw.get("complexity", "-1.0")
+                    complexity = float(complexity_raw)
+                    domain_hints_raw = str(kw.get("domain_hints", ""))
+                    hints = [h.strip() for h in domain_hints_raw.split(",") if h.strip()]
+                    if tier and complexity >= 0.0:
+                        task_class, domain = _bandit.bucket(complexity, hints)
+                        _bandit.record_reward(_store, tier, task_class, domain, success)
+                        replayed += 1
+        except Exception as exc:  # noqa: BLE001
+            replay_errors.append(str(exc)[:80])
+
+    # ------------------------------------------------------------------
+    # Step 4: invalidate in-process caches
+    # ------------------------------------------------------------------
+    # Vector cache: force reload from embeddings table on next search.
+    _store._vec_cache_valid = False
+    _store._vec_cache = {}
+
+    elapsed_total_ms = int((_time.monotonic() - t_start) * 1000)
+
+    # ------------------------------------------------------------------
+    # Build summary report
+    # ------------------------------------------------------------------
+    lines = [
+        f"wake_session: session={session_id!r}",
+        f"  events_replayed={len(events)}  elapsed_ms={elapsed_total_ms}",
+        f"  (load_ms={elapsed_load_ms})",
+        f"  bandit_rewards_replayed={replayed}",
+        f"  vector_cache_invalidated=true",
+    ]
+
+    if in_flight:
+        lines.append(f"  in_flight_tools={len(in_flight)}:")
+        for ev in in_flight:
+            tool = ev.get("tool_name", "?")
+            ts = ev.get("ts", 0.0)
+            eid = ev.get("id", "?")
+            lines.append(f"    - tool={tool}  event_id={eid}  ts={ts:.3f}")
+    else:
+        lines.append("  in_flight_tools=0 (session completed cleanly)")
+
+    if replay_errors:
+        lines.append(f"  replay_errors={len(replay_errors)}: {replay_errors[:3]}")
+
+    if elapsed_total_ms > 500:
+        lines.append(
+            f"  WARNING: replay exceeded 500ms budget ({elapsed_total_ms}ms). "
+            "Consider snapshotting for large sessions."
+        )
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
 def issue_sync(repo: str = "", dry_run: bool = False) -> str:
     """Reconcile linked GitHub issues with their skill-hub tasks.
 
