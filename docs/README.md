@@ -45,6 +45,7 @@ docs/
 | Understand **how the hook saves tokens** | [features/hooks.md](features/hooks.md) |
 | **Keep working when Claude is rate-limited** | [features/local-execution.md](features/local-execution.md) |
 | **Teach** the hub my vocabulary | [features/learning.md](features/learning.md) |
+| Drive **my real Chrome session** (logged-in accounts) | [features/browser-automation.md](features/browser-automation.md) |
 | See every **MCP tool** I can call | [reference/tools.md](reference/tools.md) |
 | Tune a **config value** | [reference/config.md](reference/config.md) |
 | Build a **custom local skill** | [advanced/skill-chaining.md](advanced/skill-chaining.md) |
