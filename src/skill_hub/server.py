@@ -601,6 +601,28 @@ def log_session(tool_name: str, plugin_id: str = "") -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def retrieve_compressed(hash: str) -> str:
+    """Retrieve the original content behind a ``<<ccr:HASH>>`` compression marker.
+
+    Skill Hub may inject reversible, deterministic compression markers
+    (``<<ccr:HASH>>``) when it shrinks large structured tool outputs, logs, or JSON
+    before showing them. Call this with the hash to get the full original text back
+    on demand.
+    """
+    log_tool("retrieve_compressed", hash=hash)
+    from .compression import retrieve_original
+
+    original = retrieve_original(hash)
+    if original is None:
+        return (
+            f"No stored original for hash '{hash}'. The entry may have expired, "
+            f"or deterministic compression is not enabled (install the 'compression' extra)."
+        )
+    return original
+
+
+@mcp.tool()
+@requires_capability("none")
 def close_session(summary: str = "") -> str:
     """Phase M3 — Close the current session and persist its L1 summary.
 

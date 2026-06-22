@@ -115,6 +115,12 @@ def _summarize_results(query: str, results: list[dict]) -> str:
         for i, r in enumerate(results)
     )
 
+    # Shrink the concatenated results before they hit the local LLM, cutting its
+    # input tokens. No-ops for short/prose results or without the 'compression' extra.
+    from .compression import maybe_compress
+
+    results_text = maybe_compress(results_text, context=query)
+
     model = str(_cfg.get("reason_model") or RERANK_MODEL)
     resolved = model if "/" in model else f"ollama/{model}"
     prompt = _SUMMARIZE_PROMPT.format(
