@@ -178,7 +178,7 @@ class TestCodegraphBinResolution:
             "/usr/local/bin/codegraph", "sync", str(tmp_path),
         ]
         assert _reg._codegraph_init_argv(tmp_path) == [
-            "/usr/local/bin/codegraph", "init", str(tmp_path),
+            "/usr/local/bin/codegraph", "init", "-i", str(tmp_path),
         ]
 
 
