@@ -21,6 +21,8 @@
       <button class="tab-btn" :class="{active: tab==='backend-health'}" @click="tab='backend-health'; loadBackendHealth(false)">Backend Health</button>
       <button class="tab-btn" :class="{active: tab==='tier-config'}" @click="tab='tier-config'; loadTierConfig(false)">Tier Config</button>
       <button class="tab-btn" :class="{active: tab==='telemetry'}" @click="tab='telemetry'; loadTelemetry(false)">Telemetry</button>
+      <button class="tab-btn" :class="{active: tab==='graphcode'}" @click="tab='graphcode'">Code Graph</button>
+      <button class="tab-btn" :class="{active: tab==='chrome'}" @click="tab='chrome'">Chrome</button>
     </div>
 
     <div x-show="tab==='services'" class="tab-panel">
@@ -94,6 +96,22 @@
           <span id="tier-save-status" style="font-size:12px;color:var(--color-muted)"></span>
         </div>
       </div>
+    </div>
+
+    <!-- Code Graph tab -->
+    <div x-show="tab==='graphcode'" class="tab-panel"
+         hx-get="/control/graphcode"
+         hx-trigger="revealed once"
+         hx-swap="innerHTML">
+      <p class="muted">Loading Code Graph…</p>
+    </div>
+
+    <!-- Chrome tab -->
+    <div x-show="tab==='chrome'" class="tab-panel"
+         hx-get="/control/chrome"
+         hx-trigger="revealed once"
+         hx-swap="innerHTML">
+      <p class="muted">Loading Chrome…</p>
     </div>
 
     <!-- Telemetry tab -->

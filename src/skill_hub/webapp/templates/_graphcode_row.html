@@ -1,0 +1,34 @@
+{# One row for the Code Graph table. Rendered inline and as an HTMX swap target. #}
+{# row_id must be passed by callers that need a stable DOM id; defaults to a path-derived value. #}
+{% set _rid = row_id if row_id is defined else ('cg-probe-' ~ (row.root | replace('/', '-') | replace(' ', '_'))[:30]) %}
+<tr id="{{ _rid }}">
+  <td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-all">{{ row.root }}</td>
+  <td>
+    <span class="{{ row.badge_cls }}">{{ row.badge }}</span>
+    {% if action_msg %}
+    <span class="muted small" style="margin-left:6px">{{ action_msg }}</span>
+    {% endif %}
+  </td>
+  <td>
+    {% if row.node_count %}{{ row.node_count }} nodes{% else %}&mdash;{% endif %}
+    {% if row.age_str %}<span class="muted small">&nbsp;({{ row.age_str }} ago)</span>{% endif %}
+  </td>
+  <td>
+    <form method="post" action="/control/graphcode/sync" style="display:inline"
+          hx-post="/control/graphcode/sync"
+          hx-target="#{{ _rid }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="path" value="{{ row.root }}">
+      <button type="submit" class="btn sm"
+              title="Dispatch a sync (fire-and-forget refresh) for this index">Sync now</button>
+    </form>
+    <form method="post" action="/control/graphcode/reindex" style="display:inline;margin-left:4px"
+          hx-post="/control/graphcode/reindex"
+          hx-target="#{{ _rid }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="path" value="{{ row.root }}">
+      <button type="submit" class="btn sm"
+              title="Run codegraph init (blocking, up to ~120s) to rebuild the index">Re-index</button>
+    </form>
+  </td>
+</tr>

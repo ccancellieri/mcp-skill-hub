@@ -1,0 +1,57 @@
+{# Code Graph tab panel — rendered into the Plugins-style HTMX swap target. #}
+<section class="graphcode-panel">
+
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <h3 style="margin:0;font-size:13px">Tooling Orchestrator</h3>
+    <span class="tag status-running" style="font-size:11px">mode: {{ mode }}</span>
+    <a href="/settings" class="btn sm" style="margin-left:auto">Orchestrator settings &rarr;</a>
+  </div>
+
+  {% if rows %}
+  <div class="card" style="margin-bottom:16px">
+    <h2>Indexed Roots</h2>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th style="text-align:left">Path</th>
+            <th style="text-align:left">Status</th>
+            <th style="text-align:left">Index info</th>
+            <th style="text-align:left">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          {% set action_msg = none %}
+          {% include "_graphcode_row.html" with context %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card" style="margin-bottom:16px">
+    <p class="muted">No project roots configured or seen yet. Add roots via
+      <a href="/settings">Orchestrator settings</a> or probe a path below.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Probe a path</h2>
+    <form method="post" action="/control/graphcode/probe"
+          hx-post="/control/graphcode/probe"
+          hx-target="#cg-probe-result"
+          hx-swap="innerHTML">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" name="path" placeholder="/path/to/project"
+               style="flex:1;min-width:200px;max-width:480px"
+               aria-label="Project directory path to probe">
+        <button type="submit" class="btn"
+                hx-indicator="#cg-probe-spinner">Check</button>
+        <span id="cg-probe-spinner" class="htmx-indicator muted small">working&hellip;</span>
+      </div>
+    </form>
+    <div id="cg-probe-result" style="margin-top:12px"></div>
+  </div>
+
+</section>
