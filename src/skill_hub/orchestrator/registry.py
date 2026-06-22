@@ -126,15 +126,44 @@ def _codegraph_init_argv(root: Path) -> list[str] | None:
 # Directive templates
 # ---------------------------------------------------------------------------
 
-_CODEGRAPH_READY_FMT = (
-    "[tooling] {root} is indexed (refreshed {age}) — prefer the indexed "
-    "code-graph queries (search / callers / impact) over raw text search."
-)
+def _codegraph_directive_ready(root: Path, r: Readiness) -> str:
+    """Steer toward code-graph queries when fresh; warn + steer to sync when stale."""
+    if r.fresh:
+        age = (
+            f"{int(r.stale_age)}s ago"
+            if r.stale_age is not None
+            else "recently"
+        )
+        return (
+            f"[tooling] {root} is indexed (built {age}) — prefer the indexed "
+            f"code-graph queries (search / callers / impact) over raw text search."
+        )
+    # Present but stale: the graph is behind the working tree. Trusting it risks
+    # the silent-stale-read failure mode (querying pre-edit code).
+    return (
+        f"[tooling] {root} has a code-graph index but it is STALE ({r.detail}). "
+        f"Run `codegraph sync {root}` (or ensure_tooling) and prefer re-reading "
+        f"changed files directly until the index catches up — code-graph results "
+        f"may reflect pre-edit code."
+    )
 
-_CODEGRAPH_MISSING_FMT = (
-    "[tooling] {root} is not indexed but the task is about to explore it; "
-    "offer to initialize it (via ensure_tooling) before falling back to text search."
-)
+
+def _codegraph_directive_missing(root: Path, r: Readiness) -> str:
+    """Offer init; for a worktree borrowing another checkout's index, warn loudly."""
+    if r.worktree_mismatch:
+        return (
+            f"[tooling] {root} is a git worktree with no code-graph index of its "
+            f"own. The only reachable index is {r.ancestor_index} (a different "
+            f"checkout/branch), so code-graph queries here would return THAT "
+            f"tree's code, not this worktree's — the source of silent stale "
+            f"reads. Offer to initialize a worktree-local index "
+            f"(`codegraph init -i {root}` via ensure_tooling) before using "
+            f"code-graph; until then prefer reading files directly."
+        )
+    return (
+        f"[tooling] {root} is not indexed but the task is about to explore it; "
+        f"offer to initialize it (via ensure_tooling) before falling back to text search."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +237,8 @@ CODEGRAPH = Capability(
     probe=probe_codegraph,
     provision_refresh=_codegraph_refresh_argv,
     provision_init=_codegraph_init_argv,
-    directive_ready=_CODEGRAPH_READY_FMT,
-    directive_missing=_CODEGRAPH_MISSING_FMT,
+    directive_ready=_codegraph_directive_ready,
+    directive_missing=_codegraph_directive_missing,
     probe_cache_ttl=60.0,
     sync_ttl=300.0,
 )
