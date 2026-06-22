@@ -105,7 +105,8 @@ def probe_codegraph(root: Path) -> Readiness:
     stale_age = time.time() - index_mtime
     try:
         from .. import config as _cfg
-        sync_ttl = float(_cfg.get("orchestrator_sync_ttl_secs") or _DEFAULT_SYNC_TTL)
+        _ttl = _cfg.get("orchestrator_sync_ttl_secs")
+        sync_ttl = float(_ttl if _ttl is not None else _DEFAULT_SYNC_TTL)
     except Exception:
         sync_ttl = _DEFAULT_SYNC_TTL
 
@@ -196,7 +197,8 @@ def dispatch_async(actions: list[list[str]]) -> None:
 
     try:
         from .. import config as _cfg
-        sync_ttl = float(_cfg.get("orchestrator_sync_ttl_secs") or _DEFAULT_SYNC_TTL)
+        _ttl = _cfg.get("orchestrator_sync_ttl_secs")
+        sync_ttl = float(_ttl if _ttl is not None else _DEFAULT_SYNC_TTL)
     except Exception:
         sync_ttl = _DEFAULT_SYNC_TTL
 
@@ -272,7 +274,8 @@ def _evaluate_inner(
         from .. import config as _cfg
         auto_init_global: bool = bool(_cfg.get("orchestrator_auto_init"))
         auto_init_roots_raw = _cfg.get("orchestrator_auto_init_roots") or []
-        probe_cache_ttl = float(_cfg.get("orchestrator_probe_cache_secs") or 60.0)
+        _pct = _cfg.get("orchestrator_probe_cache_secs")
+        probe_cache_ttl = float(_pct if _pct is not None else 60.0)
     except Exception:
         auto_init_global = False
         auto_init_roots_raw = []

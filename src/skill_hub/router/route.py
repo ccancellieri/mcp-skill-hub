@@ -293,20 +293,30 @@ def route(
             )
         _orch_dispatch(_orch_result.provision_actions)
         if _orch_result.decisions:
-            try:
-                from ..store import SkillStore as _SkillStore
-                _orch_store = _SkillStore()
+            # Offload the decision-log write: opening a SkillStore is ~100ms and
+            # the route path is latency-sensitive. Fire-and-forget, fully guarded.
+            def _log_orch_decisions(decisions: list, sid: str) -> None:
                 try:
-                    _orch_store.append_event(
-                        session_id=session_id or "",
-                        kind="orchestrator_decision",
-                        payload={"decisions": _orch_result.decisions},
-                        tool_name=None,
-                    )
-                finally:
-                    _orch_store.close()
-            except Exception:
-                pass
+                    from ..store import SkillStore as _SkillStore
+                    _orch_store = _SkillStore()
+                    try:
+                        _orch_store.append_event(
+                            session_id=sid,
+                            kind="orchestrator_decision",
+                            payload={"decisions": decisions},
+                            tool_name=None,
+                        )
+                    finally:
+                        _orch_store.close()
+                except Exception:
+                    pass
+
+            import threading
+            threading.Thread(
+                target=_log_orch_decisions,
+                args=(_orch_result.decisions, session_id or ""),
+                daemon=True,
+            ).start()
     except Exception:
         pass
 

@@ -11,6 +11,7 @@ here, not changing the engine.
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -80,7 +81,9 @@ def _signals_codegraph(message: str, root: Path) -> bool:
 # Provision helpers
 # ---------------------------------------------------------------------------
 
-_CODEGRAPH_BIN = "/opt/homebrew/bin/codegraph"
+# Resolve from PATH so the feature works on Linux / Intel macs, not just
+# Apple-Silicon Homebrew; fall back to the common Homebrew path.
+_CODEGRAPH_BIN = shutil.which("codegraph") or "/opt/homebrew/bin/codegraph"
 
 
 def _codegraph_refresh_argv(root: Path) -> list[str]:
