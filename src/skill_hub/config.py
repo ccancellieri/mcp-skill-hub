@@ -106,7 +106,11 @@ _DEFAULTS = {
     "hook_context_max_skill_chars": 8000,  # max chars per skill (truncated if larger)
     "hook_context_top_k_skills": 5,     # max skills to load with full content per message
     "hook_context_min_skills": 3,      # min skills to load (auto-fill from RAG if LLM picks fewer)
-    "hook_precompact_threshold": 1500,  # messages longer than this get LLM pre-compaction
+    "hook_precompact_threshold": 1500,  # messages longer than this get pre-compacted
+    # Pre-compact a long input deterministically (extractive Kompress, no local LLM)
+    # by default — the condensed view is consumed by the cloud model, which tolerates
+    # extractive text. Flip True to restore the legacy abstractive local-LLM digest.
+    "precompact_use_llm": False,
 
     # Search defaults
     "search_top_k": 3,                  # default number of results
@@ -138,12 +142,20 @@ _DEFAULTS = {
     "compression_code_aware_enabled": False,  # tree-sitter AST code compression
     "compression_ml_target_ratio": 0.6,     # Kompress target size (compressed/original)
 
-    # Conversation digest — periodic context compaction
+    # Conversation digest — periodic context compaction.
+    # Deterministic-first: by default the periodic digest condenses recent messages
+    # extractively (Kompress, no local LLM). The richer abstractive digest — which
+    # also infers stale topics + a profile-switch suggestion — runs only when the
+    # eviction feature needs it (eviction_enabled) or when forced via digest_use_llm.
     "digest_every_n_messages": 5,       # produce a digest every N messages
     "digest_stale_threshold": 0.3,      # similarity below this = "stale" topic
+    "digest_use_llm": False,            # force the abstractive local-LLM digest
 
-    # Auto-eviction — relevance decay tracking
-    "eviction_enabled": True,           # enable relevance decay tracking
+    # Auto-eviction — relevance decay tracking. OFF by default: profile-switch
+    # suggestions require the abstractive local-LLM digest (it infers the target
+    # profile), so keeping eviction opt-in preserves the deterministic-first /
+    # cost-cut posture. Flip True to re-enable stale-topic + profile-switch hints.
+    "eviction_enabled": False,          # enable relevance decay tracking
     "eviction_min_stale_count": 3,      # suggest profile switch after N stale detections
 
     # Plan-executor API fallback — when authoring plans, the runner chain
