@@ -3558,9 +3558,9 @@ def _cmd_postcompact_optimize(session_id: str) -> dict:
 
     Compaction is the natural moment to prune duplicate/decayed memory.
     Runs when system pressure is at or below ``postcompact_pressure_max``
-    (default LOW — more permissive than the background IDLE gate). Flip
-    ``postcompact_optimize_apply`` to True in config to actually mutate;
-    the default is dry-run (recommendations only).
+    (default LOW — more permissive than the background IDLE gate). By default
+    ``postcompact_optimize_apply`` is True, so the pass actually mutates the
+    store; set it False in config for a dry-run (recommendations only).
     """
     log_event("POSTCOMPACT", f"session={session_id[:12]}")
     try:
@@ -3577,7 +3577,10 @@ def _cmd_postcompact_optimize(session_id: str) -> dict:
 
     apply = bool(_cfg_mod.get("postcompact_optimize_apply"))
     try:
-        report = _optimize_memory(dry_run=not apply)
+        # should_run_postcompact_optimize() already cleared the (wider, LOW)
+        # postcompact ceiling above; bypass the inner IDLE-only gate so the
+        # widened ceiling actually runs instead of being re-blocked.
+        report = _optimize_memory(dry_run=not apply, bypass_gate=True)
     except Exception as exc:  # noqa: BLE001
         log_event("POSTCOMPACT", f"optimize_error: {exc}")
         return {"decision": "allow"}

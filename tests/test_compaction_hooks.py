@@ -117,7 +117,7 @@ def test_postcompact_optimize_returns_systemmessage(monkeypatch):
     # resolves to our stub without importing the real server (which opens the
     # live DB at module level via its module-level SkillStore() call).
     fake_server = types.ModuleType("skill_hub.server")
-    fake_server.optimize_memory = lambda dry_run=True: f"REPORT (dry_run={dry_run})"  # type: ignore[attr-defined]
+    fake_server.optimize_memory = lambda dry_run=True, bypass_gate=False: f"REPORT (dry_run={dry_run})"  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
 
     result = cli._cmd_postcompact_optimize(session_id="s-1")
@@ -135,7 +135,7 @@ def test_postcompact_optimize_truncates_huge_report(monkeypatch):
                         lambda k, default=None: default)
     # Same stub approach — avoid importing the real server module.
     fake_server = types.ModuleType("skill_hub.server")
-    fake_server.optimize_memory = lambda dry_run=True: "X" * 8000  # type: ignore[attr-defined]
+    fake_server.optimize_memory = lambda dry_run=True, bypass_gate=False: "X" * 8000  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
 
     result = cli._cmd_postcompact_optimize(session_id="s-1")

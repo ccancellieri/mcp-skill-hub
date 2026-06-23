@@ -157,6 +157,58 @@ class TestPreloaderTeachings:
         assert "should-not-appear" not in skill_names
         assert teaching_text == ""
 
+    def test_teaching_text_capped_top_k_and_length(self, tmp_store, monkeypatch):
+        """At most _TEACHING_TOP_K teachings are injected and teaching_text is
+        bounded to _TEACHING_TEXT_MAX_CHARS."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.embeddings as _emb
+        import skill_hub.store as _store_mod
+
+        fake_vec = [1.0] + [0.0] * 767
+        # Seed 10 long teachings — well above the top_k cap; each rule long
+        # enough that 3 of them already approach the char budget.
+        for i in range(10):
+            tmp_store.add_teaching(
+                rule=f"teaching rule number {i} " + ("x" * 300),
+                rule_vector=fake_vec,
+                action="note",
+                target_type="",
+                target_id="",
+                weight=1.0,
+            )
+
+        monkeypatch.setattr(_emb, "embed_available", lambda: True)
+        monkeypatch.setattr(_emb, "embed", lambda q: fake_vec)
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+        monkeypatch.setattr(tmp_store, "search", lambda vec, top_k=9: [])
+        monkeypatch.setattr(tmp_store, "suggest_plugins", lambda vec: [])
+
+        # Spy on search_teachings to confirm the preloader passes top_k=3
+        seen_kwargs: dict = {}
+        real_search = tmp_store.search_teachings
+
+        def _spy(vec, min_sim=0.6, top_k=None):
+            seen_kwargs["top_k"] = top_k
+            return real_search(vec, min_sim=min_sim, top_k=top_k)
+
+        monkeypatch.setattr(tmp_store, "search_teachings", _spy)
+
+        cfg = {"router_use_teachings": True, "teaching_min_similarity": 0.1}
+        _, _, teaching_text = preloader.load_skills(
+            ["api"], cfg=cfg, top_k=3
+        )
+
+        assert seen_kwargs.get("top_k") == preloader._TEACHING_TOP_K, (
+            f"preloader should cap teachings to top_k=3, passed {seen_kwargs.get('top_k')}"
+        )
+        # Length is bounded (cap + the single-char ellipsis).
+        assert len(teaching_text) <= preloader._TEACHING_TEXT_MAX_CHARS + 1, (
+            f"teaching_text not capped: len={len(teaching_text)}"
+        )
+        # At most 3 rules' worth of newline-joined text (≤ 2 separators).
+        assert teaching_text.count("\n") <= preloader._TEACHING_TOP_K - 1
+
 
 # ===========================================================================
 # FIX 2 — postcompact runs at LOW; background optimize_memory gate unchanged
@@ -266,16 +318,62 @@ class TestPostcompactDefaultApply:
         # Let pressure gate pass
         monkeypatch.setattr(rm, "should_run_postcompact_optimize", lambda: True)
 
-        calls: list[bool] = []
+        calls: list[dict] = []
         fake_server = types.ModuleType("skill_hub.server")
         fake_server.optimize_memory = (  # type: ignore[attr-defined]
-            lambda dry_run=True: calls.append(dry_run) or "REPORT"
+            lambda dry_run=True, bypass_gate=False:
+            calls.append({"dry_run": dry_run, "bypass_gate": bypass_gate}) or "REPORT"
         )
         monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
 
         cli._cmd_postcompact_optimize(session_id="s-test")
         # With default (True), dry_run should be False
-        assert calls == [False], f"Expected dry_run=False, got calls={calls}"
+        assert calls == [{"dry_run": False, "bypass_gate": True}], (
+            f"Expected dry_run=False + bypass_gate=True, got calls={calls}"
+        )
+
+    def test_postcompact_actually_runs_at_low_not_skipped(self, monkeypatch):
+        """End-to-end: at LOW pressure the postcompact path RUNS optimize_memory
+        (bypassing the inner IDLE gate) instead of returning the 'skipped' string.
+
+        Guards against the no-op where the widened LOW ceiling clears the outer
+        gate but optimize_memory's internal should_run_llm IDLE check re-blocks it.
+        """
+        import types
+        from skill_hub import cli
+        from skill_hub import resource_monitor as rm
+        from skill_hub.resource_monitor import Pressure, SystemSnapshot
+
+        # System is at LOW pressure — above IDLE, so the inner gate WOULD block.
+        low = SystemSnapshot(
+            cpu_load_1m=0.1, memory_used_pct=0.1,
+            memory_available_mb=4096, total_memory_mb=8192,
+            pressure=Pressure.LOW, timestamp=0.0,
+        )
+        monkeypatch.setattr(rm, "snapshot", lambda force=False: low)
+
+        # Fake optimize_memory mirroring the REAL inner gate: when bypass_gate is
+        # False it consults should_run_llm("optimize_memory") (IDLE-only) and at
+        # LOW returns the skipped string; when bypass_gate is True it runs.
+        def fake_optimize(dry_run=True, bypass_gate=False):
+            if not bypass_gate and not rm.should_run_llm("optimize_memory"):
+                return "Skipped: system under pressure (LOW, ...)."
+            return "=== Memory Optimization Report ===\nran"
+
+        fake_server = types.ModuleType("skill_hub.server")
+        fake_server.optimize_memory = fake_optimize  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "skill_hub.server", fake_server)
+
+        result = cli._cmd_postcompact_optimize(session_id="s-low")
+
+        msg = result.get("systemMessage", "")
+        assert "Skipped: system under pressure" not in msg, (
+            "postcompact was re-blocked by the inner IDLE gate at LOW — "
+            "bypass_gate must let it run"
+        )
+        assert "Memory Optimization Report" in msg, (
+            f"postcompact did not run optimize_memory at LOW; got: {msg!r}"
+        )
 
 
 # ===========================================================================

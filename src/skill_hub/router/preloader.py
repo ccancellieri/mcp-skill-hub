@@ -28,6 +28,12 @@ from __future__ import annotations
 from typing import Any
 
 
+# Caps for the teaching rules injected into the systemMessage. Bounded so a
+# noisy teachings table can't bloat the (cache-stable) injected context.
+_TEACHING_TOP_K: int = 3          # at most this many matched teachings
+_TEACHING_TEXT_MAX_CHARS: int = 600  # total injected rule-text budget
+
+
 # ---------------------------------------------------------------------------
 # Skill preloading
 # ---------------------------------------------------------------------------
@@ -92,7 +98,8 @@ def load_skills(
         if cfg.get("router_use_teachings", True):
             try:
                 teach_min = float(cfg.get("teaching_min_similarity", 0.6))
-                teachings = store.search_teachings(vec, min_sim=teach_min)
+                teachings = store.search_teachings(
+                    vec, min_sim=teach_min, top_k=_TEACHING_TOP_K)
                 for t in teachings:
                     # Collect the rule text for injection into systemMessage
                     rule_text = (t.get("rule") or "").strip()
@@ -115,6 +122,8 @@ def load_skills(
         store.close()
 
     teaching_text = "\n".join(teaching_rules) if teaching_rules else ""
+    if len(teaching_text) > _TEACHING_TEXT_MAX_CHARS:
+        teaching_text = teaching_text[:_TEACHING_TEXT_MAX_CHARS].rstrip() + "…"
     return skill_names, plugin_names, teaching_text
 
 
