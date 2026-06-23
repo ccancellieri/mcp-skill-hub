@@ -142,3 +142,248 @@ def test_hooks_dir_env_override(monkeypatch, tmp_path):
     assert bc.hooks_dir() == tmp_path
     cmd = bc.base_hooks()["PostCompact"][0]["hooks"][0]["command"]
     assert cmd == str(tmp_path / "postcompact.sh")
+
+
+# ---------------------------------------------------------------------------
+# MCP registration tests
+# ---------------------------------------------------------------------------
+
+def test_check_mcp_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILL_HUB_CLAUDE_JSON", str(tmp_path / "nonexistent.json"))
+    issues = bc.check_mcp()
+    assert issues  # file not found → issue reported
+
+
+def test_check_mcp_empty_json(tmp_path, monkeypatch):
+    p = tmp_path / "claude.json"
+    p.write_text("{}", encoding="utf-8")
+    issues = bc.check_mcp(p)
+    assert any("skill-hub" in i for i in issues)
+
+
+def test_merge_mcp_into_empty(tmp_path):
+    p = tmp_path / "claude.json"
+    p.write_text("{}", encoding="utf-8")
+    data, added = bc.merge_mcp(p)
+    assert "mcpServers:skill-hub" in added
+    assert "skill-hub" in data["mcpServers"]
+    entry = data["mcpServers"]["skill-hub"]
+    assert entry.get("command")  # command is set
+    assert entry.get("type") == "stdio"
+
+
+def test_merge_mcp_preserves_other_servers(tmp_path):
+    p = tmp_path / "claude.json"
+    existing = {
+        "mcpServers": {
+            "codegraph": {"type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"]}
+        }
+    }
+    p.write_text(json.dumps(existing), encoding="utf-8")
+    data, added = bc.merge_mcp(p)
+    assert "codegraph" in data["mcpServers"]  # preserved
+    assert "skill-hub" in data["mcpServers"]   # added
+    assert "mcpServers:skill-hub" in added
+
+
+def test_merge_mcp_idempotent(tmp_path):
+    p = tmp_path / "claude.json"
+    existing = {
+        "mcpServers": {
+            "skill-hub": {"type": "stdio", "command": "/some/path/skill-hub"}
+        }
+    }
+    p.write_text(json.dumps(existing), encoding="utf-8")
+    data, added = bc.merge_mcp(p)
+    assert added == []  # already present
+    # Original command preserved (not overwritten)
+    assert data["mcpServers"]["skill-hub"]["command"] == "/some/path/skill-hub"
+
+
+def test_install_mcp_writes_and_backs_up(tmp_path):
+    p = tmp_path / "claude.json"
+    p.write_text(json.dumps({"numStartups": 5}), encoding="utf-8")
+    report = bc.install_mcp(p)
+    assert report["added"]
+    assert report["backup_path"]
+    bak = Path(report["backup_path"])
+    assert bak.exists()
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert "skill-hub" in written["mcpServers"]
+    assert written["numStartups"] == 5  # other keys preserved
+
+
+def test_install_mcp_dry_run_does_not_write(tmp_path):
+    p = tmp_path / "claude.json"
+    p.write_text("{}", encoding="utf-8")
+    report = bc.install_mcp(p, dry_run=True)
+    assert report["dry_run"] is True
+    assert report["added"]
+    assert bc.check_mcp(p)  # still missing after dry-run
+
+
+def test_install_mcp_idempotent(tmp_path):
+    p = tmp_path / "claude.json"
+    p.write_text("{}", encoding="utf-8")
+    bc.install_mcp(p, backup=False)
+    report2 = bc.install_mcp(p, backup=False)
+    assert report2["added"] == []
+
+
+# ---------------------------------------------------------------------------
+# CLAUDE.md base-roles block tests
+# ---------------------------------------------------------------------------
+
+def test_check_roles_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILL_HUB_CLAUDE_MD", str(tmp_path / "nonexistent.md"))
+    issues = bc.check_roles()
+    assert issues  # file not found
+
+
+def test_check_roles_no_sentinel(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# My Config\n\nSome content.\n", encoding="utf-8")
+    issues = bc.check_roles(p)
+    assert any("sentinel" in i or "not present" in i for i in issues)
+
+
+def test_merge_roles_insert_into_empty_file(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# My Config\n\n", encoding="utf-8")
+    new_text, added = bc.merge_roles(p)
+    assert "CLAUDE.md:base-roles:inserted" in added
+    assert bc._ROLES_START in new_text
+    assert bc._ROLES_END in new_text
+    assert "# My Config" in new_text  # surrounding content preserved
+
+
+def test_merge_roles_refresh_existing_block(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text(
+        f"# My Config\n\n{bc._ROLES_START}\nOLD CONTENT\n{bc._ROLES_END}\n\n## After\n",
+        encoding="utf-8",
+    )
+    new_text, added = bc.merge_roles(p)
+    assert added  # something changed
+    assert "OLD CONTENT" not in new_text
+    assert bc._BASE_ROLES_CONTENT.strip() in new_text
+    assert "# My Config" in new_text   # content before preserved
+    assert "## After" in new_text      # content after preserved
+
+
+def test_merge_roles_idempotent(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("", encoding="utf-8")
+    new_text1, added1 = bc.merge_roles(p)
+    # Write the result to disk, then run again.
+    p.write_text(new_text1, encoding="utf-8")
+    new_text2, added2 = bc.merge_roles(p)
+    assert added2 == []  # nothing changed on second run
+    assert new_text1 == new_text2
+
+
+def test_install_roles_writes_and_backs_up(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# Existing\n", encoding="utf-8")
+    report = bc.install_roles(p)
+    assert report["added"]
+    assert report["backup_path"]
+    assert Path(report["backup_path"]).exists()
+    written = p.read_text(encoding="utf-8")
+    assert bc._ROLES_START in written
+    assert "# Existing" in written
+
+
+def test_install_roles_dry_run_does_not_write(tmp_path):
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# Existing\n", encoding="utf-8")
+    report = bc.install_roles(p, dry_run=True)
+    assert report["dry_run"] is True
+    assert report["added"]
+    assert bc.check_roles(p)  # still missing after dry-run
+
+
+# ---------------------------------------------------------------------------
+# check_all / restore_all tests
+# ---------------------------------------------------------------------------
+
+def test_check_all_empty(tmp_path, monkeypatch):
+    sp = tmp_path / "settings.json"
+    cj = tmp_path / "claude.json"
+    cm = tmp_path / "CLAUDE.md"
+    # None of the files exist yet.
+    status = bc.check_all(settings_path=sp, claude_json_path=cj, claude_md_path=cm)
+    assert status["hooks"]   # all hooks missing
+    assert status["mcp"]     # entry missing
+    assert status["roles"]   # block missing
+
+
+def test_check_all_present(tmp_path, monkeypatch):
+    sp = tmp_path / "settings.json"
+    cj = tmp_path / "claude.json"
+    cm = tmp_path / "CLAUDE.md"
+    # Install everything.
+    bc.install(sp, backup=False)
+    bc.install_mcp(cj, backup=False)
+    bc.install_roles(cm, backup=False)
+    status = bc.check_all(settings_path=sp, claude_json_path=cj, claude_md_path=cm)
+    assert status["hooks"] == []
+    assert status["mcp"] == []
+    assert status["roles"] == []
+
+
+def test_restore_all_applies_everything(tmp_path):
+    sp = tmp_path / "settings.json"
+    cj = tmp_path / "claude.json"
+    cm = tmp_path / "CLAUDE.md"
+    report = bc.restore_all(
+        settings_path=sp,
+        claude_json_path=cj,
+        claude_md_path=cm,
+        dry_run=False,
+        backup=False,
+    )
+    assert report["hooks"]["added"]
+    assert report["mcp"]["added"]
+    assert report["roles"]["added"]
+    # Idempotent second run.
+    report2 = bc.restore_all(
+        settings_path=sp,
+        claude_json_path=cj,
+        claude_md_path=cm,
+        dry_run=False,
+        backup=False,
+    )
+    assert report2["hooks"]["added"] == []
+    assert report2["mcp"]["added"] == []
+    assert report2["roles"]["added"] == []
+
+
+def test_restore_all_dry_run(tmp_path):
+    sp = tmp_path / "settings.json"
+    cj = tmp_path / "claude.json"
+    cm = tmp_path / "CLAUDE.md"
+    report = bc.restore_all(
+        settings_path=sp,
+        claude_json_path=cj,
+        claude_md_path=cm,
+        dry_run=True,
+        backup=False,
+    )
+    assert report["hooks"]["dry_run"] is True
+    assert report["hooks"]["added"]   # would add
+    assert not sp.exists()            # nothing written
+
+
+def test_format_report_unified(tmp_path):
+    sp = tmp_path / "settings.json"
+    cj = tmp_path / "claude.json"
+    cm = tmp_path / "CLAUDE.md"
+    report = bc.restore_all(
+        settings_path=sp, claude_json_path=cj, claude_md_path=cm,
+        dry_run=False, backup=False,
+    )
+    text = bc.format_report(report)
+    assert "hook install" in text
+    assert "MCP server" in text
+    assert "Base roles" in text

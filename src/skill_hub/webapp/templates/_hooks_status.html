@@ -1,0 +1,68 @@
+{# Hooks / MCP / Roles status partial — swapped by HTMX on load and after restore. #}
+<div id="hooks-status-panel">
+  <div style="margin-bottom:16px">
+    <button class="btn btn-primary"
+            hx-post="/control/hooks/restore"
+            hx-target="#hooks-status-panel"
+            hx-swap="outerHTML"
+            hx-indicator="#hooks-restore-spinner">
+      Restore All
+    </button>
+    <span id="hooks-restore-spinner" class="htmx-indicator muted" style="font-size:12px;margin-left:8px">
+      Restoring…
+    </span>
+    {% if restore_summary %}
+    <span class="muted" style="font-size:12px;margin-left:8px;color:var(--color-success,#22c55e)">
+      {{ restore_summary }}
+    </span>
+    {% endif %}
+  </div>
+
+  {# ── Hooks ── #}
+  <div class="card" style="margin-bottom:12px">
+    <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:0 0 10px">
+      Hook Registration
+    </h3>
+    {% if missing_hooks %}
+    <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--color-error,#ef4444)">
+      {% for item in missing_hooks %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p style="margin:0;font-size:13px;color:var(--color-success,#22c55e)">All hooks present</p>
+    {% endif %}
+  </div>
+
+  {# ── MCP registration ── #}
+  <div class="card" style="margin-bottom:12px">
+    <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:0 0 10px">
+      MCP Server Registration
+    </h3>
+    {% if missing_mcp %}
+    <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--color-error,#ef4444)">
+      {% for item in missing_mcp %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p style="margin:0;font-size:13px;color:var(--color-success,#22c55e)">skill-hub registered in ~/.claude.json</p>
+    {% endif %}
+  </div>
+
+  {# ── Base roles block ── #}
+  <div class="card">
+    <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-muted);margin:0 0 10px">
+      Base Roles Block (CLAUDE.md)
+    </h3>
+    {% if missing_roles %}
+    <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--color-error,#ef4444)">
+      {% for item in missing_roles %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p style="margin:0;font-size:13px;color:var(--color-success,#22c55e)">Base-roles block present in ~/.claude/CLAUDE.md</p>
+    {% endif %}
+  </div>
+</div>

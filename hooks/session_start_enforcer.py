@@ -451,6 +451,40 @@ def _update_task_activity(session_id: str) -> None:
             pass
 
 
+def _self_heal_base_config() -> str:
+    """Re-apply any missing base-config items (hooks / MCP / roles).
+
+    Runs only when ``auto_repair_base_config`` is True (default).  Fast,
+    idempotent, never raises — any error is swallowed and logged.
+    Returns a one-line advisory when items were repaired, otherwise "".
+    """
+    try:
+        from skill_hub import config as _cfg
+        if not _cfg.get("auto_repair_base_config"):
+            return ""
+    except Exception:
+        return ""
+
+    try:
+        from skill_hub import base_config as _bc
+        status = _bc.check_all()
+        total_missing = (
+            len(status.get("hooks") or [])
+            + len(status.get("mcp") or [])
+            + len(status.get("roles") or [])
+        )
+        if total_missing == 0:
+            return ""
+        _bc.restore_all(dry_run=False, backup=True)
+        return f"skill-hub: re-applied {total_missing} missing base-config item(s) (hooks/MCP/roles)"
+    except Exception as exc:
+        try:
+            log(f"self-heal error: {exc}")
+        except Exception:
+            pass
+        return ""
+
+
 def _dispatch_background_jobs(session_id: str, ts: float) -> str:
     """Return a housekeeping block if background jobs are pending and user is idle.
 
@@ -642,6 +676,10 @@ def main():
     else:
         log_cmd = f"tail -f {log_path}"
 
+    self_heal_msg = _self_heal_base_config()
+    if self_heal_msg:
+        log(f"SELF-HEAL  {self_heal_msg}")
+
     resume_msg = consume_resume_marker()
     if resume_msg:
         log(f"RESUME marker consumed  msg=\"{resume_msg[:80]}\"")
@@ -719,6 +757,8 @@ def main():
         system_msg = system_msg + "\n\n" + housekeeping_msg
     if bind_advisory:
         system_msg = bind_advisory + "\n\n" + system_msg
+    if self_heal_msg:
+        system_msg = self_heal_msg + "\n\n" + system_msg
 
     print(json.dumps({"systemMessage": system_msg}))
 
