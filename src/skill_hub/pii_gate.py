@@ -28,6 +28,9 @@ We block on these high-confidence patterns (false-positive aware):
   * Cloud Run revisions — ``service-name-00001-abc``
   * Anthropic API keys  — ``sk-ant-…`` prefix
   * GitHub tokens       — ``ghp_…`` prefix
+  * Email addresses     — ``local@domain.tld`` (personal/work contact PII)
+  * Phone numbers       — ``+39 338 200 3690`` style (optional country code,
+                          7+ separated digits)
   * Generic bearer tokens that look like long opaque strings are *not* gated
     here — too many false positives. Add to ``pii_overrides`` if needed in
     reverse (extra patterns) — not implemented in M1.
@@ -92,6 +95,23 @@ _CLOUD_RUN_REV = re.compile(
     r"(?<![\w-])[a-z][a-z0-9-]{0,40}-\d{5}-[a-z0-9]{3}(?![\w-])"
 )
 
+# Email address. Standard local@domain.tld shape. Catches personal/work
+# addresses (the kind that leaked via a public career-profile ref). The left
+# boundary excludes characters that are themselves valid in a local-part so we
+# match the whole address, not a tail of it.
+_EMAIL = re.compile(
+    r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w])"
+)
+
+# Phone number. Optional ``+`` country code then 7+ phone characters
+# (digits, spaces, parens, dashes) ending in a digit — e.g. "+39 338 200 3690".
+# We exclude ``.`` from the body so dotted version strings and IPv4 addresses
+# (handled by _IPV4) don't double-match. Mirrors the website-generator
+# scrubber's phone shape for consistency across the codebase.
+_PHONE = re.compile(
+    r"(?<![\w])\+?\d[\d\s()-]{7,}\d(?![\w])"
+)
+
 
 @dataclass
 class Hit:
@@ -105,9 +125,11 @@ _PATTERN_TABLE: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("sk_ant_key", _SK_ANT),
     ("github_token", _GHP),
     ("github_token", _GH_TOKEN),
+    ("email", _EMAIL),
     ("cloud_run_revision", _CLOUD_RUN_REV),
     ("gcp_project_id", _GCP_PROJECT),
     ("ipv4", _IPV4),
+    ("phone", _PHONE),
 )
 
 
