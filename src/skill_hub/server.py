@@ -2029,6 +2029,19 @@ def search_context(
     except Exception:  # noqa: BLE001
         pass
 
+    # 7. CodeGraph symbols — injected when the flag is on and an index exists.
+    if _cfg.get("search_context_use_codegraph"):
+        try:
+            from .codegraph_context import get_context_block, has_codegraph_index
+            from pathlib import Path as _Path
+            _repo_root = _Path.cwd()
+            if has_codegraph_index(_repo_root):
+                cg_block = get_context_block(query, _repo_root)
+                if cg_block:
+                    parts.append(cg_block)
+        except Exception:  # noqa: BLE001
+            pass
+
     # parts[0] is the mode marker added at the start; len==1 means no real hits.
     if len(parts) <= 1:
         return "No relevant context found. Try index_skills() and index_plugins() first."

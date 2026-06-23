@@ -118,6 +118,11 @@ _DEFAULTS = {
     "feedback_boost_max": 1.5,          # maximum feedback boost factor
     "teaching_min_similarity": 0.6,     # minimum sim for teaching rule match
 
+    # CodeGraph enrichment in search_context — off by default.
+    # When True, search_context appends a bounded symbol block from the project's
+    # CodeGraph index (if one exists at the active repo root).
+    "search_context_use_codegraph": False,
+
     # Compaction
     "compact_max_input_chars": 4000,
 
