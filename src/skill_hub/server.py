@@ -55,6 +55,7 @@ from .indexer import index_all
 from .activity_log import log_tool, log_llm, log_banner
 from .resource_monitor import should_run_llm, snapshot
 from .store import SkillStore, get_store
+from .compression import maybe_compress
 from . import dashboard as _dashboard
 from .capabilities import requires_capability
 
@@ -418,7 +419,9 @@ def search_skills(
                 "\nUse suggest_plugins() for full analysis."
             )
 
-    return "\n\n---\n\n".join(parts)
+    return maybe_compress(
+        "\n\n---\n\n".join(parts), context=query, site="search_skills"
+    )
 
 
 @mcp.tool()
@@ -2023,7 +2026,9 @@ def search_context(
     if len(parts) <= 1:
         return "No relevant context found. Try index_skills() and index_plugins() first."
 
-    return "\n\n---\n\n".join(parts)
+    return maybe_compress(
+        "\n\n---\n\n".join(parts), context=query, site="search_context"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3061,17 +3066,57 @@ def render_dashboard() -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def _compression_report() -> str:
+    """Build the compression-savings section for token_stats (always shown)."""
+    try:
+        c = _store.get_compression_stats()
+    except Exception:  # noqa: BLE001
+        return ""
+    ml = "on" if _cfg.get("compression_ml_enabled") else "off"
+    code = "on" if _cfg.get("compression_code_aware_enabled") else "off"
+    master = "on" if _cfg.get("compression_enabled") else "off"
+    if not c.get("calls"):
+        return (
+            "\n=== Tool-output Compression (headroom) ===\n"
+            f"  master={master}  ml/Kompress={ml}  code-aware={code}\n"
+            "  No compression activity recorded yet."
+        )
+    saved = c["saved"]
+    tok = c["tokens_saved"]
+    hit_rate = (c["hits"] / c["calls"] * 100) if c["calls"] else 0.0
+    lines = [
+        "\n=== Tool-output Compression (headroom) ===",
+        f"  master={master}  ml/Kompress={ml}  code-aware={code}",
+        f"  Calls: {c['calls']:,}  ({c['hits']:,} compressed, {hit_rate:.0f}% hit-rate)",
+        f"  Bytes: {c['bytes_before']:,} → {c['bytes_after']:,}  (saved {saved:,} bytes)",
+        f"  Tokens saved (est.): ~{tok:,}"
+        f"  (~${tok / 1_000_000 * 3:.4f} at $3/M)",
+        f"  Avg ratio (over hits): {c['avg_ratio']:.3f}  (lower = better)",
+    ]
+    by_strat = c.get("by_strategy") or {}
+    if by_strat:
+        lines.append("  By strategy:")
+        for name, d in sorted(by_strat.items(), key=lambda kv: -kv[1]["saved"]):
+            lines.append(
+                f"    {name:<14} {d['count']:>4}x  ~{d['saved']:,} bytes saved"
+            )
+    return "\n".join(lines)
+
+
 def token_stats() -> str:
-    """Show estimated token savings from hook interceptions."""
+    """Show estimated token savings from hook interceptions and tool-output compression."""
+    compression = _compression_report()
     totals = _store.get_interception_totals()
     if not totals or not totals["total_interceptions"]:
         enabled = _cfg.get("token_profiling")
         if not enabled:
-            return (
+            head = (
                 "Token profiling is disabled.\n"
                 "Enable with: configure(key='token_profiling', value='true')"
             )
-        return "No interceptions recorded yet. Use task commands to build up data."
+        else:
+            head = "No interceptions recorded yet. Use task commands to build up data."
+        return head + ("\n" + compression if compression else "")
 
     stats = _store.get_interception_stats()
     total_saved = totals["total_tokens_saved"] or 0
@@ -3095,6 +3140,8 @@ def token_stats() -> str:
         f"\nToken profiling: {'on' if _cfg.get('token_profiling') else 'off'}"
         f"  ← configure(key='token_profiling', value='false') to disable"
     )
+    if compression:
+        lines.append(compression)
     return "\n".join(lines)
 
 
@@ -3768,7 +3815,7 @@ def search_web(query: str, top_k: int = 5) -> str:
     if summary:
         lines.append(f"\n**Summary:** {summary}")
 
-    return "\n".join(lines)
+    return maybe_compress("\n".join(lines), context=query, site="search_web")
 
 
 @mcp.tool()
