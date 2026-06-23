@@ -740,8 +740,8 @@ def health_snapshot(include_top: bool = True) -> HealthSnapshot:
                 severity="warn",
                 title=f"Swap {mem.swap_pct:.0f}% full ({mem.swap_used_mb}/{mem.swap_total_mb} MB), not paging",
                 detail="Swap is full but the machine is not actively paging, so impact "
-                       f"is limited for now.{who} Reduce committed memory to keep headroom; "
-                       "swap only fully clears on reboot.",
+                       f"is limited for now.{who} Reduce committed memory to free swap "
+                       "space; swap only fully clears on reboot.",
                 action="purge-memory",
                 action_label="Purge inactive memory",
             ))
