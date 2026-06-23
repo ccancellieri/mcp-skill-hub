@@ -1799,3 +1799,44 @@ class TestWikiQuery:
         monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits)
         out = query(store, wiki_root, "e", top_k=2)
         assert len(out["results"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.6: dashboard "Memory Wiki" card
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardWikiCard:
+    """The dashboard surfaces wiki health + the ingest approval queue."""
+
+    def _setup_vault(self, tmp_path):
+        # store fixture sets HOME=tmp_path, so this is the default wiki_root.
+        wiki_root = tmp_path / ".claude" / "mcp-skill-hub" / "wiki"
+        src = wiki_root / "pages" / "source"
+        src.mkdir(parents=True)
+        (src / "source-a.md").write_text(
+            "---\nslug: source-a\ntitle: A\ntype: source\nscope: public\n"
+            "projects:\n- _global\nsource_refs:\n- /orig/a.md\n---\nbody\n",
+            encoding="utf-8")
+        return wiki_root
+
+    def test_db_metrics_includes_wiki(self, store, tmp_path):
+        from skill_hub import dashboard as dash
+        from skill_hub import wiki as _wiki
+        wiki_root = self._setup_vault(tmp_path)
+        _wiki.scan_and_enqueue(store, wiki_root)
+        m = dash._db_metrics(store)
+        assert m["wiki"] is not None
+        assert m["wiki"]["queue_pending"] == 1
+        assert m["wiki"]["pages_disk"] >= 1
+
+    def test_render_writes_wiki_card(self, store, tmp_path):
+        from skill_hub import dashboard as dash
+        from skill_hub import wiki as _wiki
+        wiki_root = self._setup_vault(tmp_path)
+        _wiki.scan_and_enqueue(store, wiki_root)
+        out = tmp_path / "dash.html"
+        dash.render(store, out_path=out, log_path=tmp_path / "missing.log")
+        html = out.read_text()
+        assert "Memory Wiki" in html
+        assert "ingest queue" in html
