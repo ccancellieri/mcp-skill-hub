@@ -14,9 +14,22 @@
     <button class="btn {% if p.enabled %}off{% else %}on{% endif %}"
             hx-post="/control/plugins/{{ p.full_key }}/toggle"
             hx-target="#plugin-{{ p.full_key | replace('@', '--') }}"
-            hx-swap="outerHTML">
+            hx-swap="outerHTML"
+            aria-label="{% if p.enabled %}Disable {{ p.name }}{% else %}Enable {{ p.name }}{% endif %}">
       {% if p.enabled %}Disable{% else %}Enable{% endif %}
     </button>
+    <button class="btn sm"
+            hx-post="/control/plugins/{{ p.full_key }}/update"
+            hx-target="#update-result-{{ p.full_key | replace('@', '--') }}"
+            hx-swap="innerHTML"
+            hx-indicator="#update-spinner-{{ p.full_key | replace('@', '--') }}"
+            aria-label="Pull latest from git for {{ p.name }}">
+      Update
+    </button>
+    <span id="update-spinner-{{ p.full_key | replace('@', '--') }}"
+          class="htmx-indicator muted small" aria-live="polite">pulling&hellip;</span>
     <span class="muted small">restart Claude Code to apply</span>
   </div>
+  <div id="update-result-{{ p.full_key | replace('@', '--') }}"
+       class="plugin-update-result" aria-live="polite"></div>
 </div>
