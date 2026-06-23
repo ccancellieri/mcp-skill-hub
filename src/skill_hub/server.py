@@ -4756,6 +4756,41 @@ def wiki_migrate(dry_run: bool = True) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("none")
+def wiki_scan() -> str:
+    """Auto-select wiki source pages needing distillation and enqueue them.
+
+    Deterministic — no LLM, no token spend. Finds undistilled source pages (the
+    migration backfill) and stale ones (underlying file changed), then upserts
+    them into the approval queue as ``pending``. This is the *automatic source
+    selection* step: it picks what to ingest so you never hand-pick files.
+
+    Nothing is distilled here. Approve rows with ``wiki_queue_decision``, then
+    run ``wiki_ingest`` to spend tokens. Stdlib + DB only — works in no_llm_mode.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_scan")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    summary = _wiki.scan_and_enqueue(_store, wiki_root)
+    lines = [
+        f"wiki_scan: scanned={summary['scanned']}",
+        f"  queue: pending={summary['pending']} approved={summary['approved']} "
+        f"done={summary['done']} skipped={summary['skipped']}",
+        f"  est_calls(pending+approved)={summary['total_est_calls']}",
+    ]
+    for c in summary["queue"][:10]:
+        title = c["title"] if c["scope"] != "private" else "(private)"
+        lines.append(f"  - {c['slug']} [{c['reason']}] {title}")
+    extra = len(summary["queue"]) - 10
+    if extra > 0:
+        lines.append(f"  ... and {extra} more")
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()

@@ -959,6 +959,134 @@ def _index_pages(store: Any, wiki_root: Path, pages: list[WikiPage]) -> int:
     return vec_count
 
 
+# ---------------------------------------------------------------------------
+# Automatic source selection — deterministic scanner + approval queue
+# ---------------------------------------------------------------------------
+
+def scan_candidates(store: Any, wiki_root: Path) -> list[dict]:
+    """Select ``source`` pages needing distillation. Deterministic, no LLM.
+
+    Reads the vault from disk (works in ``no_llm_mode``). A source page is a
+    candidate when it is:
+    - **stale**: its underlying file (``source_refs[0]``) content hash differs
+      from the recorded ``source_hash``; or
+    - **undistilled**: no non-source page yet references any of its
+      ``source_refs`` (i.e. it has never been distilled into entity/concept
+      pages). This is the migration backfill set.
+
+    Returns ``[{slug, title, scope, reason, source_refs, est_calls}]`` ranked
+    stale-before-undistilled, then alphabetically by slug.
+    """
+    wiki_root = Path(wiki_root)
+    source_pages: list[WikiPage] = []
+    distilled_refs: set[str] = set()
+
+    for md in wiki_root.rglob("*.md"):
+        if not md.is_file() or md.name == "index.md":
+            continue
+        page = _load_page(md)
+        if page is None:
+            continue
+        if page.type == "source":
+            source_pages.append(page)
+        else:
+            for r in page.source_refs:
+                distilled_refs.add(str(r))
+
+    candidates: list[dict] = []
+    for p in source_pages:
+        reason: str | None = None
+        if p.source_hash and p.source_refs:
+            orig = Path(str(p.source_refs[0]))
+            if orig.is_file():
+                try:
+                    if _hash_text(orig.read_text(encoding="utf-8")) != p.source_hash:
+                        reason = "stale"
+                except OSError:
+                    pass
+        if reason is None:
+            refs = {str(r) for r in p.source_refs}
+            if not (refs & distilled_refs):
+                reason = "undistilled"
+        if reason:
+            candidates.append({
+                "slug": p.slug, "title": p.title, "scope": p.scope,
+                "reason": reason, "source_refs": p.source_refs, "est_calls": 1,
+            })
+
+    rank = {"stale": 0, "undistilled": 1}
+    candidates.sort(key=lambda c: (rank.get(c["reason"], 9), c["slug"]))
+    return candidates
+
+
+def scan_and_enqueue(store: Any, wiki_root: Path) -> dict:
+    """Run :func:`scan_candidates` and upsert the approval queue. No LLM.
+
+    Idempotent: new candidates become ``pending``; an existing ``pending`` row
+    refreshes its reason; a ``done``/``skipped`` row re-opens to ``pending``
+    only when the source went ``stale`` (spec §14.2 — skipped stays skipped
+    until the source changes). ``approved`` rows are never disturbed.
+
+    Returns a summary with queue totals and the current actionable rows.
+    """
+    candidates = scan_candidates(store, wiki_root)
+    conn = store._conn
+    enqueued = 0
+    for c in candidates:
+        row = conn.execute(
+            "SELECT status FROM wiki_queue WHERE slug=?", (c["slug"],)
+        ).fetchone()
+        status = row["status"] if row else None
+        if row is None:
+            conn.execute(
+                "INSERT INTO wiki_queue (slug, title, scope, reason, est_calls, status) "
+                "VALUES (?, ?, ?, ?, ?, 'pending')",
+                (c["slug"], c["title"], c["scope"], c["reason"], c["est_calls"]),
+            )
+            enqueued += 1
+        elif status == "pending":
+            conn.execute(
+                "UPDATE wiki_queue SET title=?, scope=?, reason=? WHERE slug=?",
+                (c["title"], c["scope"], c["reason"], c["slug"]),
+            )
+        elif status in ("done", "skipped") and c["reason"] == "stale":
+            conn.execute(
+                "UPDATE wiki_queue SET reason='stale', status='pending', decided_at=NULL "
+                "WHERE slug=?",
+                (c["slug"],),
+            )
+            enqueued += 1
+        # approved rows: leave untouched
+    conn.commit()
+    return _queue_summary(store, scanned=len(candidates))
+
+
+def _queue_summary(store: Any, scanned: int | None = None) -> dict:
+    """Return queue counts + the actionable (pending/approved) rows."""
+    conn = store._conn
+    counts = {"pending": 0, "approved": 0, "done": 0, "skipped": 0}
+    for row in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM wiki_queue GROUP BY status"
+    ):
+        counts[row["status"]] = row["n"]
+    total_est = conn.execute(
+        "SELECT COALESCE(SUM(est_calls), 0) AS s FROM wiki_queue "
+        "WHERE status IN ('pending','approved')"
+    ).fetchone()["s"]
+    rows = conn.execute(
+        "SELECT slug, title, scope, reason, est_calls, status FROM wiki_queue "
+        "WHERE status IN ('pending','approved') ORDER BY status, slug"
+    ).fetchall()
+    out = {
+        **counts,
+        "total_est_calls": int(total_est or 0),
+        "queue": [dict(r) for r in rows],
+    }
+    if scanned is not None:
+        out["scanned"] = scanned
+    return out
+
+
 def ingest_source(
     store: Any,
     wiki_root: Path,

@@ -920,6 +920,22 @@ class SkillStore:
             CREATE INDEX IF NOT EXISTS idx_wiki_edges_dst ON wiki_edges (dst_slug);
             CREATE INDEX IF NOT EXISTS idx_wiki_edges_src ON wiki_edges (src_slug);
             CREATE INDEX IF NOT EXISTS idx_wiki_edges_resolved ON wiki_edges (resolved);
+
+            -- Wave 2: approval queue for automatic ingest source-selection.
+            -- The scanner proposes candidates (pending); the operator approves;
+            -- only then does the LLM ingest spend tokens. Auto-select, not auto-spend.
+            CREATE TABLE IF NOT EXISTS wiki_queue (
+                slug         TEXT PRIMARY KEY,          -- source page to (re)distill
+                title        TEXT NOT NULL DEFAULT '',
+                scope        TEXT NOT NULL DEFAULT 'public',
+                reason       TEXT NOT NULL DEFAULT '',  -- undistilled | stale
+                est_calls    INTEGER NOT NULL DEFAULT 1,
+                status       TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|done|skipped
+                diff_preview TEXT,                       -- last dry-run diff JSON
+                created_at   TEXT DEFAULT (datetime('now')),
+                decided_at   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_queue_status ON wiki_queue (status);
         """)
         self._conn.commit()
 

@@ -1480,3 +1480,133 @@ class TestIngestSource:
         out = ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
                             source_text="t", dry_run=True)
         assert "bar" in out["candidates"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.3: scan_candidates + scan_and_enqueue (auto source selection)
+# ---------------------------------------------------------------------------
+
+
+class TestScanCandidates:
+    """Deterministic source selection: undistilled + stale source pages."""
+
+    def _write(self, wiki_root, rel, slug, ptype, body="x", scope="public",
+               source_refs=None, source_hash=""):
+        p = wiki_root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fm = [f"---", f"slug: {slug}", f"title: {slug}", f"type: {ptype}",
+              f"scope: {scope}", "projects:", "- _global"]
+        if source_refs:
+            fm.append("source_refs:")
+            for r in source_refs:
+                fm.append(f"- {r}")
+        if source_hash:
+            fm.append(f"source_hash: {source_hash}")
+        fm.append("---")
+        p.write_text("\n".join(fm) + f"\n{body}\n", encoding="utf-8")
+        return p
+
+    def test_undistilled_source_is_candidate(self, store, wiki_root):
+        from skill_hub.wiki import scan_candidates
+        self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
+                    source_refs=["/orig/a.md"])
+        cands = scan_candidates(store, wiki_root)
+        assert len(cands) == 1
+        assert cands[0]["slug"] == "source-a"
+        assert cands[0]["reason"] == "undistilled"
+
+    def test_distilled_source_not_candidate(self, store, wiki_root):
+        from skill_hub.wiki import scan_candidates
+        # A source page AND an entity page sharing the same source_ref → distilled.
+        self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
+                    source_refs=["/orig/a.md"])
+        self._write(wiki_root, "pages/entity/a.md", "a", "entity",
+                    source_refs=["/orig/a.md"])
+        cands = scan_candidates(store, wiki_root)
+        assert cands == []
+
+    def test_stale_source_is_candidate(self, store, wiki_root, tmp_path):
+        from skill_hub.wiki import scan_candidates, _hash_text
+        orig = tmp_path / "a.md"
+        orig.write_text("new content", encoding="utf-8")
+        # Record a stale hash (of different content) + a distilled descendant so
+        # 'undistilled' does not also fire — isolating the stale path.
+        self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
+                    source_refs=[str(orig)], source_hash=_hash_text("old content"))
+        self._write(wiki_root, "pages/entity/a.md", "a", "entity",
+                    source_refs=[str(orig)])
+        cands = scan_candidates(store, wiki_root)
+        assert len(cands) == 1
+        assert cands[0]["reason"] == "stale"
+
+    def test_unchanged_hash_not_stale(self, store, wiki_root, tmp_path):
+        from skill_hub.wiki import scan_candidates, _hash_text
+        orig = tmp_path / "a.md"
+        orig.write_text("same", encoding="utf-8")
+        self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
+                    source_refs=[str(orig)], source_hash=_hash_text("same"))
+        self._write(wiki_root, "pages/entity/a.md", "a", "entity",
+                    source_refs=[str(orig)])
+        assert scan_candidates(store, wiki_root) == []
+
+    def test_ranking_stale_before_undistilled(self, store, wiki_root, tmp_path):
+        from skill_hub.wiki import scan_candidates, _hash_text
+        orig = tmp_path / "s.md"
+        orig.write_text("changed", encoding="utf-8")
+        self._write(wiki_root, "pages/source/source-s.md", "source-s", "source",
+                    source_refs=[str(orig)], source_hash=_hash_text("was"))
+        self._write(wiki_root, "pages/entity/s.md", "s", "entity",
+                    source_refs=[str(orig)])
+        self._write(wiki_root, "pages/source/source-u.md", "source-u", "source",
+                    source_refs=["/orig/u.md"])
+        cands = scan_candidates(store, wiki_root)
+        assert [c["reason"] for c in cands] == ["stale", "undistilled"]
+
+    def test_index_md_ignored(self, store, wiki_root):
+        from skill_hub.wiki import scan_candidates
+        (wiki_root / "index.md").write_text("# Wiki Index\n", encoding="utf-8")
+        self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
+                    source_refs=["/orig/a.md"])
+        cands = scan_candidates(store, wiki_root)
+        assert {c["slug"] for c in cands} == {"source-a"}
+
+
+class TestScanAndEnqueue:
+    """scan_and_enqueue upserts the approval queue idempotently."""
+
+    def _src(self, wiki_root, slug, ref):
+        p = wiki_root / "pages" / "source" / f"{slug}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            f"---\nslug: {slug}\ntitle: {slug}\ntype: source\nscope: public\n"
+            f"projects:\n- _global\nsource_refs:\n- {ref}\n---\nbody\n",
+            encoding="utf-8")
+
+    def test_enqueues_pending(self, store, wiki_root):
+        from skill_hub.wiki import scan_and_enqueue
+        self._src(wiki_root, "source-a", "/orig/a.md")
+        out = scan_and_enqueue(store, wiki_root)
+        assert out["scanned"] == 1
+        assert out["pending"] == 1
+        assert out["total_est_calls"] == 1
+        assert out["queue"][0]["slug"] == "source-a"
+
+    def test_idempotent_rescan(self, store, wiki_root):
+        from skill_hub.wiki import scan_and_enqueue
+        self._src(wiki_root, "source-a", "/orig/a.md")
+        scan_and_enqueue(store, wiki_root)
+        out = scan_and_enqueue(store, wiki_root)
+        assert out["pending"] == 1  # not duplicated
+        n = store._conn.execute("SELECT COUNT(*) FROM wiki_queue").fetchone()[0]
+        assert n == 1
+
+    def test_approved_row_not_reset(self, store, wiki_root):
+        from skill_hub.wiki import scan_and_enqueue
+        self._src(wiki_root, "source-a", "/orig/a.md")
+        scan_and_enqueue(store, wiki_root)
+        store._conn.execute(
+            "UPDATE wiki_queue SET status='approved' WHERE slug='source-a'")
+        store._conn.commit()
+        out = scan_and_enqueue(store, wiki_root)
+        assert out["approved"] == 1
+        assert out["pending"] == 0

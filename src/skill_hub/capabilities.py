@@ -376,6 +376,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("wiki_migrate", "Migrate auto-memory files to wiki source pages (dry_run=True default)",
              hard=(BACKEND_DB,)),
+    ToolSpec("wiki_scan", "Auto-select source pages needing distillation into the approval queue",
+             hard=(BACKEND_DB,)),
 )
 
 
