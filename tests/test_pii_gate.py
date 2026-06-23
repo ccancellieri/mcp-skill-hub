@@ -73,6 +73,24 @@ def test_scan_catches_gcp_project_id():
     assert "gcp_project_id" in labels
 
 
+def test_scan_catches_email():
+    hits = scan("reach me at ccancellieri@hotmail.com any time")
+    assert any(h.pattern == "email" and h.match == "ccancellieri@hotmail.com"
+               for h in hits)
+
+
+def test_scan_catches_phone():
+    # The exact format that leaked via a public career-profile reference.
+    hits = scan("Phone: +39 338 200 3690")
+    assert any(h.pattern == "phone" for h in hits)
+
+
+def test_scan_phone_no_false_positive_on_short_numbers():
+    # Years, small counts, and dotted version strings must not match phone.
+    hits = scan("Released in 2026 after 3 fixes; build 1.2.3.4 today.")
+    assert not any(h.pattern == "phone" for h in hits)
+
+
 def test_scan_clean_text_no_hits():
     """Ordinary prose, kebab-case slugs without digits, and version strings
     must not trigger the gate — those are the high-volume false positives.
@@ -162,6 +180,20 @@ def test_check_blocks_pii_in_public_repo(tmp_path):
     assert r.public is True
     assert r.hits, "must report offending substrings"
     assert any("192.168.1.42" in h.match for h in r.hits)
+
+
+def test_check_blocks_leaked_pii_in_public_repo(tmp_path):
+    """Regression for the actual leak: phone + email + internal id in a
+    career-profile reference reaching a public repo must be blocked."""
+    _mkpolicy(tmp_path, "public: true\n")
+    r = check(
+        "Phone: +39 338 200 3690\nEmail: ccancellieri@hotmail.com\n",
+        tmp_path,
+    )
+    assert r.allowed is False
+    labels = {h.pattern for h in r.hits}
+    assert "phone" in labels
+    assert "email" in labels
 
 
 def test_check_allows_clean_content_in_public_repo(tmp_path):
