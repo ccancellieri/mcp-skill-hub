@@ -223,3 +223,245 @@ def test_limit_respected(patched_store):
     assert report["scanned"] <= 5, (
         f"Expected at most 5 events scanned with limit=5, got {report['scanned']}"
     )
+
+
+# ===========================================================================
+# Part B — cluster_failures (Phase 2)
+# ===========================================================================
+
+class TestClusterFailures:
+    """Tests for log_insights.cluster_failures (deterministic, no LLM)."""
+
+    def test_groups_identical_errors(self, isolated_store, monkeypatch):
+        """Two identical errors for the same tool → single cluster with count=2."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        payload = json.dumps({"ok": False, "error": "connection refused", "elapsed_ms": 5})
+        isolated_store.append_event("s", "tool_result", payload, tool_name="search_skills", ts=t0)
+        isolated_store.append_event("s", "tool_result", payload, tool_name="search_skills", ts=t0 + 1)
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=2)
+
+        assert result["scanned"] >= 2
+        assert len(result["clusters"]) == 1
+        c = result["clusters"][0]
+        assert c["tool"] == "search_skills"
+        assert c["count"] == 2
+        assert "connection refused" in c["pattern"]
+
+    def test_respects_min_count(self, isolated_store, monkeypatch):
+        """Clusters with count < min_count are excluded."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        payload = json.dumps({"ok": False, "error": "timeout", "elapsed_ms": 10})
+        # Only one occurrence
+        isolated_store.append_event("s", "tool_result", payload, tool_name="teach", ts=t0)
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=2)
+
+        assert result["scanned"] >= 1
+        # min_count=2 means this single error must NOT appear
+        assert len(result["clusters"]) == 0
+
+    def test_normalisation_merges_near_identical(self, isolated_store, monkeypatch):
+        """Errors differing only in numeric IDs / addresses merge into one cluster."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        err1 = "sqlite error: UNIQUE constraint failed row 12345"
+        err2 = "sqlite error: UNIQUE constraint failed row 67890"
+        isolated_store.append_event(
+            "s", "tool_result",
+            json.dumps({"ok": False, "error": err1}),
+            tool_name="save_task", ts=t0,
+        )
+        isolated_store.append_event(
+            "s", "tool_result",
+            json.dumps({"ok": False, "error": err2}),
+            tool_name="save_task", ts=t0 + 1,
+        )
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=2)
+
+        # After normalisation, both errors should collapse to one cluster
+        assert len(result["clusters"]) == 1
+        assert result["clusters"][0]["count"] == 2
+
+    def test_ok_true_not_included(self, isolated_store, monkeypatch):
+        """Successful tool_result events (ok=True) must not appear in clusters."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        ok_payload = json.dumps({"ok": True, "elapsed_ms": 5})
+        for _ in range(3):
+            isolated_store.append_event(
+                "s", "tool_result", ok_payload, tool_name="search_skills", ts=t0,
+            )
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=1)
+
+        assert len(result["clusters"]) == 0, "ok=True events must not cluster"
+
+    def test_clusters_sorted_by_count_desc(self, isolated_store, monkeypatch):
+        """cluster list must be sorted by count descending."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        err_a = json.dumps({"ok": False, "error": "error alpha"})
+        err_b = json.dumps({"ok": False, "error": "error beta"})
+        # 3 of alpha, 2 of beta
+        for _ in range(3):
+            isolated_store.append_event("s", "tool_result", err_a, tool_name="t1", ts=t0)
+        for _ in range(2):
+            isolated_store.append_event("s", "tool_result", err_b, tool_name="t2", ts=t0)
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=1)
+
+        assert len(result["clusters"]) >= 2
+        counts = [c["count"] for c in result["clusters"]]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_result_shape(self, isolated_store, monkeypatch):
+        """Each cluster dict must have all required keys."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        payload = json.dumps({"ok": False, "error": "test error"})
+        for _ in range(2):
+            isolated_store.append_event("s", "tool_result", payload, tool_name="t", ts=t0)
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=2)
+
+        assert "scanned" in result
+        assert "clusters" in result
+        assert len(result["clusters"]) == 1
+        c = result["clusters"][0]
+        for key in ("tool", "pattern", "count", "example", "first_ts", "last_ts", "suggested_action"):
+            assert key in c, f"cluster missing key '{key}'"
+
+    def test_suggested_action_contains_tool(self, isolated_store, monkeypatch):
+        """suggested_action must reference the tool name."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        t0 = time.time() - 60
+        payload = json.dumps({"ok": False, "error": "some error"})
+        for _ in range(2):
+            isolated_store.append_event("s", "tool_result", payload, tool_name="my_tool", ts=t0)
+
+        from skill_hub import log_insights
+        result = log_insights.cluster_failures(hours=1, min_count=2)
+
+        assert len(result["clusters"]) == 1
+        assert "my_tool" in result["clusters"][0]["suggested_action"]
+
+
+# ===========================================================================
+# Part C — skill_selection_stats (Phase 2, feasible subset)
+# ===========================================================================
+
+class TestSkillSelectionStats:
+    """Tests for log_insights.skill_selection_stats."""
+
+    def test_injection_counts_per_skill(self, isolated_store, monkeypatch):
+        """Injection counts must reflect log_skill_injection calls."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-A", query="q1", session_id="s1")
+        isolated_store.log_skill_injection("skill-A", query="q2", session_id="s1")
+        isolated_store.log_skill_injection("skill-B", query="q3", session_id="s2")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        assert by_id["skill-A"]["injections"] == 2
+        assert by_id["skill-B"]["injections"] == 1
+        assert stats["total_injections"] == 3
+
+    def test_feedback_helpful_rate(self, isolated_store, monkeypatch):
+        """helpful_rate is the fraction of feedback rows where helpful=1."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        # Need a skill in the skills table before adding feedback (FK not enforced on SQLite
+        # without PRAGMA foreign_keys=ON, so we can insert directly).
+        isolated_store.log_skill_injection("skill-X", query="q", session_id="s")
+
+        conn = isolated_store._conn
+        # Insert feedback directly (record_feedback requires query_vector)
+        conn.execute(
+            "INSERT INTO feedback (query, query_vector, skill_id, helpful) VALUES (?,?,?,?)",
+            ("q", "[]", "skill-X", 1),
+        )
+        conn.execute(
+            "INSERT INTO feedback (query, query_vector, skill_id, helpful) VALUES (?,?,?,?)",
+            ("q", "[]", "skill-X", 0),
+        )
+        conn.commit()
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        assert "skill-X" in by_id
+        r = by_id["skill-X"]
+        assert r["feedback_n"] == 2
+        # 1 helpful out of 2 → 0.5
+        assert abs(r["helpful_rate"] - 0.5) < 1e-9
+
+    def test_never_helpful_status(self, isolated_store, monkeypatch):
+        """A skill with only unhelpful feedback should get status 'review: never-helpful'."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-Z", query="q", session_id="s")
+        conn = isolated_store._conn
+        for _ in range(2):
+            conn.execute(
+                "INSERT INTO feedback (query, query_vector, skill_id, helpful) VALUES (?,?,?,?)",
+                ("q", "[]", "skill-Z", 0),
+            )
+        conn.commit()
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        assert by_id["skill-Z"]["status"] == "review: never-helpful"
+
+    def test_no_feedback_skill_status(self, isolated_store, monkeypatch):
+        """A frequently injected skill with no feedback should say 'no feedback yet'."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        for i in range(5):
+            isolated_store.log_skill_injection("skill-NF", query=f"q{i}", session_id="s")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        assert "skill-NF" in by_id
+        assert by_id["skill-NF"]["status"] == "no feedback yet"
+
+    def test_result_shape(self, isolated_store, monkeypatch):
+        """Each skill row must have all required keys."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-shape", query="q", session_id="s")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        assert "skills" in stats
+        assert "total_injections" in stats
+        assert "total_feedback" in stats
+        assert len(stats["skills"]) >= 1
+        for key in ("skill_id", "injections", "feedback_n", "helpful_rate", "status"):
+            assert key in stats["skills"][0], f"skill row missing key '{key}'"
+
+    def test_skills_sorted_by_injections_desc(self, isolated_store, monkeypatch):
+        """Skills must be sorted by injection count descending."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        for _ in range(3):
+            isolated_store.log_skill_injection("skill-hi", query="q", session_id="s")
+        isolated_store.log_skill_injection("skill-lo", query="q", session_id="s")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        injection_counts = [r["injections"] for r in stats["skills"]]
+        assert injection_counts == sorted(injection_counts, reverse=True)

@@ -3866,6 +3866,7 @@ def search_web(query: str, top_k: int = 5) -> str:
 def analyze_router_log(
     top_n: int = 20,
     propose_teachings: bool = True,
+    window_size: int = 10,
 ) -> str:
     """Analyse the prompt-router audit log to surface misclassifications and suggest teach() rules.
 
@@ -3873,9 +3874,13 @@ def analyze_router_log(
     where confidence was low or where the user might have disagreed, and
     optionally proposes teach() calls to improve future routing.
 
+    Also reports a sliding-window confidence trend (recent vs prior window) and
+    flags expensive-tier verdicts that may be candidates for downgrade.
+
     Args:
         top_n: Number of recent entries to analyse (default 20).
         propose_teachings: If True, include suggested teach() calls (default True).
+        window_size: Size of each window for trend analysis (default 10).
     """
     import json as _json
     from pathlib import Path as _Path
@@ -3904,11 +3909,22 @@ def analyze_router_log(
         return "Router log is empty."
 
     # ── Summary stats ────────────────────────────────────────────────────────
-    model_counts: Counter = Counter(e["verdict"]["model"] for e in entries)
-    tier_counts: Counter = Counter(e["verdict"]["tier_used"] for e in entries)
-    plan_count = sum(1 for e in entries if e["verdict"].get("plan_mode"))
-    avg_conf = sum(e["verdict"]["confidence"] for e in entries) / len(entries)
-    avg_lat = sum(e.get("latency_ms", 0) for e in entries) / len(entries)
+    # Field names from verdict.py append_audit_log (authoritative schema):
+    #   verdict.tier   (not tier_used)
+    #   latency.total_ms (not latency_ms)
+    #   prompt         (not prompt_preview)
+    model_counts: Counter = Counter(
+        e.get("verdict", {}).get("model", "unknown") for e in entries
+    )
+    tier_counts: Counter = Counter(
+        e.get("verdict", {}).get("tier", "?") for e in entries
+    )
+    plan_count = sum(1 for e in entries if e.get("verdict", {}).get("plan_mode"))
+    confs = [e.get("verdict", {}).get("confidence", 0.0) for e in entries]
+    avg_conf = sum(confs) / len(confs) if confs else 0.0
+    avg_lat = (
+        sum(e.get("latency", {}).get("total_ms", 0) for e in entries) / len(entries)
+    )
 
     lines_out: list[str] = [
         f"## Router Log Analysis — last {len(entries)} prompts\n",
@@ -3918,15 +3934,89 @@ def analyze_router_log(
         f"Avg confidence: {avg_conf:.2f}  |  Avg latency: {int(avg_lat)}ms\n",
     ]
 
+    # ── Sliding-window trend ──────────────────────────────────────────────────
+    w = max(1, window_size)
+    if len(entries) >= 2:
+        recent = entries[-w:]
+        prior = entries[-(2 * w):-w] if len(entries) >= 2 * w else entries[:-w]
+        def _window_stats(window: list[dict]) -> dict:
+            if not window:
+                return {"avg_conf": 0.0, "tiers": {}}
+            wc = [e.get("verdict", {}).get("confidence", 0.0) for e in window]
+            tc: Counter = Counter(e.get("verdict", {}).get("tier", "?") for e in window)
+            return {"avg_conf": sum(wc) / len(wc), "tiers": dict(tc)}
+        rs = _window_stats(recent)
+        ps = _window_stats(prior) if prior else None
+        trend_lines = [f"### Sliding-window trend (window={w})"]
+        trend_lines.append(
+            f"  Recent  ({len(recent)}): avg_conf={rs['avg_conf']:.2f}  tiers={rs['tiers']}"
+        )
+        if ps:
+            delta = rs["avg_conf"] - ps["avg_conf"]
+            direction = "↑" if delta > 0.01 else ("↓" if delta < -0.01 else "→")
+            trend_lines.append(
+                f"  Prior   ({len(prior)}): avg_conf={ps['avg_conf']:.2f}  tiers={ps['tiers']}"
+            )
+            trend_lines.append(f"  Confidence delta: {delta:+.2f} {direction}")
+        else:
+            trend_lines.append("  (not enough entries for a prior window)")
+        lines_out.append("\n".join(trend_lines))
+
+    # ── Cost-benefit: expensive-tier + high-conf + low-complexity ────────────
+    from . import model_registry as _mr
+    downgrade_candidates: list[str] = []
+    total_usd_saved = 0.0
+    for e in entries:
+        v = e.get("verdict", {})
+        savings = e.get("savings", {})
+        total_usd_saved += savings.get("usd_saved", 0.0)
+        tier = v.get("tier", 0)
+        confidence = v.get("confidence", 0.0)
+        complexity = v.get("complexity", 1.0)
+        model = v.get("model", "")
+        blended = _mr.blended_usd_per_m(model)
+        # Flag: used an expensive model (blended >= haiku*2 i.e. >= 2.0) at
+        # high confidence (>= 0.80) on low complexity (< 0.40).
+        if (
+            blended is not None
+            and blended >= 2.0
+            and confidence >= 0.80
+            and complexity < 0.40
+        ):
+            prompt = e.get("prompt", "")
+            downgrade_candidates.append(
+                f"  tier={tier} model={model} (${blended:.1f}/M) "
+                f"conf={confidence:.2f} complexity={complexity:.2f}  "
+                f"\"{prompt[:60]}\""
+            )
+
+    lines_out.append(
+        f"\n### Cost summary\n"
+        f"  Total usd_saved (logged): ${total_usd_saved:.4f}"
+    )
+    if downgrade_candidates:
+        lines_out.append(
+            f"\n### Downgrade opportunities "
+            f"(high-conf + low-complexity on expensive tier): "
+            f"{len(downgrade_candidates)}"
+        )
+        for line in downgrade_candidates[:5]:
+            lines_out.append(line)
+        lines_out.append(
+            "  → These verdicts used an expensive model on a simple, "
+            "high-confidence prompt. Consider lowering the complexity threshold "
+            "for haiku/cheaper routing."
+        )
+
     # ── Low-confidence entries ────────────────────────────────────────────────
-    low_conf = [e for e in entries if e["verdict"]["confidence"] < 0.65]
+    low_conf = [e for e in entries if e.get("verdict", {}).get("confidence", 1.0) < 0.65]
     if low_conf:
-        lines_out.append(f"### Low-confidence verdicts ({len(low_conf)})")
+        lines_out.append(f"\n### Low-confidence verdicts ({len(low_conf)})")
         for e in low_conf[:5]:
-            v = e["verdict"]
+            v = e.get("verdict", {})
             lines_out.append(
-                f"  - [{v['tier_used']}] conf={v['confidence']:.2f} "
-                f"→ {v['model']}  \"{e.get('prompt_preview', '')}\""
+                f"  - [tier={v.get('tier', '?')}] conf={v.get('confidence', 0.0):.2f} "
+                f"→ {v.get('model', '?')}  \"{e.get('prompt', '')}\""
             )
 
     # ── Proposed teach() rules ────────────────────────────────────────────────
@@ -3938,12 +4028,12 @@ def analyze_router_log(
         )
         seen: set[str] = set()
         for e in low_conf[:3]:
-            preview = e.get("prompt_preview", "")
+            preview = e.get("prompt", "")
             if not preview or preview in seen:
                 continue
             seen.add(preview)
-            v = e["verdict"]
-            model_val = v["model"]
+            v = e.get("verdict", {})
+            model_val = v.get("model", "sonnet")
             lines_out.append(
                 f'teach(\n'
                 f'  rule="when the prompt resembles: {preview[:60]}",\n'
@@ -3952,12 +4042,118 @@ def analyze_router_log(
             )
 
     # ── Tier-3 batch task usage ───────────────────────────────────────────────
-    tier3 = [e for e in entries if e["verdict"]["tier_used"] == 3]
+    tier3 = [e for e in entries if e.get("verdict", {}).get("tier") == 3]
     if tier3:
         lines_out.append(f"\n### Tier-3 (Haiku) calls: {len(tier3)}/{len(entries)}")
         lines_out.append("Consider raising router_haiku_threshold if Haiku fires too often.")
 
     return "\n".join(lines_out)
+
+
+@mcp.tool()
+@requires_capability("none")
+def analyze_failures(
+    hours: int = 24,
+    min_count: int = 2,
+) -> str:
+    """Cluster recurring tool failures from the event log to surface patterns.
+
+    Scans ``tool_result`` events with ``ok=False`` from the last *hours* hours,
+    normalises error strings, groups by (tool_name, normalised_error), and
+    returns a Markdown table of clusters with count >= *min_count* plus a
+    drafted (not filed) issue-body block for each top cluster.
+
+    No LLM is used — purely deterministic DB read.
+    """
+    log_tool("analyze_failures", hours=hours, min_count=min_count)
+    from .log_insights import cluster_failures
+    result = cluster_failures(hours=hours, min_count=min_count)
+    clusters = result.get("clusters", [])
+    scanned = result.get("scanned", 0)
+    if not clusters:
+        return (
+            f"analyze_failures: no recurring failures found "
+            f"(scanned {scanned} tool_result events in the last {hours}h, "
+            f"min_count={min_count})."
+        )
+    # Markdown table
+    lines: list[str] = [
+        f"## Recurring tool failures — last {hours}h\n",
+        f"Scanned {scanned} tool_result events.  "
+        f"Clusters with count >= {min_count}: **{len(clusters)}**\n",
+        "| # | tool | pattern | count | first_ts | last_ts |",
+        "|---|------|---------|-------|----------|---------|",
+    ]
+    for i, c in enumerate(clusters, 1):
+        lines.append(
+            f"| {i} | `{c['tool']}` | {c['pattern'][:60]} "
+            f"| {c['count']} | {c['first_ts'][:16]} | {c['last_ts'][:16]} |"
+        )
+    # Draft issue bodies for top-3 clusters (NOT filed)
+    lines.append("\n---\n### Drafted issue bodies (not filed — review before opening)\n")
+    for c in clusters[:3]:
+        lines.append(
+            f"**Issue draft: {c['tool']} — {c['pattern'][:50]}**\n"
+            f"```\n"
+            f"Title: Recurring failure in `{c['tool']}`: {c['pattern'][:60]}\n\n"
+            f"Occurrences: {c['count']} in last {hours}h "
+            f"(first: {c['first_ts'][:19]}, last: {c['last_ts'][:19]})\n\n"
+            f"Example error:\n{c['example'][:300]}\n\n"
+            f"Suggested action: {c['suggested_action']}\n"
+            f"```\n"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
+def analyze_skill_selection(
+    limit: int = 500,
+) -> str:
+    """Report per-skill injection counts and feedback helpful-rates.
+
+    Uses ``skill_injections`` and ``feedback`` tables — no LLM.
+
+    NOTE: True injected-vs-used attribution is not tracked in the current
+    schema.  This tool reports injection frequency and feedback signal as
+    separate dimensions; it cannot determine whether an injected skill was
+    actually read or acted on.  A follow-up issue is needed to add an
+    ``injection_used`` event kind to close this gap.
+    """
+    log_tool("analyze_skill_selection", limit=limit)
+    from .log_insights import skill_selection_stats
+    stats = skill_selection_stats(limit=limit)
+    rows = stats.get("skills", [])
+    total_injections = stats.get("total_injections", 0)
+    total_feedback = stats.get("total_feedback", 0)
+    if not rows:
+        return (
+            "analyze_skill_selection: no injection data found. "
+            "Run search_skills at least once to populate skill_injections."
+        )
+    lines: list[str] = [
+        f"## Skill selection metrics (last {limit} injections)\n",
+        f"Total injections: {total_injections}  |  Total feedback rows: {total_feedback}\n",
+        "| skill | injections | helpful_rate | feedback_n | status |",
+        "|-------|-----------|-------------|------------|--------|",
+    ]
+    for r in rows:
+        helpful_rate = r.get("helpful_rate")
+        rate_str = f"{helpful_rate:.0%}" if helpful_rate is not None else "n/a"
+        status = r.get("status", "")
+        lines.append(
+            f"| `{r['skill_id']}` | {r['injections']} | {rate_str} "
+            f"| {r['feedback_n']} | {status} |"
+        )
+    # Attribution gap notice (always shown)
+    lines.append(
+        "\n> **Attribution gap**: true injected-vs-used tracking is not implemented. "
+        "Injection count reflects how often the skill was returned by search_skills; "
+        "feedback_helpful_rate comes from explicit record_feedback calls. "
+        "A follow-up issue is needed to add an `injection_used` event kind "
+        "to track whether injected skills were actually consulted."
+    )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
