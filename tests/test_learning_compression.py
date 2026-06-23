@@ -66,12 +66,12 @@ class TestPreloaderTeachings:
         """load_skills always returns (skill_names, plugin_names, teaching_text)."""
         import skill_hub.router.preloader as preloader
 
-        # No embeddings available → graceful empty return
-        monkeypatch.setattr(
-            "skill_hub.router.preloader.embed_available",
-            lambda: False,
-            raising=False,
-        )
+        # No embeddings available → graceful empty return. Patch the embeddings
+        # source module: load_skills does `from ..embeddings import
+        # embed_available` fresh each call, so patching the preloader namespace
+        # is a no-op (and would only "pass" when no embed backend is installed).
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
         result = preloader.load_skills(["python", "fastapi"], cfg={}, top_k=3)
         assert isinstance(result, tuple)
         assert len(result) == 3
