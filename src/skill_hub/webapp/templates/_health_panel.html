@@ -219,6 +219,92 @@
     </table>
     {% else %}<p class="muted">psutil unavailable.</p>{% endif %}
   </div>
+
+  {# ---- Compression stats --------------------------------------------- #}
+  {% set cs = compression_stats %}
+  {% set ccfg = compression_cfg %}
+  <div class="card">
+    <div class="card-head">
+      <h3>Compression</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        {% if ccfg.enabled %}
+        <span class="tag status-ok">● on</span>
+        {% else %}
+        <span class="tag status-stopped">○ off</span>
+        {% endif %}
+      </div>
+    </div>
+    {# flags row #}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">
+      <span class="muted">ML (Kompress):</span>
+      {% if ccfg.ml_enabled %}<span class="tag status-ok">on</span>{% else %}<span class="tag status-stopped">off</span>{% endif %}
+      <span class="muted" style="margin-left:6px">Code-aware:</span>
+      {% if ccfg.code_aware_enabled %}<span class="tag status-ok">on</span>{% else %}<span class="tag status-stopped">off</span>{% endif %}
+    </div>
+    {% if cs.calls == 0 %}
+    <p class="muted" style="margin:6px 0">No compression activity yet.</p>
+    {% else %}
+    {# headline stats #}
+    <table class="health-table" style="margin-bottom:8px">
+      <thead><tr><th>metric</th><th style="text-align:right">value</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Calls / hits</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '{:,}'.format(cs.calls) }} / {{ '{:,}'.format(cs.hits) }}
+            <span class="muted">({{ ((cs.hits / cs.calls) * 100)|round(1) }}% hit rate)</span>
+          </td>
+        </tr>
+        <tr>
+          <td>Bytes saved</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {% if cs.saved >= 1048576 %}
+              {{ '%.1f'|format(cs.saved / 1048576) }} MB
+            {% elif cs.saved >= 1024 %}
+              {{ '%.1f'|format(cs.saved / 1024) }} KB
+            {% else %}
+              {{ '{:,}'.format(cs.saved) }} B
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td>Tokens saved</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '{:,}'.format(cs.tokens_saved) }}
+            <span class="muted">≈ <strong style="color:var(--color-good)">~${{ '%.2f'|format(cs.tokens_saved / 1000000 * 3) }}</strong> @ $3/M</span>
+          </td>
+        </tr>
+        <tr>
+          <td>Avg ratio (hits)</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '%.3f'|format(cs.avg_ratio) }}
+            <span class="muted">(lower = smaller output)</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    {# per-strategy breakdown #}
+    {% if cs.by_strategy %}
+    <div style="font-size:11px;color:var(--color-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">By strategy</div>
+    <table class="health-table">
+      <thead><tr><th>strategy</th><th style="text-align:right">calls</th><th style="text-align:right">bytes saved</th></tr></thead>
+      <tbody>
+      {% for strat, d in cs.by_strategy.items()|sort(attribute='1.saved', reverse=True) %}
+        <tr>
+          <td>{{ strat }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(d.count) }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {% if d.saved >= 1048576 %}{{ '%.1f'|format(d.saved / 1048576) }} MB
+            {% elif d.saved >= 1024 %}{{ '%.1f'|format(d.saved / 1024) }} KB
+            {% else %}{{ '{:,}'.format(d.saved) }} B{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
 </div>
 
 <style>
