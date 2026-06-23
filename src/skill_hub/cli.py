@@ -3557,15 +3557,22 @@ def _cmd_postcompact_optimize(session_id: str) -> dict:
     """PostCompact hook handler — surface optimize_memory recommendations.
 
     Compaction is the natural moment to prune duplicate/decayed memory.
-    We default to dry-run so the user sees the report; flip
-    ``postcompact_optimize_apply`` in config to actually mutate.
+    Runs when system pressure is at or below ``postcompact_pressure_max``
+    (default LOW — more permissive than the background IDLE gate). Flip
+    ``postcompact_optimize_apply`` to True in config to actually mutate;
+    the default is dry-run (recommendations only).
     """
     log_event("POSTCOMPACT", f"session={session_id[:12]}")
     try:
         from . import config as _cfg_mod
+        from .resource_monitor import should_run_postcompact_optimize
         from .server import optimize_memory as _optimize_memory
     except Exception as exc:  # noqa: BLE001
         log_event("POSTCOMPACT", f"import_error: {exc}")
+        return {"decision": "allow"}
+
+    if not should_run_postcompact_optimize():
+        log_event("POSTCOMPACT", "skip  pressure_too_high")
         return {"decision": "allow"}
 
     apply = bool(_cfg_mod.get("postcompact_optimize_apply"))
@@ -3647,7 +3654,68 @@ def _cmd_session_close(session_id: str, reason: str = "",
     except Exception:
         pass
 
+    # ── Session-end L0→L1 promotion ──────────────────────────────────────────
+    # Lightweight pass: promote L0 entries that were accessed at least once
+    # (they proved useful this session) to L1 so they survive the 1-day L0 TTL.
+    # Skipped under HIGH pressure, guarded by ``session_end_promote`` config flag.
+    _run_session_end_promote()
+
     return {"decision": "allow"}
+
+
+def _run_session_end_promote() -> None:
+    """Promote accessed L0 vectors to L1 at session end.
+
+    Idempotent — promotes only L0 rows with ``access_count >= 1`` that are at
+    most 1 day old (fresh, still in L0 TTL window).  Older zero-access L0 rows
+    are left for the nightly ``promote_memory`` prune pass.
+
+    Guards: ``session_end_promote`` config flag (default True), HIGH-pressure
+    skip, no exception propagation (failure must never break the hook).
+    """
+    try:
+        from . import config as _cfg_mod
+        if not _cfg_mod.get("session_end_promote"):
+            return
+
+        s = snapshot()
+        if s.pressure >= Pressure.HIGH:
+            log_event("SESSEND", "promote_skip  pressure=HIGH")
+            return
+
+        store = SkillStore()
+        try:
+            conn = store._conn
+            rows = conn.execute(
+                "SELECT id, namespace, doc_id FROM vectors "
+                "WHERE level = 'L0' AND access_count >= 1 "
+                "AND indexed_at >= datetime('now', '-1 day')"
+            ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                conn.execute(
+                    "UPDATE vectors SET level = 'L1' WHERE id = ?",
+                    (row["id"],),
+                )
+                try:
+                    store.record_memory_audit(
+                        action="promote",
+                        namespace=row["namespace"],
+                        doc_id=row["doc_id"],
+                        from_level="L0",
+                        to_level="L1",
+                        reason_json={"reason": "session_end_promote"},
+                    )
+                except Exception:
+                    pass
+            conn.commit()
+            log_event("SESSEND", f"promote_done  count={len(rows)}")
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001
+        # Must never break the session-end hook
+        log_event("SESSEND", f"promote_error: {exc}")
 
 
 def _heuristic_skill_split(message: str) -> list[str] | None:

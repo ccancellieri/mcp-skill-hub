@@ -264,6 +264,22 @@ _DEFAULTS = {
     "resource_gating_enabled": True,
     "resource_cache_ttl_seconds": 10,   # how often to re-check system resources
 
+    # PostCompact memory optimisation — triggered by the PostCompact hook after
+    # /compact summarises the context.  Compaction is a natural pruning moment.
+    # ``postcompact_optimize_apply`` True = mutate the store; False = dry-run only.
+    # ``postcompact_pressure_max``   ceiling for the postcompact path (LOW is more
+    #   permissive than the background IDLE gate used by nightly promote_memory).
+    "postcompact_optimize_apply": True,
+    "postcompact_pressure_max": "LOW",
+
+    # Router teachings — consult matching teachings when preloading skills so
+    # learned "when X → do Y" rules are surfaced to the model.
+    "router_use_teachings": True,
+
+    # Session-end L0→L1 promotion — run a lightweight memory-promotion pass
+    # at session end (guards: config flag + HIGH-pressure skip).
+    "session_end_promote": True,
+
     # LLM triage — local LLM pre-processes ALL messages before Claude
     "hook_llm_triage": False,           # disabled: small models can't classify reliably, blocks real work
     "hook_llm_triage_timeout": 30,      # max seconds for triage LLM call

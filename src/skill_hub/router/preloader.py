@@ -36,29 +36,32 @@ def load_skills(
     domain_hints: list[str],
     cfg: dict[str, Any],
     top_k: int = 3,
-) -> tuple[list[str], list[str]]:
-    """Return (skill_names, plugin_names) relevant to *domain_hints*.
+) -> tuple[list[str], list[str], str]:
+    """Return (skill_names, plugin_names, teaching_rules_text) relevant to *domain_hints*.
 
     Skill names are deduplicated by name (preserving best-ranked order).
-    Gracefully returns empty lists if Ollama or the store is unavailable.
+    When ``router_use_teachings`` is enabled (default True), matching teachings
+    are consulted and their suggested skills/plugins are merged into the result,
+    and their rule text is returned so it can be injected into the systemMessage.
+    Gracefully returns empty lists/string if Ollama or the store is unavailable.
     """
     if not domain_hints:
-        return [], []
+        return [], [], ""
 
     try:
         from ..embeddings import embed, embed_available, EMBED_MODEL
         from ..store import SkillStore
     except ImportError:
-        return [], []
+        return [], [], ""
 
     if not embed_available():
-        return [], []
+        return [], [], ""
 
     query = " ".join(domain_hints)
     try:
         vec = embed(query)
     except Exception:
-        return [], []
+        return [], [], ""
 
     store = SkillStore()
     try:
@@ -79,12 +82,41 @@ def load_skills(
             p["short_name"] for p in (plugin_suggestions or [])[:2]
             if not p.get("is_enabled", True)  # only suggest disabled ones
         ]
+
+        # ── Teaching consultation ─────────────────────────────────────────────
+        # When enabled, query matching teachings by the same embedding and merge
+        # their suggested skills/plugins into the preloaded set. Surface matching
+        # rule text so learned "when X → do Y" rules reach the model. No extra
+        # LLM call — reuses the already-computed vec.
+        teaching_rules: list[str] = []
+        if cfg.get("router_use_teachings", True):
+            try:
+                teach_min = float(cfg.get("teaching_min_similarity", 0.6))
+                teachings = store.search_teachings(vec, min_sim=teach_min)
+                for t in teachings:
+                    # Collect the rule text for injection into systemMessage
+                    rule_text = (t.get("rule") or "").strip()
+                    if rule_text:
+                        teaching_rules.append(rule_text)
+                    # Merge teaching-suggested skills/plugins into preloaded set
+                    action = (t.get("action") or "").strip()
+                    target_type = (t.get("target_type") or "").strip()
+                    target_id = (t.get("target_id") or "").strip()
+                    if target_id and target_type == "skill" and target_id not in seen:
+                        seen.add(target_id)
+                        skill_names.append(target_id)
+                    elif target_id and target_type == "plugin" and target_id not in plugin_names:
+                        plugin_names.append(target_id)
+            except Exception:
+                pass
+
     except Exception:
-        skill_names, plugin_names = [], []
+        skill_names, plugin_names, teaching_rules = [], [], []
     finally:
         store.close()
 
-    return skill_names, plugin_names
+    teaching_text = "\n".join(teaching_rules) if teaching_rules else ""
+    return skill_names, plugin_names, teaching_text
 
 
 # ---------------------------------------------------------------------------

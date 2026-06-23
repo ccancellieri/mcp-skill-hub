@@ -125,6 +125,9 @@ class Verdict:
     enforcement: str = "suggest"     # "hard_switch" | "suggest" | "none"
     prev_model: str = ""             # model before enforcement (for savings calc)
 
+    # Teaching rules matched for this prompt (injected into volatile systemMessage)
+    teaching_text: str = ""
+
     # Thin-prompt enrichment
     enrichment_applied: bool = False
     enrichment_source: str = ""      # "session_context" | "semantic_task" | "recent_task"
@@ -185,6 +188,10 @@ def format_volatile(v: Verdict) -> str:
     the provider prompt-cache prefix.
     """
     lines: list[str] = []
+
+    # ── Teaching rules ──────────────────────────────────────────────────────
+    if v.teaching_text:
+        lines.append(f"[Router] Learned rules for this context:\n{v.teaching_text}")
 
     # ── Header ─────────────────────────────────────────────────────────────
     mode_tag = "+plan" if v.plan_mode else ""

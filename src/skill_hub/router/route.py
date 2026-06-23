@@ -188,7 +188,7 @@ def route(
 
     # ── Skill preloading ─────────────────────────────────────────────────────
     max_skills: int = int(cfg.get("hook_context_top_k_skills", 3))
-    skill_names, plugin_names = preloader.load_skills(domain_hints, cfg, top_k=max_skills)
+    skill_names, plugin_names, teaching_text = preloader.load_skills(domain_hints, cfg, top_k=max_skills)
 
     # ── Thin-prompt enrichment ───────────────────────────────────────────────
     enriched_msg = preloader.enrich_thin_prompt(prompt, session_id, cfg)
@@ -211,6 +211,7 @@ def route(
         plan_mode=plan_mode,
         preload_skills=skill_names,
         preload_plugins=plugin_names,
+        teaching_text=teaching_text,
         confidence=confidence,
         reasoning=reasoning,
         tier_used=tier_used,
