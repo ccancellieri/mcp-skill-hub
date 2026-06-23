@@ -4567,11 +4567,16 @@ def issue_sync(repo: str = "", dry_run: bool = False) -> str:
 @mcp.tool()
 @requires_capability("none")
 def discussions_sync(repo: str = "", dry_run: bool = False, first: int = 50) -> str:
-    """Index this repo's GitHub Discussions (+ comments) into vector memory (namespace 'discussions'), searchable via search_context.
+    """Land this repo's GitHub Discussions (+ comments) into the wiki as source pages.
+
+    Each discussion becomes one mechanical wiki ``source`` page (no LLM, comments
+    folded in). The scan→approve→ingest loop (wiki_scan / wiki_queue_decision /
+    wiki_ingest) distills them; query via wiki_query. Supersedes the old raw
+    'discussions' vector namespace.
 
     Args:
         repo:     GitHub repo as "owner/name". Empty = resolve from current directory.
-        dry_run:  Report what would be indexed without writing to the DB.
+        dry_run:  Report what would be written without writing pages.
         first:    Number of discussions to fetch (max 100).
     """
     from . import discussions_sync as _discussions_sync

@@ -1,9 +1,9 @@
 """Tests for discussions_sync module (issue #41).
 
-Covers:
+Covers (Wave 2 — discussions land as mechanical wiki source pages):
 (a) Happy path: 2 discussions (one with 2 comments, one with 0) → checked=2,
-    discussions=2, comments=2, indexed=4, 4 rows in the discussions namespace.
-(b) dry_run=True: same counts returned, but 0 rows written to the DB.
+    discussions=2, comments=2, indexed=2 (one source page each, comments folded).
+(b) dry_run=True: same counts returned, but no pages and no vectors written.
 (c) Graceful failure when _gh_graphql returns None → error key, indexed==0,
     no exception.
 (d) Graceful failure when _resolve_repo returns None → error key, no exception.
@@ -96,8 +96,21 @@ _TWO_DISCUSSIONS_PAYLOAD = {
 # (a) Happy path
 # ---------------------------------------------------------------------------
 
-def test_sync_happy_path(isolated_store, monkeypatch):
-    """2 discussions (disc1 with 2 comments, disc2 with 0) → indexed=4, 4 DB rows."""
+def _isolate_wiki_root(monkeypatch, tmp_path):
+    """Point config's wiki_root at a temp vault (the default is baked at import)."""
+    import skill_hub.config as _cfg_mod
+    wiki_root = tmp_path / ".claude" / "mcp-skill-hub" / "wiki"
+    _orig = _cfg_mod.get
+    monkeypatch.setattr(
+        _cfg_mod, "get",
+        lambda k, *a, **kw: str(wiki_root) if k == "wiki_root" else _orig(k, *a, **kw),
+    )
+    return wiki_root
+
+
+def test_sync_happy_path(isolated_store, tmp_path, monkeypatch):
+    """Wave 2: 2 discussions → 2 wiki source pages (comments folded in)."""
+    wiki_root = _isolate_wiki_root(monkeypatch, tmp_path)
     monkeypatch.setattr("skill_hub.embeddings.embed", lambda text, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(
         "skill_hub.discussions_sync._resolve_repo",
@@ -116,32 +129,35 @@ def test_sync_happy_path(isolated_store, monkeypatch):
     assert report["checked"] == 2
     assert report["discussions"] == 2
     assert report["comments"] == 2
-    assert report["indexed"] == 4
+    # One source page per discussion (comments folded into the body).
+    assert report["indexed"] == 2
     assert report["skipped"] == 0
     assert report["dry_run"] is False
 
-    # Verify the 4 rows are actually in the DB
-    rows = isolated_store._conn.execute(
-        "SELECT doc_id, source FROM vectors WHERE namespace = 'discussions'"
-    ).fetchall()
-    assert len(rows) == 4, f"Expected 4 rows, got {len(rows)}: {[r['doc_id'] for r in rows]}"
+    # Source pages written to the wiki, comments folded into the body.
+    src = wiki_root / "pages" / "source"
+    assert (src / "source-discussion-1.md").exists()
+    assert (src / "source-discussion-2.md").exists()
+    d1 = (src / "source-discussion-1.md").read_text()
+    assert "Try Y instead." in d1
+    assert "Also check the docs." in d1
 
-    doc_ids = {r["doc_id"] for r in rows}
-    assert "discussion:1" in doc_ids
-    assert "discussion:2" in doc_ids
-    assert "discussion:1:comment:DC_abc1" in doc_ids
-    assert "discussion:1:comment:DC_abc2" in doc_ids
-
-    for r in rows:
-        assert r["source"] == "discussion"
+    # The raw 'discussions' namespace is retired — content is in 'wiki'.
+    assert isolated_store._conn.execute(
+        "SELECT COUNT(*) FROM vectors WHERE namespace='discussions'"
+    ).fetchone()[0] == 0
+    assert isolated_store._conn.execute(
+        "SELECT COUNT(*) FROM vectors WHERE namespace='wiki'"
+    ).fetchone()[0] > 0
 
 
 # ---------------------------------------------------------------------------
-# (b) dry_run=True: same counts, no DB writes
+# (b) dry_run=True: same counts, no writes
 # ---------------------------------------------------------------------------
 
-def test_sync_dry_run(isolated_store, monkeypatch):
-    """dry_run=True returns same counts but writes nothing to the DB."""
+def test_sync_dry_run(isolated_store, tmp_path, monkeypatch):
+    """dry_run=True returns page counts but writes no pages and no vectors."""
+    wiki_root = _isolate_wiki_root(monkeypatch, tmp_path)
     monkeypatch.setattr("skill_hub.embeddings.embed", lambda text, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(
         "skill_hub.discussions_sync._resolve_repo",
@@ -159,14 +175,13 @@ def test_sync_dry_run(isolated_store, monkeypatch):
     assert report["checked"] == 2
     assert report["discussions"] == 2
     assert report["comments"] == 2
-    assert report["indexed"] == 4
+    assert report["indexed"] == 2
     assert report["dry_run"] is True
 
-    # Nothing written
-    count = isolated_store._conn.execute(
-        "SELECT COUNT(*) FROM vectors WHERE namespace = 'discussions'"
-    ).fetchone()[0]
-    assert count == 0, f"Expected 0 rows in dry_run, got {count}"
+    assert not (wiki_root / "pages" / "source").exists()
+    assert isolated_store._conn.execute(
+        "SELECT COUNT(*) FROM vectors WHERE namespace='wiki'"
+    ).fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------

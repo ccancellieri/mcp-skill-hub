@@ -1201,6 +1201,49 @@ def query(
     return {"query": query_text, "results": ranked[:top_k]}
 
 
+def write_source_page(
+    store: Any, wiki_root: Path, *, source_id: str, title: str, body: str,
+    url: str = "", scope: str = "public", project: str = "_global",
+    today: str | None = None,
+) -> str | None:
+    """Mechanically write/refresh a ``source`` page (no LLM). Returns the slug.
+
+    Source connectors (discussions, issues) use this to land raw content into
+    the wiki as a ``source`` page. The scan→approve→ingest loop distills it
+    later — this keeps connectors cheap (no token spend) and consistent with
+    migration. Idempotent via ``source_hash``; returns None when unchanged.
+    """
+    wiki_root = Path(wiki_root)
+    today = today or date.today().isoformat()
+    slug = "source-" + _slugify(source_id)
+    existing = _find_page_by_slug(store, wiki_root, slug)
+    source_hash = _hash_text(body)
+    if existing is not None and existing.source_hash == source_hash:
+        return None  # unchanged — skip the write
+
+    page = WikiPage(
+        id=existing.id if existing else _stable_page_id(Path(scope) / slug),
+        slug=slug, title=title or slug, type="source",
+        projects=(existing.projects if existing and existing.projects
+                  else [project or "_global"]),
+        scope=scope, body=body,
+        source_refs=[url] if url else [source_id],
+        created=existing.created if (existing and existing.created) else today,
+        updated=today, source_hash=source_hash,
+    )
+    path = page_path(wiki_root, page)
+    if path.exists():
+        _backup_page(path)
+    _atomic_write_page(path, render_page(page))
+    try:
+        _index_pages(store, wiki_root, [page])
+        _write_public_index(wiki_root)
+        _write_private_indexes(wiki_root)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("write_source_page: index update failed for %s: %s", slug, exc)
+    return slug
+
+
 def queue_decision(store: Any, slug: str, decision: str) -> dict:
     """Approve or skip a queued candidate. ``decision`` in {'approve','skip'}.
 
