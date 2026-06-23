@@ -34,11 +34,14 @@ class LLMProvider(Protocol):
         stop: list[str] | None = None,
         cache: bool = False,
         extra: dict[str, Any] | None = None,
+        op: str = "",
     ) -> str:
         """Single-turn text completion. Returns generated text.
 
         ``cache=True`` attaches an ephemeral ``cache_control`` marker to the
         last user content block for Anthropic models; no-op elsewhere.
+        ``op`` is an optional operation label (e.g. ``"compact"``) recorded in
+        the ``llm_call`` metering event for per-operation cost attribution.
         """
         ...
 
@@ -53,9 +56,11 @@ class LLMProvider(Protocol):
         timeout: float = 60.0,
         cache: bool = False,
         extra: dict[str, Any] | None = None,
+        op: str = "",
     ) -> str:
         """Multi-turn chat. ``messages`` is a list of ``{role, content}`` dicts
-        or ``Message`` dataclasses. Returns the assistant's text."""
+        or ``Message`` dataclasses. Returns the assistant's text. ``op`` is an
+        optional operation label recorded in the ``llm_call`` metering event."""
         ...
 
     def embed(

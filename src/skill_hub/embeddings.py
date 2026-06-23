@@ -73,6 +73,7 @@ def _generate(
     timeout: float,
     temperature: float = 0.2,
     num_predict: int = 512,
+    op: str = "",
 ) -> str:
     """Thin wrapper over ``LLMProvider.complete()`` matching the old
     ``httpx.post(/api/generate).json()['response']`` shape. Returns ``""`` on
@@ -84,6 +85,7 @@ def _generate(
             max_tokens=num_predict,
             temperature=temperature,
             timeout=timeout,
+            op=op,
         )
     except LLMError:
         return ""
@@ -231,7 +233,7 @@ def rerank(query: str, candidates: list[dict],
             description=c.get("description", ""),
         )
         try:
-            raw = _generate(prompt, model=model, timeout=60.0) or "{}"
+            raw = _generate(prompt, model=model, timeout=60.0, op="rerank") or "{}"
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             result = json.loads(raw)
             score = float(result.get("score", 0.5))
@@ -277,7 +279,7 @@ def compact(content: str, model: str = RERANK_MODEL) -> dict:
     log_llm("compact", model=model, input_chars=len(content[:4000]))
     prompt = _COMPACT_PROMPT.format(content=content[:4000])
     try:
-        raw = _generate(prompt, model=model, timeout=120.0) or "{}"
+        raw = _generate(prompt, model=model, timeout=120.0, op="compact") or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # Extract JSON from response (handle markdown code blocks)
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -505,7 +507,7 @@ def conversation_digest(messages: list[str],
     prompt = _CONVERSATION_DIGEST_PROMPT.format(content=content[:max_chars])
 
     try:
-        raw = _generate(prompt, model=model, timeout=60.0) or "{}"
+        raw = _generate(prompt, model=model, timeout=60.0, op="conversation_digest") or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -610,7 +612,7 @@ Respond with ONLY this JSON:
         with llm_timer() as _t:
             raw = _generate(
                 prompt, model=chosen_model, timeout=30.0,
-                temperature=0.1, num_predict=500,
+                temperature=0.1, num_predict=500, op="smart_memory_write",
             ) or "{}"
         log_llm("smart_memory_write", model=chosen_model, duration=_t.duration,
                 input_chars=len(content))
@@ -796,6 +798,7 @@ def triage_message(message: str, context: str = "",
         raw = _generate(
             prompt, model=model,
             timeout=float(_cfg.get("hook_llm_triage_timeout") or 30),
+            op="triage",
         ) or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)

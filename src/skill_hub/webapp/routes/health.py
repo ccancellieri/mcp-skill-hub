@@ -23,6 +23,14 @@ _COMPRESSION_EMPTY: dict = {
     "by_strategy": {}, "by_site": {},
 }
 
+_LLM_STATS_EMPTY: dict = {
+    "calls": 0, "errors": 0,
+    "total_duration_ms": 0, "avg_latency_ms": 0.0,
+    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+    "tokens_per_sec": 0.0,
+    "by_op": {}, "by_model": {},
+}
+
 
 def _compression_context() -> dict:
     """Return compression stats + config flags for the health panel."""
@@ -34,9 +42,14 @@ def _compression_context() -> dict:
         pass
 
     stats = _COMPRESSION_EMPTY
+    llm_stats = _LLM_STATS_EMPTY
     if store is not None:
         try:
             stats = store.get_compression_stats()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            llm_stats = store.get_llm_stats()
         except Exception:  # noqa: BLE001
             pass
 
@@ -47,6 +60,8 @@ def _compression_context() -> dict:
             "ml_enabled": bool(cfg.get("compression_ml_enabled")),
             "code_aware_enabled": bool(cfg.get("compression_code_aware_enabled")),
         },
+        "llm_stats": llm_stats,
+        "llm_metering_enabled": bool(cfg.get("llm_metering_enabled")),
     }
 
 

@@ -5062,6 +5062,95 @@ class SkillStore:
             "by_site": by_site,
         }
 
+    def get_llm_stats(self, limit: int = 5000) -> dict:
+        """Aggregate ``kind='llm_call'`` events into a UI/report summary.
+
+        Each llm_call event payload carries ``op``/``model``/``tier``/
+        ``duration_ms``/``prompt_tokens``/``completion_tokens``/
+        ``total_tokens``/``status``.  Aggregates over the most recent
+        ``limit`` events.  Returns a dict that ``token_stats`` and the
+        dashboard health card both render::
+
+            {
+              "calls": int, "errors": int,
+              "total_duration_ms": int, "avg_latency_ms": float,
+              "prompt_tokens": int, "completion_tokens": int, "total_tokens": int,
+              "tokens_per_sec": float,
+              "by_op": {op: {"count": int, "total_tokens": int, "duration_ms": int}},
+              "by_model": {model: {"count": int, "total_tokens": int, "duration_ms": int}},
+            }
+        """
+        empty: dict = {
+            "calls": 0, "errors": 0,
+            "total_duration_ms": 0, "avg_latency_ms": 0.0,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+            "tokens_per_sec": 0.0,
+            "by_op": {}, "by_model": {},
+        }
+        try:
+            rows = self._conn.execute(
+                "SELECT payload FROM events WHERE kind='llm_call' "
+                "ORDER BY ts DESC LIMIT ?",
+                (max(1, min(int(limit), 50000)),),
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_llm_stats query failed: %s", exc)
+            return empty
+        if not rows:
+            return empty
+
+        calls = errors = 0
+        total_duration_ms = 0
+        ok_duration_ms = 0
+        prompt_tokens = completion_tokens = total_tokens = 0
+        by_op: dict[str, dict] = {}
+        by_model: dict[str, dict] = {}
+        for r in rows:
+            try:
+                p = json.loads(r["payload"])
+            except Exception:  # noqa: BLE001
+                continue
+            dur = int(p.get("duration_ms") or 0)
+            pt = int(p.get("prompt_tokens") or 0)
+            ct = int(p.get("completion_tokens") or 0)
+            tt = int(p.get("total_tokens") or 0)
+            op = str(p.get("op") or "?")
+            model = str(p.get("model") or "?")
+            status = str(p.get("status") or "ok")
+            calls += 1
+            total_duration_ms += dur
+            if status != "ok":
+                errors += 1
+            else:
+                ok_duration_ms += dur
+            prompt_tokens += pt
+            completion_tokens += ct
+            total_tokens += tt
+            od = by_op.setdefault(op, {"count": 0, "total_tokens": 0, "duration_ms": 0})
+            od["count"] += 1
+            od["total_tokens"] += tt
+            od["duration_ms"] += dur
+            md = by_model.setdefault(model, {"count": 0, "total_tokens": 0, "duration_ms": 0})
+            md["count"] += 1
+            md["total_tokens"] += tt
+            md["duration_ms"] += dur
+
+        avg_latency_ms = (total_duration_ms / calls) if calls else 0.0
+        ok_duration_s = ok_duration_ms / 1000.0
+        tokens_per_sec = (completion_tokens / ok_duration_s) if ok_duration_s > 0 else 0.0
+        return {
+            "calls": calls,
+            "errors": errors,
+            "total_duration_ms": total_duration_ms,
+            "avg_latency_ms": round(avg_latency_ms, 1),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "tokens_per_sec": round(tokens_per_sec, 1),
+            "by_op": by_op,
+            "by_model": by_model,
+        }
+
     def events_prune(
         self,
         before_ts: float = 0.0,
