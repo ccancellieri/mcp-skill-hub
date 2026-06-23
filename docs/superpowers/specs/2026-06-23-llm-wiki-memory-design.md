@@ -1,7 +1,7 @@
 # LLM Wiki Knowledge Layer — Design Spec
 
 **Date:** 2026-06-23
-**Status:** Approved design, first slice (core loop)
+**Status:** Wave 1 shipped (core loop + migration); Wave 2 design approved (§14 — ingest loop + automatic selection + UI)
 **Scope:** Add an "LLM Wiki" persistent-knowledge layer to mcp-skill-hub, inverting today's vector-DB-as-source-of-truth memory model.
 
 ---
@@ -236,3 +236,46 @@ New `wiki migrate` command (idempotent — keyed on `source_refs`; an already-co
 
 ## 13. Out of Scope (this slice)
 Lint, query-file-back, router/hook injection, live cron, session auto-ingest, Obsidian/webapp views, export integration for the private scope, LLM-driven entity/concept fan-out during bulk migration.
+
+---
+
+## 14. Wave 2 — Ingest loop + automatic selection + UI (approved 2026-06-23)
+
+Wave 1 shipped steps 0–3 + 8 (foundation, reindex, status, migrate, seeded-disabled cron). Wave 2 builds the original steps 4–7 (LLM ingest producer → `ingest_source` → `wiki_query` → discussions rewire) **plus** two additions from the user directive: *"the step-4 followup should be integrated in the UI of the mcp skill hub and the selection of the source should be automatic."*
+
+**Decisions (user-approved):** (1) ingest control = **approval queue** — auto-selection without auto-spend; (2) selection scope = **undistilled + stale `source` pages**; (3) UI = **status + scan + trigger card** on the existing dashboard.
+
+### 14.1 Automatic source selection — `wiki.scan_candidates(store, wiki_root) -> list[Candidate]`
+Deterministic, **no LLM**, stdlib + DB only (runs in `no_llm_mode`). Scans the raw `source/` layer and flags what needs distillation:
+- **Undistilled** — a `source` page that no entity/concept page yet cites in its `source_refs` (i.e. raw, never distilled). Self-join on `wiki_pages` / `source_refs`.
+- **Stale** — a `source` page whose underlying file `source_hash` differs from the value recorded at last ingest (re-read original via `source_refs` path; missing original ⇒ skip, not error).
+`Candidate = {slug, title, scope, reason: "undistilled"|"stale", source_refs, est_calls: 1}`. Returns ranked (stale before undistilled, then alphabetical), deduped by slug. Total `est_calls` = candidate count = the cost preview. This is the *selector* — it replaces manual file-picking. Bounded by the 1124 migrated pages; never unbounded.
+
+### 14.2 Approval queue — `wiki_queue` table + tools
+The selector proposes; the operator approves; only then does the LLM run. Minimal `wiki_queue` table (`slug PK, title, scope, reason, est_calls, status: 'pending'|'approved'|'done'|'skipped', diff_preview, created_at, decided_at`).
+- `wiki_scan(dry_run=True)` — run `scan_candidates`, upsert `pending` rows (idempotent on slug), return the candidate list + total cost. **No LLM, no writes to pages.** Default-on safe.
+- `wiki_ingest(slug="", source_kind="", ..., dry_run=True)` — unchanged single-source entrypoint from §4.1; when called for a queued slug, runs candidate-discovery → LLM rewrite → returns the diff. With `dry_run=True` it stores `diff_preview` on the queue row and sets nothing live. With `dry_run=False` it applies (atomic write + backup + index/log + re-embed) and marks the row `done`.
+- `wiki_queue_decision(slug, decision)` — `approve` (next `wiki_ingest dry_run=False` allowed) / `skip` (mark `skipped`, excluded from future scans until source changes). Approval is the gate; nothing spends tokens on page writes without it.
+- Batch: `wiki_ingest(approve_all=True, limit=N, dry_run=False)` walks `approved` rows up to `limit` (cost ceiling), each atomic. `limit` defaults to a small N (config `wiki_ingest_batch_limit`, default 10) so an accidental run can't rewrite hundreds of pages.
+
+### 14.3 UI integration — dashboard "Memory Wiki" card
+Extend the existing `render_dashboard` surface (same card idiom as the log-digest / cron cards). The card shows:
+- **Status:** pages / edges / orphans / drift / last `log.md` op (from `wiki_status`).
+- **Queue:** pending / approved / done counts + total `est_calls` cost preview (from `wiki_queue`).
+- **Actions:** *Scan* (calls `wiki_scan`, no spend), *Approve* (per-row or all, `wiki_queue_decision`), *Ingest approved* (`wiki_ingest approve_all` within `limit`). Actions map to the MCP tools — the card is a thin view + trigger, not new business logic.
+Read path is stdlib/DB only so the card renders even when LLM/embedding backends are down (degrades to status + queue counts; ingest action disabled with a reason).
+
+### 14.4 Build sequence (Wave 2, each independently verifiable)
+- **W2.1** `embeddings.wiki_ingest` LLM producer + `llm/prompts/wiki_ingest.yaml`. *Verify:* mock provider → assert JSON shape (`source_page`, `page_updates`, `index_entries`, `assumptions`).
+- **W2.2** `wiki.ingest_source` (candidate discovery → LLM → deterministic write) + access-gating. *Verify:* dry-run returns diffs & writes nothing; non-dry writes pages + index + log + backups; private target gated for unauthorized scope.
+- **W2.3** `wiki.scan_candidates` + `wiki_queue` DDL + `wiki_scan` tool. *Verify:* seeded undistilled/stale sources surface as candidates; idempotent re-scan; runs with no LLM.
+- **W2.4** Approval-queue tools (`wiki_queue_decision`, batch `approve_all`+`limit`) + `wiki_ingest` tool wired to the queue. *Verify:* approve→ingest applies; un-approved slug refuses non-dry write; batch respects `limit`.
+- **W2.5** `wiki_query` (hybrid) + file-back stub. *Verify:* ranked pages w/ provenance; private excluded for unauthorized scope.
+- **W2.6** Dashboard "Memory Wiki" card in `render_dashboard`. *Verify:* renders status + queue counts; degrades when backends down.
+- **W2.7** Rewire `discussions_sync` → `ingest_source`; retire raw `discussions` namespace. *Verify:* `discussions_sync(dry_run=True)` produces page diffs, not raw upserts.
+
+### 14.5 Cost & safety invariants
+- Selection is deterministic and bounded; **no LLM call happens during scan**.
+- No page write happens without an `approved` queue row (or an explicit single-slug `dry_run=False`).
+- Batch ingest is capped by `wiki_ingest_batch_limit`.
+- Every page write keeps the §4.1 atomicity: backup-before-overwrite, per-page commit, `wiki_status` drift + `wiki_reindex` as the reconcile authority.
