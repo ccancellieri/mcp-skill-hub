@@ -1636,7 +1636,7 @@ def update_task(task_id: int, summary: str = "", context: str = "",
         task = _store.get_task(task_id)
         if task:
             new_title = title or task["title"]
-            new_summary = summary or task.get("summary", "")
+            new_summary = summary or task["summary"] or ""
             try:
                 vector = embed(f"{new_title}: {new_summary}")
             except RuntimeError:
@@ -2140,6 +2140,7 @@ def index_plugins() -> str:
     def _read_plugin_desc(plugin_dir: Path, fallback: str) -> tuple[str, str]:
         """Return (short_name, description)."""
         import json as _json
+        import re
         short_name = plugin_dir.name
         desc = fallback
         pj = plugin_dir / "plugin.json"
