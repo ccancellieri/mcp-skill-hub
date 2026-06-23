@@ -4355,6 +4355,39 @@ def discussions_sync(repo: str = "", dry_run: bool = False, first: int = 50) -> 
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("embedding")
+def index_logs(hours: int = 24, limit: int = 1000, dry_run: bool = False) -> str:
+    """Embed recent activity-log events into vector memory (namespace 'logs'), searchable via search_context.
+
+    Args:
+        hours:    How many hours back to scan (default 24).
+        limit:    Maximum number of events to process (default 1000).
+        dry_run:  Report what would be indexed without writing to the DB.
+    """
+    from . import log_insights as _log_insights
+
+    log_tool("index_logs", hours=hours, limit=limit, dry_run=dry_run)
+
+    report = _log_insights.index_recent_logs(hours=hours, limit=limit, dry_run=dry_run)
+
+    mode = "dry_run" if dry_run else "live"
+    by_kind = report.get("by_kind") or {}
+    lines = [
+        f"index_logs [{mode}]: "
+        f"scanned={report['scanned']} "
+        f"indexed={report['indexed']} "
+        f"namespace={report['namespace']}",
+    ]
+    if by_kind:
+        lines.append("  by_kind:")
+        for kind, count in sorted(by_kind.items()):
+            lines.append(f"    {kind}: {count}")
+    if dry_run:
+        lines.append("  (dry_run: no writes made)")
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()
