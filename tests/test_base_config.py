@@ -230,6 +230,53 @@ def test_install_mcp_idempotent(tmp_path):
     assert report2["added"] == []
 
 
+def test_merge_mcp_corrupt_json_is_not_written(tmp_path):
+    """Corrupt or non-dict claude.json must be left untouched (data-loss guard)."""
+    original = "this is not json {"
+    p = tmp_path / "claude.json"
+    p.write_text(original, encoding="utf-8")
+    data, added = bc.merge_mcp(p)
+    assert added == []  # refused to modify
+    # install_mcp must also leave the file byte-identical
+    report = bc.install_mcp(p, backup=False)
+    assert report["added"] == []
+    assert p.read_text(encoding="utf-8") == original  # file untouched
+
+
+def test_merge_mcp_non_dict_root_is_not_written(tmp_path):
+    """A claude.json whose root is a JSON array must not be truncated."""
+    original = json.dumps([{"mcpServers": {}}])
+    p = tmp_path / "claude.json"
+    p.write_text(original, encoding="utf-8")
+    _, added = bc.merge_mcp(p)
+    assert added == []
+    assert p.read_text(encoding="utf-8") == original  # file untouched
+    # check_all should surface the parse issue without writing
+    status = bc.check_all(claude_json_path=p)
+    assert status["mcp"]  # issue reported
+
+
+def test_merge_mcp_malformed_entry_is_replaced(tmp_path):
+    """A skill-hub entry with no command must be replaced, not skipped."""
+    existing = {
+        "numStartups": 3,
+        "mcpServers": {"skill-hub": {"type": "stdio"}},  # missing command
+    }
+    p = tmp_path / "claude.json"
+    p.write_text(json.dumps(existing), encoding="utf-8")
+    _, added = bc.merge_mcp(p)
+    assert "mcpServers:skill-hub" in added  # entry was replaced
+    # check_mcp must now pass
+    bc.install_mcp(p, backup=False)
+    assert bc.check_mcp(p) == []
+    # Second run is a no-op (converges)
+    _, added2 = bc.merge_mcp(p)
+    assert added2 == []
+    # Other keys preserved
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert written["numStartups"] == 3
+
+
 # ---------------------------------------------------------------------------
 # CLAUDE.md base-roles block tests
 # ---------------------------------------------------------------------------
@@ -280,6 +327,27 @@ def test_merge_roles_idempotent(tmp_path):
     new_text2, added2 = bc.merge_roles(p)
     assert added2 == []  # nothing changed on second run
     assert new_text1 == new_text2
+
+
+def test_merge_roles_separator_single_newline_ending(tmp_path):
+    """A file ending in a single newline (the common case) must get exactly one
+    blank line before the appended block — not two (which would produce \\n\\n\\n)."""
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# My Config\n", encoding="utf-8")
+    new_text, added = bc.merge_roles(p)
+    assert added
+    # Exactly one blank line between existing content and the sentinel.
+    assert "# My Config\n\n" + bc._ROLES_START in new_text
+    assert "# My Config\n\n\n" not in new_text  # no triple newline
+
+
+def test_merge_roles_separator_double_newline_ending(tmp_path):
+    """A file already ending in a blank line must not grow another."""
+    p = tmp_path / "CLAUDE.md"
+    p.write_text("# My Config\n\n", encoding="utf-8")
+    new_text, _ = bc.merge_roles(p)
+    assert "# My Config\n\n" + bc._ROLES_START in new_text
+    assert "# My Config\n\n\n" not in new_text
 
 
 def test_install_roles_writes_and_backs_up(tmp_path):

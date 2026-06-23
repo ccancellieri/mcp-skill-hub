@@ -333,18 +333,26 @@ def merge_mcp(
     """
     path = _resolve_claude_json_path(claude_json_path)
     data: dict[str, Any] = {}
+    parse_ok = True
     if path.exists():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 data = raw
+            else:
+                parse_ok = False
         except (OSError, ValueError):
-            pass
+            parse_ok = False
+
+    if not parse_ok:
+        # Refuse to overwrite a file we couldn't parse — data-loss prevention.
+        return data, []
 
     servers = data.setdefault("mcpServers", {})
     added: list[str] = []
 
-    if "skill-hub" not in servers:
+    entry = servers.get("skill-hub")
+    if not isinstance(entry, dict) or not entry.get("command"):
         servers["skill-hub"] = _default_mcp_entry()
         added.append("mcpServers:skill-hub")
 
@@ -455,8 +463,15 @@ def merge_roles(
         new_text = existing[:start_idx] + new_block + existing[end_idx:]
         added.append("CLAUDE.md:base-roles:refreshed")
     elif _ROLES_START not in existing:
-        # Append the block (with a blank line separator when file has content).
-        sep = "\n\n" if existing and not existing.endswith("\n\n") else ""
+        # Append the block with exactly one blank line separator.
+        if not existing:
+            sep = ""
+        elif existing.endswith("\n\n"):
+            sep = ""
+        elif existing.endswith("\n"):
+            sep = "\n"
+        else:
+            sep = "\n\n"
         new_text = existing + sep + block
         added.append("CLAUDE.md:base-roles:inserted")
     else:
