@@ -1610,3 +1610,107 @@ class TestScanAndEnqueue:
         out = scan_and_enqueue(store, wiki_root)
         assert out["approved"] == 1
         assert out["pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.4: approval queue tools (decision + queued ingest + batch)
+# ---------------------------------------------------------------------------
+
+
+class TestQueueDecisionAndIngest:
+    """Approval gate: only approved rows may be ingested live."""
+
+    def _enqueue(self, store, wiki_root, slug="source-a", ref=None):
+        # Write a source page + enqueue it as a candidate.
+        p = wiki_root / "pages" / "source" / f"{slug}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        ref = ref or "/orig/a.md"
+        p.write_text(
+            f"---\nslug: {slug}\ntitle: {slug}\ntype: source\nscope: public\n"
+            f"projects:\n- _global\nsource_refs:\n- {ref}\n---\nraw body\n",
+            encoding="utf-8")
+        from skill_hub.wiki import scan_and_enqueue
+        scan_and_enqueue(store, wiki_root)
+
+    def _stub_llm(self, monkeypatch, store, slug="source-a"):
+        import skill_hub.embeddings as _emb
+        payload = {
+            "source_page": {"slug": slug, "title": "A", "body": "raw"},
+            "page_updates": [{"slug": "a", "title": "A", "type": "entity",
+                              "scope": "public", "new_body": "About a.",
+                              "is_new": True}],
+            "index_entries": [], "assumptions": [],
+        }
+        monkeypatch.setattr(_emb, "wiki_ingest", lambda **kw: payload)
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: [])
+
+        def fake_upsert(namespace, doc_id, text, metadata=None, **kw):
+            store._conn.execute(
+                "INSERT INTO vectors (namespace, doc_id, model, vector, norm, "
+                "level, source, project) VALUES (?, ?, 'stub', '[]', 0.1, 'L3', "
+                "'wiki', NULL) ON CONFLICT(namespace, doc_id) DO UPDATE SET "
+                "vector=excluded.vector", (namespace, doc_id))
+            store._conn.commit()
+        monkeypatch.setattr(store, "upsert_vector", fake_upsert)
+
+    def test_approve_sets_status(self, store, wiki_root):
+        from skill_hub.wiki import queue_decision
+        self._enqueue(store, wiki_root)
+        out = queue_decision(store, "source-a", "approve")
+        assert out["decision"] == "approved"
+        row = store._conn.execute(
+            "SELECT status FROM wiki_queue WHERE slug='source-a'").fetchone()
+        assert row["status"] == "approved"
+
+    def test_skip_sets_status(self, store, wiki_root):
+        from skill_hub.wiki import queue_decision
+        self._enqueue(store, wiki_root)
+        queue_decision(store, "source-a", "skip")
+        row = store._conn.execute(
+            "SELECT status FROM wiki_queue WHERE slug='source-a'").fetchone()
+        assert row["status"] == "skipped"
+
+    def test_bad_decision_errors(self, store, wiki_root):
+        from skill_hub.wiki import queue_decision
+        self._enqueue(store, wiki_root)
+        assert queue_decision(store, "source-a", "maybe")["status"] == "error"
+
+    def test_live_ingest_requires_approval(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_queued
+        self._enqueue(store, wiki_root)
+        self._stub_llm(monkeypatch, store)
+        out = ingest_queued(store, wiki_root, "source-a", dry_run=False)
+        assert out["status"] == "denied"
+
+    def test_dry_run_allowed_without_approval(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_queued
+        self._enqueue(store, wiki_root)
+        self._stub_llm(monkeypatch, store)
+        out = ingest_queued(store, wiki_root, "source-a", dry_run=True)
+        assert out["status"] == "dry_run"
+        # diff preview stored
+        row = store._conn.execute(
+            "SELECT diff_preview FROM wiki_queue WHERE slug='source-a'").fetchone()
+        assert row["diff_preview"] is not None
+
+    def test_approved_ingest_writes_and_marks_done(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_queued, queue_decision
+        self._enqueue(store, wiki_root)
+        self._stub_llm(monkeypatch, store)
+        queue_decision(store, "source-a", "approve")
+        out = ingest_queued(store, wiki_root, "source-a", dry_run=False,
+                            today="2026-06-23")
+        assert out["status"] == "ok"
+        assert (wiki_root / "pages" / "entity" / "a.md").exists()
+        row = store._conn.execute(
+            "SELECT status FROM wiki_queue WHERE slug='source-a'").fetchone()
+        assert row["status"] == "done"
+
+    def test_batch_respects_limit(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_approved, queue_decision
+        for s in ("source-a", "source-b", "source-c"):
+            self._enqueue(store, wiki_root, slug=s, ref=f"/orig/{s}.md")
+            queue_decision(store, s, "approve")
+        self._stub_llm(monkeypatch, store)
+        out = ingest_approved(store, wiki_root, limit=2, dry_run=False)
+        assert out["processed"] == 2

@@ -378,6 +378,10 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("wiki_scan", "Auto-select source pages needing distillation into the approval queue",
              hard=(BACKEND_DB,)),
+    ToolSpec("wiki_queue_decision", "Approve or skip a wiki ingest candidate",
+             hard=(BACKEND_DB,)),
+    ToolSpec("wiki_ingest", "Distill approved wiki source pages into entity/concept pages (LLM)",
+             hard=(BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM)),
 )
 
 

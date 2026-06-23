@@ -589,6 +589,8 @@ _DEFAULTS = {
     "wiki_private_scopes": {"glicemia": ["glicemia"], "career": ["career"]},
     # Whether to include wiki-private pages in memory-export bundles.
     "wiki_export_private": False,
+    # Max approved source pages distilled per batch wiki_ingest run (cost cap).
+    "wiki_ingest_batch_limit": 10,
 }
 
 

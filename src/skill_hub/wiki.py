@@ -764,7 +764,12 @@ def _hash_text(text: str) -> str:
 
 
 def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | None:
-    """Locate an existing page by slug via the derived index, then load from disk."""
+    """Locate an existing page by slug via the derived index, then disk fallback.
+
+    The DB (``wiki_pages``) is authoritative when current. When the vault has
+    been written/migrated but not yet reindexed, fall back to the conventional
+    on-disk locations (filename == slug). Page writes always use ``<slug>.md``.
+    """
     try:
         row = store._conn.execute(
             "SELECT rel_path FROM wiki_pages WHERE slug=?", (slug,)
@@ -774,8 +779,18 @@ def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | Non
     if row:
         rel = row["rel_path"] if not isinstance(row, tuple) else row[0]
         page = _load_page(wiki_root / rel)
-        if page is not None:
+        if page is not None and page.slug == slug:
             return page
+
+    # Disk fallback: known layouts, then a cheap filename glob.
+    candidates = [wiki_root / "pages" / "source" / f"{slug}.md"]
+    candidates += list((wiki_root / "pages").glob(f"*/{slug}.md"))
+    candidates += list((wiki_root / "_private").glob(f"*/{slug}.md"))
+    for path in candidates:
+        if path.is_file():
+            page = _load_page(path)
+            if page is not None and page.slug == slug:
+                return page
     return None
 
 
@@ -1087,6 +1102,107 @@ def _queue_summary(store: Any, scanned: int | None = None) -> dict:
     return out
 
 
+def queue_decision(store: Any, slug: str, decision: str) -> dict:
+    """Approve or skip a queued candidate. ``decision`` in {'approve','skip'}.
+
+    Approval is the gate: only ``approved`` rows may be ingested non-dry. A
+    skipped row is excluded from future scans until its source goes stale.
+    """
+    if decision not in ("approve", "skip"):
+        return {"status": "error", "reason": f"unknown decision {decision!r}"}
+    new = "approved" if decision == "approve" else "skipped"
+    cur = store._conn.execute(
+        "UPDATE wiki_queue SET status=?, decided_at=datetime('now') "
+        "WHERE slug=? AND status IN ('pending','approved')",
+        (new, slug),
+    )
+    store._conn.commit()
+    if cur.rowcount == 0:
+        return {"status": "noop", "reason": f"{slug} not in pending/approved"}
+    return {"status": "ok", "slug": slug, "decision": new}
+
+
+def ingest_queued(
+    store: Any, wiki_root: Path, slug: str, *,
+    authorized_scopes: list[str] | None = None, dry_run: bool = True,
+    today: str | None = None, tier: str = "tier_smart", model: str | None = None,
+) -> dict:
+    """Distill one queued source page. Live writes require an ``approved`` row.
+
+    Reconstructs the source text from the page's underlying file
+    (``source_refs[0]``) when available, else the page body, then calls
+    :func:`ingest_source` updating the same source slug in place. Marks the
+    queue row ``done`` on success.
+    """
+    wiki_root = Path(wiki_root)
+    page = _find_page_by_slug(store, wiki_root, slug)
+    if page is None:
+        return {"status": "error", "reason": f"source page {slug!r} not found"}
+
+    row = store._conn.execute(
+        "SELECT status FROM wiki_queue WHERE slug=?", (slug,)
+    ).fetchone()
+    status = row["status"] if row else None
+    if not dry_run and status != "approved":
+        return {"status": "denied",
+                "reason": f"{slug} not approved (status={status})"}
+
+    source_text = page.body
+    source_ref = str(page.source_refs[0]) if page.source_refs else ""
+    if source_ref:
+        op = Path(source_ref)
+        if op.is_file():
+            try:
+                source_text = op.read_text(encoding="utf-8")
+            except OSError:
+                pass
+    target_project = page.projects[0] if page.projects else "_global"
+
+    result = ingest_source(
+        store, wiki_root, source_kind="memory",
+        source_id=source_ref or slug, source_title=page.title,
+        source_text=source_text, source_slug=slug,
+        target_scope=page.scope, target_project=target_project,
+        authorized_scopes=authorized_scopes, dry_run=dry_run,
+        today=today, tier=tier, model=model,
+    )
+
+    if dry_run:
+        store._conn.execute(
+            "UPDATE wiki_queue SET diff_preview=? WHERE slug=?",
+            (json.dumps(result.get("pages", [])), slug),
+        )
+        store._conn.commit()
+    elif result.get("status") in ("ok", "skipped"):
+        store._conn.execute(
+            "UPDATE wiki_queue SET status='done', decided_at=datetime('now') "
+            "WHERE slug=?", (slug,),
+        )
+        store._conn.commit()
+    return result
+
+
+def ingest_approved(
+    store: Any, wiki_root: Path, *, limit: int = 10,
+    authorized_scopes: list[str] | None = None, dry_run: bool = False,
+    today: str | None = None, tier: str = "tier_smart", model: str | None = None,
+) -> dict:
+    """Batch-ingest up to ``limit`` approved queue rows. ``limit`` is the cost cap."""
+    rows = store._conn.execute(
+        "SELECT slug FROM wiki_queue WHERE status='approved' ORDER BY slug LIMIT ?",
+        (max(0, limit),),
+    ).fetchall()
+    results = [
+        ingest_queued(store, wiki_root, r["slug"],
+                      authorized_scopes=authorized_scopes, dry_run=dry_run,
+                      today=today, tier=tier, model=model)
+        for r in rows
+    ]
+    ok = sum(1 for r in results if r.get("status") in ("ok", "skipped"))
+    return {"processed": len(results), "ok": ok, "limit": limit,
+            "results": results}
+
+
 def ingest_source(
     store: Any,
     wiki_root: Path,
@@ -1095,6 +1211,7 @@ def ingest_source(
     source_id: str,
     source_title: str = "",
     source_text: str = "",
+    source_slug: str = "",
     url: str = "",
     target_scope: str = "public",
     target_project: str = "_global",
@@ -1136,7 +1253,8 @@ def ingest_source(
 
     # --- idempotence: skip unchanged source ---
     source_hash = _hash_text(source_text)
-    source_slug = "source-" + _slugify(source_id or source_title or "untitled")
+    source_slug = source_slug or (
+        "source-" + _slugify(source_id or source_title or "untitled"))
     src_existing = _find_page_by_slug(store, wiki_root, source_slug)
     if src_existing is not None and src_existing.source_hash == source_hash:
         return {"status": "skipped", "reason": "unchanged source_hash",

@@ -4791,6 +4791,81 @@ def wiki_scan() -> str:
     return "\n".join(lines)
 
 
+def _wiki_authorized_scopes() -> list[str]:
+    """Scopes the local operator may write/read — the union of configured
+    private scopes (this is the user's own machine and vault)."""
+    scopes: set[str] = set()
+    cfg = _cfg.get("wiki_private_scopes") or {}
+    if isinstance(cfg, dict):
+        for v in cfg.values():
+            if isinstance(v, list):
+                scopes.update(v)
+    return sorted(scopes)
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_queue_decision(slug: str, decision: str) -> str:
+    """Approve or skip a wiki ingest candidate.
+
+    ``decision`` is 'approve' or 'skip'. Approval is the gate — only approved
+    rows may be ingested live by ``wiki_ingest``. Skipped rows are excluded from
+    future ``wiki_scan`` runs until their source changes.
+    """
+    from . import wiki as _wiki
+
+    log_tool("wiki_queue_decision", decision=decision)
+    out = _wiki.queue_decision(_store, slug, decision)
+    tail = out.get("decision") or out.get("reason") or ""
+    return f"wiki_queue_decision: {out.get('status')} {slug} -> {tail}"
+
+
+@mcp.tool()
+@requires_capability("llm")
+def wiki_ingest(slug: str = "", dry_run: bool = True,
+                approve_all: bool = False, limit: int = 0) -> str:
+    """Distill approved wiki source pages into entity/concept pages via the LLM.
+
+    Automatic selection happens in ``wiki_scan``; this tool spends tokens only
+    on rows you have approved (``wiki_queue_decision``).
+
+    Args:
+        slug: Ingest one queued source page. Live writes require it be approved.
+        dry_run: When True (default), return the proposed diff and write nothing.
+        approve_all: Batch-ingest every approved row up to ``limit``.
+        limit: Batch cost cap; 0 → config ``wiki_ingest_batch_limit`` (default 10).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_ingest", dry_run=dry_run, approve_all=approve_all)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+
+    if approve_all:
+        lim = limit or int(_cfg.get("wiki_ingest_batch_limit") or 10)
+        out = _wiki.ingest_approved(_store, wiki_root, limit=lim,
+                                    authorized_scopes=authorized, dry_run=dry_run)
+        mode = "dry_run" if dry_run else "live"
+        return (f"wiki_ingest [batch {mode}]: processed={out['processed']} "
+                f"ok={out['ok']} limit={out['limit']}")
+
+    if not slug:
+        return "wiki_ingest error: provide slug=... or approve_all=True"
+
+    out = _wiki.ingest_queued(_store, wiki_root, slug,
+                              authorized_scopes=authorized, dry_run=dry_run)
+    status = out.get("status")
+    if status == "ok":
+        return (f"wiki_ingest [live]: {slug} status=ok "
+                f"written={out.get('written')} vectors={out.get('vectors')}")
+    if status == "dry_run":
+        return (f"wiki_ingest [dry_run]: {slug} "
+                f"pages={len(out.get('pages', []))} (nothing written)")
+    return f"wiki_ingest: {slug} status={status} {out.get('reason', '')}"
+
+
 def main() -> None:
     import sys
     log_banner()
