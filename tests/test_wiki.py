@@ -1239,3 +1239,85 @@ class TestMigrateProjectRoots:
         # No project_roots → repo .memory is not discovered.
         result = migrate(store, wiki_root, dry_run=True)
         assert result["would_write"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.1: wiki_ingest LLM producer
+# ---------------------------------------------------------------------------
+
+
+class TestWikiIngestProducer:
+    """embeddings.wiki_ingest distills a source into page rewrites (mock LLM)."""
+
+    def _provider(self, payload: str):
+        class FakeProvider:
+            def complete(self, *a, **kw):
+                return payload
+        return FakeProvider()
+
+    def test_parses_well_formed_json(self):
+        from skill_hub import embeddings as _emb
+
+        payload = json.dumps({
+            "source_page": {"slug": "source-x", "title": "X", "body": "raw"},
+            "page_updates": [
+                {"slug": "x", "title": "X", "type": "entity", "scope": "public",
+                 "new_body": "About [[y]].", "reason": "new", "is_new": True}
+            ],
+            "index_entries": [{"slug": "x", "title": "X", "one_line": "the x"}],
+            "assumptions": [{"claim": "c", "verify_by": "v"}],
+        })
+        with patch.object(_emb, "get_provider", return_value=self._provider(payload)):
+            out = _emb.wiki_ingest("memory", "X", "raw text")
+        assert out["source_page"]["slug"] == "source-x"
+        assert out["page_updates"][0]["slug"] == "x"
+        assert out["index_entries"][0]["one_line"] == "the x"
+        assert out["assumptions"] == [{"claim": "c", "verify_by": "v"}]
+        assert not out.get("_fallback")
+
+    def test_normalizes_missing_and_wrong_type_lists(self):
+        from skill_hub import embeddings as _emb
+
+        # source_page present (required), but list fields null / wrong type / missing.
+        payload = json.dumps({
+            "source_page": {"slug": "source-x", "title": "X", "body": "raw"},
+            "page_updates": None,
+            "index_entries": "not a list",
+        })
+        with patch.object(_emb, "get_provider", return_value=self._provider(payload)):
+            out = _emb.wiki_ingest("memory", "X", "raw")
+        assert out["page_updates"] == []
+        assert out["index_entries"] == []
+        assert out["assumptions"] == []
+
+    def test_strips_think_block(self):
+        from skill_hub import embeddings as _emb
+
+        payload = (
+            "<think>deciding</think>\n"
+            '{"source_page": {"slug": "source-x", "title": "X", "body": "b"}, '
+            '"page_updates": [], "index_entries": [], "assumptions": []}'
+        )
+        with patch.object(_emb, "get_provider", return_value=self._provider(payload)):
+            out = _emb.wiki_ingest("memory", "X", "raw")
+        assert out["source_page"]["slug"] == "source-x"
+        assert not out.get("_fallback")
+
+    def test_fallback_on_garbage(self):
+        from skill_hub import embeddings as _emb
+
+        with patch.object(_emb, "get_provider", return_value=self._provider("not json")):
+            out = _emb.wiki_ingest("memory", "X", "raw")
+        assert out["_fallback"] is True
+        assert out["source_page"] == {}
+        assert out["page_updates"] == []
+
+    def test_fallback_on_provider_exception(self):
+        from skill_hub import embeddings as _emb
+
+        class Boom:
+            def complete(self, *a, **kw):
+                raise RuntimeError("provider down")
+        with patch.object(_emb, "get_provider", return_value=Boom()):
+            out = _emb.wiki_ingest("memory", "X", "raw")
+        assert out["_fallback"] is True
