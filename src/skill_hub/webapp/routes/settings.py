@@ -102,6 +102,7 @@ _FIELD_HINTS = {
     "llm_providers": "LLM endpoints by tier (tier_cheap/mid/smart/embed). Use litellm syntax: ollama/<model>, anthropic/<model>, openai/<model>",
     "llm_default_tier": "Default LLM tier when code doesn't specify one",
     "llm_metering_enabled": "Record latency and token throughput for every local LLM call (surfaces in token_stats and the System Health dashboard)",
+    "llm_cache_extended_ttl": "Request Anthropic's ~1h prompt-cache window (vs default ~5m) for long-lived prefixes (session memory, master state). Needs a recent litellm/SDK — leave off unless confirmed supported",
     # Hook core
     "hook_enabled": "Enable/disable UserPromptSubmit hook entirely",
     "hook_timeout_seconds": "Max seconds for hook LLM classification",

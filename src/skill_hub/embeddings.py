@@ -339,6 +339,8 @@ def compact_master_state(
             temperature=0.1,
             timeout=timeout,
             cache=True,
+            cache_ttl="1h",  # master-state snapshot is a long-lived reused prefix (opt-in tier)
+            op="compact_master_state",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)

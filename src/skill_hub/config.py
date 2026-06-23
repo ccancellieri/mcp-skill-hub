@@ -146,6 +146,14 @@ _DEFAULTS = {
     # Surfaces in token_stats() and the System Health dashboard card.
     "llm_metering_enabled": True,           # master switch for per-call LLM metering
 
+    # Extended prompt-cache TTL — request Anthropic's ~1h cache window (vs the
+    # default ~5m) for long-lived reused prefixes (session memory, master state).
+    # Off by default: the extended tier needs a recent litellm/SDK; enabling it
+    # on an unsupported stack could reject the cache_control. Opt in once
+    # confirmed. Stabilizing the prefix itself (deterministic ordering of
+    # injected skills/plugins) is always on and independent of this flag.
+    "llm_cache_extended_ttl": False,
+
     # Conversation digest — periodic context compaction.
     # Deterministic-first: by default the periodic digest condenses recent messages
     # extractively (Kompress, no local LLM). The richer abstractive digest — which

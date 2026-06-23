@@ -35,6 +35,7 @@ class LLMProvider(Protocol):
         cache: bool = False,
         extra: dict[str, Any] | None = None,
         op: str = "",
+        cache_ttl: str = "",
     ) -> str:
         """Single-turn text completion. Returns generated text.
 
@@ -57,6 +58,7 @@ class LLMProvider(Protocol):
         cache: bool = False,
         extra: dict[str, Any] | None = None,
         op: str = "",
+        cache_ttl: str = "",
     ) -> str:
         """Multi-turn chat. ``messages`` is a list of ``{role, content}`` dicts
         or ``Message`` dataclasses. Returns the assistant's text. ``op`` is an
