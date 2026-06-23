@@ -586,7 +586,7 @@ _DEFAULTS = {
     "wiki_root": str(Path.home() / ".claude" / "mcp-skill-hub" / "wiki"),
     # Per-project private-scope authorization: {project: [authorized_scope, ...]}
     # e.g. {"career": ["career"], "glicemia": ["glicemia"]}
-    "wiki_private_scopes": {},
+    "wiki_private_scopes": {"glicemia": ["glicemia"], "career": ["career"]},
     # Whether to include wiki-private pages in memory-export bundles.
     "wiki_export_private": False,
 }

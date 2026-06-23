@@ -34,6 +34,7 @@ _DEFAULT_JOBS = [
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
     # Disabled by default — enable explicitly via the cron UI or config.
     ("log-digest-snapshot",     "0 6 * * *",   "log_digest_snapshot",         0),
+    ("wiki-reindex-nightly",    "0 5 * * *",   "wiki_reindex_nightly",        0),
 ]
 
 
@@ -57,10 +58,31 @@ _HUMAN_SCHEDULES: dict[str, str] = {
     "0 2 * * *":    "daily at 2:00 AM",
     "0 3 * * *":    "daily at 3:00 AM",
     "0 4 * * *":    "daily at 4:00 AM",
+    "0 5 * * *":    "daily at 5:00 AM",
     "0 6 * * *":    "daily at 6:00 AM",
     "0 0 * * 0":    "weekly on Sunday at midnight",
     "*/15 * * * *": "every 15 minutes",
 }
+
+
+def _wiki_reindex_nightly_handler() -> None:
+    """Cron handler: rebuild wiki pages/edges and re-embed into vector namespaces.
+
+    Disabled by default (enabled=0 in _DEFAULT_JOBS). Enable via the cron UI
+    once the wiki vault has content worth nightly re-indexing.
+    """
+    from .store import get_store
+    from . import wiki as _wiki
+    from . import config as _cfg
+    from pathlib import Path
+    store = get_store()
+    wiki_root = Path(_cfg.get("wiki_root") or
+                     Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    result = _wiki.reindex(store, wiki_root, dry_run=False)
+    _log.info(
+        "wiki_reindex_nightly: pages=%d edges=%d vectors=%d",
+        result["pages"], result["edges"], result["vectors"],
+    )
 
 
 def _log_digest_snapshot_handler() -> None:

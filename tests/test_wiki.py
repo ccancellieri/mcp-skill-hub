@@ -1,9 +1,10 @@
-"""Tests for LLM Wiki Wave 1 — Steps 0–3.
+"""Tests for LLM Wiki Wave 1 — Steps 0–3 and Step 8 (migration).
 
 Step 0: privacy leak fix in iter_user_memory_files
 Step 1: wiki_pages / wiki_edges DDL, vector index namespaces, promote_memory guard
 Step 2: wiki.py — parse_frontmatter, render_page, extract_edges, page_path
 Step 3: wiki.reindex, wiki.status, dim-guard, MCP tool registration
+Step 8: wiki.migrate — mechanical source-page conversion
 """
 from __future__ import annotations
 
@@ -674,4 +675,567 @@ class TestWikiConfigKeys:
     def test_wiki_private_scopes_default(self, tmp_path, monkeypatch):
         import skill_hub.config as cfg_mod
         monkeypatch.setattr(cfg_mod, "CONFIG_PATH", tmp_path / "config.json")
-        assert cfg_mod.load_config()["wiki_private_scopes"] == {}
+        scopes = cfg_mod.load_config()["wiki_private_scopes"]
+        assert "glicemia" in scopes
+        assert "career" in scopes
+
+
+# ---------------------------------------------------------------------------
+# Step 8 — wiki.migrate
+# ---------------------------------------------------------------------------
+
+def _make_auto_memory_tree(projects_root: Path) -> dict:
+    """Build a fake ~/.claude/projects/ tree with several memory files.
+
+    Returns a dict of notable paths for assertions.
+    """
+    # Project A: public files only.
+    proj_a = projects_root / "-Users-user-work-projA" / "memory"
+    proj_a.mkdir(parents=True)
+    file_a1 = proj_a / "decisions.md"
+    file_a1.write_text("# Decisions\n\nWe chose FastAPI.\n", encoding="utf-8")
+    file_a2 = proj_a / "patterns.md"
+    file_a2.write_text("# Patterns\n\nUse upsert not insert.\n", encoding="utf-8")
+
+    # Project A: private subdir.
+    priv_a = proj_a / "private"
+    priv_a.mkdir()
+    file_a_priv = priv_a / "secret.md"
+    file_a_priv.write_text("# Secret\n\nSensitive info.\n", encoding="utf-8")
+
+    # Project B: name contains "diabete" → glicemia scope override.
+    proj_b = projects_root / "-Users-user-work-diabete-app" / "memory"
+    proj_b.mkdir(parents=True)
+    file_b1 = proj_b / "health-notes.md"
+    file_b1.write_text("# Health Notes\n\nT1D readings.\n", encoding="utf-8")
+
+    # Project C: name contains "career-skill-hub-plugin" → career scope.
+    proj_c = projects_root / "-Users-user-work-career-skill-hub-plugin" / "memory"
+    proj_c.mkdir(parents=True)
+    file_c1 = proj_c / "cv-notes.md"
+    file_c1.write_text("# CV Notes\n\nPortfolio content.\n", encoding="utf-8")
+
+    # Inbox file — must be skipped.
+    file_inbox = proj_a / "inbox.md"
+    file_inbox.write_text("# Inbox\n\nUnconfirmed items.\n", encoding="utf-8")
+
+    return {
+        "proj_a_dir": proj_a,
+        "file_a1": file_a1,
+        "file_a2": file_a2,
+        "file_a_priv": file_a_priv,
+        "file_b1": file_b1,
+        "file_c1": file_c1,
+        "file_inbox": file_inbox,
+    }
+
+
+class TestMigrateDryRun:
+    """Dry-run writes nothing and returns a manifest with correct counts."""
+
+    def test_dry_run_writes_nothing(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        files = _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=True,
+                         private_scopes={"glicemia": ["glicemia"],
+                                         "career": ["career"]})
+
+        assert result["dry_run"] is True
+        assert result["would_write"] > 0
+        # Nothing must be written.
+        assert not (wiki_root / "pages").exists()
+        assert not (wiki_root / "_private").exists()
+        assert not (wiki_root / "index.md").exists()
+
+    def test_dry_run_counts_public_and_private(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=True,
+                         private_scopes={"glicemia": ["glicemia"],
+                                         "career": ["career"]})
+
+        # Public: decisions.md, patterns.md from projA (inbox skipped).
+        # Private: secret.md (private/ subdir), health-notes.md (diabete), cv-notes.md (career).
+        assert result["public"] >= 2
+        assert result["private"] >= 3
+
+
+class TestMigrateNonDryRun:
+    """Non-dry-run writes expected page files under pages/source/, project/, _private/."""
+
+    def _run_migrate(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        files = _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=False,
+                         private_scopes={"glicemia": ["glicemia"],
+                                         "career": ["career"]})
+        return result, wiki_root, files
+
+    def test_writes_source_pages(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        source_dir = wiki_root / "pages" / "source"
+        assert source_dir.exists(), "pages/source/ must exist after migrate"
+        md_files = list(source_dir.glob("*.md"))
+        assert len(md_files) >= 2, "at least 2 public source pages expected"
+
+    def test_private_file_lands_in_private_dir(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        private_root = wiki_root / "_private"
+        assert private_root.exists()
+        all_private = list(private_root.rglob("*.md"))
+        # Filter out index.md files.
+        content_pages = [p for p in all_private if p.name != "index.md"]
+        assert len(content_pages) >= 1
+
+    def test_private_subdir_goes_to_private_project(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        # secret.md is under private/ subdir of projA; must land under _private/.
+        private_root = wiki_root / "_private"
+        all_slugs = set()
+        for p in private_root.rglob("*.md"):
+            if p.name == "index.md":
+                continue
+            text = p.read_text(encoding="utf-8")
+            from skill_hub.wiki import parse_frontmatter
+            fm, _ = parse_frontmatter(text)
+            if fm.get("source_refs") and str(files["file_a_priv"]) in fm["source_refs"]:
+                assert fm.get("scope") == "private"
+                return
+        # If we reach here, secret.md was not migrated to private.
+        assert False, "secret.md should appear under _private/ with scope=private"
+
+    def test_diabete_project_routes_to_glicemia(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        from skill_hub.wiki import parse_frontmatter
+        # health-notes.md from diabete project must land in _private/glicemia/.
+        glicemia_dir = wiki_root / "_private" / "glicemia"
+        assert glicemia_dir.exists(), "_private/glicemia/ must exist"
+        found = False
+        for p in glicemia_dir.glob("*.md"):
+            if p.name == "index.md":
+                continue
+            text = p.read_text(encoding="utf-8")
+            fm, _ = parse_frontmatter(text)
+            if fm.get("source_refs") and str(files["file_b1"]) in fm["source_refs"]:
+                found = True
+                break
+        assert found, "health-notes.md must land in _private/glicemia/"
+
+    def test_career_project_routes_to_career(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        from skill_hub.wiki import parse_frontmatter
+        career_dir = wiki_root / "_private" / "career"
+        assert career_dir.exists(), "_private/career/ must exist"
+        found = False
+        for p in career_dir.glob("*.md"):
+            if p.name == "index.md":
+                continue
+            text = p.read_text(encoding="utf-8")
+            fm, _ = parse_frontmatter(text)
+            if fm.get("source_refs") and str(files["file_c1"]) in fm["source_refs"]:
+                found = True
+                break
+        assert found, "cv-notes.md must land in _private/career/"
+
+    def test_inbox_is_skipped(self, tmp_path, monkeypatch):
+        result, wiki_root, files = self._run_migrate(tmp_path, monkeypatch)
+        from skill_hub.wiki import parse_frontmatter
+        # No page should have inbox.md in source_refs.
+        for p in wiki_root.rglob("*.md"):
+            if p.name in ("index.md", "log.md"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fm, _ = parse_frontmatter(text)
+            refs = fm.get("source_refs") or []
+            assert str(files["file_inbox"]) not in refs, \
+                f"inbox.md must never appear in source_refs, found in {p}"
+
+
+class TestMigrateIdempotency:
+    """Running migrate twice produces the same files; second run skips all."""
+
+    def test_second_run_skips_all(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result1 = migrate(store, wiki_root, dry_run=False,
+                          private_scopes={"glicemia": ["glicemia"],
+                                          "career": ["career"]})
+        result2 = migrate(store, wiki_root, dry_run=False,
+                          private_scopes={"glicemia": ["glicemia"],
+                                          "career": ["career"]})
+
+        assert result1["written"] > 0
+        assert result2["written"] == 0
+        assert result2["skipped"] == result1["written"]
+
+    def test_second_run_same_files(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]})
+        files_after_first = set(p.name for p in wiki_root.rglob("*.md"))
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]})
+        files_after_second = set(p.name for p in wiki_root.rglob("*.md"))
+
+        # Same set of files (log.md may grow, index may be rewritten — but
+        # no new content pages should appear).
+        assert files_after_first == files_after_second
+
+
+class TestMigrateSlugCollisions:
+    """Slug collisions across two projects produce project-suffixed slugs."""
+
+    def test_collision_produces_unique_slugs(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate, parse_frontmatter
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        # Two projects each with a "notes.md" — will collide on slug "notes".
+        for proj in ("projX", "projY"):
+            d = projects_root / f"-{proj}" / "memory"
+            d.mkdir(parents=True)
+            (d / "notes.md").write_text(f"# Notes from {proj}\n", encoding="utf-8")
+
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=False,
+                         private_scopes={})
+
+        # Both pages must exist; slugs must be distinct.
+        source_dir = wiki_root / "pages" / "source"
+        slugs = set()
+        for p in source_dir.glob("*.md"):
+            text = p.read_text(encoding="utf-8")
+            fm, _ = parse_frontmatter(text)
+            slugs.add(fm.get("slug") or p.stem)
+        assert len(slugs) == 2, f"expected 2 unique slugs for 2 notes.md files, got {slugs}"
+
+    def test_collision_manifest_records_collisions(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        for proj in ("projX", "projY"):
+            d = projects_root / f"-{proj}" / "memory"
+            d.mkdir(parents=True)
+            (d / "notes.md").write_text(f"Notes from {proj}\n", encoding="utf-8")
+
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=True, private_scopes={})
+        assert len(result["collisions"]) >= 1
+
+
+class TestMigratePublicIndex:
+    """Public index.md contains public slugs and no private slug/title."""
+
+    def test_public_index_contains_public_slugs(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]})
+
+        index_path = wiki_root / "index.md"
+        assert index_path.exists(), "index.md must be written"
+        index_text = index_path.read_text(encoding="utf-8")
+
+        # Must contain at least one public slug.
+        assert "decisions" in index_text or "patterns" in index_text
+
+    def test_public_index_excludes_private_content(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate, parse_frontmatter
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]})
+
+        index_text = (wiki_root / "index.md").read_text(encoding="utf-8")
+
+        # Collect all private page slugs and titles.
+        private_slugs: set[str] = set()
+        private_titles: set[str] = set()
+        for p in (wiki_root / "_private").rglob("*.md"):
+            if p.name == "index.md":
+                continue
+            try:
+                fm, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+                if fm.get("slug"):
+                    private_slugs.add(fm["slug"])
+                if fm.get("title"):
+                    private_titles.add(fm["title"])
+            except Exception:
+                pass
+
+        for slug in private_slugs:
+            assert slug not in index_text, \
+                f"private slug {slug!r} must not appear in public index.md"
+
+
+class TestMigrateLogMd:
+    """log.md gets one ## [...] migrate | ... line per run."""
+
+    def test_log_md_appended(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]},
+                today="2026-06-23")
+
+        log_path = wiki_root / "log.md"
+        assert log_path.exists()
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "## [2026-06-23] migrate |" in log_text
+
+    def test_log_md_one_line_per_run(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]},
+                today="2026-06-23")
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]},
+                today="2026-06-23")
+
+        log_text = (wiki_root / "log.md").read_text(encoding="utf-8")
+        log_lines = [l for l in log_text.splitlines() if l.startswith("## [")]
+        assert len(log_lines) == 2, \
+            f"expected 2 log entries after 2 runs, got {len(log_lines)}"
+
+
+class TestMigrateReindexStatus:
+    """After non-dry migrate + reindex, status reports drift == 0."""
+
+    def _stub_embed(self, store):
+        """Patch store.upsert_vector to avoid needing a real embedding backend."""
+        def fake_upsert(namespace, doc_id, text, metadata=None, **kw):
+            vec = json.dumps([0.1] * 10)
+            store._conn.execute(
+                """
+                INSERT INTO vectors (namespace, doc_id, model, vector, norm,
+                                     level, source, project)
+                VALUES (?, ?, 'stub', ?, 0.1, 'L3', 'wiki', NULL)
+                ON CONFLICT(namespace, doc_id) DO UPDATE SET
+                    vector=excluded.vector, indexed_at=datetime('now')
+                """,
+                (namespace, doc_id, vec),
+            )
+            store._conn.commit()
+        store.upsert_vector = fake_upsert
+
+    def test_reindex_after_migrate_drift_zero(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate, reindex, status
+        from skill_hub.store import SkillStore
+
+        projects_root = tmp_path / "projects"
+        _make_auto_memory_tree(projects_root)
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", projects_root)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        migrate(store, wiki_root, dry_run=False,
+                private_scopes={"glicemia": ["glicemia"], "career": ["career"]})
+
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        st = status(store, wiki_root)
+        assert st["drift"] == 0, \
+            f"drift must be 0 after migrate + reindex, got {st}"
+
+
+class TestMigrateCronAndTool:
+    """wiki-reindex-nightly is seeded disabled; wiki_migrate in TIER_REGISTRY."""
+
+    def test_wiki_migrate_in_tier_registry(self):
+        from skill_hub.capabilities import TIER_REGISTRY
+        assert "wiki_migrate" in TIER_REGISTRY
+        assert TIER_REGISTRY["wiki_migrate"] == "none"
+
+    def test_wiki_migrate_toolspec_hard_db(self):
+        from skill_hub.capabilities import TOOLS, BACKEND_DB
+        spec = next((s for s in TOOLS if s.name == "wiki_migrate"), None)
+        assert spec is not None
+        assert BACKEND_DB in spec.hard
+
+    def test_wiki_reindex_nightly_in_default_jobs(self):
+        from skill_hub.cron import _DEFAULT_JOBS
+        names = [job[0] for job in _DEFAULT_JOBS]
+        assert "wiki-reindex-nightly" in names
+
+    def test_wiki_reindex_nightly_disabled_by_default(self):
+        from skill_hub.cron import _DEFAULT_JOBS
+        for name, schedule, command, enabled in _DEFAULT_JOBS:
+            if name == "wiki-reindex-nightly":
+                assert enabled == 0, "wiki-reindex-nightly must be seeded disabled"
+                assert schedule == "0 5 * * *"
+                assert command == "wiki_reindex_nightly"
+                return
+        assert False, "wiki-reindex-nightly not found in _DEFAULT_JOBS"
+
+
+class TestMigrateProjectRoots:
+    """project_roots covers literal <repo>/.memory/ trees (distinct from auto-memory)."""
+
+    def test_project_memory_files_migrated(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        # Empty auto-memory tree so only project_roots contributes.
+        empty_auto = tmp_path / "projects"
+        empty_auto.mkdir()
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", empty_auto)
+
+        # A repo root with a literal .memory/ tree (public + private subdir).
+        repo = tmp_path / "geoid"
+        mem = repo / ".memory"
+        mem.mkdir(parents=True)
+        (mem / "decisions.md").write_text("# Decisions\n\nUse codegraph.\n",
+                                          encoding="utf-8")
+        priv = mem / "private"
+        priv.mkdir()
+        (priv / "sovereign.md").write_text("# Sovereign\n\nSensitive.\n",
+                                           encoding="utf-8")
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        result = migrate(store, wiki_root, dry_run=False,
+                         project_roots=[repo])
+
+        # Public .memory file → pages/source/; private/ subdir → _private/geoid/.
+        assert (wiki_root / "pages" / "source" / "decisions.md").exists()
+        assert (wiki_root / "_private" / "geoid" / "sovereign.md").exists()
+        assert result["public"] == 1
+        assert result["private"] == 1
+
+    def test_no_project_roots_skips_repo_memory(self, tmp_path, monkeypatch):
+        import skill_hub.memory_index as mi
+        from skill_hub.wiki import migrate
+        from skill_hub.store import SkillStore
+
+        empty_auto = tmp_path / "projects"
+        empty_auto.mkdir()
+        monkeypatch.setattr(mi, "_USER_MEMORY_ROOT", empty_auto)
+
+        repo = tmp_path / "geoid"
+        mem = repo / ".memory"
+        mem.mkdir(parents=True)
+        (mem / "decisions.md").write_text("# Decisions\n\nx\n", encoding="utf-8")
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        store = SkillStore(db_path=tmp_path / "db.db")
+
+        # No project_roots → repo .memory is not discovered.
+        result = migrate(store, wiki_root, dry_run=True)
+        assert result["would_write"] == 0

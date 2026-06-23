@@ -374,6 +374,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB, BACKEND_EMBED)),
     ToolSpec("wiki_status", "Wiki health: page counts, edges, orphans, drift",
              hard=()),
+    ToolSpec("wiki_migrate", "Migrate auto-memory files to wiki source pages (dry_run=True default)",
+             hard=(BACKEND_DB,)),
 )
 
 

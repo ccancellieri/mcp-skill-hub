@@ -14,10 +14,14 @@ NB: vault.py is the credential vault (keyring/age). This module is the wiki.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -568,3 +572,611 @@ def _split_page_sections(page: WikiPage) -> list[tuple[str, str]]:
                 sections.append((f"{anchor}-{i}", chunk))
 
     return sections if sections else [("", body)]
+
+
+# ---------------------------------------------------------------------------
+# Migration — mechanical one-file→one-source-page conversion
+# ---------------------------------------------------------------------------
+
+# Source-directory-name fragments that map to a private scope.
+# Keys are substrings matched against the encoded project dir name (case-insensitive).
+_PRIVATE_DIR_KEYWORDS: dict[str, str] = {
+    "diabete": "glicemia",
+    "glicemia": "glicemia",
+}
+
+# Filenames to skip unconditionally during migration.
+_SKIP_FILENAMES: frozenset[str] = frozenset({"inbox.md"})
+
+
+def _stable_page_id(source_path: Path) -> str:
+    """Return a stable, sortable page id derived deterministically from the source path.
+
+    Using the absolute path ensures the same file always gets the same id across
+    re-runs (idempotency).  The format is ``src-<hex12>`` so it sorts stably and
+    is clearly machine-generated.
+    """
+    digest = hashlib.sha1(str(source_path).encode()).hexdigest()
+    return f"src-{digest[:16]}"
+
+
+def _slugify(text: str) -> str:
+    """Convert arbitrary text to a URL-safe kebab slug."""
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-") or "page"
+
+
+def _extract_h1_title(text: str) -> str | None:
+    """Return the first # heading from markdown text, or None."""
+    for line in text.splitlines():
+        m = re.match(r"^#\s+(.+)", line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _humanize(stem: str) -> str:
+    """Turn a filename stem like ``karpathy-coding-guidelines`` into a title."""
+    return stem.replace("-", " ").replace("_", " ").title()
+
+
+def _file_iso_date(path: Path) -> str:
+    """Return the file's mtime as an ISO date string."""
+    try:
+        mtime = path.stat().st_mtime
+        import datetime
+        return datetime.date.fromtimestamp(mtime).isoformat()
+    except OSError:
+        return date.today().isoformat()
+
+
+def _resolve_scope_and_project(
+    source_path: Path,
+    mem_dir: Path,
+    project_label: str,
+    private_scopes: dict[str, list[str]],
+) -> tuple[str, str]:
+    """Return (scope, project_name) for a source file.
+
+    Private conditions (in priority order):
+    1. File is under a ``private/`` subdirectory within mem_dir.
+    2. The project_label (encoded dir name) contains a private-dir keyword
+       (e.g. ``diabete`` → scope ``glicemia``).
+    3. A key from ``private_scopes`` appears as a substring of project_label
+       (handles encoded paths like ``-Users-user-work-career-skill-hub-plugin``
+       matching the key ``career``).
+
+    Returns:
+        scope: "private" or "public"
+        project_name: the scope name (from keyword map or matched key)
+    """
+    label_lower = project_label.lower()
+
+    def _match_scope() -> str | None:
+        """Return matched scope name, or None for public."""
+        # Keyword override (e.g. diabete → glicemia).
+        for keyword, scope_name in _PRIVATE_DIR_KEYWORDS.items():
+            if keyword in label_lower:
+                return scope_name
+        # Explicit private_scopes: key is a substring of the encoded dir name.
+        for proj_key in private_scopes:
+            if proj_key.lower() in label_lower:
+                return proj_key
+        return None
+
+    # Check if path is inside a private/ subdir of mem_dir.
+    try:
+        rel = source_path.relative_to(mem_dir)
+    except ValueError:
+        rel = source_path
+    if any(part == "private" for part in rel.parts):
+        scope_name = _match_scope() or project_label
+        return "private", scope_name
+
+    # Check project-level private override (no private/ subdir needed).
+    scope_name = _match_scope()
+    if scope_name is not None:
+        return "private", scope_name
+
+    return "public", project_label
+
+
+def _atomic_write_page(path: Path, content: str) -> None:
+    """Write content to path atomically via a temp file + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (OSError, AttributeError):
+                pass
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _collect_existing_source_refs(wiki_root: Path) -> dict[str, Path]:
+    """Scan existing wiki pages and return {source_ref: page_path}.
+
+    Used by migrate() to skip files already converted.
+    """
+    result: dict[str, Path] = {}
+    for md_path in wiki_root.rglob("*.md"):
+        if not md_path.is_file():
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = parse_frontmatter(text)
+        for ref in (fm.get("source_refs") or []):
+            result.setdefault(str(ref), md_path)
+    return result
+
+
+def _unique_slug(
+    base_slug: str,
+    project: str,
+    used: set[str],
+) -> str:
+    """Return a slug that is not in ``used``.
+
+    Collision resolution order:
+    1. base_slug (no suffix)
+    2. base_slug-<project>
+    3. base_slug-<project>-1, -2, ... (numeric suffix)
+    """
+    if base_slug not in used:
+        return base_slug
+    candidate = f"{base_slug}-{_slugify(project)}"
+    if candidate not in used:
+        return candidate
+    i = 1
+    while True:
+        candidate = f"{base_slug}-{_slugify(project)}-{i}"
+        if candidate not in used:
+            return candidate
+        i += 1
+
+
+def migrate(
+    store: Any,
+    wiki_root: Path,
+    *,
+    dry_run: bool = True,
+    sources: list[Path] | None = None,
+    private_scopes: dict[str, list[str]] | None = None,
+    project_roots: list[Path] | None = None,
+    today: str | None = None,
+) -> dict:
+    """Mechanical migration: one source file → one ``source`` wiki page.
+
+    Discovery:
+    - Public auto-memory files via ``iter_user_memory_files()`` (already
+      excludes ``private/`` subdirs).
+    - Private files: files under any ``private/`` subdir in both the
+      auto-memory tree and per-project ``.memory/`` trees.
+    - Per-project ``.memory/*.md`` files via ``_project_to_memory_dir``.
+    - One ``project/<project>.md`` index page per project that has source pages.
+
+    Idempotent — keyed on ``source_refs``.  A source file already present in any
+    page's ``source_refs`` frontmatter is skipped.
+
+    Slug collisions: suffixed ``<slug>-<project>`` then ``<slug>-<project>-N``.
+
+    Args:
+        store: SkillStore instance (not used for writing; reserved for future
+               source-ref scanning from the DB).
+        wiki_root: root directory of the wiki vault.
+        dry_run: When True, scan and report without writing anything.
+        sources: Optional explicit list of source paths (overrides discovery).
+        private_scopes: Mapping of project label → list of scope names.
+            Defaults to the ``wiki_private_scopes`` config value.
+        project_roots: Optional list of repo roots whose literal ``<root>/.memory/``
+            trees should also be migrated (decisions.md, patterns.md, etc.).
+            These are distinct from the encoded auto-memory tree. None = skip.
+        today: ISO date for log.md / index timestamps.  Defaults to today.
+
+    Returns:
+        dry_run=True:  manifest dict with counts (writes nothing).
+        dry_run=False: result dict with written counts.
+    """
+    from .memory_index import iter_user_memory_files, _USER_MEMORY_ROOT
+    from .master_state import _strip_frontmatter
+
+    wiki_root = Path(wiki_root)
+    _today = today or date.today().isoformat()
+
+    if private_scopes is None:
+        try:
+            from . import config as _cfg
+            private_scopes = dict(_cfg.get("wiki_private_scopes") or {})
+        except Exception:
+            private_scopes = {}
+
+    # Collect already-converted source_refs from existing wiki pages.
+    existing_refs = _collect_existing_source_refs(wiki_root)
+
+    # ---- Discovery --------------------------------------------------------
+
+    # Each entry: (source_path, mem_dir, project_label)
+    candidate_triples: list[tuple[Path, Path, str]] = []
+
+    if sources is not None:
+        # Explicit override — caller supplies paths; use wiki_root as mem_dir placeholder.
+        for p in sources:
+            candidate_triples.append((p, wiki_root, p.parent.name))
+    else:
+        auto_memory_root = _USER_MEMORY_ROOT  # ~/.claude/projects/
+
+        # --- Public pass: iter_user_memory_files gives non-private files ---
+        public_files = iter_user_memory_files()
+        for f in public_files:
+            # Derive project_label from the encoded dir two levels up:
+            # f = ~/.claude/projects/<enc>/memory/foo.md  → enc = project_label
+            try:
+                mem_dir = f.parents[0]  # .../memory/
+                enc_dir = f.parents[1]  # .../projects/<enc>/
+                project_label = enc_dir.name
+            except IndexError:
+                mem_dir = f.parent
+                project_label = "unknown"
+            candidate_triples.append((f, mem_dir, project_label))
+
+        # --- Private pass: files under private/ subdirs in auto-memory tree ---
+        if auto_memory_root.exists():
+            for project_dir in auto_memory_root.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                mem_dir = project_dir / "memory"
+                if not mem_dir.is_dir():
+                    continue
+                private_dir = mem_dir / "private"
+                if not private_dir.is_dir():
+                    continue
+                for f in private_dir.rglob("*.md"):
+                    if f.is_file():
+                        candidate_triples.append((f, mem_dir, project_dir.name))
+
+        # --- Per-project .memory/ trees (public + private) ---
+        # Scan each project's auto-memory dir; also look for .memory/ dirs
+        # attached to known project roots by trying _project_to_memory_dir on
+        # the most common work roots.
+        # We cover this by also reading all *.md files in each project's
+        # auto-memory dir that iter_user_memory_files may have missed
+        # (e.g. MEMORY.md at root, or files in non-private subdirs).
+        seen_paths: set[Path] = {t[0] for t in candidate_triples}
+
+        if auto_memory_root.exists():
+            for project_dir in auto_memory_root.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                mem_dir = project_dir / "memory"
+                if not mem_dir.is_dir():
+                    continue
+                for f in mem_dir.rglob("*.md"):
+                    if not f.is_file():
+                        continue
+                    if f in seen_paths:
+                        continue
+                    seen_paths.add(f)
+                    candidate_triples.append((f, mem_dir, project_dir.name))
+
+        # --- Literal per-repo .memory/ trees (decisions.md, patterns.md) ---
+        # Distinct from the encoded auto-memory tree above. project_label is the
+        # repo dir name so scope resolution (private/ subdirs, keyword/key match)
+        # works the same way.
+        for root in (project_roots or []):
+            mem_dir = Path(root) / ".memory"
+            if not mem_dir.is_dir():
+                continue
+            for f in mem_dir.rglob("*.md"):
+                if not f.is_file():
+                    continue
+                if f in seen_paths:
+                    continue
+                seen_paths.add(f)
+                candidate_triples.append((f, mem_dir, Path(root).name))
+
+    # ---- Build source list ------------------------------------------------
+
+    # Structure: list of dicts with all info needed to create a page.
+    # Deferred until after idempotency check.
+
+    # Track slugs used in THIS run (starts with slugs from existing pages).
+    used_slugs: set[str] = set()
+    for md_path in wiki_root.rglob("*.md"):
+        if not md_path.is_file():
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = parse_frontmatter(text)
+        if fm.get("slug"):
+            used_slugs.add(fm["slug"])
+
+    # Per-project source page list (for building project index pages).
+    # Keyed by human project name → list of (slug, title).
+    project_source_pages: dict[str, list[tuple[str, str]]] = {}
+
+    pages_to_write: list[WikiPage] = []
+    skipped_already_converted = 0
+    collisions: list[str] = []
+    by_project: dict[str, int] = {}
+    by_scope: dict[str, int] = {}
+    public_count = 0
+    private_count = 0
+
+    for source_path, mem_dir, project_label in candidate_triples:
+        # Skip non-markdown or excluded filenames.
+        if source_path.suffix.lower() != ".md":
+            continue
+        if source_path.name in _SKIP_FILENAMES:
+            continue
+
+        # Idempotency check.
+        if str(source_path) in existing_refs:
+            skipped_already_converted += 1
+            continue
+
+        # Determine scope and project.
+        scope, project_name = _resolve_scope_and_project(
+            source_path, mem_dir, project_label, private_scopes
+        )
+
+        # Determine if this is genuinely cross-cutting (auto-memory files that
+        # appear under a directory NOT matching any specific project).
+        # Convention: treat files whose project_label doesn't look like a
+        # specific project path as [_global].  For now, the encoded dir name
+        # IS the project, so we always set it.
+        projects_list = [project_name]
+
+        # Read the source file.
+        try:
+            raw_text = source_path.read_text(encoding="utf-8")
+        except OSError:
+            _log.warning("migrate: cannot read %s", source_path)
+            continue
+
+        body_text = _strip_frontmatter(raw_text)
+
+        # Extract dates from existing frontmatter if present.
+        existing_fm, _ = parse_frontmatter(raw_text)
+        created_date = (
+            str(existing_fm.get("created") or "")
+            or _file_iso_date(source_path)
+        )
+        updated_date = (
+            str(existing_fm.get("updated") or "")
+            or _file_iso_date(source_path)
+        )
+
+        # Derive title: first H1 if present, else humanize stem.
+        title = _extract_h1_title(body_text) or _humanize(source_path.stem)
+
+        # Build slug and resolve collisions.
+        base_slug = _slugify(source_path.stem)
+        slug = _unique_slug(base_slug, project_name, used_slugs)
+        if slug != base_slug:
+            collisions.append(f"{base_slug} → {slug} (project={project_name})")
+        used_slugs.add(slug)
+
+        # Stable id derived from source path.
+        page_id = _stable_page_id(source_path)
+
+        page = WikiPage(
+            id=page_id,
+            slug=slug,
+            title=title,
+            type="source",
+            projects=projects_list,
+            scope=scope,
+            body=body_text,
+            source_refs=[str(source_path)],
+            created=created_date,
+            updated=updated_date,
+        )
+
+        pages_to_write.append(page)
+
+        # Accumulate stats.
+        proj_key = project_name
+        by_project[proj_key] = by_project.get(proj_key, 0) + 1
+        scope_key = scope if scope == "public" else project_name
+        by_scope[scope_key] = by_scope.get(scope_key, 0) + 1
+        if scope == "public":
+            public_count += 1
+            project_source_pages.setdefault(project_name, []).append((slug, title))
+        else:
+            private_count += 1
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_write": len(pages_to_write),
+            "public": public_count,
+            "private": private_count,
+            "by_project": by_project,
+            "by_scope": by_scope,
+            "collisions": collisions,
+            "skipped_already_converted": skipped_already_converted,
+        }
+
+    # ---- Non-dry-run: write pages -----------------------------------------
+
+    written = 0
+    index_pages_written = 0
+
+    for page in pages_to_write:
+        dest = page_path(wiki_root, page)
+        try:
+            _atomic_write_page(dest, render_page(page))
+            written += 1
+            _log.debug("migrate: wrote %s", dest)
+        except Exception as exc:
+            _log.warning("migrate: failed to write %s: %s", dest, exc)
+
+    # --- Project index pages (one per project with public source pages) ---
+    for proj_name, source_entries in project_source_pages.items():
+        links = "\n".join(f"- [[{s}]] — {t}" for s, t in source_entries)
+        body = f"# {proj_name}\n\nSource pages migrated from auto-memory.\n\n{links}\n"
+        proj_slug = _slugify(proj_name)
+        proj_slug = _unique_slug(proj_slug, proj_name, used_slugs)
+        used_slugs.add(proj_slug)
+        proj_page = WikiPage(
+            id=_stable_page_id(wiki_root / "project" / f"{proj_slug}.md"),
+            slug=proj_slug,
+            title=proj_name,
+            type="project",
+            projects=[proj_name],
+            scope="public",
+            body=body,
+            created=_today,
+            updated=_today,
+        )
+        dest = wiki_root / "pages" / "project" / f"{proj_slug}.md"
+        try:
+            _atomic_write_page(dest, render_page(proj_page))
+            index_pages_written += 1
+        except Exception as exc:
+            _log.warning("migrate: failed to write project page %s: %s", dest, exc)
+
+    # --- Public index.md ---
+    _write_public_index(wiki_root)
+
+    # --- Private per-scope index files ---
+    _write_private_indexes(wiki_root)
+
+    # --- log.md append ---
+    summary = f"{written} source pages + {index_pages_written} project pages"
+    _append_log(wiki_root, _today, "migrate", summary, written + index_pages_written)
+
+    return {
+        "dry_run": False,
+        "written": written,
+        "public": public_count,
+        "private": private_count,
+        "skipped": skipped_already_converted,
+        "index_pages": index_pages_written,
+    }
+
+
+def _write_public_index(wiki_root: Path) -> None:
+    """(Re)generate <wiki_root>/index.md from public pages only.
+
+    Grouped by type, alphabetized within group.  Private pages are never
+    included.  Per-scope private indexes are written separately.
+    """
+    pages_root = wiki_root / "pages"
+    if not pages_root.exists():
+        return
+
+    by_type: dict[str, list[tuple[str, str]]] = {}
+    for md_path in pages_root.rglob("*.md"):
+        if not md_path.is_file():
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = parse_frontmatter(text)
+        slug = fm.get("slug") or md_path.stem
+        title = fm.get("title") or slug
+        page_type = fm.get("type") or "entity"
+        # Only public pages go in the shared index.
+        if (fm.get("scope") or "public") == "private":
+            continue
+        by_type.setdefault(page_type, []).append((slug, title))
+
+    lines = ["# Wiki Index\n"]
+    for ptype in sorted(by_type):
+        lines.append(f"\n## {ptype}\n")
+        for slug, title in sorted(by_type[ptype], key=lambda x: x[0]):
+            lines.append(f"- [[{slug}]] — {title}")
+    lines.append("")
+
+    index_path = wiki_root / "index.md"
+    try:
+        _atomic_write_page(index_path, "\n".join(lines))
+    except Exception as exc:
+        _log.warning("migrate: failed to write index.md: %s", exc)
+
+
+def _write_private_indexes(wiki_root: Path) -> None:
+    """Write per-scope index files under _private/<scope>/index.md.
+
+    These are separate from the public index.md and never leak private titles
+    into the public catalog.  Each index file carries proper wiki frontmatter
+    so ``reindex`` treats it as a valid page with a unique slug.
+    """
+    private_root = wiki_root / "_private"
+    if not private_root.exists():
+        return
+
+    for scope_dir in private_root.iterdir():
+        if not scope_dir.is_dir():
+            continue
+        scope_name = scope_dir.name
+        entries: list[tuple[str, str]] = []
+        for md_path in scope_dir.glob("*.md"):
+            if md_path.name == "index.md":
+                continue
+            if not md_path.is_file():
+                continue
+            try:
+                text = md_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fm, _ = parse_frontmatter(text)
+            slug = fm.get("slug") or md_path.stem
+            title = fm.get("title") or slug
+            entries.append((slug, title))
+
+        if not entries:
+            continue
+
+        links_body = "\n".join(f"- [[{s}]] — {t}" for s, t in sorted(entries, key=lambda x: x[0]))
+        index_slug = f"private-index-{_slugify(scope_name)}"
+        index_page = WikiPage(
+            id=_stable_page_id(wiki_root / "_private" / scope_name / "index.md"),
+            slug=index_slug,
+            title=f"Private Index — {scope_name}",
+            type="project",
+            projects=[scope_name],
+            scope="private",
+            body=f"# Private Index — {scope_name}\n\n{links_body}\n",
+            created=date.today().isoformat(),
+            updated=date.today().isoformat(),
+        )
+        index_path = scope_dir / "index.md"
+        try:
+            _atomic_write_page(index_path, render_page(index_page))
+        except Exception as exc:
+            _log.warning("migrate: failed to write private index %s: %s", index_path, exc)
+
+
+def _append_log(wiki_root: Path, today: str, operation: str,
+                summary: str, count: int) -> None:
+    """Append a line to <wiki_root>/log.md.
+
+    Format: ``## [YYYY-MM-DD] <operation> | <summary> (<count> pages)``
+    Append-only; the ``## [`` prefix is the parse contract used by wiki.status.
+    """
+    log_path = wiki_root / "log.md"
+    line = f"## [{today}] {operation} | {summary} ({count} pages)\n"
+    try:
+        existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        _atomic_write_page(log_path, existing + line)
+    except Exception as exc:
+        _log.warning("migrate: failed to append to log.md: %s", exc)

@@ -4709,6 +4709,53 @@ def wiki_status() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("none")
+def wiki_migrate(dry_run: bool = True) -> str:
+    """Migrate auto-memory markdown files to wiki source pages (mechanical, no LLM).
+
+    Discovers public auto-memory files via iter_user_memory_files() and private
+    files under private/ subdirs, then writes one ``source`` page per file under
+    ``<wiki_root>/pages/source/`` (public) or ``<wiki_root>/_private/<scope>/``
+    (private).  One ``project/<project>.md`` index page is written per project.
+
+    Idempotent — files already present in any page's ``source_refs`` are skipped.
+    After a non-dry-run, call wiki_reindex to rebuild the vector index.
+
+    Args:
+        dry_run: When True (default), scan and report counts without writing.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_migrate", dry_run=dry_run)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    try:
+        result = _wiki.migrate(_store, wiki_root, dry_run=dry_run)
+    except Exception as exc:
+        return f"wiki_migrate error: {exc}"
+
+    if dry_run:
+        lines = [
+            f"wiki_migrate [dry_run]: would_write={result['would_write']}",
+            f"  public={result['public']} private={result['private']}",
+            f"  skipped_already_converted={result['skipped_already_converted']}",
+        ]
+        if result["collisions"]:
+            lines.append(f"  collisions: {', '.join(result['collisions'][:5])}")
+        lines.append("  (dry_run: no files written)")
+        return "\n".join(lines)
+
+    lines = [
+        f"wiki_migrate [live]: written={result['written']}",
+        f"  public={result['public']} private={result['private']}",
+        f"  skipped={result['skipped']} index_pages={result['index_pages']}",
+        "  Run wiki_reindex to rebuild the vector index.",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()
