@@ -150,20 +150,18 @@ class Verdict:
 _TIER_LABELS = {1: "heuristic", 2: "Ollama", 3: "Haiku"}
 
 
-def format_system_message(v: Verdict) -> str:
-    """Return the text injected as systemMessage into Claude's context."""
+def format_stable_block(v: Verdict) -> str:
+    """Return the cache-stable portion of the systemMessage.
+
+    Contains only the preloaded skills and suggested plugins lines — content
+    that depends solely on the domain classification and is expected to remain
+    byte-identical across multiple turns of the same session.  Emitted in
+    canonical (sorted) order so the same set always produces identical text.
+
+    This is the block that ``verdict_cache`` stores and replays.
+    """
     lines: list[str] = []
 
-    # ── Header ─────────────────────────────────────────────────────────────
-    mode_tag = "+plan" if v.plan_mode else ""
-    enforcement_tag = " [applied]" if v.enforcement == "hard_switch" else " [suggested]"
-    tier_label = _TIER_LABELS.get(v.tier_used, str(v.tier_used))
-    lines.append(
-        f"[Router] {v.model}{mode_tag}{enforcement_tag} "
-        f"(confidence={v.confidence:.0%}, tier={tier_label}) — {v.reasoning}"
-    )
-
-    # ── Preloaded skills ────────────────────────────────────────────────────
     # Emit names in a canonical (sorted) order so identical skill/plugin sets
     # produce byte-identical injected text regardless of the relevance-ranked
     # order they were selected in — keeps the injected prefix cache-stable.
@@ -174,6 +172,28 @@ def format_system_message(v: Verdict) -> str:
         lines.append(
             f"[Router] Suggested plugins to enable: {', '.join(sorted(v.preload_plugins))}"
         )
+
+    return "\n".join(lines)
+
+
+def format_volatile(v: Verdict) -> str:
+    """Return the per-turn volatile portion of the systemMessage.
+
+    Contains everything that changes on every prompt: the header line (model,
+    confidence, tier, reasoning), compact advisory, subtask decomposition, and
+    settings hint.  This is placed AFTER the stable block so it does not break
+    the provider prompt-cache prefix.
+    """
+    lines: list[str] = []
+
+    # ── Header ─────────────────────────────────────────────────────────────
+    mode_tag = "+plan" if v.plan_mode else ""
+    enforcement_tag = " [applied]" if v.enforcement == "hard_switch" else " [suggested]"
+    tier_label = _TIER_LABELS.get(v.tier_used, str(v.tier_used))
+    lines.append(
+        f"[Router] {v.model}{mode_tag}{enforcement_tag} "
+        f"(confidence={v.confidence:.0%}, tier={tier_label}) — {v.reasoning}"
+    )
 
     # ── Compact hint ────────────────────────────────────────────────────────
     ch = v.compact_hint
@@ -202,6 +222,21 @@ def format_system_message(v: Verdict) -> str:
         )
 
     return "\n".join(lines)
+
+
+def format_system_message(v: Verdict) -> str:
+    """Return the full systemMessage text injected into Claude's context.
+
+    Backward-compatible: assembles stable_block + volatile with the stable
+    block placed FIRST so it forms a cacheable prefix for the provider's
+    prompt cache.  (Prior to issue #88 the header was first; the reorder is
+    intentional — a stable prefix enables cache reuse across turns.)
+    """
+    stable = format_stable_block(v)
+    volatile = format_volatile(v)
+    if stable and volatile:
+        return stable + "\n" + volatile
+    return stable or volatile
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,8 @@ from typing import Any
 
 from .. import config as _cfg
 from . import heuristics, ollama_client, haiku_client, enforcement, preloader
-from .verdict import Verdict, format_system_message, append_audit_log
+from .verdict import Verdict, format_system_message, format_stable_block, format_volatile, append_audit_log
+from . import verdict_cache
 
 
 def _project_override(cfg_from_file: dict[str, Any], cwd: str) -> dict[str, Any]:
@@ -246,7 +247,33 @@ def route(
     output: dict[str, Any] = {"decision": "allow"}
 
     parts: list[str] = []
-    system_msg = format_system_message(v)
+    # ── Assemble systemMessage ───────────────────────────────────────────────
+    # When the verdict cache is enabled the stable skills/plugins block is
+    # emitted byte-identical every turn (placed FIRST to form a cacheable
+    # prefix), and only the volatile header/advisory/subtasks follow it.
+    # When the flag is off this path is byte-identical to the previous behaviour
+    # because format_system_message() = stable + volatile in the same order.
+    try:
+        if cfg.get("router_verdict_cache_enabled", False):
+            stable = verdict_cache.get_or_build_stable_block(
+                session_id,
+                current_domain_hints=domain_hints,
+                current_plan_mode=plan_mode,
+                current_msg_count=msg_count,
+                hard_switch=(action == "hard_switch"),
+                build_fn=lambda: format_stable_block(v),
+                cfg=cfg,
+            )
+            volatile = format_volatile(v)
+            if stable and volatile:
+                system_msg = stable + "\n" + volatile
+            else:
+                system_msg = stable or volatile
+        else:
+            system_msg = format_system_message(v)
+    except Exception:
+        system_msg = format_system_message(v)
+
     if system_msg:
         parts.append(system_msg)
     if enforce_msg:
