@@ -2755,12 +2755,17 @@ def configure(key: str = "", value: str = "") -> str:
 
 @mcp.tool()
 @requires_capability("llm")
-def optimize_memory(dry_run: bool = True) -> str:
+def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
     """Analyze memory files with tier-smart LLM routing. Recommends KEEP/PRUNE/COMPACT/MERGE. dry_run=True for report only.
+
+    ``bypass_gate=True`` skips the internal IDLE-only pressure check. It is
+    intended ONLY for callers that have already cleared their own (more
+    permissive) gate — e.g. the postcompact path, which runs up to LOW
+    pressure. Do not set it for background/nightly callers.
     """
     log_tool("optimize_memory", dry_run=dry_run)
 
-    if not should_run_llm("optimize_memory"):
+    if not bypass_gate and not should_run_llm("optimize_memory"):
         s = snapshot(force=True)
         return (
             f"Skipped: system under pressure ({s.pressure.name}, "

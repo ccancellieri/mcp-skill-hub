@@ -2004,16 +2004,20 @@ class SkillStore:
         return teaching_id
 
     def search_teachings(self, query_vector: list[float],
-                         min_sim: float = 0.6) -> list[dict]:
+                         min_sim: float = 0.6,
+                         top_k: int | None = None) -> list[dict]:
         """Find teachings whose rule matches the query semantically.
 
         Uses the vec0 binary-KNN + float32 rerank path when available (S6);
         falls back to the in-Python cosine loop otherwise.
+
+        ``top_k`` caps the number of (best-ranked) teachings returned; ``None``
+        (default) returns all matches above ``min_sim``.
         """
         if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and len(query_vector) == self._vec_dim:
             vec_results = self._search_teachings_vec(query_vector, min_sim)
             if vec_results is not None:
-                return vec_results
+                return vec_results[:top_k] if top_k is not None else vec_results
 
         rows = self._conn.execute(
             "SELECT id, rule, rule_vector, action, target_type, target_id, weight "
@@ -2028,7 +2032,8 @@ class SkillStore:
                 results.append((sim * row["weight"], dict(row)))
 
         results.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r in results]
+        ranked = [r for _, r in results]
+        return ranked[:top_k] if top_k is not None else ranked
 
     def _search_teachings_vec(self, query_vector: list[float],
                               min_sim: float) -> list[dict] | None:

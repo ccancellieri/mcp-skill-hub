@@ -250,3 +250,40 @@ def should_run_llm(operation: str) -> bool:
         )
 
     return allowed
+
+
+def should_run_postcompact_optimize() -> bool:
+    """Decide whether optimize_memory should run on the postcompact-triggered path.
+
+    The postcompact path uses a configurable ceiling (``postcompact_pressure_max``,
+    default ``LOW``) rather than the background-only ``IDLE`` gate used by nightly
+    / promote_memory callers.  Compaction is user-initiated so a small amount of
+    load is acceptable.
+
+    The ``optimize_memory`` entry in ``should_run_llm`` remains ``IDLE``; this
+    function is only called by the postcompact CLI handler.
+    """
+    from . import config as _cfg
+    if not _cfg.get("resource_gating_enabled"):
+        return True
+    if os.environ.get("SKILL_HUB_FORCE_LLM") == "1":
+        return True
+
+    _PRESSURE_NAMES: dict[str, Pressure] = {
+        "IDLE":     Pressure.IDLE,
+        "LOW":      Pressure.LOW,
+        "MODERATE": Pressure.MODERATE,
+        "HIGH":     Pressure.HIGH,
+    }
+    ceiling_name = str(_cfg.get("postcompact_pressure_max") or "LOW").upper()
+    max_pressure = _PRESSURE_NAMES.get(ceiling_name, Pressure.LOW)
+
+    s = snapshot()
+    allowed = s.pressure <= max_pressure
+    if not allowed:
+        log.info(
+            "Skipping postcompact optimize_memory: pressure=%s > limit=%s (cpu=%.0f%% mem=%.0f%%)",
+            s.pressure.name, max_pressure.name,
+            s.cpu_load_1m * 100, s.memory_used_pct * 100,
+        )
+    return allowed
