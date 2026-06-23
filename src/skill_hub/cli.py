@@ -9,6 +9,7 @@ Usage from hooks:
 """
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -82,6 +83,14 @@ _IDE_TAG_RE = re.compile(
     r"[^>]*>.*?</(?:ide_\w+|system-reminder|EXTREMELY_IMPORTANT|SUBAGENT-STOP|command-name)>",
     re.DOTALL,
 )
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two embedding vectors. Returns 0.0 for zero-norm inputs."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 
 def _sanitize_hook_message(message: str) -> str:
@@ -227,15 +236,7 @@ def _task_similarity(message: str) -> float:
     Recomputes centroid if the config list changes.
     Returns cosine similarity 0.0–1.0.
     """
-    import math
-
     global _task_command_vector, _task_command_hash
-
-    def cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        return dot / (na * nb) if na and nb else 0.0
 
     try:
         examples = _get_task_examples()
@@ -247,7 +248,7 @@ def _task_similarity(message: str) -> float:
             _task_command_hash = current_hash
 
         msg_vec = embed(message)
-        return cosine(msg_vec, _task_command_vector)
+        return _cosine(msg_vec, _task_command_vector)
     except Exception:
         return 0.0
 
@@ -258,16 +259,9 @@ def _local_cmd_similarity(message: str) -> float:
     Uses a separate centroid from task commands — "show git status"
     is similar to shell commands but not to "save to memory".
     """
-    import math
     from . import config as _cfg
 
     global _local_cmd_vector, _local_cmd_hash
-
-    def cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        return dot / (na * nb) if na and nb else 0.0
 
     try:
         # Build examples from L1 command names + L2 template names
@@ -290,7 +284,7 @@ def _local_cmd_similarity(message: str) -> float:
             _local_cmd_hash = current_hash
 
         msg_vec = embed(message)
-        return cosine(msg_vec, _local_cmd_vector)
+        return _cosine(msg_vec, _local_cmd_vector)
     except Exception:
         return 0.0
 
@@ -301,14 +295,7 @@ def _classify_complexity(msg_vector: list[float]) -> str:
     Returns "simple", "moderate", or "complex" based on cosine similarity
     to pre-computed centroids.  Falls back to "moderate" on error.
     """
-    import math
     global _complexity_centroids
-
-    def cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        return dot / (na * nb) if na and nb else 0.0
 
     try:
         if _complexity_centroids is None:
@@ -320,7 +307,7 @@ def _classify_complexity(msg_vector: list[float]) -> str:
         best_level = "moderate"
         best_sim = -1.0
         for level, centroid in _complexity_centroids.items():
-            sim = cosine(msg_vector, centroid)
+            sim = _cosine(msg_vector, centroid)
             if sim > best_sim:
                 best_sim = sim
                 best_level = level
@@ -868,7 +855,6 @@ def _load_local_skills() -> list[dict]:
 
 def _match_local_skill(message: str) -> dict | None:
     """Level 3: Match user message to a local skill via embedding similarity."""
-    import math
     from . import config as _cfg
 
     if not _cfg.get("local_execution_enabled"):
@@ -883,12 +869,6 @@ def _match_local_skill(message: str) -> dict | None:
     except Exception:
         return None
 
-    def cosine(a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        return dot / (na * nb) if na and nb else 0.0
-
     best_skill = None
     best_sim = 0.0
 
@@ -900,7 +880,7 @@ def _match_local_skill(message: str) -> dict | None:
         for text in texts:
             try:
                 t_vec = embed(text)
-                sim = cosine(msg_vec, t_vec)
+                sim = _cosine(msg_vec, t_vec)
                 if sim > best_sim:
                     best_sim = sim
                     best_skill = skill

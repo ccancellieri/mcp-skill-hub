@@ -562,7 +562,6 @@ _SERVICE_DEFAULTS = {
 _MONITOR_DEFAULTS = {
     "ram_free_mb_min": 2048,    # pressure threshold
     "cpu_load_pct_max": 0.80,   # pressure threshold
-    "sustain_seconds": 30,      # time before auto-disable triggers
 }
 
 _DEFAULTS["services"] = _SERVICE_DEFAULTS
@@ -594,7 +593,6 @@ _FANOUT_DEFAULTS = {
         "skill_hub.fanout.sources:GitHubSource",
         "skill_hub.fanout.sources:TextSource",
     ],
-    "naming": "issue-{number}-{slug}",
 }
 _DEFAULTS["fanout"] = _FANOUT_DEFAULTS
 

@@ -8,7 +8,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from ... import dashboard as _dashboard
-from ... import dashboard_api  # noqa: F401 (plan reference; future use)
 from ..services import intents_queue, questions_queue
 from .router_page import _read_entries, _compute_stats
 
