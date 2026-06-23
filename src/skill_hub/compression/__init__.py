@@ -13,14 +13,17 @@ fall back to the heavier ML paths:
 
 * **Kompress** — a ModernBERT token compressor for prose. LOSSY and *irreversible*
   (it deletes low-salience tokens; there is no rehydration for prose). Gated by the
-  ``compression_ml_enabled`` config flag (default OFF) and the ``compression_full``
-  extra (``headroom-ai[ml]``).
+  ``compression_ml_enabled`` config flag (default ON after eval — avg ratio 0.60,
+  avg embedding-fidelity 0.87; see scripts/compression_eval.py) and the
+  ``compression_full`` extra (``headroom-ai[ml]``). Auto-no-ops without the extra.
 * **code-aware** — tree-sitter AST compression for source code. Gated by
-  ``compression_code_aware_enabled`` (default OFF) and ``headroom-ai[code]``.
+  ``compression_code_aware_enabled`` (default OFF — the eval showed headroom routes
+  code to Kompress first, so this path never fires on real tool output).
 
-Because the ML paths are lossy, they are opt-in and eval-gated: measure ratio +
-fidelity with the eval harness before enabling. The local-LLM summarize path
-(searxng) deliberately stays deterministic-only — it cannot rehydrate lossy text.
+The single-shot encoder pass is fast and light (no autoregressive generation, no
+Ollama). ``kompress_prose()`` exposes it directly for sites that want a light
+extractive digest *instead of* a heavy local-LLM summarize (e.g. the searxng web
+connector), independent of the ``compression_ml_enabled`` flag.
 
 headroom-ai is Apache-2.0: https://github.com/headroomlabs-ai/headroom
 """
@@ -379,6 +382,31 @@ def maybe_compress(
     # (i.e. were large enough to try) — skip tiny no-op passthroughs.
     if payload.bytes_before >= min_tokens * _CHARS_PER_TOKEN:
         _emit_compression_event(payload, site)
+    return payload.compressed
+
+
+def kompress_prose(text: str, *, context: str = "", site: str = "kompress") -> str:
+    """Light, LLM-free extractive prose compression via Kompress (ModernBERT).
+
+    Unlike :func:`maybe_compress`, this calls the Kompress model directly and is
+    **independent of the ``compression_ml_enabled`` flag** — use it where a site
+    deliberately wants a fast extractive digest in place of a heavy local-LLM
+    summarize (e.g. the searxng web connector). It is LOSSY (deletes tokens) but
+    grounded: output is a subset of the input, so it cannot hallucinate.
+
+    Returns the compressed text, or the original verbatim on any miss/error or when
+    the ``compression_full`` extra is not installed. Records a telemetry event on a
+    successful compression. Never raises.
+    """
+    if not (text and text.strip()):
+        return text
+    try:
+        payload = _kompress_direct(text, context or "")
+    except Exception:  # pragma: no cover - _kompress_direct already guards
+        return text
+    if payload is None:
+        return text
+    _emit_compression_event(payload, site)
     return payload.compressed
 
 
