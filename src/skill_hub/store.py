@@ -104,6 +104,7 @@ _DEFAULT_VECTOR_INDEXES: dict[str, dict] = {
     "habits:tool-chains":  {"default_level": "L2", "half_life_days": 60.0},
     "habits:prompts":      {"default_level": "L2", "half_life_days": 60.0},
     "session:log":         {"default_level": "L1", "half_life_days": 3.0},
+    "logs":                {"default_level": "L1", "half_life_days": 7.0},
 }
 
 
