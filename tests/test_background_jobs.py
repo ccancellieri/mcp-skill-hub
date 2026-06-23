@@ -18,7 +18,7 @@ import pytest
 
 from skill_hub.store import SkillStore
 from skill_hub import background_jobs as bj
-from skill_hub.background_jobs import JobDispatcher, get_dispatcher, register_handler
+from skill_hub.background_jobs import JobDispatcher, get_dispatcher
 
 
 # ---------------------------------------------------------------------------
@@ -236,14 +236,17 @@ def dispatcher(store):
     return JobDispatcher(store=store)
 
 
-def test_dispatch_one_runs_handler_and_marks_done(store, dispatcher):
+def test_dispatch_one_runs_handler_and_marks_done(store, dispatcher, monkeypatch):
     """dispatch_one() with a registered handler runs it and marks done."""
     results = []
 
-    @register_handler("_test_dispatch_ok")
     def _handler(payload: dict) -> dict:
         results.append(payload)
         return {"processed": True}
+
+    # Register via monkeypatch so the entry is removed after the test even if
+    # an assertion fails — prevents the key from leaking into other tests.
+    monkeypatch.setitem(bj._HANDLERS, "_test_dispatch_ok", _handler)
 
     store.enqueue_job("_test_dispatch_ok", {"key": "val"})
 
@@ -324,28 +327,20 @@ def test_dispatch_one_non_reentrant(store, dispatcher):
 # ---------------------------------------------------------------------------
 
 
-def test_get_dispatcher_returns_singleton():
+def test_get_dispatcher_returns_singleton(monkeypatch):
     """get_dispatcher() always returns the same instance."""
     import skill_hub.background_jobs as _bj_mod
-    orig = _bj_mod._DISPATCHER
-    _bj_mod._DISPATCHER = None
-    try:
-        d1 = get_dispatcher()
-        d2 = get_dispatcher()
-        assert d1 is d2
-    finally:
-        _bj_mod._DISPATCHER = orig
+    monkeypatch.setattr(_bj_mod, "_DISPATCHER", None)
+    d1 = get_dispatcher()
+    d2 = get_dispatcher()
+    assert d1 is d2
 
 
-def test_get_dispatcher_returns_jobdispatcher_instance():
+def test_get_dispatcher_returns_jobdispatcher_instance(monkeypatch):
     import skill_hub.background_jobs as _bj_mod
-    orig = _bj_mod._DISPATCHER
-    _bj_mod._DISPATCHER = None
-    try:
-        d = get_dispatcher()
-        assert isinstance(d, JobDispatcher)
-    finally:
-        _bj_mod._DISPATCHER = orig
+    monkeypatch.setattr(_bj_mod, "_DISPATCHER", None)
+    d = get_dispatcher()
+    assert isinstance(d, JobDispatcher)
 
 
 # ---------------------------------------------------------------------------

@@ -198,10 +198,11 @@ def test_auto_teach_skips_when_disabled(tmp_path, monkeypatch):
 
 def test_auto_teach_extracts_rule(tmp_path, monkeypatch):
     """_maybe_auto_teach_from_feedback stores a teaching when enabled."""
-    # Enable continuous teaching
+    # Enable continuous teaching — monkeypatch restores the value automatically,
+    # even if an assertion inside the test raises.
     monkeypatch.setenv("HOME", str(tmp_path))
     from skill_hub import config as _cfg
-    _cfg._DEFAULTS["continuous_teaching_enabled"] = True
+    monkeypatch.setitem(_cfg._DEFAULTS, "continuous_teaching_enabled", True)
 
     from skill_hub.store import SkillStore
     store = SkillStore(db_path=tmp_path / "skill_hub.db")
@@ -218,21 +219,18 @@ def test_auto_teach_extracts_rule(tmp_path, monkeypatch):
 
     # Patch SkillStore so _maybe_auto_teach_from_feedback uses our tmp store
     import post_tool_observer as pto
-    try:
-        import skill_hub.store as _sh_store
+    import skill_hub.store as _sh_store
 
-        def _fake_store(*args, **kwargs):
-            return store
+    def _fake_store(*args, **kwargs):
+        return store
 
-        with patch.object(_sh_store, "SkillStore", side_effect=_fake_store):
-            pto._maybe_auto_teach_from_feedback("Write", {"file_path": str(feedback_file)})
+    with patch.object(_sh_store, "SkillStore", side_effect=_fake_store):
+        pto._maybe_auto_teach_from_feedback("Write", {"file_path": str(feedback_file)})
 
-        rows = store._conn.execute("SELECT rule FROM teachings").fetchall()
-        rules = [r[0] for r in rows]
-        assert any("Always run tests" in r for r in rules), f"No matching rule found in {rules}"
-    finally:
-        _cfg._DEFAULTS["continuous_teaching_enabled"] = False
-        _real_close()
+    rows = store._conn.execute("SELECT rule FROM teachings").fetchall()
+    rules = [r[0] for r in rows]
+    assert any("Always run tests" in r for r in rules), f"No matching rule found in {rules}"
+    _real_close()
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +276,7 @@ def test_teach_from_message_remember_pattern(tmp_path, monkeypatch):
     """_maybe_teach_from_message stores teaching when enabled and pattern matches."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from skill_hub import config as _cfg
-    _cfg._DEFAULTS["continuous_teaching_enabled"] = True
+    monkeypatch.setitem(_cfg._DEFAULTS, "continuous_teaching_enabled", True)
 
     from skill_hub.store import SkillStore
     store = SkillStore(db_path=tmp_path / "skill_hub.db")
@@ -293,17 +291,14 @@ def test_teach_from_message_remember_pattern(tmp_path, monkeypatch):
     def _fake_store(*args, **kwargs):
         return store
 
-    try:
-        with patch.object(_sh_store, "SkillStore", side_effect=_fake_store):
-            result = sse._maybe_teach_from_message(
-                "remember: never commit API keys to public repos", "sess-teach"
-            )
+    with patch.object(_sh_store, "SkillStore", side_effect=_fake_store):
+        result = sse._maybe_teach_from_message(
+            "remember: never commit API keys to public repos", "sess-teach"
+        )
 
-        assert result.startswith('AUTO-TAUGHT:')
-        rows = store._conn.execute("SELECT rule FROM teachings").fetchall()
-        rules = [r[0] for r in rows]
-        assert any("API keys" in r or "never commit" in r.lower() for r in rules), \
-            f"No matching rule found in {rules}"
-    finally:
-        _cfg._DEFAULTS["continuous_teaching_enabled"] = False
-        _real_close()
+    assert result.startswith('AUTO-TAUGHT:')
+    rows = store._conn.execute("SELECT rule FROM teachings").fetchall()
+    rules = [r[0] for r in rows]
+    assert any("API keys" in r or "never commit" in r.lower() for r in rules), \
+        f"No matching rule found in {rules}"
+    _real_close()
