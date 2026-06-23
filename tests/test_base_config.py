@@ -48,7 +48,7 @@ def test_merge_into_empty_adds_all_then_is_idempotent():
     assert len(added) == len(bc._HOOKS)
     assert bc.check(merged) == []  # nothing missing now
     # Second run adds nothing.
-    merged2, added2 = bc.merge(merged)
+    _, added2 = bc.merge(merged)
     assert added2 == []
 
 
@@ -64,7 +64,7 @@ def test_merge_preserves_existing_unrelated_hooks():
         },
         "model": "sonnet",
     }
-    merged, added = bc.merge(settings)
+    merged, _ = bc.merge(settings)
     # Unrelated entries survive.
     assert merged["model"] == "sonnet"
     cmds_stop = [h["command"] for g in merged["hooks"]["Stop"] for h in g["hooks"]]
@@ -75,7 +75,7 @@ def test_merge_preserves_existing_unrelated_hooks():
     assert any("post-tool-observer.sh" in c for c in cmds_ptu)
 
 
-def test_merge_matches_by_basename_not_full_path(tmp_path, monkeypatch):
+def test_merge_matches_by_basename_not_full_path(tmp_path):
     """A skill-hub hook already present under a DIFFERENT absolute path must not
     be re-added (clobber-repair must not duplicate after a checkout move)."""
     settings = {
@@ -154,7 +154,7 @@ def test_check_mcp_missing_file(tmp_path, monkeypatch):
     assert issues  # file not found → issue reported
 
 
-def test_check_mcp_empty_json(tmp_path, monkeypatch):
+def test_check_mcp_empty_json(tmp_path):
     p = tmp_path / "claude.json"
     p.write_text("{}", encoding="utf-8")
     issues = bc.check_mcp(p)
@@ -274,7 +274,7 @@ def test_merge_roles_refresh_existing_block(tmp_path):
 def test_merge_roles_idempotent(tmp_path):
     p = tmp_path / "CLAUDE.md"
     p.write_text("", encoding="utf-8")
-    new_text1, added1 = bc.merge_roles(p)
+    new_text1, _ = bc.merge_roles(p)
     # Write the result to disk, then run again.
     p.write_text(new_text1, encoding="utf-8")
     new_text2, added2 = bc.merge_roles(p)
@@ -307,7 +307,7 @@ def test_install_roles_dry_run_does_not_write(tmp_path):
 # check_all / restore_all tests
 # ---------------------------------------------------------------------------
 
-def test_check_all_empty(tmp_path, monkeypatch):
+def test_check_all_empty(tmp_path):
     sp = tmp_path / "settings.json"
     cj = tmp_path / "claude.json"
     cm = tmp_path / "CLAUDE.md"
@@ -318,7 +318,7 @@ def test_check_all_empty(tmp_path, monkeypatch):
     assert status["roles"]   # block missing
 
 
-def test_check_all_present(tmp_path, monkeypatch):
+def test_check_all_present(tmp_path):
     sp = tmp_path / "settings.json"
     cj = tmp_path / "claude.json"
     cm = tmp_path / "CLAUDE.md"

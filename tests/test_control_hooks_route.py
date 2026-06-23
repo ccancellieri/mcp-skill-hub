@@ -1,7 +1,6 @@
 """Tests for GET /control/hooks/status and POST /control/hooks/restore."""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -50,7 +49,7 @@ def client(tmp_path, monkeypatch):
 
     reg = reg_mod.ServiceRegistry([])
     reg_mod.set_registry(reg)
-    reg_mod.set_pressure(_FakePressure())
+    reg_mod.set_pressure(_FakePressure())  # type: ignore[arg-type]
 
     from skill_hub.webapp.main import create_app
     app = create_app(store=None)
