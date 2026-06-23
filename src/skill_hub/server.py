@@ -4791,6 +4791,38 @@ def wiki_scan() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("embedding")
+def wiki_query(query: str, top_k: int = 5) -> str:
+    """Query the LLM Wiki: hybrid vector + index.md lexical ranking.
+
+    Returns the top matching pages with their bodies and ``source_refs``
+    provenance. Private pages are included only for authorized scopes (the
+    local operator's configured private scopes).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_query")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+    out = _wiki.query(_store, wiki_root, query, top_k=top_k,
+                      authorized_scopes=authorized)
+    results = out["results"]
+    if not results:
+        return f"wiki_query: no matches for {query!r}"
+    lines = [f"wiki_query: {len(results)} result(s) for {query!r}"]
+    for r in results:
+        refs = ", ".join(r["source_refs"][:3]) if r["source_refs"] else "-"
+        lines.append(
+            f"\n## [[{r['slug']}]] — {r['title']} "
+            f"(type={r['type']}, scope={r['scope']}, score={r['score']})\n"
+            f"{r['body'][:1500]}\n(source_refs: {refs})"
+        )
+    return "\n".join(lines)
+
+
 def _wiki_authorized_scopes() -> list[str]:
     """Scopes the local operator may write/read — the union of configured
     private scopes (this is the user's own machine and vault)."""

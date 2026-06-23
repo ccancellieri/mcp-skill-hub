@@ -382,6 +382,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("wiki_ingest", "Distill approved wiki source pages into entity/concept pages (LLM)",
              hard=(BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM)),
+    ToolSpec("wiki_query", "Query the wiki: hybrid vector + index.md lexical ranking",
+             hard=(BACKEND_DB, BACKEND_EMBED)),
 )
 
 

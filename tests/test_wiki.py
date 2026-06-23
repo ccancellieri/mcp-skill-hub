@@ -1714,3 +1714,88 @@ class TestQueueDecisionAndIngest:
         self._stub_llm(monkeypatch, store)
         out = ingest_approved(store, wiki_root, limit=2, dry_run=False)
         assert out["processed"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.5: wiki_query (hybrid vector + lexical) + file-back stub
+# ---------------------------------------------------------------------------
+
+
+class TestWikiQuery:
+    """Hybrid query: vector ranking unioned with index.md lexical hits."""
+
+    def _page(self, wiki_root, rel, slug, title, scope="public",
+              source_refs=None):
+        p = wiki_root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fm = [f"---", f"slug: {slug}", f"title: {title}", "type: entity",
+              f"scope: {scope}", "projects:", "- _global"]
+        if source_refs:
+            fm.append("source_refs:")
+            for r in source_refs:
+                fm.append(f"- {r}")
+        fm.append("---")
+        p.write_text("\n".join(fm) + f"\nbody of {slug}\n", encoding="utf-8")
+
+    def test_file_back_stub_raises(self, store, wiki_root):
+        from skill_hub.wiki import query
+        with pytest.raises(NotImplementedError):
+            query(store, wiki_root, "x", _file_back=True)
+
+    def test_vector_hit_returns_body_and_provenance(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import query
+        self._page(wiki_root, "pages/entity/foo.md", "foo", "Foo",
+                   source_refs=["/orig/foo.md"])
+        hits = [{"metadata": {"slug": "foo", "rel_path": "pages/entity/foo.md"},
+                 "score": 0.91}]
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits)
+        out = query(store, wiki_root, "foo")
+        assert out["results"][0]["slug"] == "foo"
+        assert "body of foo" in out["results"][0]["body"]
+        assert out["results"][0]["source_refs"] == ["/orig/foo.md"]
+        assert out["results"][0]["score"] == 0.91
+
+    def test_lexical_backfill_from_index(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import query
+        self._page(wiki_root, "pages/entity/karpathy.md", "karpathy",
+                   "Karpathy Guidelines")
+        (wiki_root / "index.md").write_text(
+            "# Wiki Index\n\n## entity\n- [[karpathy]] — Karpathy Guidelines\n",
+            encoding="utf-8")
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: [])
+        out = query(store, wiki_root, "karpathy")
+        assert any(r["slug"] == "karpathy" for r in out["results"])
+
+    def test_private_excluded_when_unauthorized(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import query
+        self._page(wiki_root, "_private/glicemia/secret.md", "secret", "Secret",
+                   scope="private")
+        hits = [{"metadata": {"slug": "secret",
+                              "rel_path": "_private/glicemia/secret.md"},
+                 "score": 0.99}]
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits)
+        out = query(store, wiki_root, "secret", authorized_scopes=[])
+        assert out["results"] == []
+
+    def test_private_included_when_authorized(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import query
+        self._page(wiki_root, "_private/glicemia/secret.md", "secret", "Secret",
+                   scope="private")
+        hits = [{"metadata": {"slug": "secret",
+                              "rel_path": "_private/glicemia/secret.md"},
+                 "score": 0.99}]
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits)
+        out = query(store, wiki_root, "secret", authorized_scopes=["glicemia"])
+        assert out["results"][0]["slug"] == "secret"
+
+    def test_top_k_caps_results(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import query
+        hits = []
+        for i in range(5):
+            self._page(wiki_root, f"pages/entity/e{i}.md", f"e{i}", f"E{i}")
+            hits.append({"metadata": {"slug": f"e{i}",
+                                      "rel_path": f"pages/entity/e{i}.md"},
+                         "score": 0.5})
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits)
+        out = query(store, wiki_root, "e", top_k=2)
+        assert len(out["results"]) == 2

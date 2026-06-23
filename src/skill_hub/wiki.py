@@ -1102,6 +1102,105 @@ def _queue_summary(store: Any, scanned: int | None = None) -> dict:
     return out
 
 
+_INDEX_LINE_RE = re.compile(r"^- \[\[([^\]]+)\]\] — (.+)$")
+
+
+def _index_entries(wiki_root: Path) -> list[tuple[str, str]]:
+    """Parse ``index.md`` into ``[(slug, title)]`` (public pages only)."""
+    path = wiki_root / "index.md"
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        m = _INDEX_LINE_RE.match(line.strip())
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
+def query(
+    store: Any, wiki_root: Path, query_text: str, *,
+    top_k: int = 5, authorized_scopes: list[str] | None = None,
+    _file_back: bool = False,
+) -> dict:
+    """Hybrid wiki query: vector ranking unioned with index.md lexical hits.
+
+    Vector search runs over the ``wiki`` namespace (plus ``wiki-private`` when
+    ``authorized_scopes`` is non-empty); the curated ``index.md`` (public only)
+    backfills lexical title matches. Returns ranked page bodies with
+    ``source_refs`` provenance. Private pages are excluded for unauthorized
+    callers in both paths.
+
+    ``_file_back`` is a reserved seam (deferred query-file-back) — raises
+    ``NotImplementedError``.
+    """
+    if _file_back:
+        raise NotImplementedError("wiki query file-back is a reserved seam (deferred)")
+
+    wiki_root = Path(wiki_root)
+    authorized_scopes = authorized_scopes or []
+    namespaces = ["wiki"] + (["wiki-private"] if authorized_scopes else [])
+
+    ranked: list[dict] = []
+    seen: set[str] = set()
+
+    try:
+        hits = store.search_vectors(query_text, namespaces=namespaces,
+                                    top_k=max(top_k * 2, top_k))
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wiki query: vector search failed: %s", exc)
+        hits = []
+
+    for h in hits:
+        meta = h.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:  # noqa: BLE001
+                meta = {}
+        slug = meta.get("slug")
+        rel = meta.get("rel_path")
+        if not slug or slug in seen or not rel:
+            continue
+        page = _load_page(wiki_root / rel)
+        if page is None:
+            continue
+        if page.scope == "private" and not authorized_scopes:
+            continue
+        seen.add(slug)
+        ranked.append({
+            "slug": page.slug, "title": page.title, "type": page.type,
+            "scope": page.scope, "score": round(float(h.get("score", 0.0)), 4),
+            "body": page.body, "source_refs": page.source_refs,
+        })
+        if len(ranked) >= top_k:
+            break
+
+    if len(ranked) < top_k:
+        terms = [t for t in re.split(r"\W+", query_text.lower()) if len(t) > 2]
+        for slug, title in _index_entries(wiki_root):
+            if slug in seen:
+                continue
+            if terms and any(t in title.lower() for t in terms):
+                page = _find_page_by_slug(store, wiki_root, slug)
+                if page is None or page.scope == "private":
+                    continue
+                seen.add(slug)
+                ranked.append({
+                    "slug": page.slug, "title": page.title, "type": page.type,
+                    "scope": page.scope, "score": 0.0,
+                    "body": page.body, "source_refs": page.source_refs,
+                })
+                if len(ranked) >= top_k:
+                    break
+
+    return {"query": query_text, "results": ranked[:top_k]}
+
+
 def queue_decision(store: Any, slug: str, decision: str) -> dict:
     """Approve or skip a queued candidate. ``decision`` in {'approve','skip'}.
 
