@@ -498,7 +498,7 @@ _DEFAULTS = {
         # tier_planner: strongest model for authoring/design. Used by
         # plan_executor's API-fallback runner; in-session runner prefers
         # the active Claude Code agent (user's chosen model).
-        "tier_planner": "anthropic/claude-opus-4-6",
+        "tier_planner": "anthropic/claude-opus-4-8",
         "embed":        "ollama/nomic-embed-text",
     },
     # Default tier when code doesn't specify one.

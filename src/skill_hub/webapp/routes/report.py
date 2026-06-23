@@ -122,18 +122,20 @@ def _router_by_session(entries: list[dict]) -> dict[str, list[dict]]:
     return dict(result)
 
 
-# Blended Anthropic pricing ($/1M tokens), weighted 30% input / 70% output.
-# Haiku: $0.25 in + $1.25 out = $0.95/M blended
-# Sonnet: $3 in + $15 out = $11.4/M blended
-# Opus: $15 in + $75 out = $57/M blended
-_USD_PER_M = {"haiku": 0.95, "sonnet": 11.4, "opus": 57.0}
-
-
 def _estimate_usd(tokens_by_model: dict[str, int]) -> float:
+    """Blended $/1M-token cost estimate for tokens attributed to each model.
+
+    Rates come from the shared model registry (litellm-derived, so they track
+    the live Claude lineup instead of going stale here). Unrecognised model
+    labels fall back to the sonnet rate so estimates never silently drop to 0.
+    """
+    from ... import model_registry
+
+    fallback = model_registry.blended_usd_per_m("sonnet") or 0.0
     total = 0.0
     for model, tok in tokens_by_model.items():
-        rate = _USD_PER_M.get(model, _USD_PER_M["sonnet"])
-        total += (tok / 1_000_000) * rate
+        rate = model_registry.blended_usd_per_m(model)
+        total += (tok / 1_000_000) * (rate if rate is not None else fallback)
     return round(total, 2)
 
 
