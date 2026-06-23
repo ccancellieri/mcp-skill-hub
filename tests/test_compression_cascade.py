@@ -100,39 +100,38 @@ def test_json_array_compresses_deterministically():
 # (b) Prose with lossy flags OFF returns PASSTHROUGH
 # ---------------------------------------------------------------------------
 
-def test_prose_passthrough_when_lossy_off():
-    """Prose must pass through unchanged when no lossy flags are enabled.
+def test_prose_passthrough_when_lossy_off(monkeypatch, tmp_path):
+    """Prose must pass through unchanged when lossy compression is not requested.
 
     This works even without headroom installed: the absence of a router causes
     an early passthrough return.  With headroom, the prose path is a no-op for
     the deterministic compressors.
+
+    CONFIG_PATH is redirected to a tmp file so ``cfg.set`` never writes the real
+    ~/.claude/mcp-skill-hub/config.json (which would leak state into other tests).
     """
     from skill_hub import config as cfg
     from skill_hub.compression import compress_payload
 
-    # Ensure flags are off (they are off by default, but be explicit).
-    original_ml = cfg.get("compression_ml_enabled")
-    original_code = cfg.get("compression_code_aware_enabled")
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
+    # allow_lossy=False already bypasses the lossy flags; set them off explicitly
+    # too, now that the write lands in the isolated tmp config.
     cfg.set("compression_ml_enabled", False)
     cfg.set("compression_code_aware_enabled", False)
 
-    try:
-        prose = (
-            "The transformation of software architecture over the past decade has been "
-            "profound. Microservices promised autonomy and independent scalability, yet "
-            "teams consistently discovered that the operational complexity they introduced "
-            "often eclipsed the agility they offered. A well-structured single process with "
-            "clear internal boundaries is no less maintainable than a cluster of services. "
-        ) * 6  # ~2700 chars — well above the default min_tokens * 4 threshold
+    prose = (
+        "The transformation of software architecture over the past decade has been "
+        "profound. Microservices promised autonomy and independent scalability, yet "
+        "teams consistently discovered that the operational complexity they introduced "
+        "often eclipsed the agility they offered. A well-structured single process with "
+        "clear internal boundaries is no less maintainable than a cluster of services. "
+    ) * 6  # ~2700 chars — well above the default min_tokens * 4 threshold
 
-        result = compress_payload(prose, allow_lossy=False)
-        assert result.content_type == "PASSTHROUGH"
-        assert result.compressed == prose
-        assert result.ratio == 1.0
-        assert result.lossy is False
-    finally:
-        cfg.set("compression_ml_enabled", original_ml)
-        cfg.set("compression_code_aware_enabled", original_code)
+    result = compress_payload(prose, allow_lossy=False)
+    assert result.content_type == "PASSTHROUGH"
+    assert result.compressed == prose
+    assert result.ratio == 1.0
+    assert result.lossy is False
 
 
 # ---------------------------------------------------------------------------
