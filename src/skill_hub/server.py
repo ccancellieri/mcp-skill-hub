@@ -171,6 +171,13 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+# Continuous memory sweep — opt-in background promote pass (default OFF).
+try:
+    from .continuous_sweep import start as _start_continuous_sweep
+    _start_continuous_sweep()
+except Exception:  # noqa: BLE001
+    pass
+
 # In-process session tracking
 _session = {
     "id": str(uuid.uuid4()),

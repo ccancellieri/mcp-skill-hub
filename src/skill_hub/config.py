@@ -498,6 +498,14 @@ _DEFAULTS = {
     # manage those surfaces manually.
     "auto_repair_base_config": True,
 
+    # Continuous memory sweep — periodic background promote_memory pass.
+    # Runs only when the machine is IDLE (Pressure.IDLE); skipped under any load.
+    # Default OFF: enable explicitly once the machine's idle profile is understood.
+    "continuous_sweep_enabled": False,
+    # Minimum minutes between sweep runs.  A sweep that ran (or was skipped due
+    # to pressure) within this window will not attempt again until it expires.
+    "continuous_sweep_interval_minutes": 60,
+
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,
 
