@@ -52,6 +52,7 @@ class WikiPage:
     source_refs: list[str] = field(default_factory=list)
     created: str = ""                # ISO date string
     updated: str = ""                # ISO date string
+    source_hash: str = ""            # sha256 of the source text at last ingest
 
 
 @dataclass
@@ -135,6 +136,8 @@ def render_page(page: WikiPage) -> str:
         fm["aliases"] = page.aliases
     if page.source_refs:
         fm["source_refs"] = page.source_refs
+    if page.source_hash:
+        fm["source_hash"] = page.source_hash
 
     fm_text = yaml.dump(fm, default_flow_style=False, allow_unicode=True,
                         sort_keys=False)
@@ -236,6 +239,7 @@ def _load_page(path: Path) -> WikiPage | None:
 
     created = str(fm.get("created") or "")
     updated = str(fm.get("updated") or "")
+    source_hash = str(fm.get("source_hash") or "")
 
     # Derive scope from directory if not in frontmatter.
     if not fm.get("scope") and "_private" in path.parts:
@@ -246,6 +250,7 @@ def _load_page(path: Path) -> WikiPage | None:
         projects=list(projects), scope=scope, body=body,
         tags=list(tags), aliases=list(aliases),
         source_refs=list(source_refs), created=created, updated=updated,
+        source_hash=source_hash,
     )
 
 
@@ -747,6 +752,351 @@ def _unique_slug(
         if candidate not in used:
             return candidate
         i += 1
+
+
+# ---------------------------------------------------------------------------
+# Ingest — distill one source into pages (LLM) + deterministic write
+# ---------------------------------------------------------------------------
+
+def _hash_text(text: str) -> str:
+    """Stable short hash of source text for idempotence/staleness checks."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | None:
+    """Locate an existing page by slug via the derived index, then load from disk."""
+    try:
+        row = store._conn.execute(
+            "SELECT rel_path FROM wiki_pages WHERE slug=?", (slug,)
+        ).fetchone()
+    except Exception:
+        row = None
+    if row:
+        rel = row["rel_path"] if not isinstance(row, tuple) else row[0]
+        page = _load_page(wiki_root / rel)
+        if page is not None:
+            return page
+    return None
+
+
+def _build_candidate_context(
+    store: Any, wiki_root: Path, source_text: str,
+    namespaces: list[str], top_k: int = 15, char_budget: int = 14000,
+) -> tuple[str, list[str]]:
+    """Deterministic candidate discovery: vector-search related pages, read bodies.
+
+    The derived index IS the "which pages to touch" oracle. Returns
+    ``(formatted_context, candidate_slugs)``. Fails soft to ``("", [])``.
+    """
+    try:
+        hits = store.search_vectors(source_text, namespaces=namespaces, top_k=top_k)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wiki ingest: candidate search failed: %s", exc)
+        return "", []
+
+    parts: list[str] = []
+    slugs: list[str] = []
+    used = 0
+    for h in hits:
+        meta = h.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:  # noqa: BLE001
+                meta = {}
+        slug = meta.get("slug")
+        rel = meta.get("rel_path")
+        if not slug or slug in slugs or not rel:
+            continue
+        page = _load_page(wiki_root / rel)
+        if page is None:
+            continue
+        block = (f"## [[{page.slug}]] — {page.title} (type={page.type}, "
+                 f"scope={page.scope})\n{page.body}\n")
+        if used + len(block) > char_budget:
+            break
+        parts.append(block)
+        slugs.append(slug)
+        used += len(block)
+    return "\n".join(parts), slugs
+
+
+def _page_from_update(
+    upd: dict, existing: WikiPage | None,
+    target_scope: str, target_project: str, today: str,
+    source_refs: list[str] | None = None, source_hash: str = "",
+) -> WikiPage:
+    """Build a WikiPage from an LLM page dict, preserving stable id/created/projects."""
+    slug = upd.get("slug") or _slugify(upd.get("title") or "page")
+    scope = upd.get("scope") or (existing.scope if existing else target_scope)
+    ptype = upd.get("type") or (existing.type if existing else "entity")
+    title = upd.get("title") or (existing.title if existing else _humanize(slug))
+    body = upd.get("new_body") or upd.get("body") or (existing.body if existing else "")
+    projects = (existing.projects if existing and existing.projects
+                else [target_project or "_global"])
+    page_id = existing.id if existing else _stable_page_id(Path(scope) / slug)
+    created = existing.created if (existing and existing.created) else today
+    refs = source_refs if source_refs is not None else (
+        existing.source_refs if existing else [])
+    return WikiPage(
+        id=page_id, slug=slug, title=title, type=ptype,
+        projects=list(projects), scope=scope, body=body,
+        source_refs=list(refs), created=created, updated=today,
+        source_hash=source_hash or (existing.source_hash if existing else ""),
+    )
+
+
+def _backup_page(path: Path) -> None:
+    """Keep a single rolling backup of a page before overwrite."""
+    try:
+        backup_dir = path.parent / ".backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / f"{path.name}.bak").write_text(
+            path.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wiki ingest: backup failed for %s: %s", path, exc)
+
+
+def _append_inbox(wiki_root: Path, assumptions: list, today: str,
+                  source_id: str) -> None:
+    """Append LLM assumptions to <wiki_root>/inbox.md (mirrors master-state inbox)."""
+    if not assumptions:
+        return
+    lines: list[str] = []
+    for a in assumptions:
+        if isinstance(a, dict):
+            claim = a.get("claim") or ""
+            verify = a.get("verify_by") or ""
+            lines.append(f"- [{today}] ({source_id}) {claim} — verify: {verify}")
+        else:
+            lines.append(f"- [{today}] ({source_id}) {a}")
+    inbox = wiki_root / "inbox.md"
+    try:
+        existing = (inbox.read_text(encoding="utf-8") if inbox.exists()
+                    else "# Inbox — unconfirmed inferences\n\n")
+        _atomic_write_page(inbox, existing + "\n".join(lines) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wiki ingest: inbox append failed: %s", exc)
+
+
+def _index_pages(store: Any, wiki_root: Path, pages: list[WikiPage]) -> int:
+    """Incrementally update wiki_pages/wiki_edges/vectors for touched pages only.
+
+    Bounded by the touched set (~10-15 pages). Edge dst-resolution uses the full
+    slug set so new cross-links resolve; previously-dangling inbound edges are
+    reconciled by a later full ``reindex`` (spec risk #8). Embedding is fail-soft:
+    the markdown SoT is already on disk, ``wiki_status`` drift + ``reindex`` are
+    the reconcile authority. Returns the count of vectors written.
+    """
+    conn = store._conn
+    existing_slugs = {r[0] for r in conn.execute("SELECT slug FROM wiki_pages")}
+    slug_set = existing_slugs | {p.slug for p in pages}
+    alias_to_slug: dict[str, str] = {}
+    for p in pages:
+        for a in p.aliases:
+            alias_to_slug.setdefault(a, p.slug)
+
+    for p in pages:
+        rel_path = str(_page_rel_path(wiki_root, p))
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO wiki_pages
+                (slug, id, title, type, scope, projects, tags, aliases, rel_path, updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (p.slug, p.id, p.title, p.type, p.scope, json.dumps(p.projects),
+             json.dumps(p.tags) if p.tags else None,
+             json.dumps(p.aliases) if p.aliases else None,
+             rel_path, p.updated or None),
+        )
+        conn.execute("DELETE FROM wiki_edges WHERE src_slug=?", (p.slug,))
+        project = p.projects[0] if p.projects else None
+        for e in extract_edges(p.slug, p.body):
+            if e.dst_raw in slug_set:
+                dst, resolved = e.dst_raw, 1
+            elif e.dst_raw in alias_to_slug:
+                dst, resolved = alias_to_slug[e.dst_raw], 1
+            else:
+                dst, resolved = e.dst_raw, 0
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO wiki_edges
+                    (src_slug, dst_slug, dst_raw, edge_kind, project, resolved)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (p.slug, dst, e.dst_raw, e.edge_kind, project, resolved),
+            )
+    conn.commit()
+
+    vec_count = 0
+    for p in pages:
+        namespace = "wiki-private" if p.scope == "private" else "wiki"
+        try:
+            conn.execute(
+                "DELETE FROM vectors WHERE namespace=? AND (doc_id=? OR doc_id LIKE ?)",
+                (namespace, p.id, f"{p.id}#%"),
+            )
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+        rel_path = _page_rel_path(wiki_root, p)
+        for anchor, text in _split_page_sections(p):
+            doc_id = f"{p.id}#{anchor}" if anchor else p.id
+            meta = {
+                "slug": p.slug, "title": p.title, "type": p.type,
+                "scope": p.scope, "projects": p.projects, "section": anchor,
+                "rel_path": str(rel_path), "page_id": p.id,
+            }
+            try:
+                store.upsert_vector(
+                    namespace=namespace, doc_id=doc_id, text=text, metadata=meta,
+                    source="wiki", project=p.projects[0] if p.projects else None,
+                    tags=p.tags or None,
+                )
+                vec_count += 1
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("wiki ingest: embed failed for %s: %s", doc_id, exc)
+    return vec_count
+
+
+def ingest_source(
+    store: Any,
+    wiki_root: Path,
+    *,
+    source_kind: str,
+    source_id: str,
+    source_title: str = "",
+    source_text: str = "",
+    url: str = "",
+    target_scope: str = "public",
+    target_project: str = "_global",
+    authorized_scopes: list[str] | None = None,
+    dry_run: bool = True,
+    today: str | None = None,
+    tier: str = "tier_smart",
+    model: str | None = None,
+) -> dict:
+    """Distill one source into wiki pages: candidate discovery → LLM → write.
+
+    Single normalized entrypoint for all sources (memory, discussion, issue).
+    ``dry_run=True`` (default) writes nothing and returns proposed diffs.
+
+    Access model (§3.7): a private target (``target_scope='private'``) requires
+    ``target_project`` to be in ``authorized_scopes``; otherwise the call is
+    denied. Unauthorized private *page_updates* proposed by the LLM are silently
+    dropped rather than written.
+
+    Idempotence: the source page records a ``source_hash``; an unchanged source
+    skips the LLM call entirely.
+
+    Returns a dict with ``status`` in {dry_run, ok, skipped, denied, llm_failed}.
+    """
+    from . import embeddings as _emb
+
+    wiki_root = Path(wiki_root)
+    today = today or date.today().isoformat()
+    target_project = target_project or "_global"
+    authorized_scopes = authorized_scopes or []
+
+    # --- access gating for the primary target ---
+    if target_scope == "private" and target_project not in authorized_scopes:
+        return {
+            "status": "denied",
+            "reason": f"private scope {target_project!r} not authorized",
+            "pages": [],
+        }
+
+    # --- idempotence: skip unchanged source ---
+    source_hash = _hash_text(source_text)
+    source_slug = "source-" + _slugify(source_id or source_title or "untitled")
+    src_existing = _find_page_by_slug(store, wiki_root, source_slug)
+    if src_existing is not None and src_existing.source_hash == source_hash:
+        return {"status": "skipped", "reason": "unchanged source_hash",
+                "source": source_id, "pages": []}
+
+    # --- candidate discovery (deterministic, no LLM) ---
+    namespaces = ["wiki"]
+    if target_scope == "private" and target_project in authorized_scopes:
+        namespaces.append("wiki-private")
+    candidate_text, candidate_slugs = _build_candidate_context(
+        store, wiki_root, source_text, namespaces)
+
+    # --- LLM distillation ---
+    result = _emb.wiki_ingest(
+        source_kind=source_kind, source_title=source_title,
+        source_text=source_text, candidate_pages=candidate_text,
+        target_scope=target_scope, target_project=target_project,
+        tier=tier, model=model,
+    )
+    if result.get("_fallback"):
+        return {"status": "llm_failed", "source": source_id, "pages": []}
+
+    refs = [url] if url else [source_id]
+
+    # --- assemble pages to write ---
+    pages_to_write: list[WikiPage] = []
+    diffs: list[dict] = []
+
+    sp = dict(result.get("source_page") or {})
+    sp["slug"] = source_slug  # deterministic from source_id → guarantees idempotence
+    sp["type"] = "source"
+    sp["scope"] = target_scope
+    src_page = _page_from_update(sp, src_existing, target_scope, target_project,
+                                 today, source_refs=refs, source_hash=source_hash)
+    pages_to_write.append(src_page)
+    diffs.append({"slug": src_page.slug, "type": "source", "scope": src_page.scope,
+                  "action": "update" if src_existing else "create",
+                  "title": src_page.title, "chars": len(src_page.body)})
+
+    for upd in result.get("page_updates", []):
+        slug = upd.get("slug")
+        if not slug:
+            continue
+        existing = _find_page_by_slug(store, wiki_root, slug)
+        scope = upd.get("scope") or (existing.scope if existing else target_scope)
+        if scope == "private":
+            scope_name = (existing.projects[0] if existing and existing.projects
+                          else target_project)
+            if scope_name not in authorized_scopes:
+                _log.info("wiki ingest: dropping unauthorized private page %s", slug)
+                continue
+        page = _page_from_update(upd, existing, target_scope, target_project,
+                                 today, source_refs=refs)
+        pages_to_write.append(page)
+        diffs.append({"slug": page.slug, "type": page.type, "scope": page.scope,
+                      "action": "update" if existing else "create",
+                      "title": page.title, "chars": len(page.body)})
+
+    log_line = (f"## [{today}] ingest | {source_title or source_id} "
+                f"({len(pages_to_write)} pages)")
+
+    if dry_run:
+        return {
+            "status": "dry_run", "source": source_id, "pages": diffs,
+            "candidates": candidate_slugs,
+            "assumptions": result.get("assumptions", []),
+            "log_line": log_line,
+        }
+
+    # --- deterministic write phase ---
+    written = 0
+    for p in pages_to_write:
+        path = page_path(wiki_root, p)
+        if path.exists():
+            _backup_page(path)
+        _atomic_write_page(path, render_page(p))
+        written += 1
+    vec = _index_pages(store, wiki_root, pages_to_write)
+    _write_public_index(wiki_root)
+    _write_private_indexes(wiki_root)
+    _append_log(wiki_root, today, "ingest", source_title or source_id, written)
+    _append_inbox(wiki_root, result.get("assumptions", []), today, source_id)
+
+    return {
+        "status": "ok", "source": source_id, "pages": diffs,
+        "written": written, "vectors": vec,
+        "assumptions": result.get("assumptions", []),
+    }
 
 
 def migrate(

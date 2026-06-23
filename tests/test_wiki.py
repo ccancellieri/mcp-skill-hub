@@ -1321,3 +1321,162 @@ class TestWikiIngestProducer:
         with patch.object(_emb, "get_provider", return_value=Boom()):
             out = _emb.wiki_ingest("memory", "X", "raw")
         assert out["_fallback"] is True
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Step W2.2: wiki.ingest_source (discovery → LLM → write)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestSource:
+    """ingest_source orchestrates candidate discovery, LLM distill, and writes."""
+
+    def _payload(self, **over):
+        p = {
+            "source_page": {"slug": "ignored", "title": "Foo source", "body": "raw foo"},
+            "page_updates": [
+                {"slug": "foo", "title": "Foo", "type": "entity", "scope": "public",
+                 "new_body": "Foo is about [[bar]].", "reason": "new", "is_new": True}
+            ],
+            "index_entries": [{"slug": "foo", "title": "Foo", "one_line": "the foo"}],
+            "assumptions": [{"claim": "c", "verify_by": "v"}],
+        }
+        p.update(over)
+        return p
+
+    def _patch(self, monkeypatch, store, payload, hits=None):
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "wiki_ingest", lambda **kw: payload)
+        monkeypatch.setattr(store, "search_vectors", lambda *a, **k: hits or [])
+
+        def fake_upsert(namespace, doc_id, text, metadata=None, **kw):
+            store._conn.execute(
+                "INSERT INTO vectors (namespace, doc_id, model, vector, norm, "
+                "level, source, project) VALUES (?, ?, 'stub', '[]', 0.1, 'L3', "
+                "'wiki', NULL) ON CONFLICT(namespace, doc_id) DO UPDATE SET "
+                "vector=excluded.vector",
+                (namespace, doc_id),
+            )
+            store._conn.commit()
+
+        monkeypatch.setattr(store, "upsert_vector", fake_upsert)
+
+    def test_dry_run_writes_nothing(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        self._patch(monkeypatch, store, self._payload())
+
+        out = ingest_source(store, wiki_root, source_kind="memory",
+                            source_id="foo", source_title="Foo", source_text="text",
+                            dry_run=True)
+        assert out["status"] == "dry_run"
+        assert {d["slug"] for d in out["pages"]} == {"source-foo", "foo"}
+        assert not (wiki_root / "pages").exists()
+        assert not (wiki_root / "index.md").exists()
+
+    def test_non_dry_writes_pages_index_log(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        self._patch(monkeypatch, store, self._payload())
+
+        out = ingest_source(store, wiki_root, source_kind="memory",
+                            source_id="foo", source_title="Foo", source_text="text",
+                            dry_run=False, today="2026-06-23")
+        assert out["status"] == "ok"
+        assert (wiki_root / "pages" / "source" / "source-foo.md").exists()
+        assert (wiki_root / "pages" / "entity" / "foo.md").exists()
+        assert (wiki_root / "index.md").exists()
+        log = (wiki_root / "log.md").read_text()
+        assert "## [2026-06-23] ingest | Foo" in log
+        # assumptions captured to inbox
+        assert "verify: v" in (wiki_root / "inbox.md").read_text()
+        # source page carries a source_hash for idempotence
+        sp = (wiki_root / "pages" / "source" / "source-foo.md").read_text()
+        assert "source_hash:" in sp
+
+    def test_backup_before_overwrite(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        # Pre-create the entity page so the ingest updates (and backs up) it.
+        ent = wiki_root / "pages" / "entity"
+        ent.mkdir(parents=True)
+        (ent / "foo.md").write_text(
+            "---\nslug: foo\ntitle: Foo\ntype: entity\nscope: public\n"
+            "projects:\n- _global\n---\nold body\n", encoding="utf-8")
+        self._patch(monkeypatch, store, self._payload())
+
+        ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
+                      source_title="Foo", source_text="text", dry_run=False)
+        bak = ent / ".backups" / "foo.md.bak"
+        assert bak.exists()
+        assert "old body" in bak.read_text()
+
+    def test_idempotence_skips_unchanged_source(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        self._patch(monkeypatch, store, self._payload())
+
+        first = ingest_source(store, wiki_root, source_kind="memory",
+                              source_id="foo", source_text="same text",
+                              dry_run=False)
+        assert first["status"] == "ok"
+        second = ingest_source(store, wiki_root, source_kind="memory",
+                               source_id="foo", source_text="same text",
+                               dry_run=False)
+        assert second["status"] == "skipped"
+
+    def test_changed_source_reingests(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        self._patch(monkeypatch, store, self._payload())
+        ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
+                      source_text="v1", dry_run=False)
+        out = ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
+                            source_text="v2 changed", dry_run=False)
+        assert out["status"] == "ok"
+
+    def test_private_target_denied_without_authorization(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        self._patch(monkeypatch, store, self._payload())
+        out = ingest_source(store, wiki_root, source_kind="memory", source_id="h",
+                            source_text="t", target_scope="private",
+                            target_project="glicemia", authorized_scopes=[],
+                            dry_run=True)
+        assert out["status"] == "denied"
+        assert not (wiki_root / "_private").exists()
+
+    def test_private_target_authorized_writes_private(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        payload = self._payload(page_updates=[
+            {"slug": "sugar", "title": "Sugar", "type": "entity", "scope": "private",
+             "new_body": "private note", "is_new": True}])
+        self._patch(monkeypatch, store, payload)
+        out = ingest_source(store, wiki_root, source_kind="memory", source_id="h",
+                            source_text="t", target_scope="private",
+                            target_project="glicemia",
+                            authorized_scopes=["glicemia"], dry_run=False)
+        assert out["status"] == "ok"
+        assert (wiki_root / "_private" / "glicemia" / "source-h.md").exists()
+        assert (wiki_root / "_private" / "glicemia" / "sugar.md").exists()
+
+    def test_unauthorized_private_page_update_dropped(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        # Public ingest, but the LLM proposes a private page → must be dropped.
+        payload = self._payload(page_updates=[
+            {"slug": "secret", "title": "Secret", "type": "entity",
+             "scope": "private", "new_body": "leak", "is_new": True}])
+        self._patch(monkeypatch, store, payload)
+        out = ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
+                            source_text="t", dry_run=False)
+        assert out["status"] == "ok"
+        assert {d["slug"] for d in out["pages"]} == {"source-foo"}
+        assert not (wiki_root / "_private").exists()
+
+    def test_candidate_discovery_reads_neighbours(self, store, wiki_root, monkeypatch):
+        from skill_hub.wiki import ingest_source
+        # Seed a neighbour page on disk + a fake hit pointing at it.
+        ent = wiki_root / "pages" / "entity"
+        ent.mkdir(parents=True)
+        (ent / "bar.md").write_text(
+            "---\nslug: bar\ntitle: Bar\ntype: entity\nscope: public\n"
+            "projects:\n- _global\n---\nbar body\n", encoding="utf-8")
+        hits = [{"metadata": {"slug": "bar", "rel_path": "pages/entity/bar.md"}}]
+        self._patch(monkeypatch, store, self._payload(), hits=hits)
+        out = ingest_source(store, wiki_root, source_kind="memory", source_id="foo",
+                            source_text="t", dry_run=True)
+        assert "bar" in out["candidates"]
