@@ -202,6 +202,10 @@ def test_auto_teach_extracts_rule(tmp_path, monkeypatch):
     # even if an assertion inside the test raises.
     monkeypatch.setenv("HOME", str(tmp_path))
     from skill_hub import config as _cfg
+    # Isolate CONFIG_PATH so config.get() reads a fresh tmp config (falling back to
+    # _DEFAULTS) rather than the real ~/.claude config, which another test may have
+    # materialized with continuous_teaching_enabled=false (#71 leak-in).
+    monkeypatch.setattr(_cfg, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setitem(_cfg._DEFAULTS, "continuous_teaching_enabled", True)
 
     from skill_hub.store import SkillStore
@@ -276,6 +280,10 @@ def test_teach_from_message_remember_pattern(tmp_path, monkeypatch):
     """_maybe_teach_from_message stores teaching when enabled and pattern matches."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from skill_hub import config as _cfg
+    # Isolate CONFIG_PATH so config.get() reads a fresh tmp config (falling back to
+    # _DEFAULTS) rather than the real ~/.claude config, which another test may have
+    # materialized with continuous_teaching_enabled=false (#71 leak-in).
+    monkeypatch.setattr(_cfg, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setitem(_cfg._DEFAULTS, "continuous_teaching_enabled", True)
 
     from skill_hub.store import SkillStore
