@@ -3719,19 +3719,22 @@ def promote_memory(dry_run: bool = True) -> str:
     ``dry_run=True`` (default) reports planned actions without mutating rows.
     """
     conn = _store._conn
+    # Wiki namespaces are derived from markdown (source of truth) and are
+    # rebuilt by wiki_reindex — never promoted or pruned here.
+    _wiki_guard = "namespace NOT IN ('wiki','wiki-private')"
     rules = [
         ("promote", "L1", "L2",
-         "level = 'L1' AND access_count >= 2 AND "
-         "indexed_at < datetime('now', '-7 days')"),
+         f"level = 'L1' AND access_count >= 2 AND "
+         f"indexed_at < datetime('now', '-7 days') AND {_wiki_guard}"),
         ("promote", "L2", "L3",
-         "level = 'L2' AND access_count >= 5 AND "
-         "indexed_at < datetime('now', '-30 days')"),
+         f"level = 'L2' AND access_count >= 5 AND "
+         f"indexed_at < datetime('now', '-30 days') AND {_wiki_guard}"),
         ("prune",   "L0", None,
-         "level = 'L0' AND access_count = 0 AND "
-         "indexed_at < datetime('now', '-1 day')"),
+         f"level = 'L0' AND access_count = 0 AND "
+         f"indexed_at < datetime('now', '-1 day') AND {_wiki_guard}"),
         ("prune",   "L1", None,
-         "level = 'L1' AND access_count = 0 AND "
-         "indexed_at < datetime('now', '-7 days')"),
+         f"level = 'L1' AND access_count = 0 AND "
+         f"indexed_at < datetime('now', '-7 days') AND {_wiki_guard}"),
     ]
     report: list[dict] = []
     for action, from_lvl, to_lvl, where in rules:
@@ -4639,6 +4642,70 @@ def index_logs(hours: int = 24, limit: int = 1000, dry_run: bool = False) -> str
             lines.append(f"    {kind}: {count}")
     if dry_run:
         lines.append("  (dry_run: no writes made)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("embedding")
+def wiki_reindex(dry_run: bool = False) -> str:
+    """Rebuild wiki_pages/wiki_edges tables and re-embed all wiki pages into vector namespaces.
+
+    Walks ``<wiki_root>/pages/**/*.md`` and ``<wiki_root>/_private/**/*.md``,
+    deletes existing derived data (wiki_pages, wiki_edges, and wiki/wiki-private
+    vector rows), then re-derives everything from the markdown source of truth.
+    Idempotent — safe to run repeatedly.
+
+    #35 dim guard: raises an error if the active embedding model's dimension
+    differs from the stored vector dimension.
+
+    Args:
+        dry_run: When True, scan pages and report counts without writing anything.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_reindex", dry_run=dry_run)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    try:
+        result = _wiki.reindex(_store, wiki_root, dry_run=dry_run)
+    except ValueError as exc:
+        return f"wiki_reindex error: {exc}"
+    mode = "dry_run" if dry_run else "live"
+    return (
+        f"wiki_reindex [{mode}]: "
+        f"pages={result['pages']} "
+        f"edges={result['edges']} "
+        f"vectors={result['vectors']}"
+    )
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_status() -> str:
+    """Report the current state of the LLM Wiki knowledge layer.
+
+    Returns counts of pages (DB vs disk), edges, orphans (no inbound link),
+    dangling edges (unresolved dst), last log.md entry, and drift (pages on
+    disk vs vector rows). Stdlib-only — works in no_llm_mode.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_status")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    st = _wiki.status(_store, wiki_root)
+    lines = [
+        f"wiki_status:",
+        f"  pages (db={st['pages_db']}, disk={st['pages_disk']}, drift={st['drift']})",
+        f"  edges={st['edges']} dangling={st['dangling_edges']} orphans={st['orphans']}",
+        f"  vec_rows={st['vec_rows']}",
+    ]
+    if st["last_log"]:
+        lines.append(f"  last_log: {st['last_log']}")
+    if st["drift"] > 0:
+        lines.append("  WARNING: drift detected — run wiki_reindex to reconcile")
     return "\n".join(lines)
 
 

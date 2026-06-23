@@ -237,8 +237,17 @@ def iter_user_memory_files() -> list[Path]:
             if not mem_dir.is_dir():
                 continue
             for f in mem_dir.rglob("*.md"):
-                if f.is_file():
-                    out.append(f)
+                if not f.is_file():
+                    continue
+                # Skip files in any `private` subdirectory. Check relative
+                # path parts so macOS's /private/var/... prefix is ignored.
+                try:
+                    rel = f.relative_to(mem_dir)
+                except ValueError:
+                    rel = f
+                if any(part == "private" for part in rel.parts):
+                    continue
+                out.append(f)
     except OSError:
         pass
     return out

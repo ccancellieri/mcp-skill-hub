@@ -369,6 +369,11 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("ensure_tooling", "Probe and provision dev tooling (e.g. code index) for a path",
              hard=()),
+    # --- LLM Wiki knowledge layer ---
+    ToolSpec("wiki_reindex", "Rebuild wiki_pages/wiki_edges tables and re-embed pages",
+             hard=(BACKEND_DB, BACKEND_EMBED)),
+    ToolSpec("wiki_status", "Wiki health: page counts, edges, orphans, drift",
+             hard=()),
 )
 
 
