@@ -99,7 +99,6 @@ def load_skills(
                     if rule_text:
                         teaching_rules.append(rule_text)
                     # Merge teaching-suggested skills/plugins into preloaded set
-                    action = (t.get("action") or "").strip()
                     target_type = (t.get("target_type") or "").strip()
                     target_id = (t.get("target_id") or "").strip()
                     if target_id and target_type == "skill" and target_id not in seen:
