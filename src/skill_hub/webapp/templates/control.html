@@ -118,7 +118,7 @@
     <!-- Activity Sync tab -->
     <div x-show="tab==='activity'" class="tab-panel"
          hx-get="/control/activity"
-         hx-trigger="revealed once"
+         hx-trigger="revealed once, every 30s"
          hx-swap="innerHTML">
       <p class="muted">Loading Activity Sync…</p>
     </div>

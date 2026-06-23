@@ -166,3 +166,34 @@ def activity_panel(request: Request) -> Any:
         "control_activity.html",
         data,
     )
+
+
+@router.post("/control/activity/sync", response_class=HTMLResponse)
+def activity_sync(request: Request) -> Any:
+    """Trigger an issue↔task reconciliation and return the refreshed panel HTML.
+
+    Invokes the underlying sync logic (dry_run=False, all repos) then re-renders
+    the activity panel so HTMX can swap in the updated data in one round-trip.
+    Errors are surfaced inline rather than raising HTTP exceptions, to keep the
+    panel functional even when GitHub is unreachable.
+    """
+    store = getattr(request.app.state, "store", None)
+    sync_error: str | None = None
+
+    if store is not None:
+        try:
+            from ... import issue_sync as _issue_sync
+            _issue_sync.reconcile(store, repo="", dry_run=False, writeback="off")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("activity sync failed: %s", exc)
+            sync_error = str(exc)
+
+    data = _load_panel_data(store)
+    if sync_error and data.get("error") is None:
+        data["error"] = sync_error
+
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "control_activity.html",
+        data,
+    )

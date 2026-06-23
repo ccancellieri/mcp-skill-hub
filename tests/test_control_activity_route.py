@@ -313,3 +313,51 @@ class TestControlPageTab:
     def test_control_page_contains_activity_htmx_target(self, client):
         r = client.get("/control")
         assert "/control/activity" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Sync-now trigger + auto-refresh
+# ---------------------------------------------------------------------------
+
+class TestActivitySyncNow:
+    def test_panel_renders_sync_now_button(self, client):
+        r = client.get("/control/activity")
+        assert r.status_code == 200
+        assert "Sync now" in r.text
+        assert 'hx-post="/control/activity/sync"' in r.text
+
+    def test_control_page_panel_auto_refreshes(self, client):
+        r = client.get("/control")
+        assert r.status_code == 200
+        # The activity tab panel should poll, not just load once.
+        assert "every 30s" in r.text
+
+    def test_post_sync_invokes_reconcile_and_returns_panel(self, client, monkeypatch):
+        calls = {}
+
+        def _fake_reconcile(store, **kwargs):
+            calls["kwargs"] = kwargs
+            return {"checked": 1, "closed": 0, "commented": 0}
+
+        from skill_hub import issue_sync as _issue_sync
+        monkeypatch.setattr(_issue_sync, "reconcile", _fake_reconcile)
+
+        r = client.post("/control/activity/sync")
+        assert r.status_code == 200
+        # Re-renders the panel (so HTMX can swap it in).
+        assert "Task ↔ Issue Links" in r.text
+        # Did not write back to GitHub.
+        assert calls["kwargs"].get("writeback") == "off"
+        assert calls["kwargs"].get("dry_run") is False
+
+    def test_post_sync_surfaces_error_inline(self, client, monkeypatch):
+        def _boom(store, **kwargs):
+            raise RuntimeError("github unreachable")
+
+        from skill_hub import issue_sync as _issue_sync
+        monkeypatch.setattr(_issue_sync, "reconcile", _boom)
+
+        r = client.post("/control/activity/sync")
+        # Endpoint must not 500 — it surfaces the error inline in the panel.
+        assert r.status_code == 200
+        assert "github unreachable" in r.text

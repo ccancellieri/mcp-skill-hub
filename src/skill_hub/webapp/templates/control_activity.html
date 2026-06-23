@@ -84,6 +84,13 @@
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <h2 style="margin:0">Task ↔ Issue Links</h2>
       <span class="tag status-transitioning" style="font-size:11px">{{ links | length }} link{{ 's' if links | length != 1 else '' }}</span>
+      <button class="btn sm"
+              hx-post="/control/activity/sync"
+              hx-target="closest .activity-panel"
+              hx-swap="outerHTML"
+              hx-indicator="#activity-sync-spinner"
+              style="margin-left:auto">Sync now</button>
+      <span id="activity-sync-spinner" class="htmx-indicator muted" style="font-size:11px">syncing&hellip;</span>
     </div>
 
     {% if links %}
