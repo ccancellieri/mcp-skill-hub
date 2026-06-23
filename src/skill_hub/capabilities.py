@@ -283,6 +283,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("issue_sync", "Sync skill-hub tasks with GitHub issues",
              hard=(BACKEND_DB,), soft=(BACKEND_GH,)),
+    ToolSpec("discussions_sync", "Index GitHub Discussions into vector memory",
+             hard=(BACKEND_DB,), soft=(BACKEND_GH,)),
     # --- Profiles / plugins ---
     ToolSpec("list_profiles", "List session profiles",
              hard=(BACKEND_DB,)),

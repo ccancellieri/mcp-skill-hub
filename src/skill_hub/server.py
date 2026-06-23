@@ -4307,6 +4307,54 @@ def issue_sync(repo: str = "", dry_run: bool = False) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("none")
+def discussions_sync(repo: str = "", dry_run: bool = False, first: int = 50) -> str:
+    """Index this repo's GitHub Discussions (+ comments) into vector memory (namespace 'discussions'), searchable via search_context.
+
+    Args:
+        repo:     GitHub repo as "owner/name". Empty = resolve from current directory.
+        dry_run:  Report what would be indexed without writing to the DB.
+        first:    Number of discussions to fetch (max 100).
+    """
+    from . import discussions_sync as _discussions_sync
+
+    log_tool("discussions_sync", repo=repo, dry_run=dry_run, first=first)
+
+    sid = _session.get("id", "")
+
+    def _emit(kind: str, tool_name: str | None, payload: dict) -> None:
+        try:
+            _store.append_event(session_id=sid, kind=kind,
+                                tool_name=tool_name, payload=payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+    report = _discussions_sync.sync_discussions(
+        _store,
+        repo=repo,
+        dry_run=dry_run,
+        first=first,
+        emit=_emit,
+    )
+
+    if "error" in report:
+        return f"discussions_sync error: {report['error']}"
+
+    mode = "dry_run" if dry_run else "live"
+    lines = [
+        f"discussions_sync [{mode}]: "
+        f"checked={report['checked']} "
+        f"indexed={report['indexed']} "
+        f"discussions={report['discussions']} "
+        f"comments={report['comments']} "
+        f"skipped={report['skipped']}",
+    ]
+    if dry_run:
+        lines.append("  (dry_run: no writes made)")
+    return "\n".join(lines)
+
+
 def main() -> None:
     import sys
     log_banner()
