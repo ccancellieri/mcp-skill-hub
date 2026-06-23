@@ -400,6 +400,16 @@ _DEFAULTS = {
     "router_haiku_compact_hint": True,    # /compact recommendation
     "router_haiku_subtask_decomp": True,  # multi-part prompt decomposition
 
+    # Per-session routing-verdict cache (issue #88).
+    # When enabled, the stable skills/plugins block is persisted to disk per
+    # session and replayed byte-identical each turn, forming a cacheable prefix
+    # for the provider's prompt cache.  Default OFF — zero behaviour change.
+    "router_verdict_cache_enabled": False,
+    # Maximum number of messages before the cached block is recomputed.
+    "router_verdict_cache_max_messages": 20,
+    # Wall-clock TTL (seconds) after which the cached block is recomputed.
+    "router_verdict_cache_ttl_secs": 1800,
+
     # Auto-compact advisor: inject /compact suggestion when context is estimated
     # to be ≥ this fraction full (based on session message count)
     "router_compact_threshold": 0.70,
