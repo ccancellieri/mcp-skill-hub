@@ -3104,6 +3104,39 @@ def _compression_report() -> str:
     return "\n".join(lines)
 
 
+def _llm_report() -> str:
+    """Build the local-LLM metering section for token_stats (always shown)."""
+    try:
+        s = _store.get_llm_stats()
+    except Exception:  # noqa: BLE001
+        return ""
+    metering = "on" if _cfg.get("llm_metering_enabled") else "off"
+    if not s.get("calls"):
+        return (
+            "\n=== Local LLM Calls (Ollama) ===\n"
+            f"  metering={metering}\n"
+            "  No local LLM calls recorded yet."
+        )
+    lines = [
+        "\n=== Local LLM Calls (Ollama) ===",
+        f"  metering={metering}",
+        f"  Calls: {s['calls']}  ({s['errors']} errors)",
+        f"  Latency: avg ~{s['avg_latency_ms']:.0f} ms",
+        f"  Tokens: prompt {s['prompt_tokens']}  completion {s['completion_tokens']}"
+        f"  (total {s['total_tokens']})",
+        f"  Throughput: ~{s['tokens_per_sec']:.1f} tok/s",
+    ]
+    by_op = s.get("by_op") or {}
+    if by_op:
+        lines.append("  By op:")
+        for op_name, d in sorted(by_op.items(), key=lambda kv: -kv[1]["count"]):
+            lines.append(
+                f"    {op_name:<20} {d['count']}x  ~{d['total_tokens']:,} tokens"
+                f"  (~{d['duration_ms']:,}ms)"
+            )
+    return "\n".join(lines)
+
+
 def token_stats() -> str:
     """Show estimated token savings from hook interceptions and tool-output compression."""
     compression = _compression_report()
@@ -3117,7 +3150,13 @@ def token_stats() -> str:
             )
         else:
             head = "No interceptions recorded yet. Use task commands to build up data."
-        return head + ("\n" + compression if compression else "")
+        llm = _llm_report()
+        suffix = ""
+        if compression:
+            suffix += "\n" + compression
+        if llm:
+            suffix += "\n" + llm
+        return head + suffix
 
     stats = _store.get_interception_stats()
     total_saved = totals["total_tokens_saved"] or 0
@@ -3143,6 +3182,9 @@ def token_stats() -> str:
     )
     if compression:
         lines.append(compression)
+    llm = _llm_report()
+    if llm:
+        lines.append(llm)
     return "\n".join(lines)
 
 

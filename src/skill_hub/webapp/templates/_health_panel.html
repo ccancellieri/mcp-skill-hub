@@ -305,6 +305,70 @@
     {% endif %}
     {% endif %}
   </div>
+
+  {# ---- Local LLM metering -------------------------------------------- #}
+  {% set ls = llm_stats %}
+  <div class="card">
+    <div class="card-head">
+      <h3>Local LLM</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        {% if llm_metering_enabled %}
+        <span class="tag status-ok">● metering on</span>
+        {% else %}
+        <span class="tag status-stopped">○ metering off</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if ls.calls == 0 %}
+    <p class="muted" style="margin:6px 0">No local LLM calls recorded yet.</p>
+    {% else %}
+    <table class="health-table" style="margin-bottom:8px">
+      <thead><tr><th>metric</th><th style="text-align:right">value</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Calls / errors</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ ls.calls }} / {{ ls.errors }}
+          </td>
+        </tr>
+        <tr>
+          <td>Avg latency</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            ~{{ ls.avg_latency_ms|round(0)|int }} ms
+          </td>
+        </tr>
+        <tr>
+          <td>Tokens (prompt / compl / total)</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '{:,}'.format(ls.prompt_tokens) }} / {{ '{:,}'.format(ls.completion_tokens) }} / {{ '{:,}'.format(ls.total_tokens) }}
+          </td>
+        </tr>
+        <tr>
+          <td>Throughput</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            ~{{ ls.tokens_per_sec }} tok/s
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    {% if ls.by_op %}
+    <div style="font-size:11px;color:var(--color-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">By op</div>
+    <table class="health-table">
+      <thead><tr><th>op</th><th style="text-align:right">calls</th><th style="text-align:right">tokens</th><th style="text-align:right">ms</th></tr></thead>
+      <tbody>
+      {% for op_name, d in ls.by_op.items()|sort(attribute='1.count', reverse=True) %}
+        <tr>
+          <td>{{ op_name }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ d.count }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(d.total_tokens) }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(d.duration_ms) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
 </div>
 
 <style>

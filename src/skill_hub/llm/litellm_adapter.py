@@ -6,12 +6,51 @@ Singleton per-process: ``get_provider()`` returns a cached instance.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from .. import config as _cfg
 from .provider import LLMError, LLMProvider, Message
 
 _log = logging.getLogger(__name__)
+
+
+def _emit_llm_event(
+    *,
+    op: str,
+    model: str,
+    tier: str,
+    duration_ms: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    status: str,
+) -> None:
+    """Best-effort telemetry: record an ``llm_call`` event. Never raises."""
+    try:
+        from ..config import get as cfg_get
+
+        if not cfg_get("llm_metering_enabled"):
+            return
+        from ..store import get_store
+
+        get_store().append_event(
+            session_id="",
+            kind="llm_call",
+            payload={
+                "op": op,
+                "model": model,
+                "tier": tier,
+                "duration_ms": duration_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "status": status,
+            },
+            tool_name=op or None,
+        )
+    except Exception as e:  # noqa: BLE001 - telemetry must never break a tool call
+        _log.debug("llm_call telemetry emit failed (non-fatal): %s", e)
 
 
 class LitellmProvider:
@@ -118,6 +157,7 @@ class LitellmProvider:
         stop: list[str] | None = None,
         cache: bool = False,
         extra: dict[str, Any] | None = None,
+        op: str = "",
     ) -> str:
         return self.chat(
             [Message(role="user", content=prompt)],
@@ -125,6 +165,7 @@ class LitellmProvider:
             temperature=temperature, timeout=timeout,
             cache=cache,
             extra={**(extra or {}), **({"stop": stop} if stop else {})},
+            op=op,
         )
 
     def chat(
@@ -138,6 +179,7 @@ class LitellmProvider:
         timeout: float = 60.0,
         cache: bool = False,
         extra: dict[str, Any] | None = None,
+        op: str = "",
     ) -> str:
         resolved_model = self._resolve_model(tier, model)
         normalized = self._normalize_messages(messages)
@@ -155,10 +197,48 @@ class LitellmProvider:
             kwargs["api_base"] = api_base
         if extra:
             kwargs.update(extra)
+        _t0 = time.monotonic()
         try:
             resp = self._litellm.completion(**kwargs)
         except Exception as exc:  # noqa: BLE001
+            _duration_ms = int(round((time.monotonic() - _t0) * 1000))
+            _emit_llm_event(
+                op=op, model=resolved_model, tier=tier,
+                duration_ms=_duration_ms,
+                prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                status="error",
+            )
             raise LLMError(f"completion failed ({resolved_model}): {exc}") from exc
+        _duration_ms = int(round((time.monotonic() - _t0) * 1000))
+        try:
+            _raw_usage = resp.get("usage") if hasattr(resp, "get") else None
+            if _raw_usage is None:
+                try:
+                    _raw_usage = resp["usage"]
+                except (KeyError, TypeError):
+                    pass
+            if _raw_usage is None:
+                _raw_usage = getattr(resp, "usage", None)
+            if isinstance(_raw_usage, dict):
+                _usage: dict[str, Any] = _raw_usage
+            elif _raw_usage is not None:
+                _usage = {
+                    "prompt_tokens": getattr(_raw_usage, "prompt_tokens", 0),
+                    "completion_tokens": getattr(_raw_usage, "completion_tokens", 0),
+                    "total_tokens": getattr(_raw_usage, "total_tokens", 0),
+                }
+            else:
+                _usage = {}
+        except Exception:  # noqa: BLE001
+            _usage = {}
+        _emit_llm_event(
+            op=op, model=resolved_model, tier=tier,
+            duration_ms=_duration_ms,
+            prompt_tokens=int(_usage.get("prompt_tokens") or 0),
+            completion_tokens=int(_usage.get("completion_tokens") or 0),
+            total_tokens=int(_usage.get("total_tokens") or 0),
+            status="ok",
+        )
         try:
             return resp["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:

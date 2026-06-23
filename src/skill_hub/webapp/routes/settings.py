@@ -101,6 +101,7 @@ _FIELD_HINTS = {
     "reason_model": "Reasoning model for re-ranking/compaction. 8GB: deepseek-r1:1.5b, 16GB: deepseek-r1:7b, 32GB+: deepseek-r1:14b",
     "llm_providers": "LLM endpoints by tier (tier_cheap/mid/smart/embed). Use litellm syntax: ollama/<model>, anthropic/<model>, openai/<model>",
     "llm_default_tier": "Default LLM tier when code doesn't specify one",
+    "llm_metering_enabled": "Record latency and token throughput for every local LLM call (surfaces in token_stats and the System Health dashboard)",
     # Hook core
     "hook_enabled": "Enable/disable UserPromptSubmit hook entirely",
     "hook_timeout_seconds": "Max seconds for hook LLM classification",

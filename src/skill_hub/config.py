@@ -142,6 +142,10 @@ _DEFAULTS = {
     "compression_code_aware_enabled": False,  # tree-sitter AST code compression
     "compression_ml_target_ratio": 0.6,     # Kompress target size (compressed/original)
 
+    # Local LLM metering — record latency + token throughput for every Ollama call.
+    # Surfaces in token_stats() and the System Health dashboard card.
+    "llm_metering_enabled": True,           # master switch for per-call LLM metering
+
     # Conversation digest — periodic context compaction.
     # Deterministic-first: by default the periodic digest condenses recent messages
     # extractively (Kompress, no local LLM). The richer abstractive digest — which
