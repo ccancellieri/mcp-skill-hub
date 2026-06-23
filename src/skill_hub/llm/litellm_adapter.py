@@ -113,14 +113,24 @@ class LitellmProvider:
         self,
         messages: list[dict[str, Any]],
         model: str,
+        cache_ttl: str = "",
     ) -> list[dict[str, Any]]:
         """Mark the last user message as an ephemeral cache breakpoint.
 
         No-op for non-Anthropic models. Used by callers that reuse a long
         prefix across calls (e.g., session_memory incremental refresh).
+
+        ``cache_ttl`` (e.g. ``"1h"``) requests Anthropic's extended cache TTL
+        for long-lived prefixes; omitted/empty uses the default ~5-minute
+        ephemeral window. Applied only when the operator has opted into the
+        extended tier (``llm_cache_extended_ttl``) so an unsupported
+        litellm/SDK never errors the call.
         """
         if not self._supports_cache_control(model) or not messages:
             return messages
+        cc: dict[str, Any] = {"type": "ephemeral"}
+        if cache_ttl and _cfg.get("llm_cache_extended_ttl"):
+            cc["ttl"] = cache_ttl
         for msg in reversed(messages):
             if msg.get("role") != "user":
                 continue
@@ -130,14 +140,14 @@ class LitellmProvider:
                     {
                         "type": "text",
                         "text": content,
-                        "cache_control": {"type": "ephemeral"},
+                        "cache_control": dict(cc),
                     }
                 ]
             elif isinstance(content, list) and content:
                 # Mark the last text block only.
                 for block in reversed(content):
                     if isinstance(block, dict) and block.get("type") == "text":
-                        block["cache_control"] = {"type": "ephemeral"}
+                        block["cache_control"] = dict(cc)
                         break
             break
         return messages
@@ -158,6 +168,7 @@ class LitellmProvider:
         cache: bool = False,
         extra: dict[str, Any] | None = None,
         op: str = "",
+        cache_ttl: str = "",
     ) -> str:
         return self.chat(
             [Message(role="user", content=prompt)],
@@ -166,6 +177,7 @@ class LitellmProvider:
             cache=cache,
             extra={**(extra or {}), **({"stop": stop} if stop else {})},
             op=op,
+            cache_ttl=cache_ttl,
         )
 
     def chat(
@@ -180,11 +192,12 @@ class LitellmProvider:
         cache: bool = False,
         extra: dict[str, Any] | None = None,
         op: str = "",
+        cache_ttl: str = "",
     ) -> str:
         resolved_model = self._resolve_model(tier, model)
         normalized = self._normalize_messages(messages)
         if cache:
-            normalized = self._apply_cache_control(normalized, resolved_model)
+            normalized = self._apply_cache_control(normalized, resolved_model, cache_ttl)
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "messages": normalized,

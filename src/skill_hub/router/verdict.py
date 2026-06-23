@@ -164,11 +164,16 @@ def format_system_message(v: Verdict) -> str:
     )
 
     # ── Preloaded skills ────────────────────────────────────────────────────
+    # Emit names in a canonical (sorted) order so identical skill/plugin sets
+    # produce byte-identical injected text regardless of the relevance-ranked
+    # order they were selected in — keeps the injected prefix cache-stable.
     if v.preload_skills:
-        lines.append(f"[Router] Preloaded skills: {', '.join(v.preload_skills)}")
+        lines.append(f"[Router] Preloaded skills: {', '.join(sorted(v.preload_skills))}")
 
     if v.preload_plugins:
-        lines.append(f"[Router] Suggested plugins to enable: {', '.join(v.preload_plugins)}")
+        lines.append(
+            f"[Router] Suggested plugins to enable: {', '.join(sorted(v.preload_plugins))}"
+        )
 
     # ── Compact hint ────────────────────────────────────────────────────────
     ch = v.compact_hint
