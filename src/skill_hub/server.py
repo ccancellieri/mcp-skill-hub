@@ -3065,8 +3065,6 @@ def render_dashboard() -> str:
     return f"Dashboard written to file://{path}"
 
 
-@mcp.tool()
-@requires_capability("none")
 def _compression_report() -> str:
     """Build the compression-savings section for token_stats (always shown)."""
     try:
@@ -3137,6 +3135,8 @@ def _llm_report() -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("none")
 def token_stats() -> str:
     """Show estimated token savings from hook interceptions and tool-output compression."""
     compression = _compression_report()

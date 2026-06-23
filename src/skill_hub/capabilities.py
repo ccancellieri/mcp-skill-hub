@@ -328,6 +328,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("rebuild_session_memory", "Rebuild session memory from logs",
              hard=(BACKEND_DB,)),
+    ToolSpec("wake_session", "Stateless recovery — event replay + cache rebuild",
+             hard=(BACKEND_DB,)),
     # --- Configuration & status ---
     ToolSpec("configure", "View or update a config key",
              hard=()),
