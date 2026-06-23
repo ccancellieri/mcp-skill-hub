@@ -471,6 +471,11 @@ _DEFAULTS = {
     # into a single session_snapshot row and deleted.  Set to 0 to keep forever.
     "event_log_retention_days": 30,
 
+    # Base-config self-heal — automatically re-apply missing hooks / MCP
+    # registration / base-roles block at session start.  Disable only if you
+    # manage those surfaces manually.
+    "auto_repair_base_config": True,
+
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,
 

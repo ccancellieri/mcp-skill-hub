@@ -14,7 +14,12 @@ It powers:
 The merge is idempotent: hooks are matched by their script *basename*, so
 re-running never duplicates an entry, and a clobbered settings.json is repaired
 by appending only the missing skill-hub hook groups. Other tools' hooks
-(codegraph, ~/.claude/hooks/*, model-tier enforcement) are left untouched.
+(codegraph, hooks in other dirs, model-tier enforcement) are left untouched.
+
+Beyond hooks, this module also manages:
+  * MCP-server registration in ``~/.claude.json``  (``check_mcp`` / ``merge_mcp``)
+  * A sentinel "base roles" block in ``~/.claude/CLAUDE.md``            (``check_roles`` / ``merge_roles``)
+  * Unified ``check_all`` / ``restore_all`` covering all three surfaces.
 
 Ref: https://code.claude.com/docs/en/hooks
 """
@@ -26,6 +31,45 @@ from pathlib import Path
 from typing import Any
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+
+# Default paths — overridable via env for tests.
+_CLAUDE_JSON_PATH = Path.home() / ".claude.json"
+_CLAUDE_MD_PATH = Path.home() / ".claude" / "CLAUDE.md"
+
+CLAUDE_JSON_PATH: Path = Path(
+    os.environ.get("SKILL_HUB_CLAUDE_JSON", str(_CLAUDE_JSON_PATH))
+)
+CLAUDE_MD_PATH: Path = Path(
+    os.environ.get("SKILL_HUB_CLAUDE_MD", str(_CLAUDE_MD_PATH))
+)
+
+# Sentinel markers for the managed block in CLAUDE.md.
+_ROLES_START = "<!-- skill-hub:base-roles:start -->"
+_ROLES_END = "<!-- skill-hub:base-roles:end -->"
+
+# Generic, self-contained "base roles" block — no paths, slugs, or PII.
+_BASE_ROLES_CONTENT = """\
+## Model-Tier Routing
+
+- **Opus** — design, architecture, brainstorming, complex decisions. Use for judgement, not labour.
+- **Sonnet** — implementation, refactoring, test writing, code review, commit-message authoring.
+- **Haiku** — read-only research (symbol lookup, grep sweeps, log trawls), git mechanics (stage, commit, push, branch, PR plumbing).
+
+Dispatch every Agent with an explicit `model:` parameter matching the tier above.
+Inheriting Opus for mechanical work is a token leak.
+
+## Skill-Hub MCP
+
+Keep the skill-hub MCP server in the request loop (hooks + router active).
+Call `search_skills` at conversation start and after topic changes.
+
+## Karpathy Guidelines
+
+- **Think Before Coding** — read the spec and existing patterns before writing.
+- **Simplicity First** — smallest correct change; no speculative abstractions.
+- **Surgical Changes** — match surrounding style; don't refactor unrelated code.
+- **Goal-Driven Execution** — every line must be traceable to a stated requirement.
+"""
 
 
 def hooks_dir() -> Path:
@@ -39,6 +83,11 @@ def hooks_dir() -> Path:
     if override:
         return Path(override)
     return Path(__file__).resolve().parents[2] / "hooks"
+
+
+def _repo_root() -> Path:
+    """Absolute path to the repository root (parent of ``src/`` and ``hooks/``)."""
+    return Path(__file__).resolve().parents[2]
 
 
 # The skill-hub-owned hooks, in the exact shape Claude Code expects. Each entry
@@ -217,29 +266,432 @@ def install(
     return report
 
 
+# ---------------------------------------------------------------------------
+# MCP-server registration in ~/.claude.json
+# ---------------------------------------------------------------------------
+
+def _default_mcp_entry() -> dict[str, Any]:
+    """Canonical skill-hub MCP entry derived from the repo layout.
+
+    Uses the venv-installed ``skill-hub`` binary if present; otherwise falls
+    back to ``python -m skill_hub.server`` so the entry works even outside a
+    venv (e.g. a dev editable install).
+    """
+    venv_bin = _repo_root() / ".venv" / "bin" / "skill-hub"
+    if venv_bin.exists():
+        return {"type": "stdio", "command": str(venv_bin)}
+    return {
+        "type": "stdio",
+        "command": "python",
+        "args": ["-m", "skill_hub.server"],
+    }
+
+
+def _resolve_claude_json_path(claude_json_path: Path | None) -> Path:
+    if claude_json_path is not None:
+        return Path(claude_json_path)
+    env = os.environ.get("SKILL_HUB_CLAUDE_JSON")
+    return Path(env) if env else _CLAUDE_JSON_PATH
+
+
+def check_mcp(claude_json_path: Path | None = None) -> list[str]:
+    """Return a list of issues with the skill-hub MCP registration.
+
+    Returns an empty list when the entry is present and well-formed.
+    """
+    path = _resolve_claude_json_path(claude_json_path)
+    if not path.exists():
+        return ["skill-hub entry missing (claude.json not found)"]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return ["claude.json is not a JSON object"]
+    except (OSError, ValueError) as exc:
+        return [f"cannot read claude.json: {exc}"]
+
+    servers = data.get("mcpServers") or {}
+    if "skill-hub" not in servers:
+        return ["skill-hub not in mcpServers"]
+    entry = servers["skill-hub"]
+    if not isinstance(entry, dict) or not entry.get("command"):
+        return ["skill-hub mcpServers entry is malformed (no command)"]
+    return []
+
+
+def merge_mcp(
+    claude_json_path: Path | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Ensure skill-hub is registered in ``claude_json_path``.
+
+    Reads the existing file (if present) to use its skill-hub entry as the
+    template, preserving any secrets already there.  If no entry exists,
+    derives a default from the repo layout.  All other keys and mcpServers
+    are left untouched.
+
+    Returns ``(data, added)`` where ``added`` is a list of string labels
+    describing what changed (empty when already correct).
+    """
+    path = _resolve_claude_json_path(claude_json_path)
+    data: dict[str, Any] = {}
+    parse_ok = True
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
+            else:
+                parse_ok = False
+        except (OSError, ValueError):
+            parse_ok = False
+
+    if not parse_ok:
+        # Refuse to overwrite a file we couldn't parse — data-loss prevention.
+        return data, []
+
+    servers = data.setdefault("mcpServers", {})
+    added: list[str] = []
+
+    entry = servers.get("skill-hub")
+    if not isinstance(entry, dict) or not entry.get("command"):
+        servers["skill-hub"] = _default_mcp_entry()
+        added.append("mcpServers:skill-hub")
+
+    return data, added
+
+
+def install_mcp(
+    claude_json_path: Path | None = None,
+    *,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> dict[str, Any]:
+    """Idempotently register skill-hub in ``claude_json_path``.
+
+    Returns a report dict parallel in structure to ``install()``.
+    """
+    path = _resolve_claude_json_path(claude_json_path)
+    existed = path.exists()
+
+    issues_before = check_mcp(path)
+    data, added = merge_mcp(path)
+
+    report: dict[str, Any] = {
+        "claude_json_path": str(path),
+        "existed": existed,
+        "added": added,
+        "issues_before": issues_before,
+        "backup_path": None,
+        "dry_run": dry_run,
+    }
+
+    if dry_run or not added:
+        return report
+
+    if backup and existed:
+        bak = path.with_suffix(path.suffix + ".bak")
+        try:
+            bak.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            report["backup_path"] = str(bak)
+        except OSError:
+            pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Managed "base roles" block in ~/.claude/CLAUDE.md
+# ---------------------------------------------------------------------------
+
+def _resolve_claude_md_path(claude_md_path: Path | None) -> Path:
+    if claude_md_path is not None:
+        return Path(claude_md_path)
+    env = os.environ.get("SKILL_HUB_CLAUDE_MD")
+    return Path(env) if env else _CLAUDE_MD_PATH
+
+
+def check_roles(claude_md_path: Path | None = None) -> list[str]:
+    """Return issues with the managed base-roles block in CLAUDE.md.
+
+    Returns an empty list when the block is present and intact.
+    """
+    path = _resolve_claude_md_path(claude_md_path)
+    if not path.exists():
+        return ["base-roles block missing (CLAUDE.md not found)"]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"cannot read CLAUDE.md: {exc}"]
+    if _ROLES_START not in text:
+        return ["base-roles sentinel block not present in CLAUDE.md"]
+    if _ROLES_END not in text:
+        return ["base-roles block start found but end sentinel missing"]
+    return []
+
+
+def merge_roles(
+    claude_md_path: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Idempotently insert/refresh the base-roles sentinel block.
+
+    Content outside the sentinels is preserved byte-for-byte.  The inner
+    content is replaced with ``_BASE_ROLES_CONTENT`` on every call so it
+    stays fresh.  If the sentinels are absent the block is appended.
+
+    Returns ``(new_text, added)`` where ``added`` describes what changed.
+    """
+    path = _resolve_claude_md_path(claude_md_path)
+    existing = ""
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+
+    block = f"{_ROLES_START}\n{_BASE_ROLES_CONTENT}{_ROLES_END}\n"
+    added: list[str] = []
+
+    if _ROLES_START in existing and _ROLES_END in existing:
+        # Replace only the inner content.
+        start_idx = existing.index(_ROLES_START)
+        end_idx = existing.index(_ROLES_END) + len(_ROLES_END)
+        old_block = existing[start_idx:end_idx]
+        new_block = f"{_ROLES_START}\n{_BASE_ROLES_CONTENT}{_ROLES_END}"
+        if old_block == new_block:
+            return existing, []  # already up to date
+        new_text = existing[:start_idx] + new_block + existing[end_idx:]
+        added.append("CLAUDE.md:base-roles:refreshed")
+    elif _ROLES_START not in existing:
+        # Append the block with exactly one blank line separator.
+        if not existing:
+            sep = ""
+        elif existing.endswith("\n\n"):
+            sep = ""
+        elif existing.endswith("\n"):
+            sep = "\n"
+        else:
+            sep = "\n\n"
+        new_text = existing + sep + block
+        added.append("CLAUDE.md:base-roles:inserted")
+    else:
+        # Start sentinel present but end is missing — append end.
+        new_text = existing.rstrip() + "\n" + _ROLES_END + "\n"
+        added.append("CLAUDE.md:base-roles:end-sentinel-repaired")
+
+    return new_text, added
+
+
+def install_roles(
+    claude_md_path: Path | None = None,
+    *,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> dict[str, Any]:
+    """Idempotently install/refresh the base-roles block in CLAUDE.md.
+
+    Returns a report dict parallel in structure to ``install()``.
+    """
+    path = _resolve_claude_md_path(claude_md_path)
+    existed = path.exists()
+
+    issues_before = check_roles(path)
+    new_text, added = merge_roles(path)
+
+    report: dict[str, Any] = {
+        "claude_md_path": str(path),
+        "existed": existed,
+        "added": added,
+        "issues_before": issues_before,
+        "backup_path": None,
+        "dry_run": dry_run,
+    }
+
+    if dry_run or not added:
+        return report
+
+    if backup and existed:
+        bak = path.with_suffix(path.suffix + ".bak")
+        try:
+            bak.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            report["backup_path"] = str(bak)
+        except OSError:
+            pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(new_text, encoding="utf-8")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Unified check_all / restore_all
+# ---------------------------------------------------------------------------
+
+def _resolve_settings_path(settings_path: Path | None) -> Path:
+    """Return the effective settings.json path, using the module attribute as default."""
+    if settings_path is not None:
+        return Path(settings_path)
+    return SETTINGS_PATH
+
+
+def check_all(
+    settings_path: Path | None = None,
+    claude_json_path: Path | None = None,
+    claude_md_path: Path | None = None,
+) -> dict[str, list[str]]:
+    """Return a dict with missing/broken items across all three surfaces.
+
+    Keys: ``hooks``, ``mcp``, ``roles``.  Each value is a list of issue
+    strings (empty list = all present / healthy).
+
+    All path arguments default to the module-level constants (``SETTINGS_PATH``,
+    ``CLAUDE_JSON_PATH``, ``CLAUDE_MD_PATH``), which tests can override via
+    ``monkeypatch.setattr(base_config, "SETTINGS_PATH", ...)`` without the
+    function's default being captured at definition time.
+    """
+    sp = _resolve_settings_path(settings_path)
+    settings: dict[str, Any] = {}
+    if sp.exists():
+        try:
+            raw = json.loads(sp.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                settings = raw
+        except (OSError, ValueError):
+            pass
+
+    return {
+        "hooks": check(settings),
+        "mcp": check_mcp(claude_json_path),
+        "roles": check_roles(claude_md_path),
+    }
+
+
+def restore_all(
+    settings_path: Path | None = None,
+    claude_json_path: Path | None = None,
+    claude_md_path: Path | None = None,
+    *,
+    dry_run: bool = False,
+    backup: bool = True,
+) -> dict[str, Any]:
+    """Re-apply all three surfaces idempotently.
+
+    Returns a dict with keys ``hooks``, ``mcp``, ``roles`` — each value is
+    the corresponding install report.  Never raises.
+
+    Path arguments default to the module-level constants so that tests can
+    patch them via ``monkeypatch.setattr`` without a frozen default value.
+    """
+    sp = _resolve_settings_path(settings_path)
+    try:
+        hooks_report = install(sp, dry_run=dry_run, backup=backup)
+    except Exception as exc:
+        hooks_report = {"error": str(exc)}
+
+    try:
+        mcp_report = install_mcp(claude_json_path, dry_run=dry_run, backup=backup)
+    except Exception as exc:
+        mcp_report = {"error": str(exc)}
+
+    try:
+        roles_report = install_roles(claude_md_path, dry_run=dry_run, backup=backup)
+    except Exception as exc:
+        roles_report = {"error": str(exc)}
+
+    return {"hooks": hooks_report, "mcp": mcp_report, "roles": roles_report}
+
+
+# ---------------------------------------------------------------------------
+# format_report — extended to cover all three sections
+# ---------------------------------------------------------------------------
+
 def format_report(report: dict[str, Any]) -> str:
-    """Human-readable summary for the CLI / slash command."""
+    """Human-readable summary for the CLI / slash command.
+
+    Handles both the legacy hooks-only shape and the new unified shape
+    returned by ``restore_all()``.
+    """
+    # Unified report from restore_all
+    if "hooks" in report and "mcp" in report and "roles" in report:
+        parts: list[str] = []
+        parts.append(_format_hooks_section(report["hooks"]))
+        parts.append(_format_mcp_section(report["mcp"]))
+        parts.append(_format_roles_section(report["roles"]))
+        return "\n\n".join(parts)
+
+    # Legacy hooks-only shape (from install())
+    return _format_hooks_section(report)
+
+
+def _format_hooks_section(report: dict[str, Any]) -> str:
     lines = ["=== mcp-skill-hub hook install ==="]
-    lines.append(f"settings: {report['settings_path']}"
-                 + ("" if report["existed"] else " (created)"))
-    if report["missing_scripts"]:
-        lines.append("⚠ base hook scripts missing on disk: "
+    if "error" in report:
+        lines.append(f"ERROR: {report['error']}")
+        return "\n".join(lines)
+    lines.append(f"settings: {report.get('settings_path', '?')}"
+                 + ("" if report.get("existed") else " (created)"))
+    if report.get("missing_scripts"):
+        lines.append("WARNING base hook scripts missing on disk: "
                      + ", ".join(report["missing_scripts"]))
-    if report["dry_run"]:
-        if report["added"]:
+    if report.get("dry_run"):
+        if report.get("added"):
             lines.append(f"Would add {len(report['added'])} hook(s):")
             lines.extend(f"  + {a}" for a in report["added"])
         else:
             lines.append("All skill-hub hooks already present — nothing to do.")
         return "\n".join(lines)
-    if report["added"]:
+    if report.get("added"):
         lines.append(f"Re-applied {len(report['added'])} missing hook(s):")
         lines.extend(f"  + {a}" for a in report["added"])
-        if report["backup_path"]:
+        if report.get("backup_path"):
             lines.append(f"Backup written: {report['backup_path']}")
-        lines.append("⚠ Restart Claude Code for the hooks to take effect.")
+        lines.append("WARNING Restart Claude Code for the hooks to take effect.")
     else:
         lines.append("All skill-hub hooks already present — nothing to do.")
+    return "\n".join(lines)
+
+
+def _format_mcp_section(report: dict[str, Any]) -> str:
+    lines = ["=== MCP server registration (~/.claude.json) ==="]
+    if "error" in report:
+        lines.append(f"ERROR: {report['error']}")
+        return "\n".join(lines)
+    lines.append(f"path: {report.get('claude_json_path', '?')}"
+                 + ("" if report.get("existed") else " (created)"))
+    if report.get("dry_run"):
+        if report.get("added"):
+            lines.append("Would add: " + ", ".join(report["added"]))
+        else:
+            lines.append("skill-hub already registered — nothing to do.")
+        return "\n".join(lines)
+    if report.get("added"):
+        lines.append("Registered: " + ", ".join(report["added"]))
+        if report.get("backup_path"):
+            lines.append(f"Backup written: {report['backup_path']}")
+    else:
+        lines.append("skill-hub already registered — nothing to do.")
+    return "\n".join(lines)
+
+
+def _format_roles_section(report: dict[str, Any]) -> str:
+    lines = ["=== Base roles block (~/.claude/CLAUDE.md) ==="]
+    if "error" in report:
+        lines.append(f"ERROR: {report['error']}")
+        return "\n".join(lines)
+    lines.append(f"path: {report.get('claude_md_path', '?')}"
+                 + ("" if report.get("existed") else " (created)"))
+    if report.get("dry_run"):
+        if report.get("added"):
+            lines.append("Would update: " + ", ".join(report["added"]))
+        else:
+            lines.append("Base-roles block already present — nothing to do.")
+        return "\n".join(lines)
+    if report.get("added"):
+        lines.append("Updated: " + ", ".join(report["added"]))
+        if report.get("backup_path"):
+            lines.append(f"Backup written: {report['backup_path']}")
+    else:
+        lines.append("Base-roles block already present — nothing to do.")
     return "\n".join(lines)
 
 

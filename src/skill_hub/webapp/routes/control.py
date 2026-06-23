@@ -13,6 +13,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from ... import config as _cfg
+from ... import base_config as _bc
 from ...services.base import install_log_path
 from ...services.registry import get_pressure, get_registry
 
@@ -651,6 +652,59 @@ def api_pipeline_telemetry(days: int = 7) -> Any:
         })
     finally:
         store.close()
+
+
+def _render_hooks_status(
+    request: Request,
+    *,
+    restore_summary: str = "",
+) -> HTMLResponse:
+    """Render the hooks/MCP/roles status partial.
+
+    Uses the module-level path constants so tests can override them via
+    monkeypatch without being locked into the definition-time default value.
+    """
+    status = _bc.check_all(
+        settings_path=_bc.SETTINGS_PATH,
+        claude_json_path=_bc.CLAUDE_JSON_PATH,
+        claude_md_path=_bc.CLAUDE_MD_PATH,
+    )
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "_hooks_status.html",
+        {
+            "missing_hooks": status.get("hooks") or [],
+            "missing_mcp": status.get("mcp") or [],
+            "missing_roles": status.get("roles") or [],
+            "restore_summary": restore_summary,
+        },
+    )
+
+
+@router.get("/control/hooks/status", response_class=HTMLResponse)
+def control_hooks_status(request: Request) -> Any:
+    """HTMX partial: current hooks / MCP / roles health."""
+    return _render_hooks_status(request)
+
+
+@router.post("/control/hooks/restore", response_class=HTMLResponse)
+def control_hooks_restore(request: Request) -> Any:
+    """HTMX action: restore all missing base-config items and re-render status."""
+    report = _bc.restore_all(
+        settings_path=_bc.SETTINGS_PATH,
+        claude_json_path=_bc.CLAUDE_JSON_PATH,
+        claude_md_path=_bc.CLAUDE_MD_PATH,
+        dry_run=False,
+        backup=True,
+    )
+    hooks_added = len((report.get("hooks") or {}).get("added") or [])
+    mcp_added = len((report.get("mcp") or {}).get("added") or [])
+    roles_added = len((report.get("roles") or {}).get("added") or [])
+    total = hooks_added + mcp_added + roles_added
+    summary = (
+        f"Restored {total} item(s)" if total else "Nothing to restore — all present"
+    )
+    return _render_hooks_status(request, restore_summary=summary)
 
 
 @router.get("/control/monitor", response_class=HTMLResponse)
