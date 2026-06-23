@@ -351,6 +351,12 @@ _DEFAULTS = {
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")
     "log_dir": str(Path.home() / ".claude" / "mcp-skill-hub" / "logs"),
 
+    # hook-debug.log — size-based rotation (the many hook writers append to it
+    # directly, so it is not covered by the activity-log TimedRotatingFileHandler).
+    # Rotated at MCP server start / session end when over the cap; oldest pruned.
+    "hook_log_max_bytes": 10 * 1024 * 1024,  # rotate when over 10 MB
+    "hook_log_keep": 3,                       # keep this many rotated files
+
     # ── Prompt Router ───────────────────────────────────────────────────────
     # Three-tier classifier: Tier-1 heuristics → Tier-2 Ollama → Tier-3 Haiku
     # Fired on every UserPromptSubmit via hooks/prompt-router.sh
@@ -492,7 +498,7 @@ _DEFAULTS = {
         # tier_planner: strongest model for authoring/design. Used by
         # plan_executor's API-fallback runner; in-session runner prefers
         # the active Claude Code agent (user's chosen model).
-        "tier_planner": "anthropic/claude-opus-4-6",
+        "tier_planner": "anthropic/claude-opus-4-8",
         "embed":        "ollama/nomic-embed-text",
     },
     # Default tier when code doesn't specify one.

@@ -67,21 +67,50 @@ def _fmt_hours(h: float) -> str:
     return f"{h / 24:.1f}d"
 
 
+# Per-file incremental tally: {path: {"offset": int, "counts": dict[int,int]}}.
+# The hook-debug log reaches tens of MB; re-reading it whole on every /report
+# load costs tens of seconds. Instead we remember how far we read each file and
+# only scan bytes appended since. A shrunk file (rotation/truncation) resets it.
+_LOG_COUNT_STATE: dict[str, dict] = {}
+
+
 def _task_log_counts() -> dict[int, int]:
-    counts: dict[int, int] = defaultdict(int)
     log_paths = [_HOOK_LOG, _ACT_LOG]
-    log_paths += sorted(_LOG_DIR.glob("activity.log.*")) if _LOG_DIR.exists() else []
+    if _LOG_DIR.exists():
+        # Include rotated files so counts survive log rotation. Rotated files
+        # are immutable, so the incremental cache reads each exactly once.
+        log_paths += sorted(_LOG_DIR.glob("activity.log.*"))
+        log_paths += sorted(_LOG_DIR.glob("hook-debug.log.*"))
+    total: dict[int, int] = defaultdict(int)
     for path in log_paths:
-        if not path.exists():
-            continue
+        key = str(path)
         try:
-            for ln in path.read_text(errors="replace").splitlines():
-                m = _TASK_TAG_RE.search(ln)
-                if m:
-                    counts[int(m.group(1))] += 1
+            size = path.stat().st_size
         except OSError:
-            pass
-    return dict(counts)
+            continue
+        st = _LOG_COUNT_STATE.get(key)
+        if st is None or size < st["offset"]:
+            st = {"offset": 0, "counts": defaultdict(int)}
+            _LOG_COUNT_STATE[key] = st
+        if size > st["offset"]:
+            try:
+                with path.open("rb") as fh:
+                    fh.seek(st["offset"])
+                    chunk = fh.read(size - st["offset"])
+            except OSError:
+                chunk = b""
+            # Only consume up to the last newline so a half-written trailing
+            # line is re-read (not double-counted) on the next call.
+            nl = chunk.rfind(b"\n")
+            if nl != -1:
+                st["offset"] += nl + 1
+                for ln in chunk[: nl + 1].decode("utf-8", "replace").splitlines():
+                    m = _TASK_TAG_RE.search(ln)
+                    if m:
+                        st["counts"][int(m.group(1))] += 1
+        for tid, c in st["counts"].items():
+            total[tid] += c
+    return dict(total)
 
 
 def _router_by_session(entries: list[dict]) -> dict[str, list[dict]]:
@@ -93,18 +122,20 @@ def _router_by_session(entries: list[dict]) -> dict[str, list[dict]]:
     return dict(result)
 
 
-# Blended Anthropic pricing ($/1M tokens), weighted 30% input / 70% output.
-# Haiku: $0.25 in + $1.25 out = $0.95/M blended
-# Sonnet: $3 in + $15 out = $11.4/M blended
-# Opus: $15 in + $75 out = $57/M blended
-_USD_PER_M = {"haiku": 0.95, "sonnet": 11.4, "opus": 57.0}
-
-
 def _estimate_usd(tokens_by_model: dict[str, int]) -> float:
+    """Blended $/1M-token cost estimate for tokens attributed to each model.
+
+    Rates come from the shared model registry (litellm-derived, so they track
+    the live Claude lineup instead of going stale here). Unrecognised model
+    labels fall back to the sonnet rate so estimates never silently drop to 0.
+    """
+    from ... import model_registry
+
+    fallback = model_registry.blended_usd_per_m("sonnet") or 0.0
     total = 0.0
     for model, tok in tokens_by_model.items():
-        rate = _USD_PER_M.get(model, _USD_PER_M["sonnet"])
-        total += (tok / 1_000_000) * rate
+        rate = model_registry.blended_usd_per_m(model)
+        total += (tok / 1_000_000) * (rate if rate is not None else fallback)
     return round(total, 2)
 
 
@@ -209,9 +240,11 @@ def _build_report() -> dict:
     conn = sqlite3.connect(str(_DB))
     conn.row_factory = sqlite3.Row
 
+    # Only the 80-char preview is ever shown; never marshal full summaries
+    # (they reach hundreds of KB each and stall the page under memory pressure).
     tasks_raw = conn.execute(
-        "SELECT id, title, summary, status, tags, session_id, "
-        "created_at, updated_at, closed_at FROM tasks ORDER BY id DESC"
+        "SELECT id, title, substr(summary, 1, 80) AS summary_short, status, tags, "
+        "session_id, created_at, updated_at, closed_at FROM tasks ORDER BY id DESC"
     ).fetchall()
 
     tasks: list[dict] = []
@@ -245,7 +278,7 @@ def _build_report() -> dict:
         t["task_prompts"] = task_prompts
         t["task_models"] = dict(task_models.most_common(3))
         t["dominant_model"] = task_models.most_common(1)[0][0] if task_models else ""
-        t["summary_short"] = (t.get("summary") or "")[:80]
+        # summary_short already provided by the SQL substr() above.
 
         if t["status"] == "open":
             open_count += 1

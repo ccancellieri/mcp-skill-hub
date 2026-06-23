@@ -216,9 +216,10 @@ _TIER_MAP = {"local": "tier_cheap", "mid": "tier_mid", "claude": "tier_strong"}
 # UI-facing model labels → Anthropic model IDs the active agent passes to the
 # Agent tool. Adding a new model = one line here + bump the dropdown.
 DIRECTIVE_MODELS: dict[str, str] = {
+    "fable":  "claude-fable-5",
     "haiku":  "claude-haiku-4-5",
     "sonnet": "claude-sonnet-4-6",
-    "opus":   "claude-opus-4-6",
+    "opus":   "claude-opus-4-8",
 }
 
 # UI-facing operation tokens → human-readable instruction snippet woven into

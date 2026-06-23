@@ -65,7 +65,7 @@ _TIER_TO_MODEL_ID_FALLBACK: dict[str, str] = {
     "tier_cheap":   "ollama/qwen2.5-coder:3b",
     "tier_mid":     "anthropic/claude-haiku-4-5",
     "tier_smart":   "anthropic/claude-sonnet-4-6",
-    "tier_planner": "anthropic/claude-opus-4-6",
+    "tier_planner": "anthropic/claude-opus-4-8",
 }
 
 
