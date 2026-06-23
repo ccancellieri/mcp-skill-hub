@@ -4156,6 +4156,64 @@ def analyze_skill_selection(
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("none")
+def log_digest(hours: int = 24) -> str:
+    """Return a markdown digest of recent activity — deterministic, no LLM.
+
+    Sections: Activity summary / Recurring failures / Skill selection.
+    Data is read from the structured event log and skill_injections tables.
+    """
+    log_tool("log_digest", hours=hours)
+    from .log_insights import build_digest
+    d = build_digest(hours=hours)
+
+    lines: list[str] = [
+        f"## Log Digest — {d['window']}\n",
+        "### Activity",
+        f"- Events: **{d['total']}** across **{d['distinct_sessions']}** session(s)",
+    ]
+    if d["by_kind"]:
+        lines.append("\n| kind | count |")
+        lines.append("|------|-------|")
+        for kind, count in sorted(d["by_kind"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {kind} | {count} |")
+    else:
+        lines.append("\n_No events in this window._")
+
+    lines.append("\n### Recurring Failures")
+    if d["top_failures"]:
+        lines.append("| tool | pattern | count | last seen |")
+        lines.append("|------|---------|-------|-----------|")
+        for c in d["top_failures"]:
+            lines.append(
+                f"| `{c['tool']}` | {c['pattern'][:60]} "
+                f"| {c['count']} | {c['last_ts'][:16]} |"
+            )
+    else:
+        lines.append("_No recurring failures (threshold: min 2 occurrences)._")
+
+    lines.append("\n### Skill Selection")
+    lines.append(
+        f"Total injections: {d['total_injections']}  |  "
+        f"Total feedback rows: {d['total_feedback']}"
+    )
+    if d["skills"]:
+        lines.append("\n| skill | injections | helpful_rate | status |")
+        lines.append("|-------|-----------|-------------|--------|")
+        for s in d["skills"]:
+            rate = s.get("helpful_rate")
+            rate_str = f"{rate:.0%}" if rate is not None else "n/a"
+            lines.append(
+                f"| `{s['skill_id']}` | {s['injections']} "
+                f"| {rate_str} | {s.get('status', '')} |"
+            )
+    else:
+        lines.append("\n_No injection data yet._")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Session memory (ported from cookbook session_memory_compaction.ipynb)
 

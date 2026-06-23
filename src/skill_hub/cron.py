@@ -32,6 +32,8 @@ _DEFAULT_JOBS = [
     ("archive-closed-tasks",    "0 4 * * *",   "archive_memory_to_db_dry_run", 1),
     ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
+    # Disabled by default — enable explicitly via the cron UI or config.
+    ("log-digest-snapshot",     "0 6 * * *",   "log_digest_snapshot",         0),
 ]
 
 
@@ -55,9 +57,28 @@ _HUMAN_SCHEDULES: dict[str, str] = {
     "0 2 * * *":    "daily at 2:00 AM",
     "0 3 * * *":    "daily at 3:00 AM",
     "0 4 * * *":    "daily at 4:00 AM",
+    "0 6 * * *":    "daily at 6:00 AM",
     "0 0 * * 0":    "weekly on Sunday at midnight",
     "*/15 * * * *": "every 15 minutes",
 }
+
+
+def _log_digest_snapshot_handler() -> None:
+    """Cron handler: build a log digest and write it to the standard logger.
+
+    Disabled by default (enabled=0 in _DEFAULT_JOBS). Enable via the cron UI
+    or set the cron_jobs table row to enabled=1. No side effects beyond reading
+    the DB and emitting a log line — safe to run unattended once enabled.
+    """
+    from .log_insights import build_digest
+    import json as _json
+    d = build_digest(hours=24)
+    _log.info(
+        "log_digest_snapshot: total=%d sessions=%d failures=%d skills=%d",
+        d["total"], d["distinct_sessions"],
+        len(d["top_failures"]), len(d["skills"]),
+    )
+    _log.debug("log_digest_snapshot: %s", _json.dumps(d, default=str))
 
 
 def human_schedule(schedule: str) -> str:
