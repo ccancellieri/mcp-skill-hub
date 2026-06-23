@@ -303,6 +303,26 @@
       </tbody>
     </table>
     {% endif %}
+    {# per-site breakdown — which tool outputs compress best #}
+    {% if cs.by_site %}
+    <div style="font-size:11px;color:var(--color-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:.04em">By site</div>
+    <table class="health-table">
+      <thead><tr><th>site</th><th style="text-align:right">calls</th><th style="text-align:right">bytes saved</th></tr></thead>
+      <tbody>
+      {% for site, d in cs.by_site.items()|sort(attribute='1.saved', reverse=True) %}
+        <tr>
+          <td>{{ site }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(d.count) }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {% if d.saved >= 1048576 %}{{ '%.1f'|format(d.saved / 1048576) }} MB
+            {% elif d.saved >= 1024 %}{{ '%.1f'|format(d.saved / 1024) }} KB
+            {% else %}{{ '{:,}'.format(d.saved) }} B{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
     {% endif %}
   </div>
 
