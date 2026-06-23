@@ -94,18 +94,15 @@ async def api_tasks_activity_stream(request: Request) -> StreamingResponse:
     store = request.app.state.store
 
     async def event_generator():
-        from skill_hub.store import compute_activity_state
         while True:
             if await request.is_disconnected():
                 break
             try:
-                tasks = store.list_tasks(status="open")
+                tasks = store.list_tasks_with_activity(status="open")
                 data = [
                     {
                         "id": t["id"],
-                        "state": compute_activity_state(
-                            t.get("last_activity_at"), t.get("status", "open")
-                        ),
+                        "state": t["activity_state"],
                     }
                     for t in tasks
                 ]

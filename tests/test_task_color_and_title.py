@@ -155,6 +155,24 @@ def test_read_memory_frontmatter_no_frontmatter(tmp_path):
     assert _read_memory_frontmatter(p) == {}
 
 
+def test_update_task_title_only_no_raise(monkeypatch, store):
+    """update_task with only a title change must not raise AttributeError.
+
+    sqlite3.Row has no .get() method; accessing task["summary"] directly is
+    required when falling back to the stored summary during re-embedding.
+    """
+    from skill_hub import server as srv
+    monkeypatch.setattr(srv, "_store", store)
+    # Stub out embed so the test doesn't need an embedding service.
+    monkeypatch.setattr(srv, "embed", lambda _text: [0.0])
+    tid = store.save_task(title="old title", summary="original summary", vector=[])
+    result = srv.update_task(task_id=tid, title="new title")
+    assert "updated" in result.lower()
+    row = store._conn.execute("SELECT title, summary FROM tasks WHERE id = ?", (tid,)).fetchone()
+    assert row["title"] == "new title"
+    assert row["summary"] == "original summary"
+
+
 def test_list_tasks_renders_glyph(monkeypatch, store):
     """The list_tasks MCP tool prefixes each row with a colour glyph."""
     from skill_hub import server as srv
