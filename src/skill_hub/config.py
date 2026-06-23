@@ -124,6 +124,15 @@ _DEFAULTS = {
     "compression_enabled": True,        # master switch for the compression pre-stage
     "compression_min_tokens": 200,      # skip payloads below ~this token count
     "compression_context_aware": True,  # pass the user query as relevance context
+    # Lossy ML paths — OFF by default (opt-in, eval-gated). When enabled, prose
+    # routes through the ModernBERT "Kompress" token compressor and source code
+    # through the tree-sitter "code-aware" compressor. Both are LOSSY but emit
+    # reversible CCR markers, so an agent can rehydrate via retrieve_compressed().
+    # Require the `compression_full` extra (headroom-ai[ml,code]); auto-no-op
+    # without it. Measure with the eval harness before flipping these on.
+    "compression_ml_enabled": False,        # Kompress (ModernBERT) prose compression
+    "compression_code_aware_enabled": False,  # tree-sitter AST code compression
+    "compression_ml_target_ratio": 0.6,     # Kompress target size (compressed/original)
 
     # Conversation digest — periodic context compaction
     "digest_every_n_messages": 5,       # produce a digest every N messages

@@ -795,7 +795,7 @@ def _execute_local_command(cmd: dict, cwd: str | None = None) -> str | None:
         if len(output) > 5000:
             from .compression import maybe_compress
 
-            output = maybe_compress(output, context=shell_cmd)
+            output = maybe_compress(output, context=shell_cmd, site="cli_shell")
         # Hard ceiling backstop for whatever didn't compress (e.g. plain prose).
         if len(output) > 5000:
             output = output[:5000] + f"\n... (truncated, {len(output)} chars total)"

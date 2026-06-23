@@ -1,16 +1,26 @@
-"""Deterministic content compression via the optional ``headroom-ai`` dependency.
+"""Content compression via the optional ``headroom-ai`` dependency.
 
 This is a thin, import-guarded adapter around `headroom-ai`'s ``ContentRouter``.
 Skill Hub stays local-first and offline-safe: when ``headroom-ai`` is not installed
 (or anything goes wrong) every function here degrades to a safe passthrough, so the
 server behaves exactly as it did before.
 
-We deliberately run the router with the ML "Kompress" path **disabled**, so only the
-deterministic compressors execute (SmartCrusher for JSON arrays, plus the log / search /
-diff / tabular / HTML compressors). That keeps the install light — no torch, no model
-downloads — and means prose and code (which would otherwise route to Kompress) simply
-pass through untouched and are left for the LLM. This matches our policy: deterministic
-compression for structured payloads, the LLM only for genuine prose synthesis.
+**Deterministic-first cascade.** Every payload is first run through the *lossless*
+deterministic compressors (SmartCrusher for JSON arrays, plus the log / search / diff /
+tabular / HTML compressors). These are cheap, offline, and reversible. Only when the
+deterministic pass yields nothing *and* the caller opted into lossy compression do we
+fall back to the heavier ML paths:
+
+* **Kompress** — a ModernBERT token compressor for prose. LOSSY and *irreversible*
+  (it deletes low-salience tokens; there is no rehydration for prose). Gated by the
+  ``compression_ml_enabled`` config flag (default OFF) and the ``compression_full``
+  extra (``headroom-ai[ml]``).
+* **code-aware** — tree-sitter AST compression for source code. Gated by
+  ``compression_code_aware_enabled`` (default OFF) and ``headroom-ai[code]``.
+
+Because the ML paths are lossy, they are opt-in and eval-gated: measure ratio +
+fidelity with the eval harness before enabling. The local-LLM summarize path
+(searxng) deliberately stays deterministic-only — it cannot rehydrate lossy text.
 
 headroom-ai is Apache-2.0: https://github.com/headroomlabs-ai/headroom
 """
@@ -34,10 +44,21 @@ _CHARS_PER_TOKEN = 4
 
 _DEFAULT_MIN_TOKENS = 200
 
-# Cached singletons. ``_router_failed`` latches so we don't re-probe a broken install
-# on every call.
-_router = None
+# Cached routers keyed by ``(ml, code)`` capability tuple. ``_router_failed``
+# latches so we don't re-probe a broken install on every call.
+_routers: dict[tuple[bool, bool], object] = {}
 _router_failed = False
+
+# Cached direct Kompress compressor (prose). headroom's ContentRouter sends prose
+# to a no-op TEXT strategy, so we call the Kompress model directly with an explicit
+# target ratio for the lossy prose path.
+_kompress = None
+_kompress_failed = False
+
+# Strategy names that mean "lossy ML compression happened" (irreversible).
+_LOSSY_STRATEGIES = {"KOMPRESS", "CODE_AWARE"}
+
+_DEFAULT_ML_TARGET_RATIO = 0.6
 
 
 @dataclass
@@ -72,47 +93,116 @@ def is_available() -> bool:
         return False
 
 
-def _get_router():
-    """Return a cached deterministic ``ContentRouter``, or None if unavailable."""
-    global _router, _router_failed
-    if _router is not None:
-        return _router
+def _build_router(ml: bool, code: bool):
+    """Construct a ``ContentRouter`` for the given capability tuple, or None."""
+    from headroom.transforms.content_router import (
+        ContentRouter,
+        ContentRouterConfig,
+    )
+
+    cfg = ContentRouterConfig()
+    # ML / lossy paths — only when explicitly requested.
+    cfg.enable_kompress = bool(ml)
+    cfg.enable_code_aware = bool(code)
+    # Route detected source code to the tree-sitter compressor when code-aware
+    # is on (otherwise headroom would send code to Kompress instead).
+    if hasattr(cfg, "prefer_code_aware_for_code"):
+        cfg.prefer_code_aware_for_code = bool(code)
+    # Keep deterministic compressors on (these are True by default, set explicitly
+    # so behaviour is stable if upstream defaults change).
+    for attr in (
+        "enable_smart_crusher",
+        "enable_search_compressor",
+        "enable_log_compressor",
+        "enable_tabular_compressor",
+        "enable_html_extractor",
+    ):
+        if hasattr(cfg, attr):
+            setattr(cfg, attr, True)
+    # Never sacrifice error text / tracebacks — the model needs them verbatim.
+    if hasattr(cfg, "protect_error_outputs"):
+        cfg.protect_error_outputs = True
+    # Keep reversible-compression markers so retrieve_compressed() can rehydrate
+    # the (lossless) deterministic strategies.
+    if hasattr(cfg, "ccr_enabled"):
+        cfg.ccr_enabled = True
+    return ContentRouter(cfg)
+
+
+def _get_router(ml: bool = False, code: bool = False):
+    """Return a cached ``ContentRouter`` for the capability tuple, or None.
+
+    ``ml``/``code`` select whether the lossy Kompress / code-aware paths are
+    enabled. The deterministic-only router is ``(False, False)``.
+    """
+    global _router_failed
+    key = (bool(ml), bool(code))
+    cached = _routers.get(key)
+    if cached is not None:
+        return cached
     if _router_failed:
         return None
     try:
-        from headroom.transforms.content_router import (
-            ContentRouter,
-            ContentRouterConfig,
-        )
-
-        cfg = ContentRouterConfig()
-        # No ML path: never attempt to load the Kompress / ModernBERT model.
-        cfg.enable_kompress = False
-        # Leave source code to the LLM / code-graph tools rather than AST-mangling it.
-        cfg.enable_code_aware = False
-        # Keep deterministic compressors on (these are True by default, set explicitly
-        # so behaviour is stable if upstream defaults change).
-        for attr in (
-            "enable_smart_crusher",
-            "enable_search_compressor",
-            "enable_log_compressor",
-            "enable_tabular_compressor",
-            "enable_html_extractor",
-        ):
-            if hasattr(cfg, attr):
-                setattr(cfg, attr, True)
-        # Never sacrifice error text / tracebacks — the model needs them verbatim.
-        if hasattr(cfg, "protect_error_outputs"):
-            cfg.protect_error_outputs = True
-        # Keep reversible-compression markers so retrieve_compressed() can rehydrate.
-        if hasattr(cfg, "ccr_enabled"):
-            cfg.ccr_enabled = True
-        _router = ContentRouter(cfg)
-        return _router
+        router = _build_router(*key)
     except Exception as e:  # pragma: no cover - exercised only without headroom
         logger.debug("compression unavailable (router init failed): %s", e)
         _router_failed = True
         return None
+    _routers[key] = router
+    return router
+
+
+def _get_kompress():
+    """Return a cached ``KompressCompressor`` (ModernBERT), or None if unavailable.
+
+    Loading downloads the model from HuggingFace on first use (needs the
+    ``compression_full`` extra). Latched so a broken/offline install isn't
+    re-probed on every call.
+    """
+    global _kompress, _kompress_failed
+    if _kompress is not None:
+        return _kompress
+    if _kompress_failed:
+        return None
+    try:
+        from headroom.transforms.kompress_compressor import KompressCompressor
+
+        _kompress = KompressCompressor()
+    except Exception as e:  # pragma: no cover - exercised only without [ml] extra
+        logger.debug("kompress unavailable (load failed): %s", e)
+        _kompress_failed = True
+        return None
+    return _kompress
+
+
+def _kompress_direct(text: str, context: str) -> "CompressedPayload | None":
+    """Lossy prose compression via the Kompress model. Returns None on miss/error."""
+    kc = _get_kompress()
+    if kc is None:
+        return None
+    try:
+        from .. import config as _cfg
+
+        target = float(_cfg.get("compression_ml_target_ratio") or _DEFAULT_ML_TARGET_RATIO)
+    except Exception:  # noqa: BLE001
+        target = _DEFAULT_ML_TARGET_RATIO
+    try:
+        out = kc.compress(text, context=context or "", target_ratio=target)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("kompress_direct failed: %s", e)
+        return None
+    compressed = getattr(out, "compressed", None) or text
+    bytes_before, bytes_after = len(text), len(compressed)
+    if bytes_after >= bytes_before:
+        return None
+    return CompressedPayload(
+        compressed=compressed,
+        content_type="KOMPRESS",
+        ratio=bytes_after / bytes_before if bytes_before else 1.0,
+        bytes_before=bytes_before,
+        bytes_after=bytes_after,
+        lossy=True,  # Kompress deletes tokens; not reversible.
+    )
 
 
 def _extract_ccr_keys(text: str) -> list[str]:
@@ -120,14 +210,46 @@ def _extract_ccr_keys(text: str) -> list[str]:
     return list(dict.fromkeys(_CCR_RE.findall(text)))
 
 
+def _run_router(router, text: str, context: str) -> CompressedPayload | None:
+    """Run one router over ``text``; return a winning payload, or None on miss."""
+    bytes_before = len(text)
+    try:
+        result = router.compress(text, context=context or "")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("compress failed, returning original: %s", e)
+        return None
+    compressed = getattr(result, "compressed", None) or text
+    strategy = getattr(result, "strategy_used", None)
+    strat_name = getattr(strategy, "name", None) or str(strategy or "PASSTHROUGH")
+    strat_name = strat_name.upper()
+    bytes_after = len(compressed)
+    # Nothing useful happened (passthrough strategy, or output grew).
+    if strat_name in _PASSTHROUGH_STRATEGIES or bytes_after >= bytes_before:
+        return None
+    ccr_keys = _extract_ccr_keys(compressed)
+    return CompressedPayload(
+        compressed=compressed,
+        content_type=strat_name,
+        ratio=bytes_after / bytes_before if bytes_before else 1.0,
+        bytes_before=bytes_before,
+        bytes_after=bytes_after,
+        # Lossy iff an ML strategy ran. CCR markers make a result *reversible*
+        # (via retrieve_compressed), so a deterministic CCR result is NOT lossy.
+        lossy=strat_name in _LOSSY_STRATEGIES,
+        ccr_keys=ccr_keys,
+    )
+
+
 def compress_payload(
     content: str,
     *,
     context: str = "",
     min_tokens: int | None = None,
+    allow_lossy: bool = False,
 ) -> CompressedPayload:
-    """Compress structured ``content`` deterministically. Always returns a usable
-    payload — falls back to the original text on any miss, error, or small input.
+    """Compress ``content`` with a deterministic-first cascade. Always returns a
+    usable payload — falls back to the original text on any miss, error, or small
+    input.
 
     Args:
         content: The text to compress (tool output, logs, JSON, search results, ...).
@@ -135,6 +257,10 @@ def compress_payload(
             to keep). Pass the user's query when available.
         min_tokens: Skip compression below this approximate token count. Defaults to
             ``_DEFAULT_MIN_TOKENS`` (small payloads aren't worth the work).
+        allow_lossy: When True (and the ``compression_ml_enabled`` /
+            ``compression_code_aware_enabled`` flags are on), fall back to the lossy
+            Kompress / code-aware paths if the deterministic pass found nothing.
+            Leave False for content fed to a local LLM that cannot rehydrate.
     """
     text = content if isinstance(content, str) else str(content)
     bytes_before = len(text)
@@ -154,44 +280,86 @@ def compress_payload(
     if bytes_before < threshold * _CHARS_PER_TOKEN:
         return passthrough
 
-    router = _get_router()
+    # 1. Lossless deterministic pass (always).
+    router = _get_router(False, False)
     if router is None:
         return passthrough
+    won = _run_router(router, text, context)
+    if won is not None:
+        return won
 
+    # 2. Lossy fallback — only when opted in and a flag is on. Try the tree-sitter
+    #    code-aware path first (it passes through non-code), then the Kompress prose
+    #    model. Both are lossy; reached only when the deterministic pass found nothing.
+    if allow_lossy:
+        ml, code = _lossy_flags()
+        if code:
+            code_router = _get_router(ml=False, code=True)
+            if code_router is not None:
+                won = _run_router(code_router, text, context)
+                if won is not None:
+                    return won
+        if ml:
+            won = _kompress_direct(text, context)
+            if won is not None:
+                return won
+
+    return passthrough
+
+
+def _lossy_flags() -> tuple[bool, bool]:
+    """Read the (ml, code) lossy-compression flags from config; (False, False) on error."""
     try:
-        result = router.compress(text, context=context or "")
-    except Exception as e:
-        logger.debug("compress failed, returning original: %s", e)
-        return passthrough
+        from .. import config as _cfg
 
-    compressed = getattr(result, "compressed", None) or text
-    strategy = getattr(result, "strategy_used", None)
-    strat_name = getattr(strategy, "name", None) or str(strategy or "PASSTHROUGH")
-    strat_name = strat_name.upper()
-    bytes_after = len(compressed)
-
-    # Nothing useful happened (prose/code routed to disabled Kompress, or it grew).
-    if strat_name in _PASSTHROUGH_STRATEGIES or bytes_after >= bytes_before:
-        return passthrough
-
-    ccr_keys = _extract_ccr_keys(compressed)
-    ratio = bytes_after / bytes_before if bytes_before else 1.0
-    return CompressedPayload(
-        compressed=compressed,
-        content_type=strat_name,
-        ratio=ratio,
-        bytes_before=bytes_before,
-        bytes_after=bytes_after,
-        lossy=bool(ccr_keys),
-        ccr_keys=ccr_keys,
-    )
+        return (
+            bool(_cfg.get("compression_ml_enabled")),
+            bool(_cfg.get("compression_code_aware_enabled")),
+        )
+    except Exception:  # noqa: BLE001
+        return (False, False)
 
 
-def maybe_compress(content: str, *, context: str = "") -> str:
+def _emit_compression_event(payload: CompressedPayload, site: str) -> None:
+    """Best-effort telemetry: record a ``compression`` event. Never raises."""
+    try:
+        from ..store import get_store
+
+        get_store().append_event(
+            session_id="",
+            kind="compression",
+            payload={
+                "site": site or "?",
+                "strategy": payload.content_type,
+                "bytes_before": payload.bytes_before,
+                "bytes_after": payload.bytes_after,
+                "ratio": round(payload.ratio, 4),
+                "lossy": payload.lossy,
+            },
+            tool_name=site or None,
+        )
+    except Exception as e:  # noqa: BLE001 - telemetry must never break a tool call
+        logger.debug("compression telemetry emit failed (non-fatal): %s", e)
+
+
+def maybe_compress(
+    content: str,
+    *,
+    context: str = "",
+    site: str = "",
+    allow_lossy: bool = True,
+) -> str:
     """Config-gated convenience used at wiring sites: returns compressed text when the
     ``compression_enabled`` flag is on and compression is effective, otherwise the
-    original content verbatim. Reads ``compression_min_tokens`` and
-    ``compression_context_aware`` from config. Never raises."""
+    original content verbatim. Records a ``compression`` telemetry event on every
+    attempt that reaches the compressor. Reads ``compression_min_tokens`` and
+    ``compression_context_aware`` from config. Never raises.
+
+    Args:
+        site: short label for telemetry (e.g. ``"searxng"``, ``"search_context"``).
+        allow_lossy: pass False for content fed into a local LLM (it cannot
+            rehydrate lossy text); True for agent-facing tool output.
+    """
     try:
         from .. import config as _cfg
 
@@ -202,9 +370,16 @@ def maybe_compress(content: str, *, context: str = "") -> str:
     except Exception:
         return content
     try:
-        return compress_payload(content, context=ctx, min_tokens=min_tokens).compressed
+        payload = compress_payload(
+            content, context=ctx, min_tokens=min_tokens, allow_lossy=allow_lossy
+        )
     except Exception:  # pragma: no cover - defensive; compress_payload already guards
         return content
+    # Only emit telemetry for attempts that actually reached the compressor
+    # (i.e. were large enough to try) — skip tiny no-op passthroughs.
+    if payload.bytes_before >= min_tokens * _CHARS_PER_TOKEN:
+        _emit_compression_event(payload, site)
+    return payload.compressed
 
 
 def retrieve_original(hash_key: str) -> str | None:

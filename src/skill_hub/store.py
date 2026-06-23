@@ -4987,6 +4987,81 @@ class SkillStore:
             _log.debug("get_events failed: %s", exc)
             return []
 
+    def get_compression_stats(self, limit: int = 5000) -> dict:
+        """Aggregate ``kind='compression'`` events into a UI/report summary.
+
+        Each compression event payload carries ``bytes_before``/``bytes_after``/
+        ``ratio``/``strategy``/``lossy``/``site``.  We aggregate over the most
+        recent ``limit`` events (bounded scan; events are prunable).  Returns a
+        dict that ``token_stats`` and the dashboard health card both render::
+
+            {
+              "calls": int,            # attempts that reached the compressor
+              "hits": int,             # attempts that actually shrank the payload
+              "bytes_before": int, "bytes_after": int, "saved": int,
+              "avg_ratio": float,      # mean ratio over hits (1.0 = no change)
+              "tokens_saved": int,     # saved // ~4 chars-per-token
+              "by_strategy": {strat: {"count": int, "saved": int}},
+              "by_site": {site: {"count": int, "saved": int}},
+            }
+        """
+        empty = {
+            "calls": 0, "hits": 0, "bytes_before": 0, "bytes_after": 0,
+            "saved": 0, "avg_ratio": 1.0, "tokens_saved": 0,
+            "by_strategy": {}, "by_site": {},
+        }
+        try:
+            rows = self._conn.execute(
+                "SELECT payload FROM events WHERE kind='compression' "
+                "ORDER BY ts DESC LIMIT ?",
+                (max(1, min(int(limit), 50000)),),
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_compression_stats query failed: %s", exc)
+            return empty
+        if not rows:
+            return empty
+
+        calls = hits = b_before = b_after = 0
+        ratio_sum = 0.0
+        by_strategy: dict[str, dict] = {}
+        by_site: dict[str, dict] = {}
+        for r in rows:
+            try:
+                p = json.loads(r["payload"])
+            except Exception:  # noqa: BLE001
+                continue
+            bb = int(p.get("bytes_before") or 0)
+            ba = int(p.get("bytes_after") or 0)
+            strat = str(p.get("strategy") or "?")
+            site = str(p.get("site") or "?")
+            calls += 1
+            b_before += bb
+            b_after += ba
+            saved = max(0, bb - ba)
+            if saved > 0:
+                hits += 1
+                ratio_sum += (ba / bb) if bb else 1.0
+            sd = by_strategy.setdefault(strat, {"count": 0, "saved": 0})
+            sd["count"] += 1
+            sd["saved"] += saved
+            td = by_site.setdefault(site, {"count": 0, "saved": 0})
+            td["count"] += 1
+            td["saved"] += saved
+
+        saved = max(0, b_before - b_after)
+        return {
+            "calls": calls,
+            "hits": hits,
+            "bytes_before": b_before,
+            "bytes_after": b_after,
+            "saved": saved,
+            "avg_ratio": (ratio_sum / hits) if hits else 1.0,
+            "tokens_saved": saved // 4,
+            "by_strategy": by_strategy,
+            "by_site": by_site,
+        }
+
     def events_prune(
         self,
         before_ts: float = 0.0,
@@ -5331,3 +5406,17 @@ def _maybe_apply_plugin_schema(conn: sqlite3.Connection, namespace: str) -> None
             (status, error, duration_ms, job_id),
         )
         self._conn.commit()
+
+
+# Process-wide shared store singleton. Used so low-level adapters (e.g. the
+# compression telemetry sink) can reach the same SQLite-backed store the server
+# uses, without importing server.py (which would be a circular import).
+_default_store: "SkillStore | None" = None
+
+
+def get_store() -> "SkillStore":
+    """Return the process-wide :class:`SkillStore`, creating it on first call."""
+    global _default_store
+    if _default_store is None:
+        _default_store = SkillStore()
+    return _default_store

@@ -119,7 +119,11 @@ def _summarize_results(query: str, results: list[dict]) -> str:
     # input tokens. No-ops for short/prose results or without the 'compression' extra.
     from .compression import maybe_compress
 
-    results_text = maybe_compress(results_text, context=query)
+    # Deterministic-only here: this text is fed to the local summarize LLM, which
+    # cannot rehydrate lossy Kompress output, so never apply the ML paths.
+    results_text = maybe_compress(
+        results_text, context=query, site="searxng", allow_lossy=False
+    )
 
     model = str(_cfg.get("reason_model") or RERANK_MODEL)
     resolved = model if "/" in model else f"ollama/{model}"

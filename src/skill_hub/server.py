@@ -54,7 +54,7 @@ from .embeddings import (
 from .indexer import index_all
 from .activity_log import log_tool, log_llm, log_banner
 from .resource_monitor import should_run_llm, snapshot
-from .store import SkillStore
+from .store import SkillStore, get_store
 from . import dashboard as _dashboard
 from .capabilities import requires_capability
 
@@ -66,7 +66,7 @@ def _get_cpu_info() -> int:
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
-_store = SkillStore()
+_store = get_store()
 
 _ACTIVE_TASK_MARKER = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "active_task.json"
 
