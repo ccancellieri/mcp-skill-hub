@@ -1795,9 +1795,13 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
 def _precompact_hint(message: str) -> str | None:
     """
-    Strategy #4: Pre-compact long messages.
-    If the message is very long, use local LLM to extract key points
-    so Claude can focus on what matters.
+    Strategy #4: Pre-compact long messages so Claude can focus on what matters.
+
+    Deterministic-first: by default the long input is condensed with a fast,
+    grounded extractive pass (Kompress, falling back to lossless deterministic
+    compaction) — no local LLM. The condensed view is injected for the cloud
+    model, which tolerates extractive text. The legacy abstractive local-LLM
+    digest stays available behind ``precompact_use_llm``.
     """
     from . import config as _cfg
 
@@ -1805,20 +1809,37 @@ def _precompact_hint(message: str) -> str | None:
     if len(message) <= threshold:
         return None
 
-    if not should_run_llm("precompact"):
+    # ── Legacy: abstractive digest via the local LLM ──
+    if _cfg.get("precompact_use_llm"):
+        if not should_run_llm("precompact"):
+            return None
+        log_detail(f"precompact: message {len(message)} chars, LLM compacting")
+        try:
+            digest = compact(message)
+            summary = digest.get("summary", "")
+            if summary:
+                return (f"[Skill Hub — pre-compacted summary of the long input below]\n"
+                        f"Key points: {summary}\n"
+                        f"Decisions: {', '.join(digest.get('decisions', []))}\n"
+                        f"Open questions: {', '.join(digest.get('open_questions', []))}")
+        except Exception:
+            pass
         return None
 
-    log_detail(f"precompact: message {len(message)} chars, compacting")
+    # ── Default: deterministic extractive condensation, no local LLM ──
+    log_detail(f"precompact: message {len(message)} chars, extractive condense")
+    from .compression import kompress_prose, maybe_compress
     try:
-        digest = compact(message)
-        summary = digest.get("summary", "")
-        if summary:
-            return (f"[Skill Hub — pre-compacted summary of the long input below]\n"
-                    f"Key points: {summary}\n"
-                    f"Decisions: {', '.join(digest.get('decisions', []))}\n"
-                    f"Open questions: {', '.join(digest.get('open_questions', []))}")
+        condensed = kompress_prose(message, site="precompact")
+        if condensed == message:
+            # Kompress unavailable / no-op — try lossless deterministic compaction.
+            condensed = maybe_compress(message, site="precompact", allow_lossy=True)
     except Exception:
-        pass
+        return None
+    # Only inject a hint when condensation actually shrank the input; otherwise the
+    # full message is already present verbatim below and a copy adds no value.
+    if condensed and condensed != message and len(condensed) < len(message):
+        return f"[Skill Hub — condensed view of the long input below]\n{condensed}"
     return None
 
 
@@ -2313,8 +2334,25 @@ def _conversation_digest_if_due(message: str) -> str | None:
     if len(_session_messages) < n or len(_session_messages) % n != 0:
         return None
 
-    if not should_run_llm("digest") or not ollama_available(RERANK_MODEL):
-        return None
+    # Profile-eviction needs the abstractive digest's inference (stale topics +
+    # suggested profile), which deterministic compression cannot produce. Run the
+    # local LLM only when eviction is enabled, or when explicitly forced; otherwise
+    # use the deterministic-first extractive digest (no local LLM).
+    if _cfg.get("eviction_enabled") or _cfg.get("digest_use_llm"):
+        if not should_run_llm("digest") or not ollama_available(RERANK_MODEL):
+            return None
+        return _conversation_digest_llm(n)
+
+    return _conversation_digest_extractive(n)
+
+
+def _conversation_digest_llm(n: int) -> str | None:
+    """Abstractive conversation digest via the local LLM (legacy / eviction path).
+
+    Produces the full structured digest (current focus, recent decisions, stale
+    topics, suggested profile) and drives the auto-eviction profile-switch hint.
+    """
+    from . import config as _cfg
 
     log_hook("digest", message_count=len(_session_messages))
     try:
@@ -2366,6 +2404,48 @@ def _conversation_digest_if_due(message: str) -> str | None:
         pass
 
     return None
+
+
+def _conversation_digest_extractive(n: int) -> str | None:
+    """Deterministic-first conversation digest — no local LLM.
+
+    Condenses the recent messages with a fast, grounded extractive pass (Kompress,
+    falling back to lossless deterministic compaction) and persists a lightweight
+    conversation state. Returns the condensed view, or None if condensation did not
+    shrink the input (in which case there is nothing useful to inject). The richer
+    abstractive digest with profile-switch inference runs only when eviction is
+    enabled — see ``_conversation_digest_if_due``.
+    """
+    from .compression import kompress_prose, maybe_compress
+
+    content = "\n---\n".join(_session_messages[-10:])
+    try:
+        condensed = kompress_prose(content, site="digest")
+        if condensed == content:
+            condensed = maybe_compress(content, site="digest", allow_lossy=True)
+    except Exception:
+        return None
+
+    if not condensed or condensed == content or len(condensed) >= len(content):
+        return None
+
+    log_hook("digest", message_count=len(_session_messages))
+    try:
+        store = SkillStore()
+        store.save_conversation_state(
+            session_id=_get_session_id(),
+            message_count=len(_session_messages),
+            digest=json.dumps({"condensed": condensed}),
+            stale_topics="[]",
+            suggested_profile=None,
+        )
+        store.close()
+    except Exception:
+        pass
+
+    header = ("[Skill Hub — conversation digest (auto-generated every "
+              f"{n} messages)]\n")
+    return header + condensed
 
 
 def _auto_memory_from_task_close(task_id: int, digest: dict) -> None:

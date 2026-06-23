@@ -114,7 +114,8 @@ _FIELD_HINTS = {
     "hook_context_max_skill_chars": "Max chars per skill (truncated if larger)",
     "hook_context_top_k_skills": "Max skills to load with full content per message",
     "hook_context_min_skills": "Min skills to load (auto-fill from RAG if LLM picks fewer)",
-    "hook_precompact_threshold": "Messages longer than this get LLM pre-compaction",
+    "hook_precompact_threshold": "Messages longer than this get pre-compacted",
+    "precompact_use_llm": "Use the legacy abstractive local-LLM digest for pre-compaction (default: deterministic extractive)",
     "hook_task_command_examples": "Phrases to build semantic centroid for task-detection prefilter",
     # Hook LLM triage
     "hook_llm_triage": "Enable local LLM pre-triage of all messages (off by default: small models unreliable)",
@@ -153,8 +154,9 @@ _FIELD_HINTS = {
     # Digest
     "digest_every_n_messages": "Produce conversation digest every N messages",
     "digest_stale_threshold": "Similarity below this marks a topic as stale",
+    "digest_use_llm": "Force the abstractive local-LLM digest (default: deterministic extractive unless eviction is on)",
     # Eviction
-    "eviction_enabled": "Enable relevance decay tracking for inactive topics",
+    "eviction_enabled": "Enable relevance decay tracking for inactive topics (also enables the abstractive LLM digest)",
     "eviction_min_stale_count": "Suggest profile switch after N stale topic detections",
     # Memory
     "user_memory_enabled": "Auto-index user project memory files into memory:user-project namespace",
@@ -239,6 +241,7 @@ _BUCKET_OVERRIDES: dict[str, str] = {
     "always_forward_to_claude": "hook",
     # hook_context: keys that don't start with "hook_context"
     "hook_precompact_threshold": "hook_context",
+    "precompact_use_llm": "hook_context",
     "hook_task_command_examples": "hook_context",
     # improve_prompt: router_improve_prompt_enabled doesn't start with "improve_prompt"
     "router_improve_prompt_enabled": "improve_prompt",
@@ -271,6 +274,7 @@ _BUCKET_OVERRIDES: dict[str, str] = {
     "learn_from_claude_sessions": "skill_evolution",
     # digest
     "compact_max_input_chars": "digest",
+    "digest_use_llm": "digest",
     "eviction_enabled": "digest",
     "eviction_min_stale_count": "digest",
     # pattern
