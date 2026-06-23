@@ -52,11 +52,51 @@ def _prune_old_logs() -> None:
         oldest.unlink(missing_ok=True)
 
 
+HOOK_LOG_FILE = LOG_DIR / "hook-debug.log"
+
+
+def rotate_hook_debug_log() -> None:
+    """Size-rotate hook-debug.log if it exceeds the configured cap.
+
+    The hook debug log is appended to directly by ~15 Python and shell hooks,
+    so it bypasses the activity logger's TimedRotatingFileHandler and would
+    otherwise grow without bound (observed at 64 MB). Called at MCP server
+    start and session end — the once-per-session chokepoints. Renames the
+    current file to ``hook-debug.log.1`` (shifting older ones up) and prunes
+    beyond ``hook_log_keep``. In-flight writers keep their open handle on the
+    renamed inode (POSIX); the next writer creates a fresh file.
+    """
+    try:
+        from . import config as _cfg
+        # config.get() takes one arg and auto-defaults from _DEFAULTS.
+        max_bytes = int(_cfg.get("hook_log_max_bytes"))
+        keep = max(1, int(_cfg.get("hook_log_keep")))
+    except Exception:
+        max_bytes, keep = 10 * 1024 * 1024, 3
+
+    p = HOOK_LOG_FILE
+    try:
+        if not p.exists() or p.stat().st_size < max_bytes:
+            return
+        # Drop the oldest, then shift .N -> .(N+1), then current -> .1
+        oldest = p.with_suffix(p.suffix + f".{keep}")
+        oldest.unlink(missing_ok=True)
+        for i in range(keep - 1, 0, -1):
+            src = p.with_suffix(p.suffix + f".{i}")
+            if src.exists():
+                src.rename(p.with_suffix(p.suffix + f".{i + 1}"))
+        p.rename(p.with_suffix(p.suffix + ".1"))
+    except OSError:
+        pass
+
+
 def _get_log_level() -> int:
     """Read log_level from config. Accepts 'DEBUG', 'INFO', etc."""
     try:
         from . import config as _cfg
-        level = _cfg.get("log_level", "INFO")
+        # config.get() takes one arg; a 2-arg call here used to TypeError and
+        # silently fall back to INFO, ignoring the configured level.
+        level = _cfg.get("log_level") or "INFO"
         return getattr(logging, str(level).upper(), logging.INFO)
     except Exception:
         return logging.INFO
@@ -274,6 +314,7 @@ def log_banner() -> None:
     from .store import SkillStore
 
     cfg = _cfg.load_config()
+    rotate_hook_debug_log()  # bound the hook debug log once per session
     logger = get_logger()
 
     store = SkillStore()
