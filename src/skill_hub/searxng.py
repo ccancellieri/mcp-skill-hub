@@ -100,26 +100,52 @@ Summary:"""
 
 def _summarize_results(query: str, results: list[dict]) -> str:
     """
-    Use the local LLM (reason_model) to summarize search results.
-    Returns the summary string, or empty string on failure.
+    Condense the fetched results into a context string.
+
+    Default path (``searxng_use_llm_summary`` False): a fast, light, LLM-free
+    extractive digest via Kompress (ModernBERT) — no Ollama dependency, grounded
+    (cannot hallucinate). Falls back to lossless deterministic compaction, then to
+    the raw results, if Kompress is unavailable.
+
+    Legacy path (``searxng_use_llm_summary`` True): an abstractive summary from the
+    local LLM (reason_model) — fluent but slow and able to invent facts.
+
+    Returns the digest string, or empty string on total failure.
     """
     if not results:
         return ""
 
     from . import config as _cfg
-    from .embeddings import RERANK_MODEL
-    from .llm import LLMError, get_provider
 
     results_text = "\n".join(
         f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}"
         for i, r in enumerate(results)
     )
 
-    # Shrink the concatenated results before they hit the local LLM, cutting its
-    # input tokens. No-ops for short/prose results or without the 'compression' extra.
+    # --- Default: light extractive Kompress, no local LLM --------------------
+    if not _cfg.get("searxng_use_llm_summary"):
+        from .compression import kompress_prose, maybe_compress
+
+        digest = kompress_prose(results_text, context=query, site="searxng")
+        if digest == results_text:
+            # Kompress unavailable / no-op — fall back to lossless deterministic
+            # compaction (JSON/log/table). Returns the raw text if nothing fires.
+            digest = maybe_compress(
+                results_text, context=query, site="searxng", allow_lossy=False
+            )
+        return digest
+
+    # --- Legacy: abstractive summary via the local Ollama LLM ----------------
+    from .embeddings import RERANK_MODEL
+    from .llm import LLMError, get_provider
+
+    # Deterministic-only here: this text is fed to the local summarize LLM, which
+    # cannot rehydrate lossy Kompress output, so never apply the ML paths.
     from .compression import maybe_compress
 
-    results_text = maybe_compress(results_text, context=query)
+    results_text = maybe_compress(
+        results_text, context=query, site="searxng", allow_lossy=False
+    )
 
     model = str(_cfg.get("reason_model") or RERANK_MODEL)
     resolved = model if "/" in model else f"ollama/{model}"

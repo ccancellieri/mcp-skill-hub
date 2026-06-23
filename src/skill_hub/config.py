@@ -124,6 +124,19 @@ _DEFAULTS = {
     "compression_enabled": True,        # master switch for the compression pre-stage
     "compression_min_tokens": 200,      # skip payloads below ~this token count
     "compression_context_aware": True,  # pass the user query as relevance context
+    # Lossy ML path — Kompress (ModernBERT) extractive prose compression. ON by
+    # default after eval (scripts/compression_eval.py): avg ratio 0.60, avg
+    # embedding-fidelity 0.87. It deletes low-salience tokens — LOSSY and (for prose)
+    # irreversible. Requires the `compression_full` extra (headroom-ai[ml]); auto-
+    # no-ops without it, so machines lacking the extra behave exactly as before.
+    # NOTE: search-result/memory-like text compresses at ~0.79 fidelity (marginal);
+    # raise compression_ml_target_ratio toward 1.0 for higher fidelity / less saving,
+    # or set compression_ml_enabled=False to revert to lossless-only.
+    "compression_ml_enabled": True,         # Kompress (ModernBERT) prose compression
+    # code-aware (tree-sitter AST) stays OFF: the eval showed it never fires on real
+    # tool output (headroom routes code to Kompress first), so it adds no value here.
+    "compression_code_aware_enabled": False,  # tree-sitter AST code compression
+    "compression_ml_target_ratio": 0.6,     # Kompress target size (compressed/original)
 
     # Conversation digest — periodic context compaction
     "digest_every_n_messages": 5,       # produce a digest every N messages
@@ -304,6 +317,11 @@ _DEFAULTS = {
     "searxng_top_k": 3,
     "searxng_timeout": 5,      # seconds for URL probe (is SearXNG reachable?)
     "searxng_search_timeout": 15,  # seconds for actual search (engines need time)
+    # How to condense fetched web results before injecting them as context.
+    # Default "kompress": fast, light, LLM-free extractive compression (ModernBERT) —
+    # grounded (no hallucination), no Ollama dependency. Set True to use the legacy
+    # local-LLM (Ollama) abstractive summary instead (fluent but slow + can invent facts).
+    "searxng_use_llm_summary": False,
 
     # Activity log — daily rotation, 50 MB cap
     # Set to a custom path to redirect logs (e.g. "/tmp/skill-hub-logs")

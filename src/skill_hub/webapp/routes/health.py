@@ -12,21 +12,56 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from ... import config as cfg
 from ... import system_health as sh
 
 router = APIRouter()
 
+_COMPRESSION_EMPTY: dict = {
+    "calls": 0, "hits": 0, "bytes_before": 0, "bytes_after": 0,
+    "saved": 0, "avg_ratio": 1.0, "tokens_saved": 0,
+    "by_strategy": {}, "by_site": {},
+}
+
+
+def _compression_context() -> dict:
+    """Return compression stats + config flags for the health panel."""
+    store = None
+    try:
+        from skill_hub.store import get_store
+        store = get_store()
+    except Exception:  # noqa: BLE001
+        pass
+
+    stats = _COMPRESSION_EMPTY
+    if store is not None:
+        try:
+            stats = store.get_compression_stats()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {
+        "compression_stats": stats,
+        "compression_cfg": {
+            "enabled": bool(cfg.get("compression_enabled")),
+            "ml_enabled": bool(cfg.get("compression_ml_enabled")),
+            "code_aware_enabled": bool(cfg.get("compression_code_aware_enabled")),
+        },
+    }
+
 
 def _panel(request: Request, flash: str | None = None) -> HTMLResponse:
     snap = sh.health_snapshot()
+    ctx: dict[str, Any] = {
+        "snap": snap,
+        "watcher": sh.watcher_status(),
+        "flash": flash,
+    }
+    ctx.update(_compression_context())
     return request.app.state.templates.TemplateResponse(
         request,
         "_health_panel.html",
-        {
-            "snap": snap,
-            "watcher": sh.watcher_status(),
-            "flash": flash,
-        },
+        ctx,
     )
 
 
