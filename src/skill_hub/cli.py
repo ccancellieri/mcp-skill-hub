@@ -5974,6 +5974,44 @@ def _cmd_profile(args_str: str) -> str:
     return "\n".join(lines)
 
 
+def _cmd_install_hooks(args_str: str) -> str:
+    """Re-apply the skill-hub base hooks into ~/.claude/settings.json.
+
+    Claude Code and other tools sometimes rewrite settings.json and drop the
+    skill-hub hooks, silently removing this MCP from the request loop. This
+    repairs that by merging the canonical base hook block back in (idempotent;
+    unrelated settings are preserved).
+
+    /hub-install-hooks          — re-apply missing hooks (backs up settings first)
+    /hub-install-hooks check    — report which hooks are missing, change nothing
+    /hub-install-hooks dry-run  — show what would change, write nothing
+    """
+    from . import base_config as _bc
+
+    sub = args_str.strip().lower()
+    if sub == "check":
+        try:
+            settings = json.loads(_bc.SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            settings = {}
+        missing = _bc.check(settings)
+        absent = _bc.missing_scripts_on_disk()
+        lines = []
+        if absent:
+            lines.append("⚠ base hook scripts missing on disk: " + ", ".join(absent))
+        if not missing:
+            lines.append("All skill-hub hooks present in settings.json.")
+        else:
+            lines.append(f"{len(missing)} skill-hub hook(s) missing from settings.json:")
+            lines.extend(f"  - {m}" for m in missing)
+            lines.append("\nRun /hub-install-hooks to re-apply them.")
+        return "\n".join(lines)
+
+    dry = sub in ("dry-run", "dry", "--dry-run", "preview")
+    report = _bc.install(dry_run=dry)
+    return _bc.format_report(report)
+
+
 def _cmd_sync_skills() -> str:
     """Re-index all skills from official + local plugin directories.
 
@@ -6111,6 +6149,16 @@ def _cmd_optimize_claude_md() -> str:
 
 # Map of slash command prefixes → local handlers
 _COMMAND_USAGE: dict[str, str] = {
+    "install_hooks": (
+        "Re-apply the skill-hub base hooks to ~/.claude/settings.json when they\n"
+        "get clobbered (router, session enforcer, compression, observers).\n"
+        "Idempotent; backs up settings.json first; preserves other settings.\n\n"
+        "Usage:\n"
+        "  `/hub-install-hooks`         — re-apply missing hooks\n"
+        "  `/hub-install-hooks check`   — report what's missing (no changes)\n"
+        "  `/hub-install-hooks dry-run` — preview changes (no write)\n"
+        "Alias: `/hub-enforce`"
+    ),
     "status": "Show health check: Ollama, models, DB stats, hook, config.\n\nUsage: `/hub-status`",
     "help": "Show full command reference.\n\nUsage: `/hub-help`",
     "token_stats": "Token savings report: interceptions, triage, context injections.\n\nUsage: `/hub-token-stats`",
@@ -6257,6 +6305,9 @@ _COMMAND_USAGE: dict[str, str] = {
 }
 
 _SLASH_COMMANDS: dict[str, str] = {
+    "/hub-install-hooks": "install_hooks",
+    "/hub-enforce": "install_hooks",
+    "/hub-reapply-hooks": "install_hooks",
     "/hub-status": "status",
     "/hub-help": "help",
     "/hub-manual": "help",
@@ -6355,6 +6406,8 @@ def _handle_slash_command(message: str) -> dict | None:
     try:
         if action == "status":
             return {"decision": "block", "message": _cmd_status()}
+        elif action == "install_hooks":
+            return {"decision": "block", "message": _cmd_install_hooks(args_str)}
         elif action == "help":
             return {"decision": "block", "message": _cmd_help()}
         elif action == "token_stats":
