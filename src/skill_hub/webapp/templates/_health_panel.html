@@ -389,6 +389,81 @@
     {% endif %}
     {% endif %}
   </div>
+
+  {# ---- Log Insights ----------------------------------------------------- #}
+  {% set ld = log_digest %}
+  <div class="card">
+    <div class="card-head">
+      <h3>Log Insights</h3>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span class="muted" style="font-size:11px">{{ ld.window }}</span>
+      </div>
+    </div>
+    {% if ld.total == 0 %}
+    <p class="muted" style="margin:6px 0">No recent activity.</p>
+    {% else %}
+    <table class="health-table" style="margin-bottom:8px">
+      <thead><tr><th>metric</th><th style="text-align:right">value</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Events / sessions</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '{:,}'.format(ld.total) }} / {{ ld.distinct_sessions }}
+          </td>
+        </tr>
+        <tr>
+          <td>Injections / feedback</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">
+            {{ '{:,}'.format(ld.total_injections) }} / {{ '{:,}'.format(ld.total_feedback) }}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    {% if ld.by_kind %}
+    <div style="font-size:11px;color:var(--color-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">By kind</div>
+    <table class="health-table" style="margin-bottom:8px">
+      <thead><tr><th>kind</th><th style="text-align:right">count</th></tr></thead>
+      <tbody>
+      {% for kind, count in ld.by_kind.items()|sort(attribute='1', reverse=True) %}
+        <tr>
+          <td>{{ kind }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ '{:,}'.format(count) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if ld.top_failures %}
+    <div style="font-size:11px;color:var(--color-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Recurring failures</div>
+    <table class="health-table" style="margin-bottom:8px">
+      <thead><tr><th>tool</th><th style="text-align:right">count</th></tr></thead>
+      <tbody>
+      {% for f in ld.top_failures %}
+        <tr>
+          <td title="{{ f.pattern }}">{{ f.tool }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ f.count }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if ld.skills %}
+    <div style="font-size:11px;color:var(--color-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Top skills</div>
+    <table class="health-table">
+      <thead><tr><th>skill</th><th style="text-align:right">inj</th><th>status</th></tr></thead>
+      <tbody>
+      {% for s in ld.skills %}
+        <tr>
+          <td>{{ s.skill_id }}</td>
+          <td style="text-align:right;font-variant-numeric:tabular-nums">{{ s.injections }}</td>
+          <td>{% if s.status %}<span class="muted" style="font-size:11px">{{ s.status }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
 </div>
 
 <style>

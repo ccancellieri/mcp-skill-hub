@@ -404,3 +404,79 @@ def skill_selection_stats(limit: int = 500) -> dict:
         "total_injections": total_injections,
         "total_feedback": total_feedback,
     }
+
+
+# ---------------------------------------------------------------------------
+# Digest surface (Phase 3)
+# ---------------------------------------------------------------------------
+
+def build_digest(hours: int = 24, limit: int = 2000) -> dict:
+    """Return a single structured digest view of recent activity — no LLM.
+
+    Keys
+    ----
+    hours          — look-back window requested
+    window         — human label e.g. "last 24h"
+    total          — total events in window
+    distinct_sessions — distinct session_id values in window
+    by_kind        — dict mapping event kind → count
+    top_failures   — top 5 recurring failure clusters (from cluster_failures)
+    skills         — skill-selection highlights (top 5 by injections, any
+                     "review: never-helpful" or "no feedback yet" flags)
+    total_injections — total injection rows
+    total_feedback   — total feedback rows
+    generated_ts   — unix timestamp (float) when the digest was built
+    """
+    import time as _time
+
+    from . import store as _store_mod
+
+    since = _time.time() - max(1, int(hours)) * 3600
+    generated_ts = _time.time()
+
+    store = _store_mod.get_store()
+    events = store.get_events(since=since, limit=limit)
+
+    by_kind: dict[str, int] = {}
+    session_ids: set[str] = set()
+    for ev in events:
+        kind = ev.get("kind") or "unknown"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        sid = ev.get("session_id") or ""
+        if sid:
+            session_ids.add(sid)
+
+    # Top recurring failures (up to 5)
+    try:
+        fail_result = cluster_failures(hours=hours, limit=limit, min_count=2)
+        top_failures = fail_result.get("clusters", [])[:5]
+    except Exception:  # noqa: BLE001
+        top_failures = []
+
+    # Skill selection highlights
+    try:
+        sel = skill_selection_stats(limit=500)
+        all_skills = sel.get("skills", [])
+        # Top 5 by injections, plus flag any with notable status
+        top_skills = all_skills[:5]
+        flagged = [s for s in all_skills[5:] if s.get("status")]
+        skill_highlights = top_skills + flagged
+        total_injections = sel.get("total_injections", 0)
+        total_feedback = sel.get("total_feedback", 0)
+    except Exception:  # noqa: BLE001
+        skill_highlights = []
+        total_injections = 0
+        total_feedback = 0
+
+    return {
+        "hours": hours,
+        "window": f"last {hours}h",
+        "total": len(events),
+        "distinct_sessions": len(session_ids),
+        "by_kind": by_kind,
+        "top_failures": top_failures,
+        "skills": skill_highlights,
+        "total_injections": total_injections,
+        "total_feedback": total_feedback,
+        "generated_ts": generated_ts,
+    }

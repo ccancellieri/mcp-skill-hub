@@ -23,6 +23,19 @@ _COMPRESSION_EMPTY: dict = {
     "by_strategy": {}, "by_site": {},
 }
 
+_LOG_DIGEST_EMPTY: dict = {
+    "hours": 24,
+    "window": "last 24h",
+    "total": 0,
+    "distinct_sessions": 0,
+    "by_kind": {},
+    "top_failures": [],
+    "skills": [],
+    "total_injections": 0,
+    "total_feedback": 0,
+    "generated_ts": 0.0,
+}
+
 _LLM_STATS_EMPTY: dict = {
     "calls": 0, "errors": 0,
     "total_duration_ms": 0, "avg_latency_ms": 0.0,
@@ -65,6 +78,17 @@ def _compression_context() -> dict:
     }
 
 
+def _log_insights_context() -> dict:
+    """Return log digest data for the health panel."""
+    digest = _LOG_DIGEST_EMPTY
+    try:
+        from skill_hub.log_insights import build_digest
+        digest = build_digest(hours=24)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"log_digest": digest}
+
+
 def _panel(request: Request, flash: str | None = None) -> HTMLResponse:
     snap = sh.health_snapshot()
     ctx: dict[str, Any] = {
@@ -73,6 +97,7 @@ def _panel(request: Request, flash: str | None = None) -> HTMLResponse:
         "flash": flash,
     }
     ctx.update(_compression_context())
+    ctx.update(_log_insights_context())
     return request.app.state.templates.TemplateResponse(
         request,
         "_health_panel.html",

@@ -317,6 +317,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,)),
     ToolSpec("analyze_skill_selection", "Per-skill injection counts and feedback helpful-rates",
              hard=(BACKEND_DB,)),
+    ToolSpec("log_digest", "Deterministic activity digest: events, failures, skill selection",
+             hard=(BACKEND_DB,)),
     # --- LLM-driven helpers ---
     ToolSpec("compact_master_state", "Compact MEMORY.md with the local LLM",
              hard=(BACKEND_REASON_LLM,)),
