@@ -2,11 +2,13 @@
 
 Design
 ------
-Read-only: fetches discussions via the GitHub GraphQL API and upserts them
-into the shared ``vectors`` table under namespace ``discussions``.  A bad
-item is skipped, never fatal.  All GitHub I/O goes through two narrow
-helpers (``_resolve_repo`` / ``_gh_graphql``) so tests can monkeypatch
-them without touching subprocess internals.
+Read-only against GitHub: fetches discussions via the GraphQL API and lands
+each one (with its comments folded in) as a mechanical wiki ``source`` page
+via ``wiki.write_source_page`` — no LLM. The scan→approve→ingest loop distills
+them later. This supersedes the old raw ``discussions`` vector namespace. A bad
+item is skipped, never fatal. All GitHub I/O goes through two narrow helpers
+(``_resolve_repo`` / ``_gh_graphql``) so tests can monkeypatch them without
+touching subprocess internals.
 """
 from __future__ import annotations
 
@@ -179,109 +181,73 @@ def sync_discussions(
         "dry_run": dry_run,
     }
 
+    # Wave 2: discussions land as mechanical wiki ``source`` pages (no LLM). The
+    # scan→approve→ingest loop distills them later. This retires the raw
+    # ``discussions`` vector namespace — reindex embeds the source pages into
+    # the ``wiki`` namespace instead.
+    from . import wiki as _wiki
+    from . import config as _cfg
+    from pathlib import Path as _Path
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+
     for disc in nodes:
         try:
             number = disc.get("number")
             title = disc.get("title") or ""
             url = disc.get("url") or ""
             body = disc.get("body") or ""
-            updated_at = disc.get("updatedAt") or ""
-            category = disc.get("category") or {}
-            cat_name = category.get("name") or ""
-            author = disc.get("author") or {}
-            author_login = author.get("login") or ""
-            answer_chosen_at = disc.get("answerChosenAt")
-            answered = bool(answer_chosen_at)
+            cat_name = (disc.get("category") or {}).get("name") or ""
+            author_login = (disc.get("author") or {}).get("login") or ""
+            answered = bool(disc.get("answerChosenAt"))
 
-            # Body document
-            body_text = f"{title}\n\n{body}".strip()
-            if body_text:
-                doc_id = f"discussion:{number}"
-                meta = {
-                    "kind": "discussion",
-                    "number": number,
-                    "title": title,
-                    "url": url,
-                    "category": cat_name,
-                    "author": author_login,
-                    "updated_at": updated_at,
-                    "answered": answered,
-                    "path": title or url,
-                }
-                if not dry_run:
-                    try:
-                        store.upsert_vector(  # type: ignore[attr-defined]
-                            namespace="discussions",
-                            doc_id=doc_id,
-                            text=body_text,
-                            source="discussion",
-                            metadata=meta,
-                        )
-                        report["indexed"] += 1
-                    except Exception as exc:  # noqa: BLE001
-                        _log.debug("upsert_vector failed for %s: %s", doc_id, exc)
-                        report["skipped"] += 1
-                else:
-                    report["indexed"] += 1
-                report["discussions"] += 1
+            # Fold the discussion + its comments into one source page body.
+            header = (f"_discussion #{number} · {cat_name} · by {author_login}"
+                      + (" · answered_" if answered else "_"))
+            parts = [f"# {title}".strip(), header]
+            if body:
+                parts.append(body)
+            for comment in (disc.get("comments") or {}).get("nodes") or []:
+                cbody = comment.get("body") or ""
+                if not cbody:
+                    continue
+                cauthor = (comment.get("author") or {}).get("login") or ""
+                parts.append(f"## Comment by {cauthor}\n\n{cbody}")
+                report["comments"] += 1
+            page_body = "\n\n".join(p for p in parts if p).strip()
+            if not page_body:
+                continue
 
-            # Comment documents
-            comments = (disc.get("comments") or {}).get("nodes") or []
-            for comment in comments:
+            report["discussions"] += 1
+            if dry_run:
+                report["indexed"] += 1
+            else:
                 try:
-                    comment_id = comment.get("id") or ""
-                    comment_body = comment.get("body") or ""
-                    if not comment_body:
-                        continue
-                    comment_url = comment.get("url") or ""
-                    comment_updated = comment.get("updatedAt") or ""
-                    comment_author = (comment.get("author") or {}).get("login") or ""
-
-                    c_doc_id = f"discussion:{number}:comment:{comment_id}"
-                    c_text = f"Re: {title}\n\n{comment_body}".strip()
-                    c_meta = {
-                        "kind": "comment",
-                        "number": number,
-                        "title": title,
-                        "url": comment_url,
-                        "category": cat_name,
-                        "author": comment_author,
-                        "updated_at": comment_updated,
-                        "path": f"{title} (comment)",
-                    }
-                    if not dry_run:
-                        try:
-                            store.upsert_vector(  # type: ignore[attr-defined]
-                                namespace="discussions",
-                                doc_id=c_doc_id,
-                                text=c_text,
-                                source="discussion",
-                                metadata=c_meta,
-                            )
-                            report["indexed"] += 1
-                        except Exception as exc:  # noqa: BLE001
-                            _log.debug("upsert_vector failed for %s: %s", c_doc_id, exc)
-                            report["skipped"] += 1
-                    else:
+                    slug = _wiki.write_source_page(
+                        store, wiki_root,
+                        source_id=f"discussion-{number}",
+                        title=title or f"Discussion {number}",
+                        body=page_body, url=url,
+                        scope="public", project=name,
+                    )
+                    if slug is not None:
                         report["indexed"] += 1
-                    report["comments"] += 1
+                    else:
+                        report["skipped"] += 1  # unchanged source_hash
                 except Exception as exc:  # noqa: BLE001
-                    _log.debug("comment processing error: %s", exc)
+                    _log.debug("write_source_page failed for #%s: %s", number, exc)
                     report["skipped"] += 1
+
+            if emit is not None:
+                try:
+                    emit("discussion.indexed", None,
+                         {"number": number, "title": title, "url": url})
+                except Exception:  # noqa: BLE001
+                    pass
 
         except Exception as exc:  # noqa: BLE001
             _log.debug("discussion processing error: %s", exc)
             report["skipped"] += 1
             continue
-
-        if emit is not None:
-            try:
-                emit("discussion.indexed", None, {
-                    "number": disc.get("number"),
-                    "title": disc.get("title") or "",
-                    "url": disc.get("url") or "",
-                })
-            except Exception:  # noqa: BLE001
-                pass
 
     return report

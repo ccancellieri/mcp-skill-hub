@@ -245,6 +245,28 @@ def _db_metrics(store: Any) -> dict[str, Any]:
     except sqlite3.OperationalError:
         out["intercept_by_day"] = []
 
+    # LLM Wiki knowledge layer — health + approval-queue snapshot.
+    try:
+        from . import wiki as _wiki
+        from . import config as _wcfg
+        from pathlib import Path as _WPath
+        wiki_root = _WPath(_wcfg.get("wiki_root") or
+                           _WPath.home() / ".claude" / "mcp-skill-hub" / "wiki")
+        st = _wiki.status(store, wiki_root)
+        summary = _wiki._queue_summary(store)
+        out["wiki"] = {
+            "pages_db": st["pages_db"], "pages_disk": st["pages_disk"],
+            "drift": st["drift"], "edges": st["edges"],
+            "dangling": st["dangling_edges"], "orphans": st["orphans"],
+            "last_log": st.get("last_log") or "",
+            "queue_pending": summary["pending"],
+            "queue_approved": summary["approved"],
+            "queue_done": summary["done"], "queue_skipped": summary["skipped"],
+            "queue_est_calls": summary["total_est_calls"],
+        }
+    except Exception:  # noqa: BLE001
+        out["wiki"] = None
+
     return out
 
 
@@ -403,6 +425,42 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
         log_note = ('<p class="warn">hook-debug.log not found — hook metrics '
                     'unavailable until a session runs.</p>')
 
+    # LLM Wiki card — health + the automatic-ingest approval queue. Rendered
+    # only when the wiki snapshot is available (degrades to nothing otherwise).
+    w = db.get("wiki")
+    if w:
+        drift_warn = ('<div class="warn">drift detected — run wiki_reindex</div>'
+                      if w["drift"] else "")
+        last_log = _esc(w["last_log"]) if w["last_log"] else "—"
+        wiki_card = f"""
+<div class="row">
+ <div class="card"><h2>Memory Wiki — health</h2>
+  <table>
+   <tr><td>pages (db / disk)</td><td>{w['pages_db']:,} / {w['pages_disk']:,}</td></tr>
+   <tr><td>drift</td><td>{w['drift']:,}</td></tr>
+   <tr><td>edges</td><td>{w['edges']:,}</td></tr>
+   <tr><td>dangling / orphans</td><td>{w['dangling']:,} / {w['orphans']:,}</td></tr>
+   <tr><td>last op</td><td>{last_log}</td></tr>
+  </table>
+  {drift_warn}
+ </div>
+ <div class="card"><h2>Memory Wiki — ingest queue</h2>
+  <table>
+   <tr><td>pending</td><td>{w['queue_pending']:,}</td></tr>
+   <tr><td>approved</td><td>{w['queue_approved']:,}</td></tr>
+   <tr><td>done</td><td>{w['queue_done']:,}</td></tr>
+   <tr><td>skipped</td><td>{w['queue_skipped']:,}</td></tr>
+   <tr><td>est. LLM calls (pending+approved)</td><td>{w['queue_est_calls']:,}</td></tr>
+  </table>
+  <div style="margin-top:8px; color:var(--muted); font-size:11px">
+   Auto-selection: <code>wiki_scan</code> finds candidates · approve with
+   <code>wiki_queue_decision</code> · distill with <code>wiki_ingest</code>.
+  </div>
+ </div>
+</div>"""
+    else:
+        wiki_card = ""
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -524,6 +582,7 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
   </table>
  </div>
 </div>
+{wiki_card}
 
 <div class="row">
  <div class="card"><h2>Tasks closed (last 30 days)</h2>

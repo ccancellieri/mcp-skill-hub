@@ -364,6 +364,74 @@ def compact_master_state(
     }
 
 
+def wiki_ingest(
+    source_kind: str,
+    source_title: str,
+    source_text: str,
+    candidate_pages: str = "",
+    target_scope: str = "public",
+    target_project: str = "_global",
+    tier: str = "tier_smart",
+    model: str | None = None,
+    timeout: float = 240.0,
+) -> dict:
+    """Distill one source into wiki page rewrites via an LLM.
+
+    Routes through ``get_provider()`` (``tier_smart`` → Claude when an Anthropic
+    key is set, else the local "smart" Ollama model). Prompt caching is enabled
+    so the candidate-page context does not pay full cost on repeat ingests of
+    the same neighbourhood.
+
+    Returns a dict with keys: source_page (dict), page_updates (list),
+    index_entries (list), assumptions (list). On any failure returns a minimal
+    fallback (empty updates, ``_fallback=True``) so callers always have a
+    renderable shape and never raise.
+    """
+    from .llm.prompts import load_prompt
+
+    log_llm("wiki_ingest", model=model or tier,
+            input_chars=len(source_text) + len(candidate_pages))
+    prompt = load_prompt("wiki_ingest").format(
+        source_kind=source_kind,
+        source_title=source_title or "(untitled)",
+        source_text=source_text[:12000] or "(empty)",
+        candidate_pages=candidate_pages[:14000] or "(no related pages yet)",
+        target_scope=target_scope,
+        target_project=target_project or "_global",
+    )
+    try:
+        raw = get_provider().complete(
+            prompt,
+            tier=tier,
+            model=model,
+            max_tokens=4096,
+            temperature=0.1,
+            timeout=timeout,
+            cache=True,
+            cache_ttl="1h",  # candidate-page context is a reused prefix
+            op="wiki_ingest",
+        )
+        raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            if isinstance(parsed.get("source_page"), dict):
+                # Normalize list fields: missing/null/wrong-type -> [].
+                for key in ("page_updates", "index_entries", "assumptions"):
+                    val = parsed.get(key)
+                    parsed[key] = val if isinstance(val, list) else []
+                return parsed
+    except Exception:
+        pass
+    return {
+        "source_page": {},
+        "page_updates": [],
+        "index_entries": [],
+        "assumptions": [],
+        "_fallback": True,
+    }
+
+
 def rewrite_query(message: str, context: str = "",
                   model: str = RERANK_MODEL) -> str:
     """

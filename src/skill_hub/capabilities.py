@@ -369,6 +369,21 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("ensure_tooling", "Probe and provision dev tooling (e.g. code index) for a path",
              hard=()),
+    # --- LLM Wiki knowledge layer ---
+    ToolSpec("wiki_reindex", "Rebuild wiki_pages/wiki_edges tables and re-embed pages",
+             hard=(BACKEND_DB, BACKEND_EMBED)),
+    ToolSpec("wiki_status", "Wiki health: page counts, edges, orphans, drift",
+             hard=()),
+    ToolSpec("wiki_migrate", "Migrate auto-memory files to wiki source pages (dry_run=True default)",
+             hard=(BACKEND_DB,)),
+    ToolSpec("wiki_scan", "Auto-select source pages needing distillation into the approval queue",
+             hard=(BACKEND_DB,)),
+    ToolSpec("wiki_queue_decision", "Approve or skip a wiki ingest candidate",
+             hard=(BACKEND_DB,)),
+    ToolSpec("wiki_ingest", "Distill approved wiki source pages into entity/concept pages (LLM)",
+             hard=(BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM)),
+    ToolSpec("wiki_query", "Query the wiki: hybrid vector + index.md lexical ranking",
+             hard=(BACKEND_DB, BACKEND_EMBED)),
 )
 
 

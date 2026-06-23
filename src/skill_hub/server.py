@@ -3744,19 +3744,22 @@ def promote_memory(dry_run: bool = True) -> str:
     ``dry_run=True`` (default) reports planned actions without mutating rows.
     """
     conn = _store._conn
+    # Wiki namespaces are derived from markdown (source of truth) and are
+    # rebuilt by wiki_reindex — never promoted or pruned here.
+    _wiki_guard = "namespace NOT IN ('wiki','wiki-private')"
     rules = [
         ("promote", "L1", "L2",
-         "level = 'L1' AND access_count >= 2 AND "
-         "indexed_at < datetime('now', '-7 days')"),
+         f"level = 'L1' AND access_count >= 2 AND "
+         f"indexed_at < datetime('now', '-7 days') AND {_wiki_guard}"),
         ("promote", "L2", "L3",
-         "level = 'L2' AND access_count >= 5 AND "
-         "indexed_at < datetime('now', '-30 days')"),
+         f"level = 'L2' AND access_count >= 5 AND "
+         f"indexed_at < datetime('now', '-30 days') AND {_wiki_guard}"),
         ("prune",   "L0", None,
-         "level = 'L0' AND access_count = 0 AND "
-         "indexed_at < datetime('now', '-1 day')"),
+         f"level = 'L0' AND access_count = 0 AND "
+         f"indexed_at < datetime('now', '-1 day') AND {_wiki_guard}"),
         ("prune",   "L1", None,
-         "level = 'L1' AND access_count = 0 AND "
-         "indexed_at < datetime('now', '-7 days')"),
+         f"level = 'L1' AND access_count = 0 AND "
+         f"indexed_at < datetime('now', '-7 days') AND {_wiki_guard}"),
     ]
     report: list[dict] = []
     for action, from_lvl, to_lvl, where in rules:
@@ -4589,11 +4592,16 @@ def issue_sync(repo: str = "", dry_run: bool = False) -> str:
 @mcp.tool()
 @requires_capability("none")
 def discussions_sync(repo: str = "", dry_run: bool = False, first: int = 50) -> str:
-    """Index this repo's GitHub Discussions (+ comments) into vector memory (namespace 'discussions'), searchable via search_context.
+    """Land this repo's GitHub Discussions (+ comments) into the wiki as source pages.
+
+    Each discussion becomes one mechanical wiki ``source`` page (no LLM, comments
+    folded in). The scan→approve→ingest loop (wiki_scan / wiki_queue_decision /
+    wiki_ingest) distills them; query via wiki_query. Supersedes the old raw
+    'discussions' vector namespace.
 
     Args:
         repo:     GitHub repo as "owner/name". Empty = resolve from current directory.
-        dry_run:  Report what would be indexed without writing to the DB.
+        dry_run:  Report what would be written without writing pages.
         first:    Number of discussions to fetch (max 100).
     """
     from . import discussions_sync as _discussions_sync
@@ -4665,6 +4673,259 @@ def index_logs(hours: int = 24, limit: int = 1000, dry_run: bool = False) -> str
     if dry_run:
         lines.append("  (dry_run: no writes made)")
     return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("embedding")
+def wiki_reindex(dry_run: bool = False) -> str:
+    """Rebuild wiki_pages/wiki_edges tables and re-embed all wiki pages into vector namespaces.
+
+    Walks ``<wiki_root>/pages/**/*.md`` and ``<wiki_root>/_private/**/*.md``,
+    deletes existing derived data (wiki_pages, wiki_edges, and wiki/wiki-private
+    vector rows), then re-derives everything from the markdown source of truth.
+    Idempotent — safe to run repeatedly.
+
+    #35 dim guard: raises an error if the active embedding model's dimension
+    differs from the stored vector dimension.
+
+    Args:
+        dry_run: When True, scan pages and report counts without writing anything.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_reindex", dry_run=dry_run)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    try:
+        result = _wiki.reindex(_store, wiki_root, dry_run=dry_run)
+    except ValueError as exc:
+        return f"wiki_reindex error: {exc}"
+    mode = "dry_run" if dry_run else "live"
+    return (
+        f"wiki_reindex [{mode}]: "
+        f"pages={result['pages']} "
+        f"edges={result['edges']} "
+        f"vectors={result['vectors']}"
+    )
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_status() -> str:
+    """Report the current state of the LLM Wiki knowledge layer.
+
+    Returns counts of pages (DB vs disk), edges, orphans (no inbound link),
+    dangling edges (unresolved dst), last log.md entry, and drift (pages on
+    disk vs vector rows). Stdlib-only — works in no_llm_mode.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_status")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    st = _wiki.status(_store, wiki_root)
+    lines = [
+        f"wiki_status:",
+        f"  pages (db={st['pages_db']}, disk={st['pages_disk']}, drift={st['drift']})",
+        f"  edges={st['edges']} dangling={st['dangling_edges']} orphans={st['orphans']}",
+        f"  vec_rows={st['vec_rows']}",
+    ]
+    if st["last_log"]:
+        lines.append(f"  last_log: {st['last_log']}")
+    if st["drift"] > 0:
+        lines.append("  WARNING: drift detected — run wiki_reindex to reconcile")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_migrate(dry_run: bool = True) -> str:
+    """Migrate auto-memory markdown files to wiki source pages (mechanical, no LLM).
+
+    Discovers public auto-memory files via iter_user_memory_files() and private
+    files under private/ subdirs, then writes one ``source`` page per file under
+    ``<wiki_root>/pages/source/`` (public) or ``<wiki_root>/_private/<scope>/``
+    (private).  One ``project/<project>.md`` index page is written per project.
+
+    Idempotent — files already present in any page's ``source_refs`` are skipped.
+    After a non-dry-run, call wiki_reindex to rebuild the vector index.
+
+    Args:
+        dry_run: When True (default), scan and report counts without writing.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_migrate", dry_run=dry_run)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    try:
+        result = _wiki.migrate(_store, wiki_root, dry_run=dry_run)
+    except Exception as exc:
+        return f"wiki_migrate error: {exc}"
+
+    if dry_run:
+        lines = [
+            f"wiki_migrate [dry_run]: would_write={result['would_write']}",
+            f"  public={result['public']} private={result['private']}",
+            f"  skipped_already_converted={result['skipped_already_converted']}",
+        ]
+        if result["collisions"]:
+            lines.append(f"  collisions: {', '.join(result['collisions'][:5])}")
+        lines.append("  (dry_run: no files written)")
+        return "\n".join(lines)
+
+    lines = [
+        f"wiki_migrate [live]: written={result['written']}",
+        f"  public={result['public']} private={result['private']}",
+        f"  skipped={result['skipped']} index_pages={result['index_pages']}",
+        "  Run wiki_reindex to rebuild the vector index.",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_scan() -> str:
+    """Auto-select wiki source pages needing distillation and enqueue them.
+
+    Deterministic — no LLM, no token spend. Finds undistilled source pages (the
+    migration backfill) and stale ones (underlying file changed), then upserts
+    them into the approval queue as ``pending``. This is the *automatic source
+    selection* step: it picks what to ingest so you never hand-pick files.
+
+    Nothing is distilled here. Approve rows with ``wiki_queue_decision``, then
+    run ``wiki_ingest`` to spend tokens. Stdlib + DB only — works in no_llm_mode.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_scan")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    summary = _wiki.scan_and_enqueue(_store, wiki_root)
+    lines = [
+        f"wiki_scan: scanned={summary['scanned']}",
+        f"  queue: pending={summary['pending']} approved={summary['approved']} "
+        f"done={summary['done']} skipped={summary['skipped']}",
+        f"  est_calls(pending+approved)={summary['total_est_calls']}",
+    ]
+    for c in summary["queue"][:10]:
+        title = c["title"] if c["scope"] != "private" else "(private)"
+        lines.append(f"  - {c['slug']} [{c['reason']}] {title}")
+    extra = len(summary["queue"]) - 10
+    if extra > 0:
+        lines.append(f"  ... and {extra} more")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("embedding")
+def wiki_query(query: str, top_k: int = 5) -> str:
+    """Query the LLM Wiki: hybrid vector + index.md lexical ranking.
+
+    Returns the top matching pages with their bodies and ``source_refs``
+    provenance. Private pages are included only for authorized scopes (the
+    local operator's configured private scopes).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_query")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+    out = _wiki.query(_store, wiki_root, query, top_k=top_k,
+                      authorized_scopes=authorized)
+    results = out["results"]
+    if not results:
+        return f"wiki_query: no matches for {query!r}"
+    lines = [f"wiki_query: {len(results)} result(s) for {query!r}"]
+    for r in results:
+        refs = ", ".join(r["source_refs"][:3]) if r["source_refs"] else "-"
+        lines.append(
+            f"\n## [[{r['slug']}]] — {r['title']} "
+            f"(type={r['type']}, scope={r['scope']}, score={r['score']})\n"
+            f"{r['body'][:1500]}\n(source_refs: {refs})"
+        )
+    return "\n".join(lines)
+
+
+def _wiki_authorized_scopes() -> list[str]:
+    """Scopes the local operator may write/read — the union of configured
+    private scopes (this is the user's own machine and vault)."""
+    scopes: set[str] = set()
+    cfg = _cfg.get("wiki_private_scopes") or {}
+    if isinstance(cfg, dict):
+        for v in cfg.values():
+            if isinstance(v, list):
+                scopes.update(v)
+    return sorted(scopes)
+
+
+@mcp.tool()
+@requires_capability("none")
+def wiki_queue_decision(slug: str, decision: str) -> str:
+    """Approve or skip a wiki ingest candidate.
+
+    ``decision`` is 'approve' or 'skip'. Approval is the gate — only approved
+    rows may be ingested live by ``wiki_ingest``. Skipped rows are excluded from
+    future ``wiki_scan`` runs until their source changes.
+    """
+    from . import wiki as _wiki
+
+    log_tool("wiki_queue_decision", decision=decision)
+    out = _wiki.queue_decision(_store, slug, decision)
+    tail = out.get("decision") or out.get("reason") or ""
+    return f"wiki_queue_decision: {out.get('status')} {slug} -> {tail}"
+
+
+@mcp.tool()
+@requires_capability("llm")
+def wiki_ingest(slug: str = "", dry_run: bool = True,
+                approve_all: bool = False, limit: int = 0) -> str:
+    """Distill approved wiki source pages into entity/concept pages via the LLM.
+
+    Automatic selection happens in ``wiki_scan``; this tool spends tokens only
+    on rows you have approved (``wiki_queue_decision``).
+
+    Args:
+        slug: Ingest one queued source page. Live writes require it be approved.
+        dry_run: When True (default), return the proposed diff and write nothing.
+        approve_all: Batch-ingest every approved row up to ``limit``.
+        limit: Batch cost cap; 0 → config ``wiki_ingest_batch_limit`` (default 10).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_ingest", dry_run=dry_run, approve_all=approve_all)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+
+    if approve_all:
+        lim = limit or int(_cfg.get("wiki_ingest_batch_limit") or 10)
+        out = _wiki.ingest_approved(_store, wiki_root, limit=lim,
+                                    authorized_scopes=authorized, dry_run=dry_run)
+        mode = "dry_run" if dry_run else "live"
+        return (f"wiki_ingest [batch {mode}]: processed={out['processed']} "
+                f"ok={out['ok']} limit={out['limit']}")
+
+    if not slug:
+        return "wiki_ingest error: provide slug=... or approve_all=True"
+
+    out = _wiki.ingest_queued(_store, wiki_root, slug,
+                              authorized_scopes=authorized, dry_run=dry_run)
+    status = out.get("status")
+    if status == "ok":
+        return (f"wiki_ingest [live]: {slug} status=ok "
+                f"written={out.get('written')} vectors={out.get('vectors')}")
+    if status == "dry_run":
+        return (f"wiki_ingest [dry_run]: {slug} "
+                f"pages={len(out.get('pages', []))} (nothing written)")
+    return f"wiki_ingest: {slug} status={status} {out.get('reason', '')}"
 
 
 def main() -> None:

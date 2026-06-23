@@ -105,6 +105,10 @@ _DEFAULT_VECTOR_INDEXES: dict[str, dict] = {
     "habits:prompts":      {"default_level": "L2", "half_life_days": 60.0},
     "session:log":         {"default_level": "L1", "half_life_days": 3.0},
     "logs":                {"default_level": "L1", "half_life_days": 7.0},
+    # LLM Wiki knowledge layer — curated pages barely decay; index is rebuilt
+    # from markdown SoT via wiki_reindex, never promoted/pruned by promote_memory.
+    "wiki":                {"default_level": "L3", "half_life_days": 365.0},
+    "wiki-private":        {"default_level": "L3", "half_life_days": 365.0},
 }
 
 
@@ -886,6 +890,52 @@ class SkillStore:
                 ran_at              TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY (experiment_id) REFERENCES experiments(id)
             );
+
+            -- LLM Wiki knowledge layer — derived from markdown pages (SoT).
+            -- Fully rebuildable by wiki_reindex; never hand-edited.
+            CREATE TABLE IF NOT EXISTS wiki_pages (
+                slug        TEXT PRIMARY KEY,        -- globally unique
+                id          TEXT NOT NULL,           -- ULID, stable across rename
+                title       TEXT NOT NULL,
+                type        TEXT NOT NULL,
+                scope       TEXT NOT NULL DEFAULT 'public',  -- public | private
+                projects    TEXT NOT NULL,           -- JSON array
+                tags        TEXT, aliases TEXT,       -- JSON arrays
+                rel_path    TEXT NOT NULL,           -- relative to wiki_root
+                updated     TEXT,
+                indexed_at  TEXT DEFAULT (datetime('now'))
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_wiki_pages_id ON wiki_pages (id);
+
+            CREATE TABLE IF NOT EXISTS wiki_edges (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                src_slug  TEXT NOT NULL,
+                dst_slug  TEXT NOT NULL,             -- post-alias-resolution
+                dst_raw   TEXT NOT NULL,             -- exactly what was inside [[ ]]
+                edge_kind TEXT NOT NULL DEFAULT 'wikilink',  -- wikilink | alias | embed
+                project   TEXT,                      -- src page's projects[0]
+                resolved  INTEGER NOT NULL DEFAULT 1,-- 0 = dangling (dst not in wiki_pages)
+                UNIQUE(src_slug, dst_slug, edge_kind)
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_edges_dst ON wiki_edges (dst_slug);
+            CREATE INDEX IF NOT EXISTS idx_wiki_edges_src ON wiki_edges (src_slug);
+            CREATE INDEX IF NOT EXISTS idx_wiki_edges_resolved ON wiki_edges (resolved);
+
+            -- Wave 2: approval queue for automatic ingest source-selection.
+            -- The scanner proposes candidates (pending); the operator approves;
+            -- only then does the LLM ingest spend tokens. Auto-select, not auto-spend.
+            CREATE TABLE IF NOT EXISTS wiki_queue (
+                slug         TEXT PRIMARY KEY,          -- source page to (re)distill
+                title        TEXT NOT NULL DEFAULT '',
+                scope        TEXT NOT NULL DEFAULT 'public',
+                reason       TEXT NOT NULL DEFAULT '',  -- undistilled | stale
+                est_calls    INTEGER NOT NULL DEFAULT 1,
+                status       TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|done|skipped
+                diff_preview TEXT,                       -- last dry-run diff JSON
+                created_at   TEXT DEFAULT (datetime('now')),
+                decided_at   TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_wiki_queue_status ON wiki_queue (status);
         """)
         self._conn.commit()
 
