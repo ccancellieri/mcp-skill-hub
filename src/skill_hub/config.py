@@ -128,6 +128,12 @@ _DEFAULTS = {
     "compression_enabled": True,        # master switch for the compression pre-stage
     "compression_min_tokens": 200,      # skip payloads below ~this token count
     "compression_context_aware": True,  # pass the user query as relevance context
+    # Context-window headroom awareness — scale the effective compression threshold
+    # based on current system pressure (from resource_monitor.snapshot()).  When ON,
+    # HIGH pressure lowers the threshold (compress more eagerly); IDLE/LOW keeps the
+    # configured value.  OFF by default: behaviour is byte-identical to the previous
+    # release until the user opts in.
+    "compression_headroom_aware": False,
     # Lossy ML path — Kompress (ModernBERT) extractive prose compression. ON by
     # default after eval (scripts/compression_eval.py): avg ratio 0.60, avg
     # embedding-fidelity 0.87. It deletes low-salience tokens — LOSSY and (for prose)

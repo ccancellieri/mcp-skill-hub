@@ -323,7 +323,41 @@ def _lossy_flags() -> tuple[bool, bool]:
         return (False, False)
 
 
-def _emit_compression_event(payload: CompressedPayload, site: str) -> None:
+# Multiplier table: Pressure tier → fraction of configured min_tokens used as the
+# effective threshold.  Values < 1.0 lower the bar (compress more eagerly).
+# IDLE and LOW leave the configured threshold unchanged (1.0).
+_PRESSURE_THRESHOLD_MULTIPLIERS: dict[int, float] = {
+    0: 1.0,   # IDLE     — keep configured threshold
+    1: 1.0,   # LOW      — keep configured threshold
+    2: 0.5,   # MODERATE — halve threshold (compress payloads half the normal size)
+    3: 0.25,  # HIGH     — quarter threshold (compress very aggressively)
+}
+
+
+def _effective_min_tokens(configured: int) -> tuple[int, str]:
+    """Return (effective_min_tokens, pressure_tier_name).
+
+    When ``compression_headroom_aware`` is False (default), returns
+    ``(configured, "DISABLED")`` so behaviour is byte-identical to before.
+    Never raises.
+    """
+    try:
+        from .. import config as _cfg
+        from ..resource_monitor import snapshot as _snapshot
+
+        if not _cfg.get("compression_headroom_aware"):
+            return configured, "DISABLED"
+        snap = _snapshot()
+        multiplier = _PRESSURE_THRESHOLD_MULTIPLIERS.get(int(snap.pressure), 1.0)
+        effective = max(1, int(configured * multiplier))
+        return effective, snap.pressure.name
+    except Exception:  # noqa: BLE001
+        return configured, "DISABLED"
+
+
+def _emit_compression_event(
+    payload: CompressedPayload, site: str, pressure_tier: str = "DISABLED"
+) -> None:
     """Best-effort telemetry: record a ``compression`` event. Never raises."""
     try:
         from ..store import get_store
@@ -338,6 +372,7 @@ def _emit_compression_event(payload: CompressedPayload, site: str) -> None:
                 "bytes_after": payload.bytes_after,
                 "ratio": round(payload.ratio, 4),
                 "lossy": payload.lossy,
+                "pressure_tier": pressure_tier,
             },
             tool_name=site or None,
         )
@@ -369,9 +404,10 @@ def maybe_compress(
         if not _cfg.get("compression_enabled"):
             return content
         ctx = context if _cfg.get("compression_context_aware") else ""
-        min_tokens = int(_cfg.get("compression_min_tokens") or _DEFAULT_MIN_TOKENS)
+        configured_min = int(_cfg.get("compression_min_tokens") or _DEFAULT_MIN_TOKENS)
     except Exception:
         return content
+    min_tokens, pressure_tier = _effective_min_tokens(configured_min)
     try:
         payload = compress_payload(
             content, context=ctx, min_tokens=min_tokens, allow_lossy=allow_lossy
@@ -381,7 +417,7 @@ def maybe_compress(
     # Only emit telemetry for attempts that actually reached the compressor
     # (i.e. were large enough to try) — skip tiny no-op passthroughs.
     if payload.bytes_before >= min_tokens * _CHARS_PER_TOKEN:
-        _emit_compression_event(payload, site)
+        _emit_compression_event(payload, site, pressure_tier)
     return payload.compressed
 
 
