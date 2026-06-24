@@ -31,7 +31,7 @@ def _authorized_scopes() -> list[str]:
     return sorted(scopes)
 
 
-def _wiki_health(store: Any) -> dict:
+def _wiki_health(store: Any) -> dict | None:
     """Return wiki vault health + queue summary. Reuses dashboard._db_metrics logic."""
     from skill_hub import wiki as _wiki
     wiki_root = _wiki_root()

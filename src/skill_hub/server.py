@@ -2048,7 +2048,6 @@ def search_context(
                 ns = r.get("namespace", "")
                 # Gate: private results only for authorized scopes.
                 if ns == "wiki-private":
-                    scope_project = str(meta.get("projects") or [""])[1:-1].strip("'\"")
                     if not _wiki_auth:
                         continue
                 slug = meta.get("slug") or r.get("doc_id", "")

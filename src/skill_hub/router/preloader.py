@@ -219,7 +219,7 @@ def _gather_context(
                 # search() searches skills table; task search needs direct query
                 tasks = _search_tasks_by_vector(store, vec, top_k=1)
                 if tasks:
-                    t = tasks[0]
+                    t = dict(tasks[0])
                     parts = [p for p in [t.get("title"), t.get("summary", "")[:200]] if p]
                     return " — ".join(parts)[:max_chars]
         except Exception:
@@ -229,7 +229,7 @@ def _gather_context(
         try:
             all_open = store.list_tasks("open")
             if all_open:
-                t = all_open[0]
+                t = dict(all_open[0])
                 parts = [p for p in [t.get("title"), t.get("summary", "")[:150]] if p]
                 return " — ".join(parts)[:max_chars]
         except Exception:

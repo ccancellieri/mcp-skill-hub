@@ -1346,7 +1346,6 @@ def file_answer(
     for r in results:
         # body is already the full page body (loaded by query() via _load_page).
         slug = r["slug"]
-        rel = r.get("rel_path", "")
         sources.append(slug)
         pages_block_parts.append(
             f"### [[{slug}]] — {r['title']} "
