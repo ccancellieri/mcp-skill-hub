@@ -36,7 +36,7 @@
       <td>
         {% if p.models %}
           {% for m in p.models %}
-            <div><code>{{ m.id }}</code> <span class="badge">{{ m.complexity }}</span>{% if m.monthly_cap_tokens %} cap={{ m.monthly_cap_tokens }}{% endif %}</div>
+            <div><code>{{ m.id }}</code> <span class="badge">{{ m.complexity }}</span>{% if m.tags %} {% for t in m.tags %}<span class="badge" style="background:#2d6;">{{ t }}</span> {% endfor %}{% endif %}{% if m.monthly_cap_tokens %} cap={{ m.monthly_cap_tokens }}{% endif %}</div>
           {% endfor %}
         {% else %}
           <em>none</em>

@@ -158,3 +158,58 @@ def test_spend_decodes_json_string_payload_and_caps(monkeypatch, tmp_path):
     })()
     with pytest.raises(provider.LLMError):
         p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+
+
+def test_op_routing_engages_ladder_and_routes_by_domain(monkeypatch, tmp_path):
+    """A known ``op`` (no explicit complexity/model) engages the ladder and the
+    policy domain selects the matching specialist."""
+    reg = {
+        "llm_metering_enabled": False,
+        "llm_provider_registry": [{
+            "name": "gw", "level": "L3", "kind": "openai_compatible",
+            "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
+            "enabled": True, "order": 30,
+            "models": [{"id": "fast-m", "complexity": "light", "tags": ["fast"]},
+                       {"id": "py-m", "complexity": "light", "tags": ["python"]}],
+        }],
+    }
+    _write_cfg(monkeypatch, tmp_path, reg)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+
+    calls: list[str] = []
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            return {"choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = FakeLitellm()
+    # 'rerank' maps to (0.2, 'fast') in _OP_ROUTING.
+    out = p.complete("x", op="rerank")
+    assert out == "ok"
+    assert calls == ["fast-m"]   # 'fast' specialist, not the python model
+
+
+def test_unknown_op_with_no_signal_skips_ladder(monkeypatch, tmp_path):
+    """An op absent from _OP_ROUTING and no complexity/domain must NOT engage
+    the ladder — preserves the prior tier-resolution path (no regression)."""
+    _write_cfg(monkeypatch, tmp_path, _REG)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+
+    p = litellm_adapter.LitellmProvider()
+    engaged = {"v": False}
+    monkeypatch.setattr(p, "_chat_via_ladder",
+                        lambda *a, **k: (engaged.__setitem__("v", True) or "ladder"))
+    monkeypatch.setattr(p, "_resolve_model", lambda tier, model: "resolved-x")
+    monkeypatch.setattr(p, "_api_base", lambda m: None)
+    monkeypatch.setattr(p, "_chat_once", lambda *a, **k: "direct")
+
+    out = p.complete("x", op="totally_unknown_op")
+    assert out == "direct"
+    assert engaged["v"] is False

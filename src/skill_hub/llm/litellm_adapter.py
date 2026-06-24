@@ -14,6 +14,23 @@ from .provider import LLMError, LLMProvider, Message
 
 _log = logging.getLogger(__name__)
 
+# Auxiliary-task routing policy: maps a call-site ``op`` label to a default
+# ``(complexity, domain)`` so those tasks flow through the escalation ladder and
+# prefer a domain-specialised model. Only ops listed here auto-engage the
+# ladder; explicit ``complexity``/``domain`` kwargs always override. Unlisted
+# ops keep the prior tier-based behaviour (no regression). Domains are matched
+# against per-model ``tags`` in the provider registry.
+_OP_ROUTING: dict[str, tuple[float, str]] = {
+    "conversation_digest": (0.3, "digest"),
+    "compact": (0.3, "digest"),
+    "compact_master_state": (0.4, "writing"),
+    "smart_memory_write": (0.4, "writing"),
+    "rerank": (0.2, "fast"),
+    "triage": (0.2, "fast"),
+    "wiki_file_answer": (0.5, "reasoning"),
+    "wiki_ingest": (0.4, "writing"),
+}
+
 
 def _emit_llm_event(
     *,
@@ -170,6 +187,7 @@ class LitellmProvider:
         op: str = "",
         cache_ttl: str = "",
         complexity: float | None = None,
+        domain: str | None = None,
     ) -> str:
         return self.chat(
             [Message(role="user", content=prompt)],
@@ -180,6 +198,7 @@ class LitellmProvider:
             op=op,
             cache_ttl=cache_ttl,
             complexity=complexity,
+            domain=domain,
         )
 
     def _chat_once(
@@ -280,17 +299,30 @@ class LitellmProvider:
         op: str = "",
         cache_ttl: str = "",
         complexity: float | None = None,
+        domain: str | None = None,
     ) -> str:
         # --- Auxiliary escalation ladder -------------------------------------
-        # Engage only when the caller did not pin a model and left tier default
-        # but supplied a complexity signal.
-        if model is None and tier == "tier_cheap" and complexity is not None:
-            return self._chat_via_ladder(
-                self._normalize_messages(messages),
-                complexity=complexity, max_tokens=max_tokens,
-                temperature=temperature, timeout=timeout, cache=cache,
-                extra=extra, op=op, cache_ttl=cache_ttl,
-            )
+        # Engage only when the caller did not pin a model and left tier default.
+        # A signal is required: an explicit complexity/domain, or a known ``op``
+        # whose routing policy supplies both (see ``_OP_ROUTING``). Explicit
+        # kwargs override the policy. Unknown ops with no signal skip the ladder.
+        if model is None and tier == "tier_cheap":
+            policy = _OP_ROUTING.get(op)
+            eff_complexity = complexity
+            eff_domain = domain
+            if policy is not None:
+                if eff_complexity is None:
+                    eff_complexity = policy[0]
+                if eff_domain is None:
+                    eff_domain = policy[1]
+            if eff_complexity is not None or eff_domain is not None:
+                return self._chat_via_ladder(
+                    self._normalize_messages(messages),
+                    complexity=eff_complexity if eff_complexity is not None else 0.5,
+                    domain=eff_domain, max_tokens=max_tokens,
+                    temperature=temperature, timeout=timeout, cache=cache,
+                    extra=extra, op=op, cache_ttl=cache_ttl,
+                )
 
         resolved_model = self._resolve_model(tier, model)
         return self._chat_once(
@@ -361,6 +393,7 @@ class LitellmProvider:
         messages: list[dict[str, Any]],
         *,
         complexity: float,
+        domain: str | None = None,
         max_tokens: int,
         temperature: float,
         timeout: float,
@@ -374,7 +407,7 @@ class LitellmProvider:
         over_cap = self._personal_over_cap()
         last_exc: Exception | None = None
         for _ in range(64):
-            sel = escalation.select(complexity, exclude=exclude)
+            sel = escalation.select(complexity, domain=domain, exclude=exclude)
             if sel is None:
                 break
             if over_cap and sel.level == "personal":

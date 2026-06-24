@@ -563,18 +563,25 @@ _DEFAULTS = {
     "llm_provider_registry": [
         {"name": "local-ollama", "level": "L1", "kind": "ollama",
          "api_base": "", "api_key": {}, "enabled": True, "order": 10,
-         "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light"}]},
+         "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light",
+                     "tags": ["fast", "digest", "programming"]}]},
         {"name": "remote-ollama", "level": "L2", "kind": "ollama",
          "api_base": "", "api_key": {"source": "env", "ref": "SKILL_HUB_REMOTE_OLLAMA_BASE"},
          "enabled": False, "order": 20, "models": []},
+        # An OpenAI-compatible gateway. Leave models empty here (secret-free
+        # default); configure base/key/models per-user via the /providers page
+        # or by pointing api_key.ref at an opencode provider id. Per-model
+        # "tags" drive specialisation routing (e.g. ["python"], ["web", "ui-ux"]).
         {"name": "work-gateway", "level": "L3", "kind": "openai_compatible",
          "api_base": "", "api_key": {"source": "opencode", "ref": ""},
          "enabled": False, "order": 30, "models": []},
         {"name": "personal-claude", "level": "personal", "kind": "anthropic",
          "api_base": "", "api_key": {"source": "env", "ref": "ANTHROPIC_API_KEY"},
          "enabled": True, "order": 90,
-         "models": [{"id": "anthropic/claude-haiku-4-5", "complexity": "light"},
-                    {"id": "anthropic/claude-sonnet-4-6", "complexity": "heavy"}]},
+         "models": [{"id": "anthropic/claude-haiku-4-5", "complexity": "light",
+                     "tags": ["fast", "classify", "rerank", "query-rewrite"]},
+                    {"id": "anthropic/claude-sonnet-4-6", "complexity": "heavy",
+                     "tags": ["programming", "python", "git", "implementation"]}]},
     ],
     # Cooldown (seconds) before re-probing a model that returned a quota/429
     # signal or hit its monthly cap. Assumption (no value given): 1h re-probe.

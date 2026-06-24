@@ -47,6 +47,7 @@ def _build_provider_view(raw_list: list) -> list[dict]:
                     "id": m.get("id", ""),
                     "complexity": m.get("complexity", "light"),
                     "monthly_cap_tokens": m.get("monthly_cap_tokens"),
+                    "tags": m.get("tags") or [],
                 }
                 for m in (rec.get("models") or [])
                 if isinstance(m, dict)

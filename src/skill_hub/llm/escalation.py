@@ -61,8 +61,11 @@ def _provider_needs_key(p: Provider) -> bool:
     return p.kind != "ollama"
 
 
-def _pick_model(p: Provider, wanted: str, exclude: set[str]) -> ProviderModel | None:
+def _pick_model(p: Provider, wanted: str, exclude: set[str],
+                domain: str | None) -> ProviderModel | None:
     avail = [m for m in p.models if m.id not in exclude and not is_cooled(m.id)]
+    if domain is not None:
+        avail = [m for m in avail if domain in m.tags]
     if not avail:
         return None
     for m in avail:
@@ -71,16 +74,46 @@ def _pick_model(p: Provider, wanted: str, exclude: set[str]) -> ProviderModel | 
     return avail[0]   # fall back to any available model in this provider
 
 
-def select(complexity: float, *, exclude: set[str] | None = None) -> Selection | None:
-    exclude = exclude or set()
-    wanted = _wanted_class(complexity)
+def _walk(wanted: str, exclude: set[str], domain: str | None) -> Selection | None:
+    """Walk the ladder in `order`; return the first usable model.
+
+    When `domain` is set it acts as a hard filter (cheapest tier carrying a
+    matching specialist wins); the caller falls back to a domain-agnostic walk
+    when no specialist is available anywhere.
+    """
     for p in load_registry():
         api_base, api_key = resolve_credentials(p)
         if _provider_needs_key(p) and not api_key:
             continue
-        m = _pick_model(p, wanted, exclude)
+        m = _pick_model(p, wanted, exclude, domain)
         if m is None:
             continue
         return Selection(model=m.id, api_base=api_base, api_key=api_key,
                          provider=p.name, level=p.level)
     return None
+
+
+def select(complexity: float, *, domain: str | None = None,
+           exclude: set[str] | None = None) -> Selection | None:
+    exclude = exclude or set()
+    wanted = _wanted_class(complexity)
+    dom = (domain or "").strip().lower() or None
+    if dom is not None:
+        hit = _walk(wanted, exclude, dom)
+        if hit is not None:
+            return hit
+        # No specialist for this domain is reachable — degrade gracefully to
+        # the normal availability/complexity ladder rather than failing.
+    return _walk(wanted, exclude, None)
+
+
+def pick_model_for(domain: str, *, complexity: float = 0.5,
+                   exclude: set[str] | None = None) -> Selection | None:
+    """Reusable selector: best reachable model for a named *domain*.
+
+    Thin wrapper over :func:`select` for callers (skills, agents, CLI) that want
+    a domain-tuned model without thinking about the ladder. ``complexity``
+    defaults to mid; pass higher for harder tasks. Returns None only when the
+    whole registry is unreachable.
+    """
+    return select(complexity, domain=domain, exclude=exclude)
