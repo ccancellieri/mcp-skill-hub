@@ -266,6 +266,85 @@ def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
         log(f"auto-teach  error={e}")
 
 
+# ── Tool-usage activity logging (issue: codegraph-vs-grep visibility) ──
+# The activity log only ever showed Bash commands (grep), never the MCP tools
+# Claude actually ran (codegraph_search, search_skills, ...). PostToolUse is the
+# one hook that sees *every* tool call, so we surface a compact `TOOL` line here
+# — and flag grep/rg used inside a `.codegraph/`-indexed repo, where
+# codegraph_search would be the better move.
+
+_GREP_CMD_RE = _re.compile(
+    r"^\s*(?:[\w./-]*/)?(?:grep|egrep|fgrep|rg|ag|ack)\b"
+)
+_GREP_PIPE_RE = _re.compile(r"\|\s*(?:grep|egrep|fgrep|rg|ag|ack)\b")
+
+
+def _mcp_short(tool_name: str) -> str:
+    """`mcp__codegraph__codegraph_search` -> `codegraph:search`."""
+    parts = tool_name.split("__")
+    if len(parts) >= 3:
+        server, tool = parts[1], "__".join(parts[2:])
+        if tool.startswith(server + "_"):
+            tool = tool[len(server) + 1:]
+        return f"{server}:{tool}"
+    return tool_name
+
+
+def _describe_tool(tool_name: str, tool_input: dict) -> tuple[str, str, bool]:
+    """Return (display_name, detail, is_greplike) for one tool call."""
+    ti = tool_input or {}
+    if tool_name == "Bash":
+        raw = (ti.get("command") or "").strip()
+        cmd = raw.splitlines()[0] if raw else ""
+        greplike = bool(_GREP_CMD_RE.match(cmd) or _GREP_PIPE_RE.search(cmd))
+        return "Bash", cmd[:80], greplike
+    if tool_name in ("Read", "Write", "Edit", "NotebookEdit"):
+        path = str(ti.get("file_path") or ti.get("notebook_path") or "")
+        return tool_name, path[-70:], False
+    if tool_name == "Grep":
+        pat = str(ti.get("pattern") or "")
+        where = str(ti.get("path") or ti.get("glob") or "")
+        return "Grep", f"{pat}  {where}".strip()[:80], True
+    if tool_name == "Glob":
+        return "Glob", str(ti.get("pattern") or "")[:80], False
+    if tool_name in ("Task", "Agent"):
+        detail = f"{ti.get('subagent_type', '')} {ti.get('description', '')}".strip()
+        return tool_name, detail[:80], False
+    if tool_name.startswith("mcp__"):
+        key = (ti.get("query") or ti.get("symbol") or ti.get("name")
+               or ti.get("pattern") or ti.get("path") or "")
+        return _mcp_short(tool_name), str(key)[:80], False
+    return tool_name, "", False
+
+
+def _codegraph_indexed(cwd: str) -> bool:
+    """True if `cwd` (or any parent) holds a `.codegraph/` index."""
+    try:
+        p = Path(cwd or os.getcwd()).resolve()
+        for d in (p, *p.parents):
+            if (d / ".codegraph").is_dir():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _emit_tool_activity(tool_name: str, tool_input: dict, cwd: str,
+                        cfg: dict) -> None:
+    """Write a compact `TOOL` line (and a codegraph `HINT`) to activity.log."""
+    if not tool_name or not cfg.get("log_tool_usage", True):
+        return
+    try:
+        from skill_hub.activity_log import append_line
+    except Exception:
+        return
+    name, detail, greplike = _describe_tool(tool_name, tool_input)
+    append_line(f"TOOL  {name:<22}{detail}".rstrip())
+    if (greplike and cfg.get("tool_usage_codegraph_hint", True)
+            and _codegraph_indexed(cwd)):
+        append_line("HINT  codegraph indexed here — prefer codegraph_search")
+
+
 def main() -> int:
     cfg = verdict_cache.load_config()
     if not cfg.get("auto_approve_learn", True):
@@ -289,6 +368,7 @@ def main() -> int:
     # Failure events skip auto-teach: a feedback file written then immediately
     # erroring out shouldn't propagate as a teaching.
     if event == "PostToolUse":
+        _emit_tool_activity(tool_name, tool_input, data.get("cwd") or "", cfg)
         _maybe_auto_teach_from_feedback(tool_name, tool_input)
         _maybe_observe_claude_task(data)
         _maybe_emit_skill_used(tool_name, data.get("tool_response"), session_id)

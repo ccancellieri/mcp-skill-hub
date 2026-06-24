@@ -4148,14 +4148,15 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     valid = best["similarity"] >= 0.93  # high confidence: skip verify
                 if valid:
                     _rc_hits.hit_response_cache(best["id"])
+                    _rc_saved = max(len(best["response"]) // 4, 200)
                     _rc_hits.log_interception(
                         command_type="response_cache",
                         message_preview=message,
-                        estimated_tokens=max(len(best["response"]) // 4, 200),
+                        estimated_tokens=_rc_saved,
                     )
                     _rc_hits.close()
                     log_pipeline_end("LOCAL", reason=f"cache hit (sim={best['similarity']:.2f})",
-                                     result=best["response"])
+                                     result=best["response"], saved=_rc_saved)
                     return _visible_result(
                         f"[Skill Hub — cached answer (sim={best['similarity']:.2f}, "
                         f"hits={best['hit_count'] + 1})]\n\n"
@@ -4207,13 +4208,14 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
 
         if handled:
             combined = "\n\n".join(handled)
+            _multi_saved = _TOKEN_ESTIMATES.get("local_command", 300) * len(handled)
             if _cfg.get("token_profiling"):
                 try:
                     store = SkillStore()
                     store.log_interception(
                         command_type="multi_cmd",
                         message_preview=message,
-                        estimated_tokens=_TOKEN_ESTIMATES.get("local_command", 300) * len(handled),
+                        estimated_tokens=_multi_saved,
                     )
                     store.close()
                 except Exception:
@@ -4237,7 +4239,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
             else:
                 # All commands handled locally — block (0 tokens)
                 log_pipeline_end("LOCAL", reason=f"multi-cmd: all {len(handled)} handled",
-                                 result=combined)
+                                 result=combined, saved=_multi_saved)
                 return _visible_result(combined)
         elif passthrough:
             # No sub-commands were handled locally — all need Claude.
@@ -4255,14 +4257,16 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     if action != "none":
         result = _execute_intent(intent, message)
         if result:
-            log_pipeline_end("LOCAL", reason=f"task:{action}", result=result)
+            _task_saved = _TOKEN_ESTIMATES.get(action, 400)
+            log_pipeline_end("LOCAL", reason=f"task:{action}", result=result,
+                             saved=_task_saved)
             if _cfg.get("token_profiling"):
                 try:
                     store = SkillStore()
                     store.log_interception(
                         command_type=action,
                         message_preview=message,
-                        estimated_tokens=_TOKEN_ESTIMATES.get(action, 400),
+                        estimated_tokens=_task_saved,
                     )
                     store.close()
                 except Exception:
@@ -4312,6 +4316,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     and len(message.strip()) <= max_local_answer_len):
                 answer = triage_result.get("answer", "")
                 if answer:
+                    _triage_saved = max(est_saved, 200)
                     # Log as interception (tokens saved)
                     if _cfg.get("token_profiling"):
                         try:
@@ -4319,12 +4324,13 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                             store.log_interception(
                                 command_type="triage:local_answer",
                                 message_preview=message,
-                                estimated_tokens=max(est_saved, 200),
+                                estimated_tokens=_triage_saved,
                             )
                             store.close()
                         except Exception:
                             pass
-                    log_pipeline_end("LOCAL", reason=f"LLM:{RERANK_MODEL}", result=answer)
+                    log_pipeline_end("LOCAL", reason=f"LLM:{RERANK_MODEL}", result=answer,
+                                     saved=_triage_saved)
                     if _cfg.get("always_forward_to_claude"):
                         return {"decision": "allow",
                                 "systemMessage": f"[Skill Hub — local LLM analysis]\n{answer}"}
@@ -4399,7 +4405,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         store.close()
                     except Exception:
                         pass
-                log_pipeline_end("LOCAL", reason="L4:agent", result=result)
+                log_pipeline_end("LOCAL", reason="L4:agent", result=result, saved=1000)
                 return _visible_result(result)
             # Level 3 skills have a _skill key
             elif "_skill" in local_cmd:
@@ -4419,7 +4425,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     except Exception:
                         pass
                 log_pipeline_end("LOCAL", reason=f"L{local_cmd['level']}:{local_cmd['name']}",
-                                 result=result)
+                                 result=result,
+                                 saved=_TOKEN_ESTIMATES.get("local_command", 300))
                 return _visible_result(result)
         elif _pending_command and stripped in ("n", "no", "cancel", "skip"):
             _pending_command = None
@@ -4463,7 +4470,8 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     except Exception:
                         pass
                 log_pipeline_end("LOCAL", reason=f"L{local_cmd['level']}:{local_cmd['name']}",
-                                 result=result)
+                                 result=result,
+                                 saved=_TOKEN_ESTIMATES.get("local_command", 300))
                 return _visible_result(result)
 
         # Try Level 3 (local skills — multi-step)
@@ -4492,7 +4500,7 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                         except Exception:
                             pass
                     log_pipeline_end("LOCAL", reason=f"L3:skill:{skill_name}",
-                                     result=result)
+                                     result=result, saved=500)
                     return _visible_result(result)
             else:
                 _pending_command = {

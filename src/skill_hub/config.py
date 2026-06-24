@@ -69,6 +69,8 @@ _DEFAULTS = {
                                         # raise to 0.55+ if you get false positives with small models
     "hook_max_message_length": 2000,    # messages longer than this skip LLM classify entirely
     "token_profiling": True,            # track estimated token savings per interception
+    "log_tool_usage": True,             # log each tool Claude calls to activity.log (TOOL lines)
+    "tool_usage_codegraph_hint": True,  # flag grep/rg use in .codegraph-indexed repos
 
     # Task command examples — used to build the semantic centroid for the
     # embedding prefilter. Add your own phrases in any language.

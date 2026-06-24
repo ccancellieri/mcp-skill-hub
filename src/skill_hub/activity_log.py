@@ -202,7 +202,16 @@ def log_pipeline_start(message: str) -> None:
     get_logger().info('>> "%s"', _preview(message))
 
 
-def log_pipeline_end(target: str, reason: str = "", result: str = "") -> None:
+def _fmt_saved(tokens: int) -> str:
+    """Render an estimated token-saving for the `<<` line: `saved~1.8k` / `saved~420tok`."""
+    n = int(tokens)
+    if n >= 1000:
+        return f"saved~{n / 1000:.1f}k"
+    return f"saved~{n}tok"
+
+
+def log_pipeline_end(target: str, reason: str = "", result: str = "",
+                     saved: int = 0) -> None:
     """Log the final outcome of a pipeline run.
 
     Args:
@@ -210,10 +219,13 @@ def log_pipeline_end(target: str, reason: str = "", result: str = "") -> None:
         reason: what matched or what context was added (e.g. "L1:git_status",
                 "3 skills (25KB)", "passthrough").
         result: output preview for LOCAL handling (truncated to 80 chars).
+        saved: estimated tokens saved by handling this locally (0 = omit).
     """
     parts = [target.upper()]
     if reason:
         parts.append(reason)
+    if saved and saved > 0:
+        parts.append(_fmt_saved(saved))
     if result:
         parts.append(f'"{_preview(result, 80)}"')
     get_logger().info("<< %s", "  ".join(parts))
@@ -282,6 +294,23 @@ def log_llm(operation: str, model: str = "", duration: float = 0.0,
 def log_event(category: str, message: str) -> None:
     """Log a general event."""
     get_logger().info("%-8s %s", category.upper(), message)
+
+
+def append_line(text: str) -> None:
+    """Append one pre-formatted line to the activity-log file.
+
+    For hook subprocesses (e.g. the PostToolUse observer) that must not spin up
+    the full logging singleton — and its stderr handler — just to record a
+    single line. Writes directly to the file with the same ``HH:MM:SS`` prefix
+    the logger emits. Best-effort; never raises.
+    """
+    from datetime import datetime
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%H:%M:%S}  {text}\n")
+    except OSError:
+        pass
 
 
 def log_skill_step(skill_name: str, step_type: str, detail: str,
