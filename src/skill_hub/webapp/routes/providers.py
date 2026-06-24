@@ -1,0 +1,133 @@
+"""Providers settings route — auxiliary LLM registry editor."""
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+
+from ... import config as _config
+from ...llm import credentials as _creds
+from ...llm import registry as _registry
+
+router = APIRouter()
+
+
+def _credential_label(api_key: dict) -> str:
+    """Return a display label for the credential source — never the secret value."""
+    source = api_key.get("source") if isinstance(api_key, dict) else None
+    ref = (api_key.get("ref") or "") if isinstance(api_key, dict) else ""
+    if source == "opencode":
+        return f"opencode:{ref}" if ref else "opencode"
+    if source == "env":
+        return f"env:{ref}" if ref else "env"
+    if source == "inline":
+        return "inline"
+    return "none"
+
+
+def _build_provider_view(raw_list: list) -> list[dict]:
+    """Build a secret-free view list from raw registry records."""
+    views = []
+    for rec in raw_list:
+        if not isinstance(rec, dict):
+            continue
+        api_key = rec.get("api_key") or {}
+        views.append({
+            "name": rec.get("name", ""),
+            "level": rec.get("level", ""),
+            "kind": rec.get("kind", ""),
+            "api_base": rec.get("api_base", ""),
+            "cred_label": _credential_label(api_key),
+            "enabled": bool(rec.get("enabled", True)),
+            "order": rec.get("order", 100),
+            "models": [
+                {
+                    "id": m.get("id", ""),
+                    "complexity": m.get("complexity", "light"),
+                    "monthly_cap_tokens": m.get("monthly_cap_tokens"),
+                }
+                for m in (rec.get("models") or [])
+                if isinstance(m, dict)
+            ],
+        })
+    return views
+
+
+@router.get("/providers", response_class=HTMLResponse)
+def providers_page(request: Request) -> Any:
+    raw_list = _config.get("llm_provider_registry") or []
+    if not isinstance(raw_list, list):
+        raw_list = []
+    provider_views = _build_provider_view(raw_list)
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "providers.html",
+        {
+            "active_tab": "providers",
+            "providers": provider_views,
+        },
+    )
+
+
+@router.post("/providers")
+async def providers_save(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"})
+
+    registry_list = body.get("registry")
+    if not isinstance(registry_list, list):
+        return JSONResponse({"ok": False, "error": "Body must have a 'registry' list"})
+
+    # Validate every record — reject the whole write if any parses to None.
+    for rec in registry_list:
+        if _registry._parse_provider(rec) is None:
+            return JSONResponse({"ok": False, "error": f"Invalid provider record: {rec!r}"})
+
+    _config.set("llm_provider_registry", registry_list)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/providers/test")
+async def providers_test(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "status": 0, "models_count": 0})
+
+    name = body.get("name", "")
+    raw_list = _config.get("llm_provider_registry") or []
+    provider = None
+    for rec in (raw_list if isinstance(raw_list, list) else []):
+        parsed = _registry._parse_provider(rec)
+        if parsed and parsed.name == name:
+            provider = parsed
+            break
+
+    if provider is None:
+        return JSONResponse({"ok": False, "status": 0, "models_count": 0})
+
+    api_base, api_key = _creds.resolve_credentials(provider)
+    if not api_base:
+        return JSONResponse({"ok": False, "status": 0, "models_count": 0})
+
+    url = api_base.rstrip("/") + "/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+        try:
+            data = resp.json()
+            count = len(data.get("data") or data.get("models") or [])
+        except Exception:
+            count = 0
+        return JSONResponse({"ok": resp.status_code < 400, "status": resp.status_code, "models_count": count})
+    except Exception:
+        return JSONResponse({"ok": False, "status": 0, "models_count": 0})

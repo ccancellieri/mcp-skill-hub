@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Providers{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Auxiliary LLM Providers</h1>
+  <p class="subtitle">Registry of auxiliary LLM providers used by the escalation ladder.</p>
+</div>
+
+<div id="providers-status" style="margin-bottom:1rem;"></div>
+
+{% if providers %}
+<table class="data-table" style="width:100%; border-collapse:collapse; margin-bottom:2rem;">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Level</th>
+      <th>Kind</th>
+      <th>API Base</th>
+      <th>Credential Source</th>
+      <th>Enabled</th>
+      <th>Order</th>
+      <th>Models</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in providers %}
+    <tr>
+      <td><strong>{{ p.name }}</strong></td>
+      <td><code>{{ p.level }}</code></td>
+      <td>{{ p.kind }}</td>
+      <td><code>{{ p.api_base }}</code></td>
+      <td><code>{{ p.cred_label }}</code></td>
+      <td>{% if p.enabled %}✓{% else %}—{% endif %}</td>
+      <td>{{ p.order }}</td>
+      <td>
+        {% if p.models %}
+          {% for m in p.models %}
+            <div><code>{{ m.id }}</code> <span class="badge">{{ m.complexity }}</span>{% if m.monthly_cap_tokens %} cap={{ m.monthly_cap_tokens }}{% endif %}</div>
+          {% endfor %}
+        {% else %}
+          <em>none</em>
+        {% endif %}
+      </td>
+      <td>
+        <button onclick="testProvider('{{ p.name }}')" class="btn-sm">Test</button>
+        <span id="test-result-{{ p.name }}"></span>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p><em>No providers configured. Add providers to <code>llm_provider_registry</code> in your config.</em></p>
+{% endif %}
+
+<section style="margin-top:2rem;">
+  <h2>Edit Registry (JSON)</h2>
+  <p>Paste the full registry list as JSON. Every record is validated before saving.</p>
+  <textarea id="registry-json" rows="20" style="width:100%; font-family:monospace; font-size:0.85em;">{{ providers | tojson(indent=2) }}</textarea>
+  <div style="margin-top:0.5rem;">
+    <button onclick="saveRegistry()">Save Registry</button>
+    <span id="save-status" style="margin-left:1rem;"></span>
+  </div>
+</section>
+
+<script>
+async function saveRegistry() {
+  const raw = document.getElementById('registry-json').value;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    document.getElementById('save-status').textContent = 'Invalid JSON: ' + e.message;
+    return;
+  }
+  // The textarea holds the view objects (no secrets); convert back to a minimal
+  // registry payload. For a full round-trip the user edits the raw config JSON.
+  const resp = await fetch('/providers', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({registry: parsed}),
+  });
+  const data = await resp.json();
+  const el = document.getElementById('save-status');
+  if (data.ok) {
+    el.textContent = 'Saved ✓';
+    el.style.color = 'green';
+  } else {
+    el.textContent = 'Error: ' + (data.error || 'unknown');
+    el.style.color = 'red';
+  }
+}
+
+async function testProvider(name) {
+  const el = document.getElementById('test-result-' + name);
+  el.textContent = '…';
+  try {
+    const resp = await fetch('/providers/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name}),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      el.textContent = '✓ ' + data.models_count + ' models';
+      el.style.color = 'green';
+    } else {
+      el.textContent = '✗ status=' + data.status;
+      el.style.color = 'red';
+    }
+  } catch (e) {
+    el.textContent = '✗ ' + e.message;
+    el.style.color = 'red';
+  }
+}
+</script>
+{% endblock %}
