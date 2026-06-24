@@ -20,9 +20,10 @@ def _data_home() -> Path:
 
 def _read_json(path: Path) -> dict:
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def opencode_provider(provider_id: str) -> dict | None:

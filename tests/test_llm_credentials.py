@@ -1,4 +1,4 @@
-import os, json
+import json
 
 
 def test_env_source(monkeypatch):
@@ -31,3 +31,18 @@ def test_opencode_source(monkeypatch, tmp_path):
                           api_key={"source": "opencode", "ref": "gw"})
     base, key = credentials.resolve_credentials(p)
     assert base == "https://gw/v1" and key == "sk-gw"
+
+
+def test_opencode_non_dict_root_is_tolerated(monkeypatch, tmp_path):
+    """A malformed opencode config whose JSON root is not an object must not crash."""
+    from skill_hub.llm import credentials, registry
+    cfg_dir = tmp_path / "opencode"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(json.dumps(["not", "an", "object"]))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    p = registry.Provider(name="work", level="L3", kind="openai_compatible",
+                          api_base="https://fallback/v1",
+                          api_key={"source": "opencode", "ref": "gw"})
+    # No record found → base falls back to provider.api_base, key is None.
+    assert credentials.resolve_credentials(p) == ("https://fallback/v1", None)
