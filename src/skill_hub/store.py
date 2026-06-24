@@ -5180,7 +5180,8 @@ class SkillStore:
               "prompt_tokens": int, "completion_tokens": int, "total_tokens": int,
               "tokens_per_sec": float,
               "by_op": {op: {"count": int, "total_tokens": int, "duration_ms": int}},
-              "by_model": {model: {"count": int, "total_tokens": int, "duration_ms": int}},
+              "by_model": {model: {"count": int, "errors": int,
+                                   "total_tokens": int, "duration_ms": int}},
             }
         """
         empty: dict = {
@@ -5233,8 +5234,11 @@ class SkillStore:
             od["count"] += 1
             od["total_tokens"] += tt
             od["duration_ms"] += dur
-            md = by_model.setdefault(model, {"count": 0, "total_tokens": 0, "duration_ms": 0})
+            md = by_model.setdefault(
+                model, {"count": 0, "errors": 0, "total_tokens": 0, "duration_ms": 0})
             md["count"] += 1
+            if status != "ok":
+                md["errors"] += 1
             md["total_tokens"] += tt
             md["duration_ms"] += dur
 

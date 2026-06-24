@@ -322,6 +322,59 @@ def test_local_runtime_failure_falls_through_to_ladder(monkeypatch, tmp_path):
     assert calls == ["ollama/qwen-local", "openai/gw-fast"]   # tried local, then ladder
 
 
+def test_unsignalled_local_down_rescued_by_gateway(monkeypatch, tmp_path):
+    """NEW fallback: an op with NO routing signal whose resolved model is a dead
+    local daemon is rescued via the ladder instead of issuing a doomed call.
+
+    This is the high-volume path (classifier/triage with op='' on tier_cheap)
+    that previously failed straight to local. It must now reach the gateway.
+    """
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: False)
+
+    calls: list[str] = []
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm(calls)
+    monkeypatch.setattr(p, "_resolve_model", lambda tier, model: "ollama/qwen-local")
+
+    out = p.complete("x", op="totally_unknown_op")   # not in _OP_ROUTING, no signal
+    assert out == "ok"
+    assert calls == ["openai/gw-fast"]               # rescued, no doomed local call
+    assert escalation.is_cooled("qwen-local")
+
+
+def test_unsignalled_local_runtime_failure_rescued(monkeypatch, tmp_path):
+    """NEW fallback: daemon passes the probe but a local call for an unsignalled
+    op fails mid-flight — it now falls through to the ladder (previously raised)."""
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: True)
+
+    calls: list[str] = []
+
+    class FlakyLocal:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            if kwargs["model"] == "ollama/qwen-local":
+                raise Exception("connection refused")
+            return {"choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = FlakyLocal()
+    monkeypatch.setattr(p, "_resolve_model", lambda tier, model: "ollama/qwen-local")
+
+    out = p.complete("x", op="totally_unknown_op")
+    assert out == "ok"
+    assert calls == ["ollama/qwen-local", "openai/gw-fast"]
+
+
 def test_cool_ollama_makes_select_skip_local(monkeypatch, tmp_path):
     _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
     escalation, _litellm_adapter, _provider = _reload_llm_modules()
@@ -368,6 +421,28 @@ def test_litellm_model_prefixes_openai_compatible_only():
     # Native providers keep their own routing prefix.
     assert _litellm_model("anthropic", "anthropic/claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
     assert _litellm_model("ollama", "ollama/qwen") == "ollama/qwen"
+
+
+def test_ladder_success_emits_activity_line(monkeypatch, tmp_path):
+    """A successful ladder call surfaces a precise activity line naming the work
+    model that served it — so gateway usage is visible, not a generic 'ladder'."""
+    _write_cfg(monkeypatch, tmp_path, {**_REG, "llm_metering_enabled": True})
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+
+    import skill_hub.store as store_mod
+    monkeypatch.setattr(store_mod, "get_store",
+                        lambda: type("S", (), {"append_event": lambda self, **k: None})())
+
+    lines: list[str] = []
+    import skill_hub.activity_log as al
+    monkeypatch.setattr(al, "append_line", lambda s: lines.append(s))
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm([])
+    out = p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+    assert out == "ok"
+    assert any("model-a" in ln and "ladder" in ln for ln in lines)
 
 
 def test_chat_once_falls_back_to_reasoning_content(monkeypatch, tmp_path):

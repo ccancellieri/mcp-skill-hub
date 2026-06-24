@@ -32,6 +32,15 @@ _OP_ROUTING: dict[str, tuple[float, str]] = {
     "exhaustion_save": (0.4, "writing"),
 }
 
+# Default complexity per tier, used when an op carries no explicit signal but
+# still has to be routed through the ladder (e.g. a local target is down). Keeps
+# cheap/unsignalled work on light gateway models instead of defaulting to heavy.
+_TIER_COMPLEXITY: dict[str, float] = {
+    "tier_cheap": 0.2,
+    "tier_mid": 0.5,
+    "tier_smart": 0.8,
+}
+
 
 def _litellm_model(kind: str, model_id: str) -> str:
     """Map a registry ``(kind, model_id)`` to the model string litellm needs.
@@ -81,6 +90,18 @@ def _emit_llm_event(
             },
             tool_name=op or None,
         )
+        # A successful ladder call means a *work* model (gateway / personal)
+        # served the task instead of Claude. Surface it in the human activity
+        # log — the generic ``model=ladder`` line never shows which model ran.
+        if status == "ok" and tier.startswith("ladder"):
+            try:
+                from ..activity_log import append_line
+                append_line(
+                    f"LLM✓ {tier:<12}{model}  "
+                    f"in={prompt_tokens} out={completion_tokens} ({duration_ms}ms)"
+                )
+            except Exception:  # noqa: BLE001 - narrative log is best-effort
+                pass
     except Exception as e:  # noqa: BLE001 - telemetry must never break a tool call
         _log.debug("llm_call telemetry emit failed (non-fatal): %s", e)
 
@@ -336,36 +357,46 @@ class LitellmProvider:
                 eff_domain = policy[1]
         has_signal = eff_complexity is not None or eff_domain is not None
         ladder_ok = tier == "tier_cheap" and has_signal
+        # Complexity the ladder uses when an op carries no explicit signal:
+        # derive it from the tier so cheap work stays on light gateway models.
+        ladder_complexity = (
+            eff_complexity if eff_complexity is not None
+            else _TIER_COMPLEXITY.get(tier, 0.5)
+        )
 
         def _ladder(exclude: set[str] | None = None) -> str:
             return self._chat_via_ladder(
                 norm,
-                complexity=eff_complexity if eff_complexity is not None else 0.5,
+                complexity=ladder_complexity,
                 domain=eff_domain, max_tokens=max_tokens,
                 temperature=temperature, timeout=timeout, cache=cache,
                 extra=extra, op=op, cache_ttl=cache_ttl, exclude=exclude,
             )
 
-        # No pinned model: the ladder picks the level. Skip a known-down local
-        # daemon up front so we never spend a call on a dead L0.
+        from . import escalation
+
+        # No pinned model on a ladder-eligible op: let the ladder pick. Skip a
+        # known-down local daemon up front so we never spend a call on a dead L0.
         if model is None and ladder_ok:
-            from . import escalation
             if not escalation.ollama_daemon_reachable():
                 escalation.cool_ollama()
             return _ladder()
 
-        # Pinned LOCAL model whose daemon is down: skip it and use the ladder
-        # (remote specialist) instead of issuing a doomed local call.
-        if model is not None and ladder_ok and str(model).startswith("ollama/"):
-            from . import escalation
-            if not escalation.ollama_daemon_reachable():
-                escalation.cool_ollama()
-                return _ladder()
-
-        # Resolve + single attempt. A runtime failure of a default-tier call
-        # with a signal falls through to the ladder (covers a daemon that dies
-        # mid-flight or a transient local error), excluding the failed model.
+        # Resolve the model this op would otherwise use locally.
         resolved_model = self._resolve_model(tier, model)
+        resolved_is_local = str(resolved_model).startswith("ollama/")
+
+        # A LOCAL target whose daemon is down is doomed — rescue it via the
+        # ladder (remote gateway) instead of issuing a failing call. This applies
+        # to ALL ops, signalled or not, so the gateway absorbs local outages for
+        # the high-volume unsignalled/tier_smart paths too, not just tier_cheap.
+        if resolved_is_local and not escalation.ollama_daemon_reachable():
+            escalation.cool_ollama()
+            return _ladder(exclude={resolved_model})
+
+        # Single attempt. On a runtime failure: a local target always falls
+        # through to the ladder (covers a daemon that dies mid-flight); a remote
+        # target only falls through when the op is ladder-eligible.
         try:
             return self._chat_once(
                 norm, model=resolved_model, api_base=self._api_base(resolved_model),
@@ -374,11 +405,11 @@ class LitellmProvider:
                 cache_ttl=cache_ttl, tier=tier,
             )
         except LLMError:
+            if resolved_is_local:
+                escalation.cool_ollama()
+                return _ladder(exclude={resolved_model})
             if not ladder_ok:
                 raise
-            from . import escalation
-            if str(resolved_model).startswith("ollama/"):
-                escalation.cool_ollama()
             return _ladder(exclude={resolved_model})
 
     def _personal_over_cap(self) -> bool:

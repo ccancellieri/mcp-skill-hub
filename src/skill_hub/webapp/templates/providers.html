@@ -19,6 +19,7 @@
       <th>Credential Source</th>
       <th>Enabled</th>
       <th>Order</th>
+      <th>Usage</th>
       <th>Models</th>
       <th>Actions</th>
     </tr>
@@ -33,6 +34,15 @@
       <td><code>{{ p.cred_label }}</code></td>
       <td>{% if p.enabled %}✓{% else %}—{% endif %}</td>
       <td>{{ p.order }}</td>
+      <td>
+        {% if p.usage and p.usage.calls %}
+          <span class="badge" style="background:#2d6;" title="successful calls">{{ p.usage.ok }} ok</span>
+          {% if p.usage.errors %}<span class="badge" style="background:#d33;" title="failed calls">{{ p.usage.errors }} err</span>{% endif %}
+          <div style="font-size:0.8em; color:#888;">{{ p.usage.tokens }} tok</div>
+        {% else %}
+          <span style="color:#999;">—</span>
+        {% endif %}
+      </td>
       <td>
         {% if p.models %}
           {% for m in p.models %}

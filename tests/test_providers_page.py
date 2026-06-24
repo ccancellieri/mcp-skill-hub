@@ -75,6 +75,47 @@ def test_post_error_does_not_leak_inline_secret(client):
     assert "sk-LEAK-ME" not in json.dumps(body)
 
 
+def test_usage_panel_folds_metering_onto_provider(client, monkeypatch):
+    """The Usage column reflects llm_call metering; a gateway model metered with
+    its ``openai/`` route prefix folds onto the registry provider that owns it."""
+    c, cfg_path = client
+    _write(cfg_path, {"llm_provider_registry": [
+        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+         "api_key": {"source": "inline", "ref": "sk"}, "enabled": True, "order": 30,
+         "models": [{"id": "zai-org/glm-4.7-maas", "complexity": "light"}]}]})
+
+    class _FakeStore:
+        def get_llm_stats(self, limit=5000):
+            return {"by_model": {
+                # metered under the openai/ dispatch prefix — must still match.
+                "openai/zai-org/glm-4.7-maas": {
+                    "count": 7, "errors": 2, "total_tokens": 1234, "duration_ms": 100},
+            }}
+
+    import skill_hub.store as store_mod
+    monkeypatch.setattr(store_mod, "get_store", lambda: _FakeStore())
+
+    r = c.get("/providers")
+    assert r.status_code == 200
+    assert "5 ok" in r.text       # 7 calls - 2 errors
+    assert "2 err" in r.text
+    assert "1234 tok" in r.text
+
+
+def test_post_strips_usage_view_field(client):
+    """Saving the page view (which carries a metering ``usage`` block) must not
+    persist that field into the registry."""
+    c, cfg_path = client
+    _write(cfg_path, {"llm_provider_registry": []})
+    view = {"registry": [
+        {"name": "a", "level": "L1", "kind": "ollama", "api_base": "", "api_key": {},
+         "enabled": True, "order": 10, "models": [],
+         "usage": {"calls": 9, "ok": 9, "errors": 0, "tokens": 50}}]}
+    r = c.post("/providers", json=view)
+    assert r.json()["ok"] is True
+    assert "usage" not in cfg_mod.get("llm_provider_registry")[0]
+
+
 def test_post_from_view_preserves_stored_credential(client):
     """Saving the secret-free page view (no api_key) must not wipe the stored cred."""
     c, cfg_path = client

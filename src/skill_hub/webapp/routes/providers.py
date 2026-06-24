@@ -56,12 +56,40 @@ def _build_provider_view(raw_list: list) -> list[dict]:
     return views
 
 
+def _attach_usage(views: list[dict]) -> None:
+    """Annotate each provider view with live metering (calls / errors / tokens).
+
+    Reads the ``llm_call`` metering aggregated by the store and folds the
+    per-model rows onto the provider that owns each model id. This is what makes
+    gateway usage visible instead of looking like 'credits = 0'.
+    """
+    try:
+        from ...store import get_store
+        stats = get_store().get_llm_stats()
+    except Exception:  # noqa: BLE001 - usage panel is best-effort
+        stats = {}
+    by_model = stats.get("by_model") or {}
+    for view in views:
+        ids = {m["id"] for m in view.get("models", [])}
+        calls = errors = tokens = 0
+        for mid, row in by_model.items():
+            # The litellm dispatch id may carry an ``openai/`` route prefix for
+            # gateway models — match on suffix so both forms fold together.
+            if mid in ids or any(mid.endswith(i) or i.endswith(mid) for i in ids):
+                calls += int(row.get("count") or 0)
+                errors += int(row.get("errors") or 0)
+                tokens += int(row.get("total_tokens") or 0)
+        view["usage"] = {"calls": calls, "errors": errors,
+                         "ok": calls - errors, "tokens": tokens}
+
+
 @router.get("/providers", response_class=HTMLResponse)
 def providers_page(request: Request) -> Any:
     raw_list = _config.get("llm_provider_registry") or []
     if not isinstance(raw_list, list):
         raw_list = []
     provider_views = _build_provider_view(raw_list)
+    _attach_usage(provider_views)
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request,
@@ -98,7 +126,7 @@ async def providers_save(request: Request) -> JSONResponse:
     merged: list = []
     for rec in registry_list:
         if isinstance(rec, dict):
-            rec = {k: v for k, v in rec.items() if k != "cred_label"}
+            rec = {k: v for k, v in rec.items() if k not in ("cred_label", "usage")}
             if not rec.get("api_key") and rec.get("name") in stored_keys:
                 rec["api_key"] = stored_keys[rec["name"]]
         merged.append(rec)
