@@ -391,9 +391,12 @@ def skill_selection_stats(limit: int = 500) -> dict:
         inj_cnt = r["cnt"]
         used_rate: float | None = used / inj_cnt if inj_cnt > 0 else None
 
-        # Derive status: real used-rate data takes precedence over the old
-        # feedback-only heuristic.
-        if inj_cnt > 0 and used == 0:
+        # Derive status. The "injected-but-unused" label requires that the
+        # PostToolUse hook has produced at least one skill.used event in this
+        # dataset (total_used > 0); otherwise every injected skill would be
+        # flagged before any hook data exists, which shadows the feedback-based
+        # heuristics that are valid on their own.
+        if total_used > 0 and inj_cnt > 0 and used == 0:
             status = "injected-but-unused"
         elif fb_n > 0 and helpful_rate is not None and helpful_rate == 0.0:
             status = "review: never-helpful"

@@ -467,7 +467,8 @@ class TestSkillSelectionStats:
         assert injection_counts == sorted(injection_counts, reverse=True)
 
     def test_used_rate_is_zero_when_no_skill_used_events(self, isolated_store, monkeypatch):
-        """used_rate must be 0/injections when no skill.used events exist."""
+        """used_rate is 0/injections when no skill.used events exist; status is NOT
+        'injected-but-unused' because total_used==0 means the hook has no data yet."""
         monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
         isolated_store.log_skill_injection("skill-noused", query="q", session_id="s1")
 
@@ -478,8 +479,38 @@ class TestSkillSelectionStats:
         r = by_id["skill-noused"]
         assert r["used"] == 0
         assert r["used_rate"] == 0.0
-        assert r["status"] == "injected-but-unused"
+        # No hook data yet → do NOT flag as injected-but-unused
+        assert r["status"] != "injected-but-unused"
         assert stats["total_used"] == 0
+
+    def test_injected_but_unused_requires_hook_data(self, isolated_store, monkeypatch):
+        """'injected-but-unused' is NOT assigned when total_used==0 (no hook data),
+        and IS assigned when total_used>0 and that specific skill has zero uses."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+
+        # Two skills injected; skill-live gets a used event, skill-dead does not.
+        isolated_store.log_skill_injection("skill-dead2", query="q", session_id="s1")
+        isolated_store.log_skill_injection("skill-live2", query="q", session_id="s1")
+
+        from skill_hub import log_insights
+
+        # Before any skill.used events: neither skill is flagged.
+        stats_before = log_insights.skill_selection_stats(limit=100)
+        by_id_before = {r["skill_id"]: r for r in stats_before["skills"]}
+        assert stats_before["total_used"] == 0
+        assert by_id_before["skill-dead2"]["status"] != "injected-but-unused"
+        assert by_id_before["skill-live2"]["status"] != "injected-but-unused"
+
+        # Emit a skill.used event only for skill-live2.
+        isolated_store.record_skill_used("skill-live2", "s1")
+
+        stats_after = log_insights.skill_selection_stats(limit=100)
+        by_id_after = {r["skill_id"]: r for r in stats_after["skills"]}
+        assert stats_after["total_used"] == 1
+        # skill-dead2 has injections but zero used events → flagged
+        assert by_id_after["skill-dead2"]["status"] == "injected-but-unused"
+        # skill-live2 was used → not flagged
+        assert by_id_after["skill-live2"]["status"] != "injected-but-unused"
 
     def test_used_rate_computed_from_skill_used_events(self, isolated_store, monkeypatch):
         """used_rate = used / injections when skill.used events are present."""
