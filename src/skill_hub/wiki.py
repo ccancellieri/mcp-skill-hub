@@ -10,7 +10,7 @@ Vault layout:
         pages/<type>/<slug>.md    — public pages, foldered by type
         _private/<project>/<slug>.md — private pages, gated at query time
 
-NB: vault.py is the credential vault (keyring/age). This module is the wiki.
+NB: "Vault" here means the wiki content directory, not credentials.
 """
 from __future__ import annotations
 

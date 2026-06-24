@@ -36,9 +36,6 @@ def test_embed_ollama_first_success(monkeypatch):
     """embed() returns result from ollama when an endpoint is healthy."""
     provider_mock = _make_provider_mock()
 
-    ollama_client_mock = MagicMock()
-    ollama_client_mock.get_api_base.return_value = "http://localhost:11434"
-
     with patch("skill_hub.embeddings.get_provider", return_value=provider_mock), \
          patch("skill_hub.embeddings._cfg") as cfg_mock:
 
