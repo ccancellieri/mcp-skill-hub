@@ -1500,6 +1500,14 @@ def _dynamic_context_stage(
         parts.append(snippet)
         budget -= len(snippet)
 
+    # Add LLM-wiki knowledge relevant to the prompt (hybrid index; the migrated
+    # wiki was previously absent from per-prompt enrichment).
+    for snip in _wiki_context_snippets(store, _cfg, message, top_k=2):
+        if budget <= 0:
+            break
+        parts.append(snip)
+        budget -= len(snip)
+
     store.close()
 
     # 5. Persist session state
@@ -1819,6 +1827,49 @@ def _keyword_terms(message: str, limit: int = 8) -> list[str]:
     return out[:limit]
 
 
+def _wiki_context_snippets(store, cfg, query_text: str, *,
+                           top_k: int = 2, max_body: int = 200) -> list[str]:
+    """Compact LLM-wiki snippets relevant to the prompt, for context injection.
+
+    Reuses the hybrid wiki index (vector ranking unioned with index.md lexical),
+    so it still contributes lexical hits when embeddings are down. Honors the
+    operator's authorized private scopes; returns [] on any miss/error. Gated by
+    ``wiki_preload_enabled`` + ``wiki_enabled``.
+    """
+    try:
+        # One-arg ``.get`` matches both call sites: ``_cfg`` is the config
+        # module (one-arg ``get`` with _DEFAULTS-backed True), not a dict.
+        if not (cfg.get("wiki_preload_enabled") and cfg.get("wiki_enabled")):
+            return []
+        from pathlib import Path as _Path
+
+        from . import wiki as _wiki
+
+        wiki_root = _Path(cfg.get("wiki_root") or "")
+        if not wiki_root.is_dir():
+            return []
+        priv = cfg.get("wiki_private_scopes") or {}
+        authorized: list[str] = []
+        if isinstance(priv, dict):
+            for v in priv.values():
+                if isinstance(v, list):
+                    authorized.extend(v)
+        result = _wiki.query(store, wiki_root, query_text, top_k=top_k,
+                             authorized_scopes=authorized or None)
+        out: list[str] = []
+        for h in (result.get("results") or []):
+            slug = h.get("slug", "")
+            title = (h.get("title") or slug or "").strip()
+            body = (h.get("body") or "").strip()[:max_body].rstrip()
+            line = f"Wiki [[{slug}]] {title}"
+            if body:
+                line += f": {body}"
+            out.append(line)
+        return out
+    except Exception:  # noqa: BLE001 - enrichment must never break the hook
+        return []
+
+
 def _build_keyword_context_injection(message: str) -> str | None:
     """Embeddings-free context injection via FTS5 BM25 keyword search.
 
@@ -1878,6 +1929,12 @@ def _build_keyword_context_injection(message: str) -> str | None:
                            f"— {(row.get('summary_or_why') or '')[:150]}")
                 parts.append(snippet)
                 budget -= len(snippet)
+
+            for snip in _wiki_context_snippets(store, _cfg, message, top_k=2):
+                if budget <= 0:
+                    break
+                parts.append(snip)
+                budget -= len(snip)
         finally:
             store.close()
     except Exception as exc:  # noqa: BLE001 - enrichment must never break the hook
