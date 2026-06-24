@@ -515,6 +515,107 @@ def status(store: Any, wiki_root: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Structural lint (deterministic, stdlib-only, no LLM)
+# ---------------------------------------------------------------------------
+
+# TODO: LLM-based contradiction detection across pages is intentionally
+# deferred — it requires a full pass over 1170+ pages and is expensive.
+
+_LINT_SLUG_CAP = 50  # max slugs to include per offending list
+
+
+def lint(store: Any, wiki_root: Path) -> dict:
+    """Deterministic structural lint of the wiki vault. No LLM, stdlib-only.
+
+    Checks:
+    - **dangling_edges**: wiki_edges rows whose dst_slug resolves to no
+      known page (resolved=0 in the DB). Keyed by src_slug → dst_raw.
+    - **orphans**: pages with no inbound resolved edge. A page is an orphan
+      when no other page links to it (dst_slug == slug, resolved=1).
+    - **stale_pages**: source pages whose on-disk source file hash differs
+      from the stored ``source_hash`` frontmatter field, meaning the source
+      changed since the last ingest.
+
+    Returns a dict with counts and capped offending-slug lists.
+    """
+    wiki_root = Path(wiki_root)
+    conn = store._conn
+
+    # --- Dangling edges (resolved=0) -----------------------------------------
+    dangling_rows = conn.execute(
+        "SELECT src_slug, dst_raw FROM wiki_edges WHERE resolved = 0"
+    ).fetchall()
+    dangling_pairs = [(r[0], r[1]) for r in dangling_rows]
+    dangling_count = len(dangling_pairs)
+    dangling_sample = [
+        f"{src}→{dst}" for src, dst in dangling_pairs[:_LINT_SLUG_CAP]
+    ]
+
+    # --- Orphans (pages with no inbound resolved edge) -----------------------
+    orphan_rows = conn.execute(
+        """
+        SELECT wp.slug FROM wiki_pages wp
+        WHERE NOT EXISTS (
+            SELECT 1 FROM wiki_edges we
+            WHERE we.dst_slug = wp.slug AND we.resolved = 1
+        )
+        ORDER BY wp.slug
+        """
+    ).fetchall()
+    orphan_slugs = [r[0] for r in orphan_rows]
+    orphan_count = len(orphan_slugs)
+    orphan_sample = orphan_slugs[:_LINT_SLUG_CAP]
+
+    # --- Stale pages (source_hash drift) -------------------------------------
+    # Walk disk pages (the source of truth). Compare their frontmatter
+    # source_hash against the hash of the source_refs[0] file.
+    stale_slugs: list[str] = []
+    pages_root = wiki_root / "pages"
+    private_root = wiki_root / "_private"
+    candidate_files: list[Path] = []
+    if pages_root.exists():
+        candidate_files += list(pages_root.rglob("*.md"))
+    if private_root.exists():
+        candidate_files += list(private_root.rglob("*.md"))
+
+    for path in candidate_files:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = parse_frontmatter(text)
+        stored_hash = fm.get("source_hash") or ""
+        refs = fm.get("source_refs") or []
+        if not stored_hash or not refs:
+            continue
+        source_path = Path(str(refs[0]))
+        if not source_path.is_file():
+            continue
+        try:
+            live_hash = _hash_text(source_path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if live_hash != stored_hash:
+            slug = fm.get("slug") or path.stem
+            stale_slugs.append(slug)
+
+    stale_count = len(stale_slugs)
+    stale_sample = sorted(stale_slugs)[:_LINT_SLUG_CAP]
+
+    return {
+        "dangling_edges": dangling_count,
+        "dangling_sample": dangling_sample,
+        "orphans": orphan_count,
+        "orphan_sample": orphan_sample,
+        "stale_pages": stale_count,
+        "stale_sample": stale_sample,
+        "total_issues": dangling_count + orphan_count + stale_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

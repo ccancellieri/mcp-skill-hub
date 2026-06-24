@@ -4821,6 +4821,47 @@ def wiki_status() -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def wiki_lint() -> str:
+    """Deterministic structural lint of the wiki vault. No LLM, stdlib-only.
+
+    Checks three categories:
+    - dangling_edges: wiki_edges whose destination page does not exist.
+    - orphans: pages with no inbound resolved wikilink.
+    - stale_pages: source pages whose underlying file hash differs from the
+      stored source_hash (i.e. the original file changed since last ingest).
+
+    Returns counts and a capped sample of offending slugs for each category.
+    Run wiki_reindex first so the DB reflects the current vault state.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_lint")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    result = _wiki.lint(_store, wiki_root)
+    lines = [
+        f"wiki_lint: {result['total_issues']} issue(s) found",
+        f"  dangling_edges={result['dangling_edges']} "
+        f"orphans={result['orphans']} "
+        f"stale_pages={result['stale_pages']}",
+    ]
+    if result["dangling_sample"]:
+        sample = ", ".join(result["dangling_sample"][:10])
+        lines.append(f"  dangling: {sample}")
+    if result["orphan_sample"]:
+        sample = ", ".join(result["orphan_sample"][:10])
+        lines.append(f"  orphans: {sample}")
+    if result["stale_sample"]:
+        sample = ", ".join(result["stale_sample"][:10])
+        lines.append(f"  stale: {sample}")
+    if result["total_issues"] == 0:
+        lines.append("  OK — no structural issues detected")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
 def wiki_migrate(dry_run: bool = True) -> str:
     """Migrate auto-memory markdown files to wiki source pages (mechanical, no LLM).
 

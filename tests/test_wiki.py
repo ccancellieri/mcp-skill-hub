@@ -1840,3 +1840,169 @@ class TestDashboardWikiCard:
         html = out.read_text()
         assert "Memory Wiki" in html
         assert "ingest queue" in html
+
+
+# ---------------------------------------------------------------------------
+# wiki_lint — deterministic structural lint
+# ---------------------------------------------------------------------------
+
+
+class TestWikiLint:
+    """wiki.lint detects dangling edges, orphans, and stale source hashes."""
+
+    def _stub_embed(self, store):
+        """Patch upsert_vector to avoid needing a real embedding backend."""
+        def fake_upsert(namespace, doc_id, text, metadata=None, **kw):
+            vec = json.dumps([0.1] * 10)
+            store._conn.execute(
+                """
+                INSERT INTO vectors (namespace, doc_id, model, vector, norm,
+                                     level, source, project)
+                VALUES (?, ?, 'stub', ?, 0.1, 'L3', 'wiki', NULL)
+                ON CONFLICT(namespace, doc_id) DO UPDATE SET
+                    vector=excluded.vector, indexed_at=datetime('now')
+                """,
+                (namespace, doc_id, vec),
+            )
+            store._conn.commit()
+        store.upsert_vector = fake_upsert
+
+    def test_clean_wiki_returns_zero_issues(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/alpha.md", """\
+---
+id: alpha
+slug: alpha
+title: Alpha
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+See [[beta]] for details.
+""")
+        _write_page(wiki_root, "pages/entity/beta.md", """\
+---
+id: beta
+slug: beta
+title: Beta
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+[[alpha]] refers to this.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        # beta is linked by alpha (resolved edge), so beta has 1 inbound.
+        # alpha is linked by beta, so alpha has 1 inbound.
+        assert result["dangling_edges"] == 0, result
+        assert result["stale_pages"] == 0, result
+        assert result["total_issues"] == result["orphans"]  # orphans only
+
+    def test_detects_dangling_edge(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/lone.md", """\
+---
+id: lone
+slug: lone
+title: Lone
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+See [[nonexistent-page]] for info.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        assert result["dangling_edges"] >= 1
+        assert any("nonexistent-page" in s for s in result["dangling_sample"])
+
+    def test_detects_orphan(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/island.md", """\
+---
+id: island
+slug: island
+title: Island
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+No links in or out.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        assert result["orphans"] >= 1
+        assert "island" in result["orphan_sample"]
+
+    def test_detects_stale_source_hash(self, store, wiki_root, tmp_path):
+        from skill_hub.wiki import lint
+        # Write a source file.
+        src = tmp_path / "original.md"
+        src.write_text("# Original\nContent v1.\n", encoding="utf-8")
+        import hashlib
+        v1_hash = hashlib.sha256(b"# Original\nContent v1.\n").hexdigest()[:16]
+        # Write a wiki page referencing it with the correct hash initially.
+        _write_page(wiki_root, "pages/source/orig.md", f"""\
+---
+id: orig
+slug: orig
+title: Orig
+type: source
+projects:
+  - p
+scope: public
+source_refs:
+  - {src}
+source_hash: {v1_hash}
+created: 2026-01-01
+updated: 2026-01-01
+---
+Content.
+""")
+        # Now overwrite the source file with new content.
+        src.write_text("# Original\nContent v2 changed.\n", encoding="utf-8")
+
+        result = lint(store, wiki_root)
+        assert result["stale_pages"] >= 1
+        assert "orig" in result["stale_sample"]
+
+    def test_empty_wiki_all_zeros(self, store, wiki_root):
+        from skill_hub.wiki import lint
+        result = lint(store, wiki_root)
+        assert result["dangling_edges"] == 0
+        assert result["orphans"] == 0
+        assert result["stale_pages"] == 0
+        assert result["total_issues"] == 0
+
+    def test_wiki_lint_in_tier_registry(self):
+        from skill_hub.capabilities import TIER_REGISTRY
+        assert "wiki_lint" in TIER_REGISTRY
+        assert TIER_REGISTRY["wiki_lint"] == "none"
+
+    def test_wiki_lint_toolspec_hard_db(self):
+        from skill_hub.capabilities import TOOLS, BACKEND_DB
+        spec = next((s for s in TOOLS if s.name == "wiki_lint"), None)
+        assert spec is not None
+        assert BACKEND_DB in spec.hard

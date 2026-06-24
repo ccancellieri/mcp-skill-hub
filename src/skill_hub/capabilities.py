@@ -374,6 +374,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB, BACKEND_EMBED)),
     ToolSpec("wiki_status", "Wiki health: page counts, edges, orphans, drift",
              hard=()),
+    ToolSpec("wiki_lint", "Structural lint: dangling edges, orphans, stale source hashes",
+             hard=(BACKEND_DB,)),
     ToolSpec("wiki_migrate", "Migrate auto-memory files to wiki source pages (dry_run=True default)",
              hard=(BACKEND_DB,)),
     ToolSpec("wiki_scan", "Auto-select source pages needing distillation into the approval queue",
