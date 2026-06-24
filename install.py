@@ -152,7 +152,10 @@ def step_install_package(step: int, total: int):
     print(f"[{step}/{total}] Installing Python package...")
     if not VENV_DIR.exists():
         run([sys.executable, "-m", "venv", str(VENV_DIR)])
-    run([str(PIP), "install", "-e", ".", "-q"], cwd=str(SCRIPT_DIR))
+    # Include the deterministic content-compression backend (headroom-ai core
+    # wheel — no torch/tree-sitter). Shrinks JSON/log/search tool output to spare
+    # context tokens. For the lossy ML path, install '.[compression_full]'.
+    run([str(PIP), "install", "-e", ".[compression]", "-q"], cwd=str(SCRIPT_DIR))
 
 
 def step_check_ollama(step: int, total: int, interactive: bool = True) -> str:

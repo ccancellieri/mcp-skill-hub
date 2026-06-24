@@ -14,7 +14,10 @@ echo "=== MCP Skill Hub Installer ==="
 echo "[1/4] Installing Python package..."
 cd "$SCRIPT_DIR"
 python3 -m venv .venv
-.venv/bin/pip install -e . -q
+# Include the deterministic content-compression backend (headroom-ai core wheel —
+# no torch/tree-sitter). Shrinks JSON/log/search tool output to spare context
+# tokens. For the lossy ML prose/code path, install '.[compression_full]' instead.
+.venv/bin/pip install -e '.[compression]' -q
 
 # 2. Check Ollama and pull models
 echo "[2/4] Checking Ollama and models..."

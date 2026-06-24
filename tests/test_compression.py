@@ -48,6 +48,42 @@ def test_is_available_returns_bool():
     assert isinstance(compression.is_available(), bool)
 
 
+# --- dependency-free built-in deterministic fallback (no headroom needed) ----
+
+def test_builtin_json_minify_is_lossless():
+    pretty = json.dumps([{"id": i, "name": f"row{i}", "val": i * 3} for i in range(80)], indent=2)
+    out = compression._builtin_deterministic(pretty)
+    assert out is not None
+    assert out.content_type == "JSON_MIN"
+    assert out.bytes_after < out.bytes_before
+    assert not out.lossy
+    # Lossless: re-parsing the minified text yields the same object.
+    assert json.loads(out.compressed) == json.loads(pretty)
+
+
+def test_builtin_collapses_duplicate_log_lines():
+    text = "\n".join(["INFO connecting"] * 50 + ["ERROR boom"] * 4)
+    out = compression._builtin_deterministic(text)
+    assert out is not None
+    assert out.content_type == "DEDUP"
+    assert out.bytes_after < out.bytes_before
+    assert "x50" in out.compressed and "ERROR boom" in out.compressed
+
+
+def test_builtin_returns_none_on_incompressible_prose():
+    # No JSON, no repeated runs → nothing to do.
+    assert compression._builtin_deterministic("a unique sentence with no repeats at all") is None
+
+
+def test_compress_payload_uses_builtin_when_router_absent(monkeypatch):
+    # Force the headroom router to be unavailable; the built-in must still shrink JSON.
+    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
+    pretty = json.dumps([{"k": i, "v": "x" * 5} for i in range(120)], indent=2)
+    out = compression.compress_payload(pretty, min_tokens=50)
+    assert out.content_type == "JSON_MIN"
+    assert out.changed and not out.lossy
+
+
 # --- behaviour that DOES require headroom -----------------------------------
 
 def test_json_array_compresses_and_keeps_errors():

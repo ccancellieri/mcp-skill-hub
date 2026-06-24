@@ -283,11 +283,18 @@ def compress_payload(
     if bytes_before < threshold * _CHARS_PER_TOKEN:
         return passthrough
 
-    # 1. Lossless deterministic pass (always).
+    # 1. Lossless deterministic pass via headroom (when installed).
     router = _get_router(False, False)
-    if router is None:
-        return passthrough
-    won = _run_router(router, text, context)
+    if router is not None:
+        won = _run_router(router, text, context)
+        if won is not None:
+            return won
+
+    # 1b. Dependency-free deterministic fallback (always runs). Makes compression
+    #     real even without the optional headroom-ai package — JSON minify +
+    #     duplicate-line collapse on the structured/log/grep content that floods
+    #     context. Lossless-ish, so it is safe even ahead of a local-LLM consumer.
+    won = _builtin_deterministic(text)
     if won is not None:
         return won
 
@@ -308,6 +315,67 @@ def compress_payload(
                 return won
 
     return passthrough
+
+
+def _builtin_deterministic(text: str) -> "CompressedPayload | None":
+    """Dependency-free deterministic compression for the structured/log/grep
+    output that floods context. Used when ``headroom-ai`` is not installed (or
+    its deterministic pass found nothing). Safe and near-lossless — returns None
+    unless it actually shrinks the payload.
+
+    Two transforms, tried in order:
+    * **JSON minify** — strip insignificant whitespace from a pretty-printed JSON
+      body (lossless). Catches large ``curl``/API responses.
+    * **Run-length line collapse** — fold runs of >=3 identical consecutive lines
+      into one with a ``… (xN)`` marker (logs, repeated grep hits, stack spam).
+    """
+    import json as _json
+
+    bytes_before = len(text)
+    best: tuple[str, str] | None = None
+
+    stripped = text.strip()
+    if stripped[:1] in "[{":
+        try:
+            obj = _json.loads(stripped)
+            minified = _json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+            if len(minified) < bytes_before:
+                best = ("JSON_MIN", minified)
+        except Exception:  # noqa: BLE001 - not valid JSON; fall through
+            pass
+
+    if best is None:
+        lines = text.split("\n")
+        out: list[str] = []
+        i, n, collapsed = 0, len(lines), False
+        while i < n:
+            j = i
+            while j + 1 < n and lines[j + 1] == lines[i]:
+                j += 1
+            run = j - i + 1
+            if run >= 3:
+                out.append(f"{lines[i]}  … (x{run})")
+                collapsed = True
+            else:
+                out.extend(lines[i:j + 1])
+            i = j + 1
+        if collapsed:
+            dedup = "\n".join(out)
+            if len(dedup) < bytes_before:
+                best = ("DEDUP", dedup)
+
+    if best is None:
+        return None
+    name, compressed = best
+    bytes_after = len(compressed)
+    return CompressedPayload(
+        compressed=compressed,
+        content_type=name,
+        ratio=bytes_after / bytes_before if bytes_before else 1.0,
+        bytes_before=bytes_before,
+        bytes_after=bytes_after,
+        lossy=False,
+    )
 
 
 def _lossy_flags() -> tuple[bool, bool]:
