@@ -223,3 +223,219 @@ def test_restore_rejects_private_paths(tmp_path):
     assert any("private" in e for e in report.errors)
     # And no file under any private/ path must have been written.
     assert not any(p.name == "private" for p in (tmp_path / "dest-p").rglob("*"))
+
+
+# ---------------------------------------------------------------------------
+# Wiki scope tests
+# ---------------------------------------------------------------------------
+
+
+def _make_wiki(root: Path) -> None:
+    """Create a minimal wiki vault under ``root``."""
+    public = root / "pages" / "entity"
+    public.mkdir(parents=True)
+    (public / "alpha.md").write_text("# Alpha\npublic content", encoding="utf-8")
+    (public / "beta.md").write_text("# Beta\nmore public", encoding="utf-8")
+    private = root / "_private" / "glicemia"
+    private.mkdir(parents=True)
+    (private / "secret.md").write_text("# Secret\nprivate health data", encoding="utf-8")
+
+
+def _build_wiki_snapshot(
+    tmp_path: Path,
+    include_wiki: bool,
+    wiki_export_private: bool,
+) -> Path:
+    db = tmp_path / "src.db"
+    _make_db(db, [])
+    wiki_root = tmp_path / "wiki"
+    _make_wiki(wiki_root)
+    out_dir = tmp_path / "out"
+    opts = snapshot.ExportOptions(
+        project_keys=[],
+        db_path=db,
+        config_path=tmp_path / "nope-c",
+        settings_path=tmp_path / "nope-s",
+        local_skills_dir=tmp_path / "nope-l",
+        projects_root=tmp_path / "nope-p",
+        include_wiki=include_wiki,
+        wiki_export_private=wiki_export_private,
+        wiki_root=wiki_root,
+        output_dir=out_dir,
+    )
+    return snapshot.build_snapshot(opts)
+
+
+def test_wiki_not_included_by_default(tmp_path):
+    """include_wiki=False means no wiki/ entry in the archive."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=False, wiki_export_private=False)
+    with tarfile.open(tar_path, "r:gz") as t:
+        names = [m.name for m in t.getmembers()]
+    assert not any("wiki" in n for n in names)
+
+
+def test_wiki_public_pages_included_when_flag_set(tmp_path):
+    """include_wiki=True exports public pages only when wiki_export_private=False."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=True, wiki_export_private=False)
+    with tarfile.open(tar_path, "r:gz") as t:
+        names = [m.name for m in t.getmembers()]
+    assert any("wiki/pages/entity/alpha.md" in n for n in names)
+    assert any("wiki/pages/entity/beta.md" in n for n in names)
+    # Private pages must NOT appear.
+    assert not any("_private" in n for n in names)
+    assert not any("secret.md" in n for n in names)
+
+
+def test_wiki_private_excluded_by_default(tmp_path):
+    """Privacy guarantee: even with include_wiki=True, _private/ is absent unless opted in."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=True, wiki_export_private=False)
+    with tarfile.open(tar_path, "r:gz") as t:
+        names = [m.name for m in t.getmembers()]
+    assert not any("_private" in n for n in names)
+
+
+def test_wiki_private_included_only_with_opt_in(tmp_path):
+    """wiki_export_private=True adds _private/ pages to the bundle."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=True, wiki_export_private=True)
+    with tarfile.open(tar_path, "r:gz") as t:
+        names = [m.name for m in t.getmembers()]
+    assert any("wiki/pages/entity/alpha.md" in n for n in names)
+    assert any("wiki/_private/glicemia/secret.md" in n for n in names)
+
+
+def test_wiki_restore_writes_public_pages(tmp_path):
+    """Restoring a wiki snapshot copies public pages to wiki_root."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=True, wiki_export_private=False)
+    dest_wiki = tmp_path / "dest_wiki"
+    dest_db = tmp_path / "dest.db"
+    _make_db(dest_db, [])
+    plan = snapshot.RestorePlan(
+        db_path=dest_db,
+        projects_root=tmp_path / "dest-p",
+        wiki_root=dest_wiki,
+    )
+    report = snapshot.restore_snapshot(tar_path, plan)
+    assert (dest_wiki / "pages" / "entity" / "alpha.md").exists()
+    assert (dest_wiki / "pages" / "entity" / "beta.md").exists()
+    assert not (dest_wiki / "_private").exists()
+    assert report.files.written == 2
+
+
+def test_wiki_restore_skips_existing_pages(tmp_path):
+    """Existing files at the restore destination are preserved (skip mode)."""
+    tar_path = _build_wiki_snapshot(tmp_path, include_wiki=True, wiki_export_private=False)
+    dest_wiki = tmp_path / "dest_wiki"
+    dest_wiki.mkdir(parents=True)
+    existing = dest_wiki / "pages" / "entity" / "alpha.md"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("local version", encoding="utf-8")
+    dest_db = tmp_path / "dest.db"
+    _make_db(dest_db, [])
+    plan = snapshot.RestorePlan(
+        db_path=dest_db,
+        projects_root=tmp_path / "dest-p",
+        wiki_root=dest_wiki,
+    )
+    report = snapshot.restore_snapshot(tar_path, plan)
+    # Existing file untouched.
+    assert existing.read_text() == "local version"
+    assert report.files.skipped >= 1
+    assert report.files.written == 1  # only beta.md was new
+
+
+def test_safe_extract_blocks_wiki_private_path(tmp_path):
+    """_safe_extract must reject tar entries that contain _private/ components."""
+    db = tmp_path / "src.db"
+    _make_db(db, [])
+    out = tmp_path / "out"
+    opts = snapshot.ExportOptions(
+        project_keys=[],
+        db_path=db,
+        config_path=tmp_path / "nope-c",
+        settings_path=tmp_path / "nope-s",
+        local_skills_dir=tmp_path / "nope-l",
+        projects_root=tmp_path / "nope-p",
+        output_dir=out,
+    )
+    clean_tar = snapshot.build_snapshot(opts)
+
+    # Re-read the clean tar and inject a wiki/_private entry.
+    with tarfile.open(clean_tar, "r:gz") as orig:
+        members = orig.getmembers()
+        files = {
+            m.name: (orig.extractfile(m).read() if orig.extractfile(m) else None)
+            for m in members
+        }
+    poisoned = tmp_path / "poisoned.tar.gz"
+    with tarfile.open(poisoned, "w:gz") as t:
+        for m in members:
+            data = files.get(m.name)
+            if data is None:
+                t.addfile(m)
+            else:
+                ti = tarfile.TarInfo(name=m.name)
+                ti.size = len(data)
+                import io
+                t.addfile(ti, fileobj=io.BytesIO(data))
+        # Malicious entry under wiki/_private/
+        body = b"leaked private wiki page"
+        ti = tarfile.TarInfo(name="wiki/_private/glicemia/secret.md")
+        ti.size = len(body)
+        import io
+        t.addfile(ti, fileobj=io.BytesIO(body))
+
+    dest_db = tmp_path / "dest.db"
+    _make_db(dest_db, [])
+    dest_wiki = tmp_path / "dest_wiki"
+    plan = snapshot.RestorePlan(
+        db_path=dest_db,
+        projects_root=tmp_path / "dest-p",
+        wiki_root=dest_wiki,
+    )
+    report = snapshot.restore_snapshot(poisoned, plan)
+    assert any("_private" in e or "private" in e for e in report.errors)
+    assert not (dest_wiki / "_private").exists()
+
+
+def test_preview_wiki_counts(tmp_path):
+    """preview() reports public/private page counts and reflects wiki_export_private."""
+    db = tmp_path / "src.db"
+    _make_db(db, [])
+    wiki_root = tmp_path / "wiki"
+    _make_wiki(wiki_root)
+
+    opts_no_private = snapshot.ExportOptions(
+        project_keys=[],
+        db_path=db,
+        config_path=tmp_path / "nope-c",
+        settings_path=tmp_path / "nope-s",
+        local_skills_dir=tmp_path / "nope-l",
+        projects_root=tmp_path / "nope-p",
+        include_wiki=True,
+        wiki_export_private=False,
+        wiki_root=wiki_root,
+        output_dir=tmp_path / "out",
+    )
+    result = snapshot.preview(opts_no_private)
+    assert result["wiki"] is not None
+    assert result["wiki"]["public_pages"] == 2
+    assert result["wiki"]["private_pages"] == 1
+    assert result["wiki"]["private_included"] is False
+    # file_count must only include the public pages.
+    assert result["file_count"] == 2
+
+    opts_with_private = snapshot.ExportOptions(
+        project_keys=[],
+        db_path=db,
+        config_path=tmp_path / "nope-c",
+        settings_path=tmp_path / "nope-s",
+        local_skills_dir=tmp_path / "nope-l",
+        projects_root=tmp_path / "nope-p",
+        include_wiki=True,
+        wiki_export_private=True,
+        wiki_root=wiki_root,
+        output_dir=tmp_path / "out",
+    )
+    result2 = snapshot.preview(opts_with_private)
+    assert result2["wiki"]["private_included"] is True
+    assert result2["file_count"] == 3  # 2 public + 1 private
