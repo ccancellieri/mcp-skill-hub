@@ -491,3 +491,163 @@ class TestSessionEndPromotion:
         ).fetchone()
         assert row is not None
         assert row["level"] == "L0", "Zero-access L0 entries should not be promoted"
+
+
+# ===========================================================================
+# Source D — wiki preload in _gather_context
+# ===========================================================================
+
+class TestGatherContextWikiSourceD:
+    """_gather_context injects wiki hits via Source D when all other sources empty."""
+
+    def _make_cfg(self, wiki_root: Path, enabled: bool = True) -> dict:
+        return {
+            "wiki_preload_enabled": enabled,
+            "wiki_enabled": True,
+            "wiki_root": str(wiki_root),
+            "wiki_private_scopes": {},
+        }
+
+    def test_wiki_hit_returned_when_sources_abc_empty(self, tmp_store, monkeypatch, tmp_path):
+        """When A/B/C yield nothing and wiki has a hit, Source D provides context."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.wiki as _wiki
+
+        # A: no session context
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        # B: embedding unavailable → skip
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+        # C: no open tasks
+        monkeypatch.setattr(tmp_store, "list_tasks", lambda status: [])
+
+        # Patch SkillStore in preloader's module
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        # Stub wiki.query to return a known hit without needing embeddings or disk
+        fake_results = [
+            {
+                "slug": "karpathy-coding-guidelines",
+                "title": "Karpathy Coding Guidelines",
+                "type": "concept",
+                "scope": "public",
+                "score": 0.85,
+                "body": "Think before coding. Simplicity first.",
+                "source_refs": [],
+            }
+        ]
+        monkeypatch.setattr(
+            _wiki, "query",
+            lambda store, wiki_root, q, top_k=2, authorized_scopes=None: {
+                "query": q,
+                "results": fake_results,
+            },
+        )
+
+        # wiki_root must be a real dir so the is_dir() guard passes
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+
+        cfg = self._make_cfg(wiki_root)
+        result = preloader._gather_context("fix it", "sess-001", cfg)
+
+        assert "karpathy-coding-guidelines" in result, (
+            f"wiki slug not in context: {result!r}"
+        )
+        assert "Karpathy Coding Guidelines" in result, (
+            f"wiki title not in context: {result!r}"
+        )
+
+    def test_wiki_disabled_by_flag_returns_empty(self, tmp_store, monkeypatch, tmp_path):
+        """wiki_preload_enabled=False skips Source D entirely."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.wiki as _wiki
+
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+        monkeypatch.setattr(tmp_store, "list_tasks", lambda status: [])
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        called: list[bool] = []
+        monkeypatch.setattr(
+            _wiki, "query",
+            lambda *a, **kw: called.append(True) or {"query": "", "results": []},
+        )
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        cfg = self._make_cfg(wiki_root, enabled=False)
+
+        result = preloader._gather_context("fix it", "sess-002", cfg)
+
+        assert result == "", f"Expected empty when wiki_preload_enabled=False, got {result!r}"
+        assert not called, "wiki.query must not be called when wiki_preload_enabled=False"
+
+    def test_wiki_error_does_not_raise(self, tmp_store, monkeypatch, tmp_path):
+        """Any exception in Source D is swallowed; _gather_context returns empty."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.wiki as _wiki
+
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+        monkeypatch.setattr(tmp_store, "list_tasks", lambda status: [])
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        def _boom(*a, **kw):
+            raise RuntimeError("DB locked")
+
+        monkeypatch.setattr(_wiki, "query", _boom)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        cfg = self._make_cfg(wiki_root)
+
+        # Must not raise
+        result = preloader._gather_context("fix it", "sess-003", cfg)
+        assert result == "", f"Expected empty on wiki error, got {result!r}"
+
+    def test_private_pages_excluded_when_no_scopes(self, tmp_store, monkeypatch, tmp_path):
+        """With wiki_private_scopes={}, authorized_scopes is empty so wiki.query
+        receives authorized_scopes=None (no private namespace queried)."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.wiki as _wiki
+
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        import skill_hub.embeddings as _emb
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+        monkeypatch.setattr(tmp_store, "list_tasks", lambda status: [])
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        captured: dict = {}
+
+        def _capture_query(store, wiki_root, q, top_k=2, authorized_scopes=None):
+            captured["authorized_scopes"] = authorized_scopes
+            return {"query": q, "results": []}
+
+        monkeypatch.setattr(_wiki, "query", _capture_query)
+
+        wiki_root = tmp_path / "wiki"
+        wiki_root.mkdir()
+        # Empty scopes config → no private access
+        cfg = {
+            "wiki_preload_enabled": True,
+            "wiki_enabled": True,
+            "wiki_root": str(wiki_root),
+            "wiki_private_scopes": {},
+        }
+        preloader._gather_context("fix it", "sess-004", cfg)
+
+        assert captured.get("authorized_scopes") is None, (
+            f"Expected authorized_scopes=None for empty scopes config, "
+            f"got {captured.get('authorized_scopes')!r}"
+        )

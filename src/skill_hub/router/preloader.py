@@ -235,6 +235,53 @@ def _gather_context(
         except Exception:
             pass
 
+        # ── Source D: wiki knowledge layer ───────────────────────────────────
+        # Query the hybrid wiki index for pages relevant to the thin prompt.
+        # Injected as a compact title+snippet block; never raises (fail-open).
+        # Gated by wiki_preload_enabled (default True) and wiki_enabled.
+        try:
+            if cfg.get("wiki_preload_enabled", True) and cfg.get("wiki_enabled", True):
+                from pathlib import Path as _Path
+                from .. import wiki as _wiki
+
+                wiki_root = _Path(cfg.get("wiki_root", ""))
+                if wiki_root.is_dir():
+                    # Derive authorized private scopes from config (same logic as
+                    # _wiki_authorized_scopes in server.py — union of all configured
+                    # private scope values).
+                    _priv_cfg = cfg.get("wiki_private_scopes") or {}
+                    authorized: list[str] = []
+                    if isinstance(_priv_cfg, dict):
+                        for _v in _priv_cfg.values():
+                            if isinstance(_v, list):
+                                authorized.extend(_v)
+
+                    result = _wiki.query(
+                        store, wiki_root, prompt,
+                        top_k=2,
+                        authorized_scopes=authorized or None,
+                    )
+                    hits = result.get("results") or []
+                    if hits:
+                        snippets: list[str] = []
+                        for h in hits:
+                            title = (h.get("title") or h.get("slug") or "").strip()
+                            slug = h.get("slug", "")
+                            # First 120 chars of body (one or two sentences)
+                            body_snip = (h.get("body") or "").strip()[:120].rstrip()
+                            line = f"[wiki:{slug}] {title}"
+                            if body_snip:
+                                line += f" — {body_snip}"
+                            snippets.append(line)
+                        wiki_block = "; ".join(snippets)
+                        if wiki_block:
+                            return wiki_block[:max_chars]
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "preloader: wiki source D skipped", exc_info=True
+            )
+
     finally:
         store.close()
 
