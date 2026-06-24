@@ -226,3 +226,223 @@ def test_sync_resolve_repo_failure(isolated_store, monkeypatch):
 
     assert "error" in report
     assert report["indexed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Write path: create_discussion (issue #87)
+# ---------------------------------------------------------------------------
+
+# Shared GraphQL mock payloads for the write path.
+_CATEGORY_PAYLOAD = {
+    "data": {
+        "repository": {
+            "id": "R_kgDO_test123",
+            "discussionCategories": {
+                "nodes": [
+                    {"id": "DIC_kwDO_general", "name": "General"},
+                    {"id": "DIC_kwDO_ideas",   "name": "Ideas"},
+                ]
+            },
+        }
+    }
+}
+
+_CREATE_DISCUSSION_PAYLOAD = {
+    "data": {
+        "createDiscussion": {
+            "discussion": {
+                "number": 42,
+                "url": "https://github.com/o/n/discussions/42",
+                "title": "Design note: foo",
+            }
+        }
+    }
+}
+
+
+def _make_graphql_router(category_payload, create_payload):
+    """Return a _gh_graphql mock that dispatches on mutation keyword."""
+    def _mock(query, variables, **kw):
+        if "createDiscussion" in query:
+            return create_payload
+        # category query and any other read
+        return category_payload
+    return _mock
+
+
+def _enable_write(monkeypatch):
+    """Patch config.get to return discussions_write_enabled=True."""
+    import skill_hub.config as _cfg_mod
+    _orig = _cfg_mod.get
+    def _patched(k, *a, **kw):
+        if k == "discussions_write_enabled":
+            return True
+        if k == "discussions_category":
+            return "General"
+        return _orig(k, *a, **kw)
+    monkeypatch.setattr(_cfg_mod, "get", _patched)
+
+
+# (e) Flag off → no-op.
+
+def test_create_discussion_disabled_by_default(monkeypatch):
+    """When discussions_write_enabled is False (default), returns status=disabled."""
+    import skill_hub.config as _cfg_mod
+    _orig = _cfg_mod.get
+    monkeypatch.setattr(
+        _cfg_mod, "get",
+        lambda k, *a, **kw: False if k == "discussions_write_enabled" else _orig(k, *a, **kw),
+    )
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(repo="o/n", title="T", body="B")
+
+    assert result == {"status": "disabled"}
+
+
+# (f) Flag on, mock GraphQL → category resolved + mutation called + event emitted.
+
+def test_create_discussion_happy_path(monkeypatch):
+    """When enabled and GraphQL succeeds, returns ok + emits discussion.created event."""
+    _enable_write(monkeypatch)
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._resolve_repo",
+        lambda repo: ("o", "n"),
+    )
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._gh_graphql",
+        _make_graphql_router(_CATEGORY_PAYLOAD, _CREATE_DISCUSSION_PAYLOAD),
+    )
+
+    emitted: list[tuple] = []
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(
+        repo="o/n",
+        title="Design note: foo",
+        body="Long-form design text.",
+        emit=lambda kind, tool, payload: emitted.append((kind, tool, payload)),
+    )
+
+    assert result["status"] == "ok"
+    assert result["number"] == 42
+    assert result["url"] == "https://github.com/o/n/discussions/42"
+    assert result["title"] == "Design note: foo"
+
+    assert len(emitted) == 1
+    kind, tool, payload = emitted[0]
+    assert kind == "discussion.created"
+    assert tool is None
+    assert payload["number"] == 42
+    assert payload["repo"] == "o/n"
+    assert payload["category"] == "General"
+
+
+# (g) Category missing → error, no mutation called.
+
+def test_create_discussion_missing_category(monkeypatch):
+    """Category not found in repo → error dict, no createDiscussion call."""
+    _enable_write(monkeypatch)
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._resolve_repo",
+        lambda repo: ("o", "n"),
+    )
+
+    mutation_calls: list[str] = []
+
+    def _mock_graphql(query, variables, **kw):
+        if "createDiscussion" in query:
+            mutation_calls.append("create")
+            return _CREATE_DISCUSSION_PAYLOAD
+        # category payload with no "General" category
+        return {
+            "data": {
+                "repository": {
+                    "id": "R_kgDO_test",
+                    "discussionCategories": {
+                        "nodes": [{"id": "DIC_kwDO_qa", "name": "Q&A"}]
+                    },
+                }
+            }
+        }
+
+    monkeypatch.setattr("skill_hub.discussions_sync._gh_graphql", _mock_graphql)
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(repo="o/n", title="T", body="B")
+
+    assert result["status"] == "error"
+    assert "General" in result["error"]
+    assert mutation_calls == [], "createDiscussion must NOT be called when category is missing"
+
+
+# (h) _resolve_repo fails → error dict.
+
+def test_create_discussion_resolve_repo_fails(monkeypatch):
+    """_resolve_repo returning None → error dict."""
+    _enable_write(monkeypatch)
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._resolve_repo",
+        lambda repo: None,
+    )
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(repo="bad", title="T", body="B")
+
+    assert result["status"] == "error"
+    assert "resolve" in result["error"]
+
+
+# (i) GraphQL errors block in response → error dict.
+
+def test_create_discussion_graphql_errors(monkeypatch):
+    """GraphQL errors list in response → error dict."""
+    _enable_write(monkeypatch)
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._resolve_repo",
+        lambda repo: ("o", "n"),
+    )
+
+    def _mock_graphql(query, variables, **kw):
+        if "createDiscussion" in query:
+            return {"errors": [{"message": "Insufficient permissions"}]}
+        return _CATEGORY_PAYLOAD
+
+    monkeypatch.setattr("skill_hub.discussions_sync._gh_graphql", _mock_graphql)
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(repo="o/n", title="T", body="B")
+
+    assert result["status"] == "error"
+    assert "Insufficient permissions" in result["error"]
+
+
+# (j) emit callback failure is non-fatal.
+
+def test_create_discussion_emit_failure_nonfatal(monkeypatch):
+    """A raising emit callback must not prevent a successful return."""
+    _enable_write(monkeypatch)
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._resolve_repo",
+        lambda repo: ("o", "n"),
+    )
+    monkeypatch.setattr(
+        "skill_hub.discussions_sync._gh_graphql",
+        _make_graphql_router(_CATEGORY_PAYLOAD, _CREATE_DISCUSSION_PAYLOAD),
+    )
+
+    def _bad_emit(kind, tool, payload):
+        raise RuntimeError("emit exploded")
+
+    from skill_hub import discussions_sync
+
+    result = discussions_sync.create_discussion(
+        repo="o/n", title="T", body="B", emit=_bad_emit
+    )
+
+    assert result["status"] == "ok"

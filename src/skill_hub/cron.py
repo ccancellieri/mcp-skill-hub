@@ -33,8 +33,9 @@ _DEFAULT_JOBS = [
     ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
     # Disabled by default — enable explicitly via the cron UI or config.
-    ("log-digest-snapshot",     "0 6 * * *",   "log_digest_snapshot",         0),
-    ("wiki-reindex-nightly",    "0 5 * * *",   "wiki_reindex_nightly",        0),
+    ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
+    ("wiki-reindex-nightly",       "0 5 * * *",   "wiki_reindex_nightly",        0),
+    ("discussions-sync-nightly",   "0 1 * * *",   "discussions_sync_nightly",    0),
 ]
 
 
@@ -55,6 +56,7 @@ def seed_defaults(db_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 _HUMAN_SCHEDULES: dict[str, str] = {
+    "0 1 * * *":    "daily at 1:00 AM",
     "0 2 * * *":    "daily at 2:00 AM",
     "0 3 * * *":    "daily at 3:00 AM",
     "0 4 * * *":    "daily at 4:00 AM",
@@ -230,6 +232,37 @@ def _memexp_snapshot_create_handler() -> None:
     )
 
 
+def _discussions_sync_nightly_handler() -> None:
+    """Cron handler: periodic full idempotent sync of GitHub Discussions into wiki.
+
+    Disabled by default (enabled=0 in _DEFAULT_JOBS). Enable via the cron UI
+    once a GitHub repo is configured and discussions_write_enabled is not
+    required (this handler only runs the read-path sync_discussions).
+
+    Each run performs a full idempotent sync (fetches up to 50 discussions,
+    upserts them as wiki source pages). Because write_source_page is
+    content-addressed (source_hash), unchanged discussions are skipped cheaply.
+    """
+    from .store import get_store
+    from . import discussions_sync as _disc
+    from . import config as _cfg
+
+    store = get_store()
+    repo = str(_cfg.get("discussions_repo") or "")
+    result = _disc.sync_discussions(store, repo=repo, dry_run=False)
+    if "error" in result:
+        _log.warning(
+            "discussions_sync_nightly error: %s", result["error"]
+        )
+    else:
+        _log.info(
+            "discussions_sync_nightly: checked=%d indexed=%d discussions=%d"
+            " comments=%d skipped=%d",
+            result["checked"], result["indexed"], result["discussions"],
+            result["comments"], result["skipped"],
+        )
+
+
 def _check_embedding_backends_handler() -> None:
     """Cron handler: probe the configured embedding backend and log reachability.
 
@@ -265,6 +298,7 @@ _HANDLERS["feedback_to_teachings"] = _feedback_to_teachings_handler
 _HANDLERS["archive_memory_to_db_dry_run"] = _archive_memory_to_db_dry_run_handler
 _HANDLERS["memexp_snapshot_create"] = _memexp_snapshot_create_handler
 _HANDLERS["check_embedding_backends"] = _check_embedding_backends_handler
+_HANDLERS["discussions_sync_nightly"] = _discussions_sync_nightly_handler
 
 
 def human_schedule(schedule: str) -> str:

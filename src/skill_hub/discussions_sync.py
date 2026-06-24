@@ -1,14 +1,25 @@
-"""Index GitHub Discussions (+ comments) into vector memory (issue #41).
+"""GitHub Discussions sync — read path (issue #41) and write path (issue #87).
 
-Design
-------
-Read-only against GitHub: fetches discussions via the GraphQL API and lands
-each one (with its comments folded in) as a mechanical wiki ``source`` page
-via ``wiki.write_source_page`` — no LLM. The scan→approve→ingest loop distills
-them later. This supersedes the old raw ``discussions`` vector namespace. A bad
-item is skipped, never fatal. All GitHub I/O goes through two narrow helpers
-(``_resolve_repo`` / ``_gh_graphql``) so tests can monkeypatch them without
-touching subprocess internals.
+Read path
+---------
+Fetches discussions via the GraphQL API and lands each one (with its comments
+folded in) as a mechanical wiki ``source`` page via ``wiki.write_source_page``
+— no LLM. The scan→approve→ingest loop distills them later. This supersedes
+the old raw ``discussions`` vector namespace. A bad item is skipped, never
+fatal.
+
+Write path
+----------
+Promotes a long-form retrospective / design note INTO a GitHub Discussion via
+the GraphQL ``createDiscussion`` mutation. Gated behind config key
+``discussions_write_enabled`` (default False) — the function is a no-op when
+the flag is off. The category is resolved by name via the GraphQL
+``repository { discussionCategories }`` query; the target name is configurable
+via ``discussions_category`` (default "General").
+
+All GitHub I/O goes through two narrow helpers (``_resolve_repo`` /
+``_gh_graphql``) so tests can monkeypatch them without touching subprocess
+internals.
 """
 from __future__ import annotations
 
@@ -251,3 +262,187 @@ def sync_discussions(
             continue
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Write path — promote a note into a GitHub Discussion (issue #87)
+# ---------------------------------------------------------------------------
+
+_CATEGORY_QUERY = """
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    id
+    discussionCategories(first: 25) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
+_CREATE_DISCUSSION_MUTATION = """
+mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+  createDiscussion(input: {
+    repositoryId: $repositoryId,
+    categoryId: $categoryId,
+    title: $title,
+    body: $body
+  }) {
+    discussion {
+      number
+      url
+      title
+    }
+  }
+}
+"""
+
+_ADD_COMMENT_MUTATION = """
+mutation($discussionId: ID!, $body: String!) {
+  addDiscussionComment(input: {
+    discussionId: $discussionId,
+    body: $body
+  }) {
+    comment {
+      id
+      url
+    }
+  }
+}
+"""
+
+
+def create_discussion(
+    repo: str = "",
+    title: str = "",
+    body: str = "",
+    *,
+    emit: Callable | None = None,
+) -> dict:
+    """Promote a note into a GitHub Discussion.
+
+    Gated by config key ``discussions_write_enabled`` (default False).  When
+    the flag is off, returns a ``{"status": "disabled"}`` dict immediately —
+    no GitHub calls are made.
+
+    The category is resolved by name from config key ``discussions_category``
+    (default "General").  If the named category does not exist in the repo,
+    returns an error dict rather than guessing.
+
+    Parameters
+    ----------
+    repo:
+        ``"owner/name"`` or empty (resolve from current dir).
+    title:
+        Discussion title (required).
+    body:
+        Discussion body markdown (required).
+    emit:
+        Optional ``(kind, tool_name, payload) -> ...`` callback for event log.
+
+    Returns
+    -------
+    dict with keys: status, url, number, title.
+    On disabled: {"status": "disabled"}.
+    On error: {"status": "error", "error": "<message>"}.
+    """
+    from . import config as _cfg
+
+    write_enabled = bool(_cfg.get("discussions_write_enabled"))
+    if not write_enabled:
+        return {"status": "disabled"}
+
+    if not title or not title.strip():
+        return {"status": "error", "error": "title is required"}
+    if not body or not body.strip():
+        return {"status": "error", "error": "body is required"}
+
+    category_name: str = str(_cfg.get("discussions_category") or "General")
+
+    resolved = _resolve_repo(repo)
+    if resolved is None:
+        return {"status": "error", "error": "could not resolve repo"}
+    owner, name = resolved
+
+    # Resolve repository node id + category id.
+    cat_result = _gh_graphql(_CATEGORY_QUERY, {"owner": owner, "name": name})
+    if cat_result is None:
+        return {"status": "error", "error": "category query failed"}
+
+    repo_data = (cat_result.get("data") or {}).get("repository") or {}
+    repo_id = repo_data.get("id")
+    if not repo_id:
+        return {"status": "error", "error": "could not resolve repository id"}
+
+    categories = (repo_data.get("discussionCategories") or {}).get("nodes") or []
+    category_id: str | None = None
+    for cat in categories:
+        if (cat.get("name") or "").strip().lower() == category_name.strip().lower():
+            category_id = cat.get("id")
+            break
+
+    if not category_id:
+        available = ", ".join(c.get("name", "") for c in categories if c.get("name"))
+        return {
+            "status": "error",
+            "error": (
+                f"category {category_name!r} not found in repo {owner}/{name}. "
+                f"Available: {available or '(none)'}"
+            ),
+        }
+
+    create_result = _gh_graphql(
+        _CREATE_DISCUSSION_MUTATION,
+        {
+            "repositoryId": repo_id,
+            "categoryId": category_id,
+            "title": title.strip(),
+            "body": body.strip(),
+        },
+    )
+    if create_result is None:
+        return {"status": "error", "error": "createDiscussion mutation failed"}
+
+    errors = create_result.get("errors")
+    if errors:
+        msg = "; ".join(e.get("message", str(e)) for e in errors)
+        return {"status": "error", "error": f"GraphQL errors: {msg}"}
+
+    disc = (
+        (create_result.get("data") or {})
+        .get("createDiscussion", {})
+        .get("discussion") or {}
+    )
+    disc_url = disc.get("url", "")
+    disc_number = disc.get("number")
+    disc_title = disc.get("title", title)
+
+    _log.info(
+        "create_discussion: created #%s %r in %s/%s category=%s",
+        disc_number, disc_title, owner, name, category_name,
+    )
+
+    if emit is not None:
+        try:
+            emit(
+                "discussion.created",
+                None,
+                {
+                    "number": disc_number,
+                    "title": disc_title,
+                    "url": disc_url,
+                    "repo": f"{owner}/{name}",
+                    "category": category_name,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {
+        "status": "ok",
+        "number": disc_number,
+        "title": disc_title,
+        "url": disc_url,
+    }
