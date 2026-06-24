@@ -29,7 +29,22 @@ _OP_ROUTING: dict[str, tuple[float, str]] = {
     "triage": (0.2, "fast"),
     "wiki_file_answer": (0.5, "reasoning"),
     "wiki_ingest": (0.4, "writing"),
+    "exhaustion_save": (0.4, "writing"),
 }
+
+
+def _litellm_model(kind: str, model_id: str) -> str:
+    """Map a registry ``(kind, model_id)`` to the model string litellm needs.
+
+    An OpenAI-compatible gateway must be addressed via the ``openai/`` provider
+    route so litellm uses the configured ``api_base``; otherwise a model id like
+    ``anthropic/claude-…`` would be dispatched to that provider *natively* (and
+    rejected by the gateway key). ``ollama``/``anthropic`` ids already carry
+    their own litellm-routable prefix.
+    """
+    if kind == "openai_compatible" and not model_id.startswith("openai/"):
+        return "openai/" + model_id
+    return model_id
 
 
 def _emit_llm_event(
@@ -281,9 +296,13 @@ class LitellmProvider:
             status="ok",
         )
         try:
-            return resp["choices"][0]["message"]["content"] or ""
+            msg = resp["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"unexpected response shape from {model}: {exc}") from exc
+        # Reasoning models on the gateway return ``content: null`` with the text
+        # in ``reasoning_content``; fall back to it so the call is not lost.
+        get = msg.get if hasattr(msg, "get") else (lambda k, d=None: getattr(msg, k, d))
+        return get("content") or get("reasoning_content") or ""
 
     def chat(
         self,
@@ -301,44 +320,66 @@ class LitellmProvider:
         complexity: float | None = None,
         domain: str | None = None,
     ) -> str:
-        # --- Auxiliary escalation ladder -------------------------------------
-        # Engage only when the caller did not pin a model and left tier default.
-        # A signal is required: an explicit complexity/domain, or a known ``op``
-        # whose routing policy supplies both (see ``_OP_ROUTING``). Explicit
-        # kwargs override the policy. Unknown ops with no signal skip the ladder.
-        if model is None and tier == "tier_cheap":
-            policy = _OP_ROUTING.get(op)
-            eff_complexity = complexity
-            eff_domain = domain
-            if policy is not None:
-                if eff_complexity is None:
-                    eff_complexity = policy[0]
-                if eff_domain is None:
-                    eff_domain = policy[1]
-            if eff_complexity is not None or eff_domain is not None:
-                return self._chat_via_ladder(
-                    self._normalize_messages(messages),
-                    complexity=eff_complexity if eff_complexity is not None else 0.5,
-                    domain=eff_domain, max_tokens=max_tokens,
-                    temperature=temperature, timeout=timeout, cache=cache,
-                    extra=extra, op=op, cache_ttl=cache_ttl,
-                )
+        norm = self._normalize_messages(messages)
 
+        # --- Auxiliary escalation ladder -------------------------------------
+        # Resolve the routing signal: explicit complexity/domain win, else the
+        # op's policy (see ``_OP_ROUTING``). Only default-tier calls carrying a
+        # signal flow through the ladder; unsignalled ops keep prior behaviour.
+        policy = _OP_ROUTING.get(op)
+        eff_complexity = complexity
+        eff_domain = domain
+        if policy is not None:
+            if eff_complexity is None:
+                eff_complexity = policy[0]
+            if eff_domain is None:
+                eff_domain = policy[1]
+        has_signal = eff_complexity is not None or eff_domain is not None
+        ladder_ok = tier == "tier_cheap" and has_signal
+
+        def _ladder(exclude: set[str] | None = None) -> str:
+            return self._chat_via_ladder(
+                norm,
+                complexity=eff_complexity if eff_complexity is not None else 0.5,
+                domain=eff_domain, max_tokens=max_tokens,
+                temperature=temperature, timeout=timeout, cache=cache,
+                extra=extra, op=op, cache_ttl=cache_ttl, exclude=exclude,
+            )
+
+        # No pinned model: the ladder picks the level. Skip a known-down local
+        # daemon up front so we never spend a call on a dead L0.
+        if model is None and ladder_ok:
+            from . import escalation
+            if not escalation.ollama_daemon_reachable():
+                escalation.cool_ollama()
+            return _ladder()
+
+        # Pinned LOCAL model whose daemon is down: skip it and use the ladder
+        # (remote specialist) instead of issuing a doomed local call.
+        if model is not None and ladder_ok and str(model).startswith("ollama/"):
+            from . import escalation
+            if not escalation.ollama_daemon_reachable():
+                escalation.cool_ollama()
+                return _ladder()
+
+        # Resolve + single attempt. A runtime failure of a default-tier call
+        # with a signal falls through to the ladder (covers a daemon that dies
+        # mid-flight or a transient local error), excluding the failed model.
         resolved_model = self._resolve_model(tier, model)
-        return self._chat_once(
-            self._normalize_messages(messages),
-            model=resolved_model,
-            api_base=self._api_base(resolved_model),
-            api_key=None,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
-            cache=cache,
-            extra=extra,
-            op=op,
-            cache_ttl=cache_ttl,
-            tier=tier,
-        )
+        try:
+            return self._chat_once(
+                norm, model=resolved_model, api_base=self._api_base(resolved_model),
+                api_key=None, max_tokens=max_tokens, temperature=temperature,
+                timeout=timeout, cache=cache, extra=extra, op=op,
+                cache_ttl=cache_ttl, tier=tier,
+            )
+        except LLMError:
+            if not ladder_ok:
+                raise
+            from . import escalation
+            if str(resolved_model).startswith("ollama/"):
+                escalation.cool_ollama()
+            return _ladder(exclude={resolved_model})
 
     def _personal_over_cap(self) -> bool:
         cap = _cfg.get("llm_personal_daily_usd_cap")
@@ -401,9 +442,10 @@ class LitellmProvider:
         extra: dict[str, Any] | None,
         op: str,
         cache_ttl: str,
+        exclude: set[str] | None = None,
     ) -> str:
         from . import escalation
-        exclude: set[str] = set()
+        exclude = set(exclude) if exclude else set()
         over_cap = self._personal_over_cap()
         last_exc: Exception | None = None
         for _ in range(64):
@@ -415,7 +457,8 @@ class LitellmProvider:
                 continue
             try:
                 return self._chat_once(
-                    messages, model=sel.model, api_base=sel.api_base,
+                    messages, model=_litellm_model(sel.kind, sel.model),
+                    api_base=sel.api_base,
                     api_key=sel.api_key, max_tokens=max_tokens,
                     temperature=temperature, timeout=timeout, cache=cache,
                     extra=extra, op=op, cache_ttl=cache_ttl,

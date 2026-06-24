@@ -66,7 +66,7 @@ def _embed_is_enabled() -> bool:
 def _generate(
     prompt: str,
     *,
-    model: str,
+    model: str | None,
     timeout: float,
     temperature: float = 0.2,
     num_predict: int = 512,
@@ -74,11 +74,15 @@ def _generate(
 ) -> str:
     """Thin wrapper over ``LLMProvider.complete()`` matching the old
     ``httpx.post(/api/generate).json()['response']`` shape. Returns ``""`` on
-    error so callers can keep their tolerant fallbacks."""
+    error so callers can keep their tolerant fallbacks.
+
+    Pass ``model=None`` to let the escalation ladder pick the level (used when
+    no local model is available, so a known ``op`` routes to a remote
+    specialist instead of failing)."""
     try:
         return get_provider().complete(
             prompt,
-            model=_wrap_ollama(model),
+            model=_wrap_ollama(model) if model else None,
             max_tokens=num_predict,
             temperature=temperature,
             timeout=timeout,
@@ -580,7 +584,8 @@ def exhaustion_save(content: str,
     prompt = _EXHAUSTION_SAVE_PROMPT.format(content=content[:max_chars])
 
     try:
-        raw = _generate(prompt, model=model, timeout=120.0) or "{}"
+        raw = _generate(prompt, model=model, timeout=120.0,
+                        op="exhaustion_save") or "{}"
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -612,18 +617,17 @@ def smart_memory_write(
             "reason": str,           # why escalation is needed (or "ok")
         }
     """
-    # Try progressively smaller models if primary unavailable
-    chosen_model = model
+    # Local-first: prefer a local model when the daemon is up. When no local
+    # model is reachable, fall through to the escalation ladder (``model=None``
+    # + the ``smart_memory_write`` op routes to a remote "writing" specialist)
+    # rather than giving up — a down local daemon must not disable memory.
+    chosen_model: str | None = model
     if not ollama_available(chosen_model):
+        chosen_model = None
         for fallback in ("qwen2.5-coder:3b", "deepseek-r1:1.5b"):
             if ollama_available(fallback):
                 chosen_model = fallback
                 break
-        else:
-            return {
-                "result": {}, "quality": 0.0,
-                "escalate": True, "reason": "no_local_model",
-            }
 
     prompt = f"""You are a memory-management assistant for an AI coding tool.
 
@@ -661,8 +665,8 @@ Respond with ONLY this JSON:
                 prompt, model=chosen_model, timeout=30.0,
                 temperature=0.1, num_predict=500, op="smart_memory_write",
             ) or "{}"
-        log_llm("smart_memory_write", model=chosen_model, duration=_t.duration,
-                input_chars=len(content))
+        log_llm("smart_memory_write", model=chosen_model or "ladder",
+                duration=_t.duration, input_chars=len(content))
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not json_match:

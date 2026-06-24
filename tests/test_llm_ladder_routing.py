@@ -74,7 +74,8 @@ def test_quota_429_rotates_and_cools_first_model(monkeypatch, tmp_path):
 
         def completion(self, **kwargs):
             calls.append(kwargs["model"])
-            if kwargs["model"] == "model-a":
+            # gw is openai_compatible → litellm model is prefixed ``openai/``.
+            if kwargs["model"] == "openai/model-a":
                 raise Exception("HTTP 429 rate limit exceeded")
             return {
                 "choices": [{"message": {"content": "ok"}}],
@@ -85,8 +86,8 @@ def test_quota_429_rotates_and_cools_first_model(monkeypatch, tmp_path):
     p._litellm = FakeLitellm()
     out = p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
     assert out == "ok"
-    assert calls == ["model-a", "anthropic/claude-haiku-4-5"]
-    assert escalation.is_cooled("model-a")
+    assert calls == ["openai/model-a", "anthropic/claude-haiku-4-5"]
+    assert escalation.is_cooled("model-a")   # cooldown keys on the registry id
 
 
 def test_budget_cap_excludes_personal(monkeypatch, tmp_path):
@@ -193,7 +194,7 @@ def test_op_routing_engages_ladder_and_routes_by_domain(monkeypatch, tmp_path):
     # 'rerank' maps to (0.2, 'fast') in _OP_ROUTING.
     out = p.complete("x", op="rerank")
     assert out == "ok"
-    assert calls == ["fast-m"]   # 'fast' specialist, not the python model
+    assert calls == ["openai/fast-m"]   # 'fast' specialist (openai_compatible → openai/ prefix)
 
 
 def test_unknown_op_with_no_signal_skips_ladder(monkeypatch, tmp_path):
@@ -213,3 +214,178 @@ def test_unknown_op_with_no_signal_skips_ladder(monkeypatch, tmp_path):
     out = p.complete("x", op="totally_unknown_op")
     assert out == "direct"
     assert engaged["v"] is False
+
+
+# --- local-daemon-down → skip the dead level, use the ladder ----------------
+
+_REG_LOCAL_PLUS_GW = {
+    "llm_metering_enabled": False,
+    "llm_provider_registry": [
+        {"name": "local", "level": "L1", "kind": "ollama",
+         "api_base": "", "api_key": {}, "enabled": True, "order": 10,
+         "models": [{"id": "qwen-local", "complexity": "light", "tags": ["digest"]}]},
+        {"name": "gw", "level": "L3", "kind": "openai_compatible",
+         "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
+         "enabled": True, "order": 30,
+         "models": [{"id": "gw-fast", "complexity": "light", "tags": ["fast"]}]},
+    ],
+}
+
+
+def _fake_litellm(calls: list[str]):
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            return {"choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+    return FakeLitellm()
+
+
+def test_pinned_local_skips_dead_daemon_and_routes_to_gateway(monkeypatch, tmp_path):
+    """A hook pins ``ollama/...`` but the daemon is down: the call must skip the
+    dead local model entirely and route through the ladder to the gateway."""
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: False)
+
+    calls: list[str] = []
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm(calls)
+
+    out = p.complete("x", model="ollama/qwen-local", op="conversation_digest")
+    assert out == "ok"
+    assert calls == ["openai/gw-fast"]     # never issued a doomed local call
+    assert escalation.is_cooled("qwen-local")  # local cooled so the ladder skips it
+
+
+def test_model_none_skips_dead_local_via_ladder(monkeypatch, tmp_path):
+    """model=None + a known op: the ladder picks the level, skipping a dead L0."""
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: False)
+
+    calls: list[str] = []
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm(calls)
+
+    out = p.complete("x", op="conversation_digest")
+    assert out == "ok"
+    assert calls == ["openai/gw-fast"]
+
+
+def test_local_used_first_when_daemon_up(monkeypatch, tmp_path):
+    """Daemon up: the pinned local model is used (free), gateway untouched."""
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: True)
+
+    calls: list[str] = []
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm(calls)
+
+    out = p.complete("x", model="ollama/qwen-local", op="conversation_digest")
+    assert out == "ok"
+    assert calls == ["ollama/qwen-local"]   # local-first preserved when up
+
+
+def test_local_runtime_failure_falls_through_to_ladder(monkeypatch, tmp_path):
+    """Daemon passes the probe but the call fails mid-flight: fall through to the
+    ladder, excluding the failed model."""
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **k: True)
+
+    calls: list[str] = []
+
+    class FlakyLocal:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            if kwargs["model"] == "ollama/qwen-local":
+                raise Exception("connection refused")
+            return {"choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = FlakyLocal()
+    out = p.complete("x", model="ollama/qwen-local", op="conversation_digest")
+    assert out == "ok"
+    assert calls == ["ollama/qwen-local", "openai/gw-fast"]   # tried local, then ladder
+
+
+def test_cool_ollama_makes_select_skip_local(monkeypatch, tmp_path):
+    _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
+    escalation, _litellm_adapter, _provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+
+    sel = escalation.select(0.3, domain="digest")
+    assert sel is not None and sel.provider == "local"   # local is the digest specialist
+    escalation.cool_ollama()
+    sel2 = escalation.select(0.3, domain="digest")
+    assert sel2 is not None and sel2.provider == "gw"    # local cooled → next reachable level
+
+
+def test_smart_memory_write_routes_to_ladder_when_no_local(monkeypatch):
+    """No local model reachable: smart_memory_write must route through the ladder
+    (model=None + its op) instead of returning ``no_local_model``."""
+    import skill_hub.embeddings as emb
+
+    monkeypatch.setattr(emb, "ollama_available", lambda *a, **k: False)
+    captured: dict = {}
+
+    def fake_generate(prompt, *, model, timeout, temperature=0.2, num_predict=512, op=""):
+        captured["model"] = model
+        captured["op"] = op
+        return ('{"filename":"x.md","name":"X","description":"d","type":"project",'
+                '"content":"a sufficiently long memory entry describing the work done",'
+                '"key_entities":["work"],"detail_score":0.9}')
+
+    monkeypatch.setattr(emb, "_generate", fake_generate)
+    out = emb.smart_memory_write("session content here", "")
+
+    assert captured["model"] is None                 # routed via the ladder, not a pinned local model
+    assert captured["op"] == "smart_memory_write"
+    assert out["escalate"] is False                  # ladder produced a usable entry → no Claude escalation
+
+
+# --- gateway dispatch correctness ------------------------------------------
+
+def test_litellm_model_prefixes_openai_compatible_only():
+    from skill_hub.llm.litellm_adapter import _litellm_model
+    # OpenAI-compatible gateway must route via the ``openai/`` provider.
+    assert _litellm_model("openai_compatible", "anthropic/claude-haiku-4-5") == "openai/anthropic/claude-haiku-4-5"
+    assert _litellm_model("openai_compatible", "zai-org/glm-4.7-maas") == "openai/zai-org/glm-4.7-maas"
+    assert _litellm_model("openai_compatible", "openai/already") == "openai/already"   # idempotent
+    # Native providers keep their own routing prefix.
+    assert _litellm_model("anthropic", "anthropic/claude-haiku-4-5") == "anthropic/claude-haiku-4-5"
+    assert _litellm_model("ollama", "ollama/qwen") == "ollama/qwen"
+
+
+def test_chat_once_falls_back_to_reasoning_content(monkeypatch, tmp_path):
+    """A reasoning model returns ``content: null`` with text in
+    ``reasoning_content``; the parse must return that rather than fail/empty."""
+    _write_cfg(monkeypatch, tmp_path, _REG)
+    _escalation, litellm_adapter, _provider = _reload_llm_modules()
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            return {"choices": [{"message": {"content": None,
+                                             "reasoning_content": "the answer is 42"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = FakeLitellm()
+    out = p.complete("x", model="ollama/qwen", op="")   # explicit model, no ladder
+    assert out == "the answer is 42"

@@ -27,6 +27,7 @@ class Selection:
     api_key: str | None
     provider: str
     level: str
+    kind: str = ""
 
 
 def reset_cooldowns() -> None:
@@ -50,6 +51,57 @@ def is_cooled(model: str, *, now: float | None = None) -> bool:
 
 def looks_like_quota_error(exc: Exception) -> bool:
     return bool(_QUOTA_RE.search(str(exc)))
+
+
+# --- local (Ollama) reachability ------------------------------------------
+# The local daemon is auto-killed under load. Rather than pin a local model,
+# try it, and fail every call, we probe once (cached) and, when it is down,
+# cool the local level so the ladder skips straight to the first reachable
+# remote level (L0 → Lx). The probe stays out of ``select()`` so the pure
+# selection logic — and its tests — are unaffected.
+_REACH_CACHE: dict[str, tuple[float, bool]] = {}   # "ollama" → (expiry, reachable)
+_REACH_TTL = 30.0
+
+
+def reset_reachability() -> None:
+    _REACH_CACHE.clear()
+
+
+def ollama_daemon_reachable(*, ttl: float = _REACH_TTL) -> bool:
+    """Cheap, cached probe: is the local Ollama daemon answering right now?
+
+    Cached for ``ttl`` seconds so it adds no latency to the common path. A
+    refused connection (daemon stopped/killed under load) returns fast.
+    """
+    now = time.time()
+    hit = _REACH_CACHE.get("ollama")
+    if hit is not None and now < hit[0]:
+        return hit[1]
+    ok = False
+    try:
+        import httpx
+        from ..ollama_client import get_ollama_client
+        base = get_ollama_client().get_api_base(None)
+        if base:
+            httpx.get(f"{base}/api/tags", timeout=2.0)
+            ok = True
+    except Exception:  # noqa: BLE001 - any failure means "treat as down"
+        ok = False
+    _REACH_CACHE["ollama"] = (now + ttl, ok)
+    return ok
+
+
+def cool_ollama(*, seconds: int = 30) -> None:
+    """Put every local (ollama-kind) model on a short cooldown so the ladder
+    skips the dead local level instead of trying and failing on each call.
+
+    A short TTL (default 30s) lets local resume quickly once load drops and the
+    daemon is back, without re-probing on every call in between.
+    """
+    for p in load_registry():
+        if p.kind == "ollama":
+            for m in p.models:
+                mark_cooldown(m.id, seconds=seconds)
 
 
 def _wanted_class(complexity: float) -> str:
@@ -89,7 +141,7 @@ def _walk(wanted: str, exclude: set[str], domain: str | None) -> Selection | Non
         if m is None:
             continue
         return Selection(model=m.id, api_base=api_base, api_key=api_key,
-                         provider=p.name, level=p.level)
+                         provider=p.name, level=p.level, kind=p.kind)
     return None
 
 
