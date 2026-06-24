@@ -669,7 +669,7 @@ def ensure_tooling(path: str, init: bool = False, refresh: bool = True) -> str:
 
 @mcp.tool()
 @requires_capability("none")
-def close_session(summary: str = "") -> str:
+def close_session(summary: str = "", to_wiki: bool = False) -> str:
     """Phase M3 — Close the current session and persist its L1 summary.
 
     - Writes ``summary`` (plus the session's tracked topic) into the
@@ -679,6 +679,9 @@ def close_session(summary: str = "") -> str:
     - Dispatches the ``on_session_end`` plugin hook (A3) so plugins can
       observe the session boundary.
     - Rotates the in-process session id so subsequent work starts fresh.
+    - When ``to_wiki=True``, enqueues the session's memory into the wiki
+      ingest approval queue via ``wiki.scan_and_enqueue`` (no token spend;
+      human approval is still required before distillation).
     """
     import hashlib, time
     log_tool("close_session", summary=summary[:80])
@@ -756,7 +759,27 @@ def close_session(summary: str = "") -> str:
         )
     except Exception:  # noqa: BLE001
         pass
-    return f"Session closed → session:log (new id={_session['id'][:8]})"
+    result_msg = f"Session closed → session:log (new id={_session['id'][:8]})"
+
+    # Optional wiki enqueue — auto-select, NOT auto-spend.  Fail-open.
+    if to_wiki:
+        try:
+            from . import wiki as _wiki_mod
+            from pathlib import Path as _wpath
+            _wiki_root = _wpath(_cfg.get("wiki_root") or
+                                _wpath.home() / ".claude" / "mcp-skill-hub" / "wiki")
+            enq = _wiki_mod.scan_and_enqueue(_store, _wiki_root)
+            result_msg += (
+                f"; wiki queue: scanned={enq.get('scanned', 0)} "
+                f"enqueued pending={enq.get('pending', 0)}"
+            )
+        except Exception as _exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "close_session: wiki enqueue failed: %s", _exc)
+            result_msg += "; wiki enqueue failed (logged)"
+
+    return result_msg
 
 
 # ---------------------------------------------------------------------------
@@ -1985,10 +2008,66 @@ def search_context(
                     "\nUse toggle_plugin() to enable."
                 )
 
-    # 5. Plugin memory (A4 + M2) — vectors from plugin-declared indexes.
+    # 5. Wiki knowledge layer — explicit search with private-access gate.
+    # ``wiki`` is always searched; ``wiki-private`` only for authorized scopes.
+    # Index hits (slug == "index" or rel_path contains "index.md") are promoted
+    # to the top so the curated overview ranks above raw log/source pages.
+    try:
+        from . import wiki as _wiki_mod
+        from pathlib import Path as _wpath
+        _wiki_root = _wpath(_cfg.get("wiki_root") or
+                            _wpath.home() / ".claude" / "mcp-skill-hub" / "wiki")
+        _wiki_auth = _wiki_authorized_scopes()
+        _wiki_ns = ["wiki"] + (["wiki-private"] if _wiki_auth else [])
+        _wiki_hits = _store.search_vectors(
+            query, namespaces=_wiki_ns, top_k=top_k * 2
+        )
+        if _wiki_hits:
+            # Promote index.md / slug=="index" hits to front.
+            def _is_index_hit(r: dict) -> bool:
+                meta = r.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        import json as _json; meta = _json.loads(meta)
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                rel = str(meta.get("rel_path") or "")
+                slug = str(meta.get("slug") or "")
+                return "index" in slug or rel.endswith("index.md")
+            _wiki_hits = sorted(
+                _wiki_hits, key=lambda r: (0 if _is_index_hit(r) else 1, -r.get("score", 0))
+            )
+            wiki_lines = []
+            for r in _wiki_hits[:top_k]:
+                meta = r.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        import json as _json2; meta = _json2.loads(meta)
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                ns = r.get("namespace", "")
+                # Gate: private results only for authorized scopes.
+                if ns == "wiki-private":
+                    scope_project = str(meta.get("projects") or [""])[1:-1].strip("'\"")
+                    if not _wiki_auth:
+                        continue
+                slug = meta.get("slug") or r.get("doc_id", "")
+                title = meta.get("title") or slug
+                rel = meta.get("rel_path") or ""
+                wiki_lines.append(
+                    f"- [[{slug}]] — {title} "
+                    f"(score={r.get('score', 0):.2f}, {ns}, {rel})"
+                )
+            if wiki_lines:
+                parts.append("## Wiki Knowledge\n\n" + "\n".join(wiki_lines))
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 6. Plugin memory (A4 + M2) — vectors from plugin-declared indexes.
     # Includes both the legacy ``memory:<plugin>`` namespace AND any custom
     # indexes a plugin declares via plugin.json ``vector_indexes`` (e.g.
     # ``career:profile``, ``career:narrative``).
+    # Wiki namespaces are excluded here — they are surfaced in section 5 above.
     if include_plugin_memory:
         try:
             # Namespaces that are NOT core ("skills") — everything else is plugin/memory.
@@ -1999,6 +2078,7 @@ def search_context(
                 and not str(r.get("namespace", "")).startswith("user:")
                 and not str(r.get("namespace", "")).startswith("habits:")
                 and not str(r.get("namespace", "")).startswith("session:")
+                and str(r.get("namespace", "")) not in ("wiki", "wiki-private")
             ][:top_k]
             if mem_rows:
                 mem_lines = []
@@ -2013,7 +2093,7 @@ def search_context(
         except Exception:  # noqa: BLE001
             pass
 
-    # 6. User identity + habits — surface only when relevant to the query.
+    # 7. User identity + habits — surface only when relevant to the query.
     try:
         id_rows = _store.search_vectors(
             query, namespaces=["user:identity", "user:preferences"],
@@ -2029,7 +2109,7 @@ def search_context(
     except Exception:  # noqa: BLE001
         pass
 
-    # 7. CodeGraph symbols — injected when the flag is on and an index exists.
+    # 8. CodeGraph symbols — injected when the flag is on and an index exists.
     if _cfg.get("search_context_use_codegraph"):
         try:
             from .codegraph_context import get_context_block, has_codegraph_index
@@ -4741,6 +4821,47 @@ def wiki_status() -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def wiki_lint() -> str:
+    """Deterministic structural lint of the wiki vault. No LLM, stdlib-only.
+
+    Checks three categories:
+    - dangling_edges: wiki_edges whose destination page does not exist.
+    - orphans: pages with no inbound resolved wikilink.
+    - stale_pages: source pages whose underlying file hash differs from the
+      stored source_hash (i.e. the original file changed since last ingest).
+
+    Returns counts and a capped sample of offending slugs for each category.
+    Run wiki_reindex first so the DB reflects the current vault state.
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_lint")
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    result = _wiki.lint(_store, wiki_root)
+    lines = [
+        f"wiki_lint: {result['total_issues']} issue(s) found",
+        f"  dangling_edges={result['dangling_edges']} "
+        f"orphans={result['orphans']} "
+        f"stale_pages={result['stale_pages']}",
+    ]
+    if result["dangling_sample"]:
+        sample = ", ".join(result["dangling_sample"][:10])
+        lines.append(f"  dangling: {sample}")
+    if result["orphan_sample"]:
+        sample = ", ".join(result["orphan_sample"][:10])
+        lines.append(f"  orphans: {sample}")
+    if result["stale_sample"]:
+        sample = ", ".join(result["stale_sample"][:10])
+        lines.append(f"  stale: {sample}")
+    if result["total_issues"] == 0:
+        lines.append("  OK — no structural issues detected")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
 def wiki_migrate(dry_run: bool = True) -> str:
     """Migrate auto-memory markdown files to wiki source pages (mechanical, no LLM).
 
@@ -4850,6 +4971,43 @@ def wiki_query(query: str, top_k: int = 5) -> str:
             f"(type={r['type']}, scope={r['scope']}, score={r['score']})\n"
             f"{r['body'][:1500]}\n(source_refs: {refs})"
         )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("llm")
+def wiki_file_answer(query: str, top_k: int = 5) -> str:
+    """Query the wiki and synthesize a cited answer from the full page bodies.
+
+    Runs a hybrid vector + index.md search (same as wiki_query), reads the
+    full markdown bodies of the top-k hits from disk, then asks the local LLM
+    to produce a concise answer that cites each claim with [[slug]] references.
+
+    Fails gracefully when no LLM is available: returns the raw top hits with
+    a note instead of raising.
+
+    Args:
+        query: Natural-language question to answer from the wiki.
+        top_k: Number of wiki pages to retrieve before synthesis (default 5).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_file_answer", query=query[:80], top_k=top_k)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+    out = _wiki.file_answer(
+        _store, wiki_root, query,
+        top_k=top_k, authorized_scopes=authorized,
+    )
+    lines = [
+        f"wiki_file_answer: {len(out['results'])} source(s) for {query!r}",
+        "",
+        out["answer"],
+    ]
+    if out["sources"]:
+        lines += ["", "Sources: " + ", ".join(f"[[{s}]]" for s in out["sources"])]
     return "\n".join(lines)
 
 

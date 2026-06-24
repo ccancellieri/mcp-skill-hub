@@ -1,0 +1,27 @@
+name: wiki_file_answer
+version: 1
+model_hint: tier_smart
+description: >
+  Synthesize a cited answer from the top-k wiki page bodies retrieved for a
+  query. Cite the page slugs used as sources. Be concise and faithful to the
+  provided pages — do NOT invent facts not present in them.
+template: |
+  You are answering a question using only the wiki pages provided below.
+  Cite every claim with the slug of the page it comes from, formatted as
+  [[slug]]. If the pages do not contain enough information to answer, say so
+  clearly instead of guessing.
+
+  Question: {query}
+
+  Wiki pages (top {top_k} results):
+  ---
+  {pages_block}
+  ---
+
+  Write a concise, accurate answer in plain Markdown. After the answer,
+  include a "Sources" section listing the slugs you cited:
+
+  ## Sources
+  - [[slug-1]]
+  - [[slug-2]]
+  ...

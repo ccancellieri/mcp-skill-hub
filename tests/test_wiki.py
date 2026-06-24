@@ -1737,10 +1737,16 @@ class TestWikiQuery:
         fm.append("---")
         p.write_text("\n".join(fm) + f"\nbody of {slug}\n", encoding="utf-8")
 
-    def test_file_back_stub_raises(self, store, wiki_root):
+    def test_file_back_routes_to_file_answer(self, store, wiki_root):
+        """query(..., _file_back=True) now routes to file_answer (not NotImplementedError)."""
         from skill_hub.wiki import query
-        with pytest.raises(NotImplementedError):
-            query(store, wiki_root, "x", _file_back=True)
+        # No pages/vectors — file_answer returns a graceful no-result dict.
+        store.search_vectors = lambda *a, **k: []
+        out = query(store, wiki_root, "x", _file_back=True)
+        # file_answer shape: has "answer" and "sources" keys.
+        assert "answer" in out
+        assert "sources" in out
+        assert "results" in out
 
     def test_vector_hit_returns_body_and_provenance(self, store, wiki_root, monkeypatch):
         from skill_hub.wiki import query
@@ -1840,3 +1846,267 @@ class TestDashboardWikiCard:
         html = out.read_text()
         assert "Memory Wiki" in html
         assert "ingest queue" in html
+
+
+# ---------------------------------------------------------------------------
+# wiki_lint — deterministic structural lint
+# ---------------------------------------------------------------------------
+
+
+class TestWikiLint:
+    """wiki.lint detects dangling edges, orphans, and stale source hashes."""
+
+    def _stub_embed(self, store):
+        """Patch upsert_vector to avoid needing a real embedding backend."""
+        def fake_upsert(namespace, doc_id, text, metadata=None, **kw):
+            vec = json.dumps([0.1] * 10)
+            store._conn.execute(
+                """
+                INSERT INTO vectors (namespace, doc_id, model, vector, norm,
+                                     level, source, project)
+                VALUES (?, ?, 'stub', ?, 0.1, 'L3', 'wiki', NULL)
+                ON CONFLICT(namespace, doc_id) DO UPDATE SET
+                    vector=excluded.vector, indexed_at=datetime('now')
+                """,
+                (namespace, doc_id, vec),
+            )
+            store._conn.commit()
+        store.upsert_vector = fake_upsert
+
+    def test_clean_wiki_returns_zero_issues(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/alpha.md", """\
+---
+id: alpha
+slug: alpha
+title: Alpha
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+See [[beta]] for details.
+""")
+        _write_page(wiki_root, "pages/entity/beta.md", """\
+---
+id: beta
+slug: beta
+title: Beta
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+[[alpha]] refers to this.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        # beta is linked by alpha (resolved edge), so beta has 1 inbound.
+        # alpha is linked by beta, so alpha has 1 inbound.
+        assert result["dangling_edges"] == 0, result
+        assert result["stale_pages"] == 0, result
+        assert result["total_issues"] == result["orphans"]  # orphans only
+
+    def test_detects_dangling_edge(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/lone.md", """\
+---
+id: lone
+slug: lone
+title: Lone
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+See [[nonexistent-page]] for info.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        assert result["dangling_edges"] >= 1
+        assert any("nonexistent-page" in s for s in result["dangling_sample"])
+
+    def test_detects_orphan(self, store, wiki_root):
+        from skill_hub.wiki import reindex, lint
+        _write_page(wiki_root, "pages/entity/island.md", """\
+---
+id: island
+slug: island
+title: Island
+type: entity
+projects:
+  - p
+scope: public
+created: 2026-01-01
+updated: 2026-01-01
+---
+No links in or out.
+""")
+        self._stub_embed(store)
+        with patch("skill_hub.wiki._check_dim_guard"):
+            reindex(store, wiki_root, dry_run=False)
+
+        result = lint(store, wiki_root)
+        assert result["orphans"] >= 1
+        assert "island" in result["orphan_sample"]
+
+    def test_detects_stale_source_hash(self, store, wiki_root, tmp_path):
+        from skill_hub.wiki import lint
+        # Write a source file.
+        src = tmp_path / "original.md"
+        src.write_text("# Original\nContent v1.\n", encoding="utf-8")
+        import hashlib
+        v1_hash = hashlib.sha256(b"# Original\nContent v1.\n").hexdigest()[:16]
+        # Write a wiki page referencing it with the correct hash initially.
+        _write_page(wiki_root, "pages/source/orig.md", f"""\
+---
+id: orig
+slug: orig
+title: Orig
+type: source
+projects:
+  - p
+scope: public
+source_refs:
+  - {src}
+source_hash: {v1_hash}
+created: 2026-01-01
+updated: 2026-01-01
+---
+Content.
+""")
+        # Now overwrite the source file with new content.
+        src.write_text("# Original\nContent v2 changed.\n", encoding="utf-8")
+
+        result = lint(store, wiki_root)
+        assert result["stale_pages"] >= 1
+        assert "orig" in result["stale_sample"]
+
+    def test_empty_wiki_all_zeros(self, store, wiki_root):
+        from skill_hub.wiki import lint
+        result = lint(store, wiki_root)
+        assert result["dangling_edges"] == 0
+        assert result["orphans"] == 0
+        assert result["stale_pages"] == 0
+        assert result["total_issues"] == 0
+
+    def test_wiki_lint_in_tier_registry(self):
+        from skill_hub.capabilities import TIER_REGISTRY
+        assert "wiki_lint" in TIER_REGISTRY
+        assert TIER_REGISTRY["wiki_lint"] == "none"
+
+    def test_wiki_lint_toolspec_hard_db(self):
+        from skill_hub.capabilities import TOOLS, BACKEND_DB
+        spec = next((s for s in TOOLS if s.name == "wiki_lint"), None)
+        assert spec is not None
+        assert BACKEND_DB in spec.hard
+
+
+# ---------------------------------------------------------------------------
+# wiki_file_answer — query-file-back with LLM synthesis
+# ---------------------------------------------------------------------------
+
+
+class TestWikiFileAnswer:
+    """file_answer retrieves top-k pages then calls LLM; fails open without LLM."""
+
+    def _page(self, wiki_root, rel, slug, title, body="Body text."):
+        content = (
+            f"---\nid: {slug}\nslug: {slug}\ntitle: {title}\ntype: entity\n"
+            f"projects:\n  - p\nscope: public\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n{body}\n"
+        )
+        _write_page(wiki_root, rel, content)
+
+    def _stub_search(self, store, hits):
+        """Patch search_vectors to return preset hits."""
+        store.search_vectors = lambda *a, **k: hits
+
+    def test_returns_llm_answer_with_sources(self, store, wiki_root):
+        from skill_hub.wiki import file_answer
+        from skill_hub import embeddings as _emb
+
+        self._page(wiki_root, "pages/entity/alpha.md", "alpha", "Alpha",
+                   body="Alpha is the first letter.")
+        hits = [{"metadata": {"slug": "alpha", "rel_path": "pages/entity/alpha.md"},
+                 "score": 0.9}]
+        self._stub_search(store, hits)
+
+        class _FakeProv:
+            def complete(self, *a, **kw):
+                return "Alpha is the first Greek letter. [[alpha]]\n\n## Sources\n- [[alpha]]"
+
+        with patch.object(_emb, "get_provider", return_value=_FakeProv()):
+            out = file_answer(store, wiki_root, "What is alpha?", top_k=1)
+
+        assert out["query"] == "What is alpha?"
+        assert "alpha" in out["sources"]
+        assert "alpha" in out["answer"].lower()
+
+    def test_fails_open_when_no_llm(self, store, wiki_root):
+        from skill_hub.wiki import file_answer
+        from skill_hub import embeddings as _emb
+
+        self._page(wiki_root, "pages/entity/beta.md", "beta", "Beta",
+                   body="Beta is the second letter.")
+        hits = [{"metadata": {"slug": "beta", "rel_path": "pages/entity/beta.md"},
+                 "score": 0.8}]
+        self._stub_search(store, hits)
+
+        class _BrokenProv:
+            def complete(self, *a, **kw):
+                raise RuntimeError("no LLM")
+
+        with patch.object(_emb, "get_provider", return_value=_BrokenProv()):
+            out = file_answer(store, wiki_root, "What is beta?", top_k=1)
+
+        # Must not raise; raw hits are in the answer.
+        assert out["query"] == "What is beta?"
+        assert out["sources"] == ["beta"]
+        assert "beta" in out["answer"].lower() or "LLM unavailable" in out["answer"]
+
+    def test_no_hits_returns_empty_answer(self, store, wiki_root):
+        from skill_hub.wiki import file_answer
+
+        store.search_vectors = lambda *a, **k: []
+
+        out = file_answer(store, wiki_root, "nonexistent topic", top_k=3)
+        assert out["results"] == []
+        assert out["sources"] == []
+        assert "No wiki pages" in out["answer"]
+
+    def test_file_back_seam_calls_file_answer(self, store, wiki_root):
+        """Calling query(..., _file_back=True) routes to file_answer."""
+        from skill_hub.wiki import query
+        from skill_hub import embeddings as _emb
+
+        store.search_vectors = lambda *a, **k: []
+
+        # When there are no hits, file_answer returns a graceful no-result dict.
+        out = query(store, wiki_root, "anything", _file_back=True)
+        assert "answer" in out  # file_answer shape, not query shape
+        assert "sources" in out
+
+    def test_wiki_file_answer_in_tier_registry(self):
+        from skill_hub.capabilities import TIER_REGISTRY
+        assert "wiki_file_answer" in TIER_REGISTRY
+        assert TIER_REGISTRY["wiki_file_answer"] == "llm"
+
+    def test_wiki_file_answer_toolspec_deps(self):
+        from skill_hub.capabilities import TOOLS, BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM
+        spec = next((s for s in TOOLS if s.name == "wiki_file_answer"), None)
+        assert spec is not None
+        assert BACKEND_DB in spec.hard
+        assert BACKEND_EMBED in spec.hard
+        assert BACKEND_REASON_LLM in spec.hard
