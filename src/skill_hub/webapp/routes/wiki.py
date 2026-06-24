@@ -1,7 +1,7 @@
 """Wiki browse and search routes."""
 from __future__ import annotations
 
-import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +9,27 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 router = APIRouter()
+
+# Slug = kebab tokens, optionally '/'-segmented. Never contains '..' — used to
+# reject path-traversal attempts before any filesystem lookup.
+_SLUG_RE = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*")
+
+# Tags/attributes permitted in rendered page-body HTML (bleach allow-list).
+_MD_ALLOWED_TAGS = [
+    "p", "br", "hr", "span", "div", "blockquote",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "b", "i", "u", "s", "del", "code", "pre",
+    "ul", "ol", "li", "a", "img",
+    "table", "thead", "tbody", "tr", "th", "td",
+]
+_MD_ALLOWED_ATTRS = {
+    "a": ["href", "title"],
+    "img": ["src", "alt", "title"],
+    "code": ["class"],
+    "span": ["class"],
+    "th": ["align"],
+    "td": ["align"],
+}
 
 
 def _wiki_root() -> Path:
@@ -113,6 +134,16 @@ def wiki_page(request: Request, slug: str) -> Any:
     templates = request.app.state.templates
     authorized = _authorized_scopes()
 
+    # Reject slugs that could escape the vault (path traversal) before lookup.
+    if not _SLUG_RE.fullmatch(slug) or ".." in slug.split("/"):
+        return templates.TemplateResponse(
+            request,
+            "wiki_page.html",
+            {"active_tab": "wiki", "page": None, "slug": slug,
+             "outbound": [], "authorized": authorized},
+            status_code=404,
+        )
+
     from skill_hub import wiki as _wiki
     page = _wiki._find_page_by_slug(store, _wiki_root(), slug)
 
@@ -172,13 +203,27 @@ def wiki_page(request: Request, slug: str) -> Any:
 
 
 def _render_md(text: str) -> str:
-    """Convert markdown to HTML — uses markdown lib if available, else escaped pre."""
+    """Render a page body to HTML for a ``| safe`` template.
+
+    Page bodies are not fully trusted (some are ingested from external
+    sources such as GitHub Discussions), so this never emits unsanitized
+    HTML. Rich markdown is rendered only when both the ``markdown`` renderer
+    and the ``bleach`` sanitizer are installed; otherwise the body is escaped
+    into a ``<pre>`` block.
+    """
+    import html
     try:
         import markdown
-        return markdown.markdown(
-            text,
-            extensions=["fenced_code", "tables", "nl2br"],
-        )
     except ImportError:
-        import html
         return "<pre>" + html.escape(text) + "</pre>"
+    rendered = markdown.markdown(
+        text, extensions=["fenced_code", "tables", "nl2br"]
+    )
+    try:
+        import bleach
+    except ImportError:
+        # No sanitizer installed — do not pass raw HTML to a |safe template.
+        return "<pre>" + html.escape(text) + "</pre>"
+    return bleach.clean(
+        rendered, tags=_MD_ALLOWED_TAGS, attributes=_MD_ALLOWED_ATTRS, strip=True
+    )

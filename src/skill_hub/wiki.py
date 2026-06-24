@@ -887,7 +887,15 @@ def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | Non
     candidates = [wiki_root / "pages" / "source" / f"{slug}.md"]
     candidates += list((wiki_root / "pages").glob(f"*/{slug}.md"))
     candidates += list((wiki_root / "_private").glob(f"*/{slug}.md"))
+    root_resolved = wiki_root.resolve()
     for path in candidates:
+        # Containment guard: never read a file that resolves outside the vault
+        # (defends against path traversal via a crafted slug, e.g. "../..").
+        try:
+            if not path.resolve().is_relative_to(root_resolved):
+                continue
+        except (OSError, ValueError):
+            continue
         if path.is_file():
             page = _load_page(path)
             if page is not None and page.slug == slug:
