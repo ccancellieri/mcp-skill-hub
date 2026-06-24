@@ -48,7 +48,6 @@ def _isolated_config(tmp_path, monkeypatch):
     from skill_hub import config as cfg
 
     monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
-    cfg.reset_vault_migration_flag()
     yield
 
 

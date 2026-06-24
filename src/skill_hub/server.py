@@ -3081,13 +3081,6 @@ def status(section: str = "summary") -> str:
         except Exception as exc:
             lines.append(f"DB:              error — {exc}")
 
-        try:
-            from . import vault as _vault_mod
-            _v = _vault_mod.Vault.detect(cfg.get("vault_backend"))
-            lines.append(f"Vault backend:   {_v.backend}")
-        except Exception as exc:
-            lines.append(f"Vault backend:   error — {exc}")
-
     # --- Context section ---
     if section in ("context", "full"):
         lines.append("\n=== Context Usage (estimated) ===\n")

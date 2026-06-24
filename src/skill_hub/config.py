@@ -37,14 +37,7 @@ _DEFAULTS = {
     "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
     "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
     # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
-    "voyage_api_key": None,  # legacy literal; prefer voyage_api_key_ref + vault
-    "voyage_api_key_ref": None,  # vault ref name; populated by vault migration
-    "anthropic_api_key_ref": None,  # vault ref name; populated by vault migration
-
-    # Credential vault — 3-tier (keyring → file → env). When unset (None),
-    # the vault auto-detects A → B → C at startup. Set to "env" to force
-    # tier C (env-var pass-through) and skip migration.
-    "vault_backend": None,
+    "voyage_api_key": None,  # set in env or config; no vault indirection
     "voyage_embed_model": "voyage/voyage-3-lite",
     "sentence_transformers_model": "all-MiniLM-L6-v2",
 
@@ -806,12 +799,8 @@ def _merge_defaults(cfg: dict) -> dict:
     return cfg
 
 
-_VAULT_MIGRATED_FLAG = False
-
-
 def load_config() -> dict:
     """Load config from file, fold legacy keys, and fill defaults."""
-    global _VAULT_MIGRATED_FLAG
     config: dict = {}
     if CONFIG_PATH.exists():
         try:
@@ -820,26 +809,7 @@ def load_config() -> dict:
             config = {}
     config = _migrate_legacy(config)
     config = _merge_defaults(config)
-
-    # One-shot vault migration of literal secrets (idempotent — second run
-    # is a no-op once *_ref fields are in place).
-    if not _VAULT_MIGRATED_FLAG:
-        _VAULT_MIGRATED_FLAG = True
-        try:
-            from . import vault as _vault_mod
-            v = _vault_mod.Vault.detect(config.get("vault_backend"))
-            _vault_mod.migrate_config_secrets(config, v, save_fn=save_config)
-        except Exception:
-            # Never block load on vault errors.
-            pass
-
     return config
-
-
-def reset_vault_migration_flag() -> None:
-    """Test helper — clear the one-shot migration guard."""
-    global _VAULT_MIGRATED_FLAG
-    _VAULT_MIGRATED_FLAG = False
 
 
 def save_config(config: dict) -> None:
