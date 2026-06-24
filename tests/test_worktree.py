@@ -65,6 +65,61 @@ def test_resolve_project_finds_repo(tmp_repo: Path):
     assert found == tmp_repo
 
 
+# ---------------------------------------------------------------------------
+# provision_codegraph — seed a worktree with a codegraph index (G6)
+# ---------------------------------------------------------------------------
+
+def test_provision_codegraph_copies_parent_and_syncs(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".codegraph").mkdir(parents=True)
+    (repo / ".codegraph" / "index.db").write_text("INDEX")
+    wt_path = tmp_path / "wt"
+    wt_path.mkdir()
+
+    monkeypatch.setattr(wt.shutil, "which", lambda b: "/usr/bin/codegraph")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wt.subprocess, "run", fake_run)
+
+    ev = wt.provision_codegraph(repo, wt_path)
+    assert ev["status"] == "ok" and ev["strategy"] == "copy+sync"
+    # Index was copied into the worktree...
+    assert (wt_path / ".codegraph" / "index.db").read_text() == "INDEX"
+    # ...and `codegraph sync` was invoked on the worktree path.
+    assert any(c[:2] == ["/usr/bin/codegraph", "sync"] for c in calls)
+
+
+def test_provision_codegraph_skips_without_binary(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".codegraph").mkdir(parents=True)
+    monkeypatch.setattr(wt.shutil, "which", lambda b: None)
+    ev = wt.provision_codegraph(repo, tmp_path / "wt")
+    assert ev["status"] == "skip" and ev["strategy"] == "no_binary"
+
+
+def test_provision_codegraph_skips_without_parent_index(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(wt.shutil, "which", lambda b: "/usr/bin/codegraph")
+    ev = wt.provision_codegraph(repo, tmp_path / "wt")
+    assert ev["status"] == "skip" and ev["strategy"] == "no_parent_index"
+
+
+def test_provision_codegraph_respects_disable_flag(tmp_path, monkeypatch):
+    from skill_hub import config as cfg
+    monkeypatch.setattr(cfg, "load_config",
+                        lambda: {"worktree": {"codegraph_provision": False}})
+    repo = tmp_path / "repo"
+    (repo / ".codegraph").mkdir(parents=True)
+    monkeypatch.setattr(wt.shutil, "which", lambda b: "/usr/bin/codegraph")
+    ev = wt.provision_codegraph(repo, tmp_path / "wt")
+    assert ev["status"] == "skip" and ev["strategy"] == "disabled"
+
+
 def test_resolve_project_invalid_name():
     with pytest.raises(wt.WorktreeError, match="invalid project name"):
         wt.resolve_project("../etc/passwd")

@@ -713,6 +713,12 @@ _DEFAULTS["system_health"] = _SYSTEM_HEALTH_DEFAULTS
 _WORKTREE_DEFAULTS = {
     "repo_roots":   ["~/work/code"],
     "default_mode": "terminal",          # terminal | tmux | background
+    # Seed each new worktree with a codegraph index (copy the parent repo's index,
+    # then `codegraph sync` to the branch state) so fanned-out agents use codegraph
+    # instead of grep on complex code. The index lives in the worktree dir, so
+    # teardown removes it and frees the disk.
+    "codegraph_provision": True,
+    "codegraph_provision_timeout": 180,  # max seconds for the copy+sync step
 }
 _DEFAULTS["worktree"] = _WORKTREE_DEFAULTS
 

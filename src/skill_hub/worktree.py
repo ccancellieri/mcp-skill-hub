@@ -251,6 +251,95 @@ def _registered_worktrees(repo: Path) -> dict[str, str]:
     return result
 
 
+def _codegraph_binary() -> Optional[str]:
+    return shutil.which("codegraph")
+
+
+def _emit_codegraph_event(payload: dict) -> None:
+    """Best-effort telemetry for worktree codegraph provisioning. Never raises."""
+    try:
+        from .store import get_store
+
+        get_store().append_event(
+            session_id="", kind="codegraph_provision",
+            payload=payload, tool_name=payload.get("strategy"),
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never break worktree creation
+        pass
+    try:
+        from .activity_log import append_line
+
+        append_line(
+            f"CODEGRAPH worktree {payload.get('worktree', '?')} "
+            f"{payload.get('status')}/{payload.get('strategy')} ({payload.get('ms')}ms)"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def provision_codegraph(repo: Path, wt_path: Path) -> dict:
+    """Seed a fresh worktree with a codegraph index so fanned-out agents use
+    codegraph instead of grep on complex code.
+
+    Fastest accurate path: copy the parent repo's existing index into the worktree
+    (avoids a full re-index), then ``codegraph sync`` to bring it to the worktree's
+    branch state. When the parent has no index, skip with a hint (a full init in
+    every worktree is too costly to do silently). Best-effort, bounded, and never
+    raises. The index lives inside the worktree, so teardown frees the disk.
+
+    Returns a telemetry dict ``{status, strategy, ms, detail, worktree}``.
+    """
+    t0 = time.time()
+
+    def _done(status: str, strategy: str, detail: str = "") -> dict:
+        ev = {
+            "status": status, "strategy": strategy,
+            "ms": int((time.time() - t0) * 1000), "detail": detail,
+            "worktree": wt_path.name,
+        }
+        _emit_codegraph_event(ev)
+        return ev
+
+    try:
+        from . import config as _cfg
+        wcfg = _cfg.load_config().get("worktree") or {}
+    except Exception:  # noqa: BLE001
+        wcfg = {}
+    if not wcfg.get("codegraph_provision", True):
+        return _done("skip", "disabled")
+
+    cg = _codegraph_binary()
+    if not cg:
+        return _done("skip", "no_binary", "codegraph not on PATH")
+
+    src = repo / ".codegraph"
+    dst = wt_path / ".codegraph"
+    if dst.exists():
+        return _done("exists", "noop")
+    if not src.is_dir():
+        return _done("skip", "no_parent_index",
+                     "parent repo has no .codegraph; run `codegraph init` there first")
+
+    try:
+        timeout = int(wcfg.get("codegraph_provision_timeout", 180))
+    except Exception:  # noqa: BLE001
+        timeout = 180
+
+    try:
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+        rc = subprocess.run(
+            [cg, "sync", str(wt_path)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if rc.returncode == 0:
+            return _done("ok", "copy+sync")
+        return _done("partial", "copy+sync", f"sync rc={rc.returncode}")
+    except subprocess.TimeoutExpired:
+        return _done("timeout", "copy+sync", f">{timeout}s")
+    except Exception as e:  # noqa: BLE001
+        return _done("error", "copy+sync", str(e)[:120])
+
+
 def ensure_worktree(
     project: str,
     name: str,
@@ -287,6 +376,9 @@ def ensure_worktree(
             _git(repo, "worktree", "add", wt_path_str, branch)
         else:
             _git(repo, "worktree", "add", wt_path_str, "-b", branch)
+        # Seed a codegraph index so agents in this worktree use codegraph, not
+        # grep. Best-effort: never blocks worktree creation on failure.
+        provision_codegraph(repo, wt_path)
 
     pid_file = str(wt_path / ".claude" / "session.pid")
     log_path = str(wt_path / ".claude" / "session.log")
