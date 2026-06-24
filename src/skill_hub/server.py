@@ -669,7 +669,7 @@ def ensure_tooling(path: str, init: bool = False, refresh: bool = True) -> str:
 
 @mcp.tool()
 @requires_capability("none")
-def close_session(summary: str = "") -> str:
+def close_session(summary: str = "", to_wiki: bool = False) -> str:
     """Phase M3 — Close the current session and persist its L1 summary.
 
     - Writes ``summary`` (plus the session's tracked topic) into the
@@ -679,6 +679,9 @@ def close_session(summary: str = "") -> str:
     - Dispatches the ``on_session_end`` plugin hook (A3) so plugins can
       observe the session boundary.
     - Rotates the in-process session id so subsequent work starts fresh.
+    - When ``to_wiki=True``, enqueues the session's memory into the wiki
+      ingest approval queue via ``wiki.scan_and_enqueue`` (no token spend;
+      human approval is still required before distillation).
     """
     import hashlib, time
     log_tool("close_session", summary=summary[:80])
@@ -756,7 +759,27 @@ def close_session(summary: str = "") -> str:
         )
     except Exception:  # noqa: BLE001
         pass
-    return f"Session closed → session:log (new id={_session['id'][:8]})"
+    result_msg = f"Session closed → session:log (new id={_session['id'][:8]})"
+
+    # Optional wiki enqueue — auto-select, NOT auto-spend.  Fail-open.
+    if to_wiki:
+        try:
+            from . import wiki as _wiki_mod
+            from pathlib import Path as _wpath
+            _wiki_root = _wpath(_cfg.get("wiki_root") or
+                                _wpath.home() / ".claude" / "mcp-skill-hub" / "wiki")
+            enq = _wiki_mod.scan_and_enqueue(_store, _wiki_root)
+            result_msg += (
+                f"; wiki queue: scanned={enq.get('scanned', 0)} "
+                f"enqueued pending={enq.get('pending', 0)}"
+            )
+        except Exception as _exc:  # noqa: BLE001
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "close_session: wiki enqueue failed: %s", _exc)
+            result_msg += "; wiki enqueue failed (logged)"
+
+    return result_msg
 
 
 # ---------------------------------------------------------------------------
