@@ -8,3 +8,4 @@ build/
 .claude/
 .memory/
 .worktrees/
+.codegraph/
