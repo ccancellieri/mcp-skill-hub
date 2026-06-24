@@ -42,7 +42,7 @@ def is_cooled(model: str, *, now: float | None = None) -> bool:
     exp = _COOLDOWN.get(model)
     if exp is None:
         return False
-    if (now or time.time()) >= exp:
+    if (now if now is not None else time.time()) >= exp:
         _COOLDOWN.pop(model, None)
         return False
     return True

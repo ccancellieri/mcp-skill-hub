@@ -103,3 +103,13 @@ def test_quota_error_detection():
     assert escalation.looks_like_quota_error(Exception("HTTP 429 Too Many Requests"))
     assert escalation.looks_like_quota_error(Exception("insufficient_quota"))
     assert not escalation.looks_like_quota_error(Exception("connection refused"))
+
+
+def test_cooldown_expires_and_is_evicted():
+    import time
+    escalation.reset_cooldowns()
+    escalation.mark_cooldown("m", seconds=1)
+    assert escalation.is_cooled("m") is True
+    # A `now` past the expiry returns False and evicts the entry.
+    assert escalation.is_cooled("m", now=time.time() + 2) is False
+    assert "m" not in escalation._COOLDOWN
