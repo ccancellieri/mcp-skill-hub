@@ -275,7 +275,7 @@ def _check_embedding_backends_handler() -> None:
 
     available = _emb.embed_available()
     priority = _cfg.get("embedding_backend_priority") or [
-        "voyage", "ollama", "sentence_transformers"
+        "ollama", "sentence_transformers"
     ]
     backend = priority[0] if isinstance(priority, list) and priority else "unknown"
     if available:

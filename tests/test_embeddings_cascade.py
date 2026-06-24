@@ -1,4 +1,4 @@
-"""Tests for embed() cascade: Voyage → Ollama → SentenceTransformers."""
+"""Tests for embed() cascade: Ollama → SentenceTransformers."""
 
 from __future__ import annotations
 
@@ -28,103 +28,53 @@ def _make_provider_mock(vec=_FAKE_VEC):
 
 
 # ---------------------------------------------------------------------------
-# embed() — voyage succeeds (first in priority)
+# embed() — ollama succeeds (first in priority)
 # ---------------------------------------------------------------------------
 
 
-def test_embed_voyage_first_success(monkeypatch):
-    """embed() returns result from voyage when VOYAGE_API_KEY is set."""
-    monkeypatch.setenv("VOYAGE_API_KEY", "vk-test")
-
-    provider_mock = _make_provider_mock()
-
-    with patch("skill_hub.embeddings.get_provider", return_value=provider_mock), \
-         patch("skill_hub.embeddings._cfg") as cfg_mock:
-
-        cfg_mock.get.side_effect = lambda k: {
-            "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-            "voyage_api_key": None,
-            "voyage_embed_model": "voyage/voyage-3-lite",
-        }.get(k)
-
-        from skill_hub.embeddings import embed
-        result = embed("hello world")
-
-    assert result == _FAKE_VEC
-    provider_mock.embed.assert_called_once()
-    call_kwargs = provider_mock.embed.call_args
-    assert "voyage/voyage-3-lite" in str(call_kwargs)
-
-
-# ---------------------------------------------------------------------------
-# embed() — voyage unavailable → falls back to ollama
-# ---------------------------------------------------------------------------
-
-
-def test_embed_falls_back_to_ollama_when_voyage_key_missing(monkeypatch):
-    """embed() skips voyage (no key) and succeeds via ollama."""
-    # Ensure VOYAGE_API_KEY is absent
-    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-
+def test_embed_ollama_first_success(monkeypatch):
+    """embed() returns result from ollama when an endpoint is healthy."""
     provider_mock = _make_provider_mock()
 
     ollama_client_mock = MagicMock()
     ollama_client_mock.get_api_base.return_value = "http://localhost:11434"
 
     with patch("skill_hub.embeddings.get_provider", return_value=provider_mock), \
-         patch("skill_hub.embeddings._cfg") as cfg_mock, \
-         patch("skill_hub.embeddings.get_ollama_client" if hasattr(
-             sys.modules.get("skill_hub.embeddings"), "get_ollama_client"
-         ) else "skill_hub.ollama_client.get_ollama_client",
-               return_value=ollama_client_mock, create=True):
+         patch("skill_hub.embeddings._cfg") as cfg_mock:
 
         cfg_mock.get.side_effect = lambda k: {
-            "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
-            "voyage_api_key": None,
-            "voyage_embed_model": "voyage/voyage-3-lite",
+            "embedding_backend_priority": ["ollama", "sentence_transformers"],
+            "embed_model": "nomic-embed-text",
             "sentence_transformers_model": "all-MiniLM-L6-v2",
         }.get(k)
 
-        # Patch _embed_voyage to raise (no key), _embed_ollama to succeed
         import skill_hub.embeddings as emb
 
-        original_voyage = emb._embed_voyage
         original_ollama = emb._embed_ollama
-
-        def fake_voyage(text, *, timeout=15.0):
-            raise RuntimeError("VOYAGE_API_KEY not set")
 
         def fake_ollama(text, *, model, timeout=15.0):
             return _FAKE_VEC
 
-        emb._embed_voyage = fake_voyage
         emb._embed_ollama = fake_ollama
         try:
-            result = emb.embed("hello")
+            result = emb.embed("hello world")
         finally:
-            emb._embed_voyage = original_voyage
             emb._embed_ollama = original_ollama
 
     assert result == _FAKE_VEC
 
 
 # ---------------------------------------------------------------------------
-# embed() — voyage + ollama fail → falls back to sentence_transformers
+# embed() — ollama unavailable → falls back to sentence_transformers
 # ---------------------------------------------------------------------------
 
 
 def test_embed_falls_back_to_sentence_transformers(monkeypatch):
-    """embed() uses sentence_transformers when both voyage and ollama fail."""
-    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-
+    """embed() uses sentence_transformers when ollama fails."""
     import skill_hub.embeddings as emb
 
-    original_voyage = emb._embed_voyage
     original_ollama = emb._embed_ollama
     original_st = emb._embed_sentence_transformers
-
-    def fake_voyage(text, *, timeout=15.0):
-        raise RuntimeError("VOYAGE_API_KEY not set")
 
     def fake_ollama(text, *, model, timeout=15.0):
         raise RuntimeError("no healthy Ollama endpoint available")
@@ -132,19 +82,17 @@ def test_embed_falls_back_to_sentence_transformers(monkeypatch):
     def fake_st(text):
         return [0.9, 0.8, 0.7]
 
-    emb._embed_voyage = fake_voyage
     emb._embed_ollama = fake_ollama
     emb._embed_sentence_transformers = fake_st
 
     try:
         with patch("skill_hub.embeddings._cfg") as cfg_mock:
             cfg_mock.get.side_effect = lambda k: {
-                "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+                "embedding_backend_priority": ["ollama", "sentence_transformers"],
             }.get(k)
 
             result = emb.embed("hello")
     finally:
-        emb._embed_voyage = original_voyage
         emb._embed_ollama = original_ollama
         emb._embed_sentence_transformers = original_st
 
@@ -158,16 +106,10 @@ def test_embed_falls_back_to_sentence_transformers(monkeypatch):
 
 def test_embed_raises_when_all_backends_fail(monkeypatch):
     """embed() raises RuntimeError listing all backend errors when all fail."""
-    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
-
     import skill_hub.embeddings as emb
 
-    original_voyage = emb._embed_voyage
     original_ollama = emb._embed_ollama
     original_st = emb._embed_sentence_transformers
-
-    def fake_voyage(text, *, timeout=15.0):
-        raise RuntimeError("VOYAGE_API_KEY not set")
 
     def fake_ollama(text, *, model, timeout=15.0):
         raise RuntimeError("no healthy Ollama endpoint available")
@@ -175,20 +117,18 @@ def test_embed_raises_when_all_backends_fail(monkeypatch):
     def fake_st(text):
         raise RuntimeError("sentence_transformers not installed")
 
-    emb._embed_voyage = fake_voyage
     emb._embed_ollama = fake_ollama
     emb._embed_sentence_transformers = fake_st
 
     try:
         with patch("skill_hub.embeddings._cfg") as cfg_mock:
             cfg_mock.get.side_effect = lambda k: {
-                "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+                "embedding_backend_priority": ["ollama", "sentence_transformers"],
             }.get(k)
 
             with pytest.raises(RuntimeError, match="all embedding backends failed"):
                 emb.embed("hello")
     finally:
-        emb._embed_voyage = original_voyage
         emb._embed_ollama = original_ollama
         emb._embed_sentence_transformers = original_st
 

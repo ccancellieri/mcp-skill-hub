@@ -1428,7 +1428,7 @@ class SkillStore:
                 "description": "All Ollama, fastest on a warm local machine",
                 "config_json": {
                     "classify_backend": "ollama_qwen",
-                    "embedding_backend_priority": ["ollama", "voyage", "sentence_transformers"],
+                    "embedding_backend_priority": ["ollama", "sentence_transformers"],
                     "synthesis_backend": "ollama",
                     "rewrite_backend": "none",
                     "pipeline_tier1_timeout_ms": 300,
@@ -1439,10 +1439,10 @@ class SkillStore:
             },
             {
                 "name": "cheap-cloud",
-                "description": "Haiku + Voyage, no Ollama needed (~$0.005/conv)",
+                "description": "Haiku + SentenceTransformers, no Ollama needed (~$0.005/conv)",
                 "config_json": {
                     "classify_backend": "haiku_json_then_yake",
-                    "embedding_backend_priority": ["voyage", "sentence_transformers"],
+                    "embedding_backend_priority": ["sentence_transformers"],
                     "synthesis_backend": "haiku",
                     "rewrite_backend": "none",
                     "pipeline_tier1_timeout_ms": 500,
@@ -1456,7 +1456,7 @@ class SkillStore:
                 "description": "Sonnet everywhere (~$0.02/conv)",
                 "config_json": {
                     "classify_backend": "haiku_json",
-                    "embedding_backend_priority": ["voyage"],
+                    "embedding_backend_priority": ["sentence_transformers"],
                     "synthesis_backend": "sonnet",
                     "rewrite_backend": "sonnet",
                     "pipeline_tier1_timeout_ms": 1000,
@@ -1482,10 +1482,10 @@ class SkillStore:
             },
             {
                 "name": "balanced",
-                "description": "Haiku L1+L3, Voyage L2, Sonnet L4 only when complex — recommended default",
+                "description": "Haiku L1+L3, Ollama L2, Sonnet L4 only when complex — recommended default",
                 "config_json": {
                     "classify_backend": "haiku_json_then_yake",
-                    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+                    "embedding_backend_priority": ["ollama", "sentence_transformers"],
                     "synthesis_backend": "haiku",
                     "rewrite_backend": "sonnet",
                     "pipeline_tier1_timeout_ms": 500,

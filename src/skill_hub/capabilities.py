@@ -17,7 +17,6 @@ annotation visible at the call site.
 """
 from __future__ import annotations
 
-import os
 import shutil
 from dataclasses import dataclass
 from typing import Callable, Literal, TypeVar
@@ -32,7 +31,6 @@ BACKEND_OLLAMA = "ollama"             # daemon reachable
 BACKEND_EMBED = "embed"               # any embedding backend usable
 BACKEND_REASON_LLM = "reason_llm"     # configured reason_model installed in Ollama
 BACKEND_SEARXNG = "searxng"           # service enabled + reachable
-BACKEND_VOYAGE = "voyage"             # VOYAGE_API_KEY present
 
 
 @dataclass(frozen=True)
@@ -83,7 +81,7 @@ def _no_llm_mode() -> bool:
 # backends (mcp/db/git/gh/claude_cli/searxng) are independent of the local LLM
 # stack and continue probing normally.
 _NO_LLM_DISABLED_BACKENDS: frozenset[str] = frozenset({
-    "ollama", "embed", "reason_llm", "voyage",
+    "ollama", "embed", "reason_llm",
 })
 
 
@@ -131,18 +129,6 @@ def _check_searxng() -> bool:
         return False
 
 
-def _check_voyage() -> bool:
-    if _no_llm_mode():
-        return False
-    if os.environ.get("VOYAGE_API_KEY"):
-        return True
-    try:
-        from . import config as _cfg
-        return bool(_cfg.get("voyage_api_key"))
-    except Exception:  # noqa: BLE001
-        return False
-
-
 BACKENDS: dict[str, Backend] = {
     b.id: b for b in [
         Backend(BACKEND_MCP, "MCP server",
@@ -158,7 +144,7 @@ BACKENDS: dict[str, Backend] = {
         Backend(BACKEND_OLLAMA, "Ollama daemon",
                 "Install Ollama: https://ollama.com — then `ollama serve`.", _check_ollama),
         Backend(BACKEND_EMBED, "Embedding backend",
-                "Pick one: `ollama pull nomic-embed-text`, set VOYAGE_API_KEY, "
+                "Pick one: `ollama pull nomic-embed-text` "
                 "or `pip install sentence-transformers`.", _check_embed),
         Backend(BACKEND_REASON_LLM, "Reasoning model",
                 "Pull the configured reason_model with Ollama "
@@ -167,8 +153,6 @@ BACKENDS: dict[str, Backend] = {
                 "Enable on /control or run "
                 "`docker compose -f docker/docker-compose.searxng.yml up -d`.",
                 _check_searxng),
-        Backend(BACKEND_VOYAGE, "Voyage embeddings",
-                "Set the VOYAGE_API_KEY environment variable.", _check_voyage),
     ]
 }
 
@@ -404,7 +388,7 @@ def probe_backends() -> dict[str, dict]:
     """Run every backend probe once and return a name-keyed dict.
 
     Issue #6 — when ``no_llm_mode`` is on we *skip the probe* for the LLM-tier
-    backends (embed/ollama/reason_llm/voyage) and report them as missing
+    backends (embed/ollama/reason_llm) and report them as missing
     unconditionally. The non-LLM backends still run their normal probe so
     "DB available?" / "git installed?" remain truthful.
     """

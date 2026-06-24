@@ -334,7 +334,7 @@ def search_skills(
             return (
                 f"<!-- Skill Hub search: query={query!r} top_k={top_k} mode=keyword-fts5 -->\n"
                 f"No matching skills found via keyword fallback. "
-                f"Set VOYAGE_API_KEY, start Ollama with '{EMBED_MODEL}', or install "
+                f"Start Ollama with '{EMBED_MODEL}', or install "
                 f"sentence-transformers for semantic search."
             )
         loaded_ids = [c["id"] for c in fts_hits]
@@ -1938,7 +1938,7 @@ def search_context(
             return (
                 parts[0] + "\n\n"
                 "No relevant context found via keyword fallback. "
-                "Enable an embedding backend (VOYAGE_API_KEY, Ollama, or "
+                "Enable an embedding backend (Ollama or "
                 "sentence-transformers) for semantic search."
             )
         return "\n\n---\n\n".join(parts)

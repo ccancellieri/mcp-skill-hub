@@ -18,9 +18,6 @@ KNOWN_EMBED_DIMS: dict[str, int] = {
     "nomic-embed-text": 768,
     "nomic-embed-text:latest": 768,
     "mxbai-embed-large": 1024,
-    "voyage-3-lite": 512,
-    "voyage-3": 1024,
-    "voyage-2": 1024,
 }
 
 
@@ -123,7 +120,6 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
     """Return embedding vector using the configured backend cascade.
 
     Tries backends in order from config `embedding_backend_priority`:
-    - "voyage": via litellm voyage/voyage-3-lite
     - "ollama": via multi-endpoint OllamaMultiClient
     - "sentence_transformers": via SentenceTransformers (lazy-loaded, CPU)
 
@@ -131,14 +127,12 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
     """
     if model is None:
         model = str(_cfg.get("embed_model") or "nomic-embed-text")
-    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
+    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"])
     errors: list[str] = []
 
     for backend in priority:
         try:
-            if backend == "voyage":
-                vec = _embed_voyage(text, timeout=timeout)
-            elif backend == "ollama":
+            if backend == "ollama":
                 vec = _embed_ollama(text, model=model, timeout=timeout)
             elif backend == "sentence_transformers":
                 vec = _embed_sentence_transformers(text)
@@ -153,23 +147,6 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
             continue
 
     raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
-
-
-def _embed_voyage(text: str, *, timeout: float = 15.0) -> list[float]:
-    """Embed via Voyage AI (voyage-3-lite) using litellm."""
-    import os
-    api_key = os.environ.get("VOYAGE_API_KEY") or str(_cfg.get("voyage_api_key") or "")
-    if not api_key:
-        raise RuntimeError("VOYAGE_API_KEY not set")
-    voyage_model = str(_cfg.get("voyage_embed_model") or "voyage/voyage-3-lite")
-    result = get_provider().embed(text, model=voyage_model, timeout=timeout)
-    if isinstance(result, list) and result and isinstance(result[0], float):
-        return result  # already a flat float vector
-    if isinstance(result, list) and result and isinstance(result[0], list):
-        inner = result[0]
-        if inner:
-            return inner
-    raise RuntimeError(f"unexpected embed response shape: {type(result)!r}")
 
 
 def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:
@@ -1277,15 +1254,15 @@ def embed_unavailable_reason() -> str:
             "intentionally disabled. Run `configure no_llm_mode false` to re-enable."
         )
     return (
-        "No embedding backend available. Set VOYAGE_API_KEY, start Ollama, "
-        "or install sentence-transformers."
+        "No embedding backend available. Start Ollama with `ollama pull nomic-embed-text`, "
+        "or install sentence-transformers. FTS5 keyword search is available as a fallback."
     )
 
 
 def embed_available() -> bool:
     """Return True if at least one embedding backend is usable.
 
-    Checks cascade: Voyage (API key set) → Ollama (healthy endpoint) → SentenceTransformers (installed).
+    Checks cascade: Ollama (healthy endpoint) → SentenceTransformers (installed).
     Does NOT make network calls — only checks config and installed packages.
 
     When ``no_llm_mode`` (issue #6) is on we skip every probe and return False
@@ -1294,13 +1271,9 @@ def embed_available() -> bool:
     """
     if _cfg.get("no_llm_mode"):
         return False
-    import os
-    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"])
+    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"])
     for backend in priority:
-        if backend == "voyage":
-            if os.environ.get("VOYAGE_API_KEY") or _cfg.get("voyage_api_key"):
-                return True
-        elif backend == "ollama":
+        if backend == "ollama":
             from .ollama_client import get_ollama_client
             if get_ollama_client().get_api_base(None) is not None:
                 return True

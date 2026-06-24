@@ -34,11 +34,9 @@ _DEFAULTS = {
     "no_llm_mode": False,
 
     # Embedding backend cascade
-    "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
-    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+    "embedding_backend": "auto",  # auto | ollama | sentence_transformers
+    "embedding_backend_priority": ["ollama", "sentence_transformers"],
     # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
-    "voyage_api_key": None,  # set in env or config; no vault indirection
-    "voyage_embed_model": "voyage/voyage-3-lite",
     "sentence_transformers_model": "all-MiniLM-L6-v2",
 
     # LLM backend config (for pipeline tiers, replacing the old Ollama-only approach)
