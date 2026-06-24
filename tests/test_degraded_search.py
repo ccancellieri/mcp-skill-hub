@@ -271,3 +271,33 @@ def test_search_skills_no_match_keyword_returns_helpful_message(
     out = server.search_skills("zzz_not_a_real_keyword_in_corpus", top_k=3)
     assert "mode=keyword-fts5" in out
     assert "no matching skills" in out.lower()
+
+
+def test_keyword_context_injection_enriches_without_embeddings(tmp_path, monkeypatch):
+    """The prompt-enrichment hook degrades to FTS5 keyword context when no
+    embedding backend is reachable, instead of passing through with nothing."""
+    from skill_hub.store import SkillStore, Skill
+    monkeypatch.setenv("HOME", str(tmp_path))
+    st = SkillStore(db_path=tmp_path / "kw.db")
+    st.upsert_skill(Skill(
+        id="local:git-pr", name="git-pr",
+        description="create a git commit and open a pull request",
+        content="Steps: stage, commit, push, open PR.",
+        file_path="", plugin="", target="claude",
+    ))
+    import skill_hub.cli as cli
+    monkeypatch.setattr(cli, "SkillStore", lambda *a, **k: st)
+
+    out = cli._build_keyword_context_injection("how do I commit and open a pull request")
+    assert out is not None
+    assert "local:git-pr" in out
+    assert "keyword fallback" in out
+
+
+def test_keyword_context_injection_returns_none_on_no_match(tmp_path, monkeypatch):
+    from skill_hub.store import SkillStore
+    monkeypatch.setenv("HOME", str(tmp_path))
+    st = SkillStore(db_path=tmp_path / "kw2.db")
+    import skill_hub.cli as cli
+    monkeypatch.setattr(cli, "SkillStore", lambda *a, **k: st)
+    assert cli._build_keyword_context_injection("zzz_no_such_corpus_token") is None

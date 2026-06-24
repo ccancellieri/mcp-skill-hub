@@ -1793,6 +1793,106 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     return header + "\n\n".join(parts)
 
 
+_KEYWORD_STOPWORDS = frozenset({
+    "how", "the", "and", "for", "with", "you", "your", "this", "that", "what",
+    "can", "does", "into", "from", "are", "was", "were", "has", "have", "had",
+    "will", "would", "should", "could", "when", "where", "which", "who", "why",
+    "use", "using", "need", "want", "get", "got", "make", "made", "let", "not",
+    "but", "its", "out", "via", "per", "any", "all", "some", "then", "than",
+})
+
+
+def _keyword_terms(message: str, limit: int = 8) -> list[str]:
+    """Salient content tokens for FTS5 BM25 — drop stopwords and short tokens.
+
+    FTS5 implicit-ANDs space-separated terms, so a raw natural-language query
+    ("how do I commit a PR") rarely matches; reducing to content words makes the
+    AND tractable, and the caller widens to a per-term union for recall.
+    """
+    import re
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in re.findall(r"[a-zA-Z0-9_]+", message.lower()):
+        if len(tok) >= 3 and tok not in _KEYWORD_STOPWORDS and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out[:limit]
+
+
+def _build_keyword_context_injection(message: str) -> str | None:
+    """Embeddings-free context injection via FTS5 BM25 keyword search.
+
+    The semantic path (:func:`_build_context_injection`) needs an embedding of
+    the message, which is impossible when no embedding backend is reachable
+    (local Ollama is auto-stopped under load and the work gateway cannot embed).
+    Rather than pass through with no context, degrade to keyword matching over
+    the same skills/teachings/tasks — mirroring how skill *search* already falls
+    back to FTS5. Zero ML deps; returns None when nothing matches.
+    """
+    from . import config as _cfg
+
+    terms = _keyword_terms(message)
+    if not terms:
+        return None
+    and_query = " ".join(terms)
+    max_chars = int(_cfg.get("hook_context_max_chars") or 2000)
+    top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
+    budget = max_chars
+    parts: list[str] = []
+    try:
+        store = SkillStore()
+        try:
+            # Precise pass: AND over salient terms. If it misses, widen to a
+            # per-term union (FTS5 strips boolean OR, so union the singles).
+            skills = store.search_skills_text(and_query, top_k=top_k_skills, target="claude")
+            if not skills:
+                merged: dict[str, dict] = {}
+                for t in terms[:5]:
+                    for s in store.search_skills_text(t, top_k=top_k_skills, target="claude"):
+                        merged.setdefault(s["id"], s)
+                skills = list(merged.values())[:top_k_skills]
+
+            for i, s in enumerate(skills):
+                if budget <= 200:
+                    break
+                desc = (s.get("description") or "")[:150]
+                content_preview = ""
+                if i == 0 and s.get("content"):
+                    content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
+                snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
+                parts.append(snippet)
+                budget -= len(snippet)
+
+            for row in store.search_text(and_query, tables=["teachings"], top_k=3):
+                if budget <= 0:
+                    break
+                snippet = (f"Suggestion: when \"{row.get('title_or_rule', '')}\" "
+                           f"→ {row.get('summary_or_why', '')}")
+                parts.append(snippet)
+                budget -= len(snippet)
+
+            for row in store.search_text(and_query, tables=["tasks"], top_k=2):
+                if budget <= 0:
+                    break
+                snippet = (f"Past work #{row.get('id')}: {row.get('title_or_rule', '')} "
+                           f"— {(row.get('summary_or_why') or '')[:150]}")
+                parts.append(snippet)
+                budget -= len(snippet)
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 - enrichment must never break the hook
+        log_detail(f"keyword_context: ERROR {str(exc)[:80]}")
+        return None
+
+    if not parts:
+        return None
+    header = (
+        "[Skill Hub — auto-injected context | keyword fallback "
+        "(embeddings unavailable)]\n\n"
+    )
+    return header + "\n\n".join(parts)
+
+
 def _precompact_hint(message: str) -> str | None:
     """
     Strategy #4: Pre-compact long messages so Claude can focus on what matters.
@@ -4459,12 +4559,18 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
                     system_parts.append(context)
         except Exception as exc:
             log_step(f"context: ERROR {str(exc)[:100]}")
-            # Fallback to static RAG
+            # Fallback to static RAG. Prefer the semantic path when embeddings
+            # are reachable; otherwise (local Ollama down, gateway can't embed)
+            # degrade to FTS5 keyword enrichment instead of passing through.
             try:
-                msg_vector = embed(message[:500])
-                fallback = _build_context_injection(message, msg_vector)
+                try:
+                    msg_vector = embed(message[:500])
+                    fallback = _build_context_injection(message, msg_vector)
+                except Exception:
+                    fallback = _build_keyword_context_injection(message)
                 if fallback:
                     system_parts.append(fallback)
+                    log_step(f"context: keyword/static fallback ({_human_size(len(fallback))})")
             except Exception:
                 pass
 
