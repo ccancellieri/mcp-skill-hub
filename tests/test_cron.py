@@ -231,6 +231,27 @@ def test_wiki_reindex_nightly_job_seeded_in_store(db_path):
     assert row[1] == 0
 
 
+def test_all_default_job_commands_have_handlers():
+    """Every command key in _DEFAULT_JOBS must resolve to a registered handler.
+
+    This guards against the silent no-op behaviour where the scheduler finds
+    no handler and skips the job without logging an error.
+    """
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+
+    missing = [
+        cmd
+        for _name, _sched, cmd, _enabled in _cron_mod._DEFAULT_JOBS
+        if cmd not in _cron_mod._HANDLERS
+    ]
+    assert missing == [], (
+        f"_DEFAULT_JOBS commands with no registered handler: {missing}. "
+        "Add a _<name>_handler() and register it in _HANDLERS."
+    )
+
+
 def test_run_job_records_error_on_handler_exception(db_path):
     seed_defaults(db_path)
     scheduler = CronScheduler(db_path)

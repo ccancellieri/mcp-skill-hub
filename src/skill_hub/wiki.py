@@ -414,6 +414,115 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
     }
 
 
+def _remove_page_by_rel_path(store: Any, wiki_root: Path, rel_path_str: str) -> bool:
+    """Delete one page's wiki_pages row, outgoing wiki_edges, and vector chunks.
+
+    Looks up the page by its ``rel_path`` column (the canonical relative path
+    stored at index time).  Returns True when a row was found and deleted,
+    False when the path was not in the index (already gone or never indexed).
+    """
+    conn = store._conn
+    row = conn.execute(
+        "SELECT slug, id, scope FROM wiki_pages WHERE rel_path=?",
+        (rel_path_str,),
+    ).fetchone()
+    if row is None:
+        return False
+    slug = row["slug"] if not isinstance(row, tuple) else row[0]
+    page_id = row["id"] if not isinstance(row, tuple) else row[1]
+    scope = row["scope"] if not isinstance(row, tuple) else row[2]
+    namespace = "wiki-private" if scope == "private" else "wiki"
+
+    conn.execute("DELETE FROM wiki_edges WHERE src_slug=?", (slug,))
+    conn.execute("DELETE FROM wiki_pages WHERE slug=?", (slug,))
+    conn.execute(
+        "DELETE FROM vectors WHERE namespace=? AND (doc_id=? OR doc_id LIKE ?)",
+        (namespace, page_id, f"{page_id}#%"),
+    )
+    conn.commit()
+    return True
+
+
+def reindex_paths(
+    store: Any,
+    wiki_root: Path,
+    *,
+    changed: set[Path] | None = None,
+    deleted: set[Path] | None = None,
+) -> dict:
+    """Incremental re-embed for a known set of changed/deleted vault paths.
+
+    Called by the vault watcher instead of a full ``reindex`` when the exact
+    set of touched ``.md`` files is known.
+
+    - **deleted**: for each path, look up the page by ``rel_path`` in the DB,
+      remove its ``wiki_pages`` row, outgoing ``wiki_edges``, and all vector
+      chunks.  Also reconcile *inbound* edges: any edge whose ``dst_slug``
+      matched the deleted page is marked unresolved (``resolved=0``).
+    - **changed** (created or modified): load the page from disk; if the file
+      no longer exists (race), treat it as a delete instead.  Call
+      :func:`_index_pages` to upsert the page row, rebuild its outgoing edges,
+      and re-embed its sections.
+
+    Returns ``{pages_updated, pages_deleted, vectors, fallback=False}``.
+
+    Raises ``ValueError`` on a dim-guard conflict (mirrors ``reindex``).
+    """
+    wiki_root = Path(wiki_root)
+    _check_dim_guard(store)
+
+    pages_deleted = 0
+    pages_updated = 0
+    vec_count = 0
+
+    def _rel(path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(wiki_root.resolve()))
+        except ValueError:
+            return str(path)
+
+    # --- handle deletions ---
+    for del_path in (deleted or set()):
+        rel = _rel(del_path)
+        removed = _remove_page_by_rel_path(store, wiki_root, rel)
+        if removed:
+            pages_deleted += 1
+            # Mark inbound edges dangling (dst no longer exists).
+            slug_row = None  # already deleted — reconstruct slug from stem
+            # Best-effort: use the file stem as the likely slug.
+            slug_guess = del_path.stem
+            store._conn.execute(
+                "UPDATE wiki_edges SET resolved=0 WHERE dst_slug=?",
+                (slug_guess,),
+            )
+            store._conn.commit()
+
+    # --- handle creates / modifies ---
+    # Also catch changed paths where the file was already gone (race → treat as delete).
+    for chg_path in (changed or set()):
+        if not chg_path.exists():
+            # File vanished between event and timer fire — treat as deletion.
+            rel = _rel(chg_path)
+            removed = _remove_page_by_rel_path(store, wiki_root, rel)
+            if removed:
+                pages_deleted += 1
+            continue
+        page = _load_page(chg_path)
+        if page is None:
+            continue
+        if "_private" in chg_path.parts:
+            page.scope = "private"
+        vec_count += _index_pages(store, wiki_root, [page])
+        pages_updated += 1
+
+    return {
+        "pages_updated": pages_updated,
+        "pages_deleted": pages_deleted,
+        "vectors": vec_count,
+        "fallback": False,
+    }
+
+
 def _check_dim_guard(store: Any) -> None:
     """Raise ValueError if the stored vec_dim conflicts with the active model's dim.
 
