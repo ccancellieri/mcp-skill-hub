@@ -622,6 +622,9 @@ _DEFAULTS = {
 
     # LLM Wiki knowledge layer — interlinked markdown wiki as source of truth.
     # The SQLite vector index is rebuilt FROM the wiki pages (derived accelerator).
+    # wiki_preload_enabled: inject a compact wiki excerpt into thin-prompt context.
+    # Set False to skip the wiki source in _gather_context (zero cost, hot path).
+    "wiki_preload_enabled": True,
     "wiki_enabled": True,
     "wiki_root": str(Path.home() / ".claude" / "mcp-skill-hub" / "wiki"),
     # Per-project private-scope authorization: {project: [authorized_scope, ...]}
