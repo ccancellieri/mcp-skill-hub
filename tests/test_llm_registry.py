@@ -9,13 +9,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import pytest
-
 from skill_hub import config as cfg
-
-
-def _write_cfg(tmp_path: Path, data: dict) -> None:
-    cfg.CONFIG_PATH.write_text(json.dumps(data))
 
 
 def test_load_registry_sorts_by_order_and_skips_disabled(tmp_path, monkeypatch):
