@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title if page else slug }} — wiki{% endblock %}
+{% block content %}
+<style>
+  .wp-breadcrumb { font-size:12px; color:var(--color-muted); margin-bottom:12px; }
+  .wp-breadcrumb a { color:var(--color-accent); text-decoration:none; }
+  .wp-breadcrumb a:hover { text-decoration:underline; }
+
+  .wp-header { margin-bottom:16px; }
+  .wp-title { font-size:22px; font-weight:700; margin:0 0 6px; letter-spacing:-0.3px; }
+  .wp-meta {
+    display:flex; gap:12px; flex-wrap:wrap; align-items:center;
+    font-size:11px; color:var(--color-muted);
+  }
+  .wp-badge {
+    display:inline-block; padding:2px 7px; border-radius:10px;
+    font-size:10px; font-weight:600; font-family:ui-monospace,monospace;
+  }
+  .type-entity   { background:rgba(58,160,255,0.15);  color:#6bbeff; }
+  .type-concept  { background:rgba(74,211,107,0.15);  color:#5fcf7b; }
+  .type-source   { background:rgba(232,166,75,0.2);   color:var(--color-warn); }
+  .type-overview { background:rgba(200,100,255,0.15); color:#cc88ff; }
+  .type-project  { background:rgba(255,100,100,0.15); color:#ff8888; }
+  .scope-private-badge {
+    background:rgba(232,166,75,0.2); color:var(--color-warn);
+    display:inline-block; padding:2px 7px; border-radius:10px;
+    font-size:10px; font-weight:600;
+  }
+
+  .wp-layout {
+    display:grid; grid-template-columns:1fr 260px; gap:16px;
+    align-items:start;
+  }
+  @media (max-width:860px) { .wp-layout { grid-template-columns:1fr; } }
+
+  /* Markdown body */
+  .wp-body {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:18px 22px;
+    font-size:13px; line-height:1.7; color:var(--color-fg);
+  }
+  .wp-body h1,.wp-body h2,.wp-body h3,.wp-body h4 { margin:1.2em 0 .4em; font-weight:600; }
+  .wp-body h1 { font-size:18px; }
+  .wp-body h2 { font-size:15px; border-bottom:1px solid var(--color-border); padding-bottom:4px; }
+  .wp-body h3 { font-size:13px; }
+  .wp-body p  { margin:.6em 0; }
+  .wp-body a  { color:var(--color-accent); }
+  .wp-body code {
+    background:rgba(125,136,150,0.15); border-radius:3px;
+    padding:1px 5px; font-family:ui-monospace,monospace; font-size:11px;
+    color:var(--color-accent);
+  }
+  .wp-body pre {
+    background:#0b1016; border:1px solid var(--color-border); border-radius:4px;
+    padding:12px; overflow-x:auto; font-size:11px; line-height:1.5;
+  }
+  .wp-body pre code { background:none; padding:0; color:var(--color-fg); }
+  .wp-body table { width:100%; border-collapse:collapse; font-size:12px; margin:.8em 0; }
+  .wp-body th, .wp-body td { padding:5px 8px; border-bottom:1px solid var(--color-border); text-align:left; }
+  .wp-body ul, .wp-body ol { padding-left:20px; margin:.6em 0; }
+  .wp-body li { margin:.3em 0; }
+  .wp-body blockquote {
+    border-left:3px solid var(--color-border); margin:0; padding-left:14px;
+    color:var(--color-muted);
+  }
+
+  /* Sidebar */
+  .wp-sidebar { display:flex; flex-direction:column; gap:12px; }
+  .wp-card {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:12px 14px;
+  }
+  .wp-card-label {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); font-weight:600; margin-bottom:8px;
+  }
+  .wp-links { display:flex; flex-direction:column; gap:4px; }
+  .wp-link { font-size:12px; color:var(--color-accent); text-decoration:none; }
+  .wp-link:hover { text-decoration:underline; }
+  .wp-link-kind { font-size:10px; color:var(--color-muted); margin-left:4px; }
+  .wp-no-links { font-size:11px; color:var(--color-muted); }
+
+  .wp-refs { font-size:11px; color:var(--color-muted); word-break:break-all; }
+  .wp-refs a { color:var(--color-muted); }
+  .wp-refs a:hover { color:var(--color-accent); }
+
+  /* Error states */
+  .wp-error {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:32px; text-align:center;
+    color:var(--color-muted);
+  }
+  .wp-error strong { color:var(--color-bad); display:block; margin-bottom:8px; font-size:15px; }
+</style>
+
+<nav class="wp-breadcrumb" aria-label="Breadcrumb">
+  <a href="/wiki">Wiki</a> &rsaquo; {{ page.title if page else slug }}
+</nav>
+
+{% if private_blocked %}
+<div class="wp-error">
+  <strong>Private page</strong>
+  This page has private scope and cannot be shown here.
+</div>
+
+{% elif page is none %}
+<div class="wp-error">
+  <strong>Page not found</strong>
+  No wiki page with slug <code>{{ slug }}</code> exists.
+  <br><br>
+  <a href="/wiki" class="btn">Back to wiki index</a>
+</div>
+
+{% else %}
+
+<header class="wp-header">
+  <h1 class="wp-title">{{ page.title }}</h1>
+  <div class="wp-meta">
+    <span class="wp-badge type-{{ page.type }}">{{ page.type }}</span>
+    {% if page.scope == 'private' %}<span class="scope-private-badge">private</span>{% endif %}
+    {% if page.projects %}<span>{{ page.projects | join(', ') }}</span>{% endif %}
+    {% if page.updated %}<span>updated {{ page.updated }}</span>{% endif %}
+    <span style="font-family:ui-monospace,monospace;font-size:10px">{{ page.slug }}</span>
+  </div>
+</header>
+
+<div class="wp-layout">
+
+  {# Main body #}
+  <main>
+    <div class="wp-body" aria-label="Page content">
+      {% if body_html %}
+        {{ body_html | safe }}
+      {% else %}
+        <p class="wp-no-links">No content.</p>
+      {% endif %}
+    </div>
+  </main>
+
+  {# Sidebar #}
+  <aside class="wp-sidebar" aria-label="Page metadata">
+
+    {# Outbound links #}
+    <div class="wp-card">
+      <div class="wp-card-label">Links to ({{ outbound | length }})</div>
+      {% if outbound %}
+      <nav class="wp-links" aria-label="Outbound links">
+        {% for link in outbound %}
+        <a class="wp-link" href="/wiki/{{ link.slug }}">{{ link.title }}<span class="wp-link-kind">{{ link.kind if link.kind != 'wikilink' else '' }}</span></a>
+        {% endfor %}
+      </nav>
+      {% else %}
+      <p class="wp-no-links">No outbound links.</p>
+      {% endif %}
+    </div>
+
+    {# Source refs provenance #}
+    {% if page.source_refs %}
+    <div class="wp-card">
+      <div class="wp-card-label">Source provenance</div>
+      <div class="wp-refs">
+        {% for ref in page.source_refs %}
+          {% if ref.startswith('http') %}
+          <div><a href="{{ ref }}" target="_blank" rel="noopener noreferrer">{{ ref }}</a></div>
+          {% else %}
+          <div>{{ ref }}</div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Tags #}
+    {% if page.tags %}
+    <div class="wp-card">
+      <div class="wp-card-label">Tags</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px">
+        {% for tag in page.tags %}
+        <span class="type-badge" style="background:rgba(125,136,150,0.15);color:var(--color-muted)">{{ tag }}</span>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </aside>
+
+</div>
+{% endif %}
+
+{% endblock %}
