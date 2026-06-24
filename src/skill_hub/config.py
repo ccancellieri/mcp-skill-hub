@@ -498,6 +498,16 @@ _DEFAULTS = {
     # into a single session_snapshot row and deleted.  Set to 0 to keep forever.
     "event_log_retention_days": 30,
 
+    # Discussions write path (issue #87) — opt-in only, default OFF.
+    # When False, create_discussion() is a no-op that returns {"status": "disabled"}.
+    "discussions_write_enabled": False,
+    # Category name to use when creating discussions via create_discussion().
+    # Resolved to a category id at write time via the GraphQL discussionCategories query.
+    "discussions_category": "General",
+    # Repo used by the discussions-sync-nightly cron job ("owner/name").
+    # Empty string = resolve from current working directory at run time.
+    "discussions_repo": "",
+
     # Base-config self-heal — automatically re-apply missing hooks / MCP
     # registration / base-roles block at session start.  Disable only if you
     # manage those surfaces manually.

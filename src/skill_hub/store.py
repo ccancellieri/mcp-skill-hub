@@ -4623,6 +4623,8 @@ class SkillStore:
              "check_embedding_backends", {}, True, False),
             ("wiki-reindex-nightly", "Wiki vault nightly reindex + re-embed", "0 5 * * *",
              "wiki_reindex_nightly", {}, False, False),
+            ("discussions-sync-nightly", "GitHub Discussions periodic sync into wiki", "0 1 * * *",
+             "discussions_sync_nightly", {}, False, False),
         ]
         for name, desc, sched, cmd, params, enabled, is_dangerous in defaults:
             self._conn.execute(

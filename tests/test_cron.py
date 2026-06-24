@@ -231,6 +231,50 @@ def test_wiki_reindex_nightly_job_seeded_in_store(db_path):
     assert row[1] == 0
 
 
+def test_discussions_sync_nightly_handler_registered():
+    """_HANDLERS must contain 'discussions_sync_nightly' after module import."""
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+    assert "discussions_sync_nightly" in _cron_mod._HANDLERS, (
+        "discussions_sync_nightly handler not registered"
+    )
+    assert callable(_cron_mod._HANDLERS["discussions_sync_nightly"])
+
+
+def test_discussions_sync_nightly_job_seeded_disabled(db_path):
+    """discussions-sync-nightly must be seeded in cron_jobs and disabled by default."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT command, enabled FROM cron_jobs"
+            " WHERE name='discussions-sync-nightly'"
+        ).fetchone()
+    assert row is not None, "discussions-sync-nightly row missing from cron_jobs"
+    assert row[0] == "discussions_sync_nightly"
+    assert row[1] == 0, "discussions-sync-nightly must be disabled by default"
+
+
+def test_all_default_job_commands_have_handlers():
+    """Every command key in _DEFAULT_JOBS must resolve to a registered handler.
+
+    This guards against the silent no-op behaviour where the scheduler finds
+    no handler and skips the job without logging an error.
+    """
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+
+    missing = [
+        cmd
+        for _name, _sched, cmd, _enabled in _cron_mod._DEFAULT_JOBS
+        if cmd not in _cron_mod._HANDLERS
+    ]
+    assert missing == [], (
+        f"_DEFAULT_JOBS commands with no registered handler: {missing}. "
+        "Add a _<name>_handler() and register it in _HANDLERS."
+    )
+
+
 def test_run_job_records_error_on_handler_exception(db_path):
     seed_defaults(db_path)
     scheduler = CronScheduler(db_path)

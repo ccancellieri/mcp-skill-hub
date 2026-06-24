@@ -33,8 +33,9 @@ _DEFAULT_JOBS = [
     ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
     # Disabled by default — enable explicitly via the cron UI or config.
-    ("log-digest-snapshot",     "0 6 * * *",   "log_digest_snapshot",         0),
-    ("wiki-reindex-nightly",    "0 5 * * *",   "wiki_reindex_nightly",        0),
+    ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
+    ("wiki-reindex-nightly",       "0 5 * * *",   "wiki_reindex_nightly",        0),
+    ("discussions-sync-nightly",   "0 1 * * *",   "discussions_sync_nightly",    0),
 ]
 
 
@@ -55,6 +56,7 @@ def seed_defaults(db_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 _HUMAN_SCHEDULES: dict[str, str] = {
+    "0 1 * * *":    "daily at 1:00 AM",
     "0 2 * * *":    "daily at 2:00 AM",
     "0 3 * * *":    "daily at 3:00 AM",
     "0 4 * * *":    "daily at 4:00 AM",
@@ -103,9 +105,200 @@ def _log_digest_snapshot_handler() -> None:
     _log.debug("log_digest_snapshot: %s", _json.dumps(d, default=str))
 
 
+def _feedback_to_teachings_handler() -> None:
+    """Cron handler: scan feedback_*.md memory files and report how many are present.
+
+    The full "promote feedback rules into the teachings table" feature is not yet
+    implemented (``continuous_teaching_enabled`` is False by default and no
+    conversion function exists).  This handler is a safe, read-only probe that
+    logs the count of feedback files and the number of teachings already in the
+    DB — giving operators visibility without modifying any state.  When the full
+    conversion logic is built it should replace the body of this function.
+    """
+    from pathlib import Path
+    from .store import get_store
+
+    memory_root = Path.home() / ".claude" / "projects"
+    feedback_files: list[Path] = []
+    if memory_root.exists():
+        feedback_files = sorted(memory_root.rglob("feedback_*.md"))
+
+    store = get_store()
+    teaching_count = store.count_teachings()
+
+    _log.info(
+        "feedback_to_teachings: feedback_files=%d existing_teachings=%d"
+        " (conversion not yet implemented — read-only probe)",
+        len(feedback_files),
+        teaching_count,
+    )
+
+
+def _optimize_memory_dry_run_handler() -> None:
+    """Cron handler: run memory optimisation in dry-run mode (report only, no writes).
+
+    Delegates to ``server.optimize_memory(dry_run=True)``.  The function has an
+    internal IDLE-pressure gate — if the machine is not idle the call returns a
+    skip message (no exception), so the cron record will still show ``ok``.
+    If the LLM capability is not configured the scheduler records the error and
+    moves on; nothing is corrupted.
+    """
+    from . import server as _server
+    result = _server.optimize_memory(dry_run=True)
+    _log.info("optimize_memory_dry_run: %s", str(result)[:200])
+
+
+def _archive_memory_to_db_dry_run_handler() -> None:
+    """Cron handler: dry-run pass over closed event sessions (no rows deleted).
+
+    Calls ``store.events_prune(dry_run=True)`` which counts candidates and
+    rows that *would* be coalesced without touching the database.
+    """
+    from .store import get_store
+    store = get_store()
+    result = store.events_prune(dry_run=True)
+    _log.info(
+        "archive_memory_to_db_dry_run: candidates=%d would_delete=%d",
+        result["candidates"],
+        result["rows_deleted"],
+    )
+
+
+def _memexp_snapshot_create_handler() -> None:
+    """Cron handler: write a weekly training-data snapshot to disk.
+
+    Calls ``store.export_training_data()`` and writes three JSONL files
+    (feedback, triage, compact) to ``~/.claude/mcp-skill-hub/training/``.
+    The output directory is created if absent; existing files are overwritten.
+    Safe to run unattended — read-only against the DB, writes only to the
+    snapshot directory.
+    """
+    import json as _json
+    from pathlib import Path
+    from .store import get_store
+
+    store = get_store()
+    data = store.export_training_data()
+
+    out_dir = Path.home() / ".claude" / "mcp-skill-hub" / "training"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    counts: dict[str, int] = {}
+
+    fb_path = out_dir / "feedback.jsonl"
+    with fb_path.open("w", encoding="utf-8") as fh:
+        for pair in data["feedback_pairs"]:
+            fh.write(_json.dumps({
+                "instruction": (
+                    "Given a user query, rate whether this skill is relevant (true/false)."
+                ),
+                "input": (
+                    f"Query: {pair['query']}\n"
+                    f"Skill: {pair['skill_description']}\n"
+                    f"Content: {pair['skill_content'][:500]}"
+                ),
+                "output": str(pair["label"]).lower(),
+                "metadata": {"skill_id": pair["skill_id"]},
+            }) + "\n")
+    counts["feedback"] = len(data["feedback_pairs"])
+
+    triage_path = out_dir / "triage.jsonl"
+    with triage_path.open("w", encoding="utf-8") as fh:
+        for pair in data["triage_pairs"]:
+            fh.write(_json.dumps({
+                "instruction": (
+                    "Classify this user message for a coding assistant. "
+                    "Actions: local_answer, local_action, enrich_and_forward, pass_through."
+                ),
+                "input": pair["message"],
+                "output": pair["action"],
+                "metadata": {"confidence": pair["confidence"]},
+            }) + "\n")
+    counts["triage"] = len(data["triage_pairs"])
+
+    compact_path = out_dir / "compact.jsonl"
+    with compact_path.open("w", encoding="utf-8") as fh:
+        for pair in data["compact_pairs"]:
+            fh.write(_json.dumps({
+                "title": pair["title"],
+                "input": pair["input"],
+                "output": pair["output"],
+            }) + "\n")
+    counts["compact"] = len(data["compact_pairs"])
+
+    _log.info(
+        "memexp_snapshot_create: feedback=%d triage=%d compact=%d -> %s",
+        counts["feedback"], counts["triage"], counts["compact"], out_dir,
+    )
+
+
+def _discussions_sync_nightly_handler() -> None:
+    """Cron handler: periodic full idempotent sync of GitHub Discussions into wiki.
+
+    Disabled by default (enabled=0 in _DEFAULT_JOBS). Enable via the cron UI
+    once a GitHub repo is configured and discussions_write_enabled is not
+    required (this handler only runs the read-path sync_discussions).
+
+    Each run performs a full idempotent sync (fetches up to 50 discussions,
+    upserts them as wiki source pages). Because write_source_page is
+    content-addressed (source_hash), unchanged discussions are skipped cheaply.
+    """
+    from .store import get_store
+    from . import discussions_sync as _disc
+    from . import config as _cfg
+
+    store = get_store()
+    repo = str(_cfg.get("discussions_repo") or "")
+    result = _disc.sync_discussions(store, repo=repo, dry_run=False)
+    if "error" in result:
+        _log.warning(
+            "discussions_sync_nightly error: %s", result["error"]
+        )
+    else:
+        _log.info(
+            "discussions_sync_nightly: checked=%d indexed=%d discussions=%d"
+            " comments=%d skipped=%d",
+            result["checked"], result["indexed"], result["discussions"],
+            result["comments"], result["skipped"],
+        )
+
+
+def _check_embedding_backends_handler() -> None:
+    """Cron handler: probe the configured embedding backend and log reachability.
+
+    Calls ``embeddings.embed_available()`` (no network I/O — checks config/env
+    only) and logs the result.  Runs every 15 minutes so pipeline health is
+    visible in the log stream without a browser.
+    """
+    from . import embeddings as _emb
+    from . import config as _cfg
+
+    available = _emb.embed_available()
+    priority = _cfg.get("embedding_backend_priority") or [
+        "voyage", "ollama", "sentence_transformers"
+    ]
+    backend = priority[0] if isinstance(priority, list) and priority else "unknown"
+    if available:
+        _log.info(
+            "check_embedding_backends: backend=%s reachable=True", backend
+        )
+    else:
+        reason = _emb.embed_unavailable_reason()
+        _log.warning(
+            "check_embedding_backends: backend=%s reachable=False reason=%s",
+            backend, reason,
+        )
+
+
 # Register module-level handlers so the scheduler can dispatch them.
 _HANDLERS["log_digest_snapshot"] = _log_digest_snapshot_handler
 _HANDLERS["wiki_reindex_nightly"] = _wiki_reindex_nightly_handler
+_HANDLERS["optimize_memory_dry_run"] = _optimize_memory_dry_run_handler
+_HANDLERS["feedback_to_teachings"] = _feedback_to_teachings_handler
+_HANDLERS["archive_memory_to_db_dry_run"] = _archive_memory_to_db_dry_run_handler
+_HANDLERS["memexp_snapshot_create"] = _memexp_snapshot_create_handler
+_HANDLERS["check_embedding_backends"] = _check_embedding_backends_handler
+_HANDLERS["discussions_sync_nightly"] = _discussions_sync_nightly_handler
 
 
 def human_schedule(schedule: str) -> str:

@@ -218,27 +218,31 @@ class _DebounceHandler:
 class _WikiVaultHandler:
     """Debounced watcher for the wiki vault directory.
 
-    On any .md change under the vault root, triggers a full wiki.reindex().
-    The reindex is idempotent (delete-then-reinsert) so calling it on each
-    debounced change is safe and correct.
+    Tracks the set of changed and deleted .md paths since the last debounce
+    fire, then re-embeds only those pages via wiki.reindex_paths().  Falls
+    back to a full wiki.reindex() when the changed set cannot be determined.
 
-    TODO (deferred): incremental re-embed — track changed page paths and
-    call wiki._index_pages(store, wiki_root, changed_pages) instead of a
-    full reindex, to reduce LLM/embed overhead when only a few pages change.
+    Delete events (event_type == 'deleted') are routed to the deleted set;
+    all other events (created / modified / moved dest) go to the changed set.
     """
 
     def __init__(self, delay: float = 2.0) -> None:
         self._delay = delay
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
-        self._last_changed: str = ""
+        self._pending_changed: set[Path] = set()
+        self._pending_deleted: set[Path] = set()
         self._busy: bool = False
         self._last_done: float = 0.0
 
     def dispatch(self, event: object) -> None:
         src = getattr(event, "src_path", "")
         if not src.endswith(".md"):
-            return
+            # Also catch the destination of a moved event.
+            dest = getattr(event, "dest_path", "")
+            if not dest.endswith(".md"):
+                return
+            src = dest
         if any(part in src for part in _IGNORE_PATH_PARTS):
             return
         with self._lock:
@@ -247,7 +251,22 @@ class _WikiVaultHandler:
                 return
             if (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL:
                 return
-            self._last_changed = src
+            event_type: str = getattr(event, "event_type", "")
+            try:
+                path = Path(src).resolve()
+            except OSError:
+                path = Path(src)
+            if event_type == "deleted":
+                self._pending_deleted.add(path)
+            else:
+                self._pending_changed.add(path)
+            # Also index the dest of a move as a new/changed page.
+            dest = getattr(event, "dest_path", "")
+            if dest.endswith(".md") and dest != src:
+                try:
+                    self._pending_changed.add(Path(dest).resolve())
+                except OSError:
+                    self._pending_changed.add(Path(dest))
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._delay, self._do_reindex)
@@ -260,6 +279,10 @@ class _WikiVaultHandler:
             if self._busy:
                 return
             self._busy = True
+            changed = set(self._pending_changed)
+            deleted = set(self._pending_deleted)
+            self._pending_changed.clear()
+            self._pending_deleted.clear()
 
         try:
             from .activity_log import log_event
@@ -269,19 +292,32 @@ class _WikiVaultHandler:
 
             wiki_root = Path(str(_cfg.get("wiki_root") or
                                  Path.home() / ".claude" / "mcp-skill-hub" / "wiki")).expanduser()
-            changed_name = Path(self._last_changed).name if self._last_changed else "unknown"
-            log_event("WATCHER", f"wiki reindex triggered (change: {changed_name})")
+
+            all_paths = changed | deleted
+            trigger_names = ", ".join(p.name for p in list(all_paths)[:3])
+            if len(all_paths) > 3:
+                trigger_names += f" (+{len(all_paths) - 3} more)"
+            log_event("WATCHER",
+                      f"wiki incremental reindex triggered "
+                      f"(changed={len(changed)}, deleted={len(deleted)}, "
+                      f"files: {trigger_names})")
 
             t0 = time.monotonic()
             store = SkillStore()
             try:
-                result = _wiki.reindex(store, wiki_root, dry_run=False)
+                result = _wiki.reindex_paths(
+                    store, wiki_root,
+                    changed=changed or None,
+                    deleted=deleted or None,
+                )
             finally:
                 store.close()
             elapsed = time.monotonic() - t0
             log_event("WATCHER",
-                      f"wiki reindex complete: pages={result['pages']} "
-                      f"edges={result['edges']} vectors={result['vectors']} "
+                      f"wiki incremental reindex complete: "
+                      f"updated={result['pages_updated']} "
+                      f"deleted={result['pages_deleted']} "
+                      f"vectors={result['vectors']} "
                       f"in {elapsed:.1f}s")
         except Exception as exc:
             try:
