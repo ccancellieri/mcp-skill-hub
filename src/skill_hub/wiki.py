@@ -1240,7 +1240,8 @@ def query(
     ``NotImplementedError``.
     """
     if _file_back:
-        raise NotImplementedError("wiki query file-back is a reserved seam (deferred)")
+        return file_answer(store, wiki_root, query_text,
+                           top_k=top_k, authorized_scopes=authorized_scopes)
 
     wiki_root = Path(wiki_root)
     authorized_scopes = authorized_scopes or []
@@ -1300,6 +1301,97 @@ def query(
                     break
 
     return {"query": query_text, "results": ranked[:top_k]}
+
+
+def file_answer(
+    store: Any, wiki_root: Path, query_text: str, *,
+    top_k: int = 5,
+    authorized_scopes: list[str] | None = None,
+    tier: str = "tier_smart",
+    model: str | None = None,
+) -> dict:
+    """Synthesize a cited answer from top-k wiki hits read from disk.
+
+    Runs ``query()`` to get ranked page slugs, reads their FULL markdown
+    bodies from disk, then calls the local LLM via the
+    ``wiki_file_answer`` prompt. Cites source page slugs/paths in the
+    answer.
+
+    Fails gracefully when no LLM is available: returns the raw top hits
+    with a ``no_llm`` note in the answer field so the caller always gets
+    a usable result.
+
+    Returns a dict with keys:
+        query (str), results (list), answer (str), sources (list[str])
+    """
+    from . import embeddings as _emb
+    from .llm.prompts import load_prompt
+
+    wiki_root = Path(wiki_root)
+    raw = query(store, wiki_root, query_text,
+                top_k=top_k, authorized_scopes=authorized_scopes)
+    results = raw["results"]
+
+    if not results:
+        return {
+            "query": query_text,
+            "results": [],
+            "answer": f"No wiki pages found for query: {query_text!r}",
+            "sources": [],
+        }
+
+    # Build pages block from full disk bodies (results already have body).
+    pages_block_parts: list[str] = []
+    sources: list[str] = []
+    for r in results:
+        # body is already the full page body (loaded by query() via _load_page).
+        slug = r["slug"]
+        rel = r.get("rel_path", "")
+        sources.append(slug)
+        pages_block_parts.append(
+            f"### [[{slug}]] — {r['title']} "
+            f"(type={r['type']}, scope={r['scope']})\n{r['body']}"
+        )
+    pages_block = "\n\n".join(pages_block_parts)
+
+    # Try LLM synthesis.
+    try:
+        prompt_tmpl = load_prompt("wiki_file_answer")
+        prompt = prompt_tmpl.format(
+            query=query_text,
+            top_k=top_k,
+            pages_block=pages_block[:16000],
+        )
+        raw_answer = _emb.get_provider().complete(
+            prompt,
+            tier=tier,
+            model=model,
+            max_tokens=2048,
+            temperature=0.1,
+            timeout=120.0,
+            op="wiki_file_answer",
+        )
+        if raw_answer:
+            import re as _re
+            raw_answer = _re.sub(
+                r"<think>.*?</think>", "", raw_answer, flags=_re.DOTALL
+            ).strip()
+        answer = raw_answer or "(LLM returned empty response)"
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("wiki file_answer: LLM call failed: %s", exc)
+        bodies_summary = "\n\n".join(
+            f"[[{r['slug']}]]: {r['body'][:400]}" for r in results
+        )
+        answer = (
+            f"(LLM unavailable — raw top hits below)\n\n{bodies_summary}"
+        )
+
+    return {
+        "query": query_text,
+        "results": results,
+        "answer": answer,
+        "sources": sources,
+    }
 
 
 def write_source_page(

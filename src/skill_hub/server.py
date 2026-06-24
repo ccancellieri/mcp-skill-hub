@@ -4974,6 +4974,43 @@ def wiki_query(query: str, top_k: int = 5) -> str:
     return "\n".join(lines)
 
 
+@mcp.tool()
+@requires_capability("llm")
+def wiki_file_answer(query: str, top_k: int = 5) -> str:
+    """Query the wiki and synthesize a cited answer from the full page bodies.
+
+    Runs a hybrid vector + index.md search (same as wiki_query), reads the
+    full markdown bodies of the top-k hits from disk, then asks the local LLM
+    to produce a concise answer that cites each claim with [[slug]] references.
+
+    Fails gracefully when no LLM is available: returns the raw top hits with
+    a note instead of raising.
+
+    Args:
+        query: Natural-language question to answer from the wiki.
+        top_k: Number of wiki pages to retrieve before synthesis (default 5).
+    """
+    from . import wiki as _wiki
+    from pathlib import Path as _Path
+
+    log_tool("wiki_file_answer", query=query[:80], top_k=top_k)
+    wiki_root = _Path(_cfg.get("wiki_root") or
+                      _Path.home() / ".claude" / "mcp-skill-hub" / "wiki")
+    authorized = _wiki_authorized_scopes()
+    out = _wiki.file_answer(
+        _store, wiki_root, query,
+        top_k=top_k, authorized_scopes=authorized,
+    )
+    lines = [
+        f"wiki_file_answer: {len(out['results'])} source(s) for {query!r}",
+        "",
+        out["answer"],
+    ]
+    if out["sources"]:
+        lines += ["", "Sources: " + ", ".join(f"[[{s}]]" for s in out["sources"])]
+    return "\n".join(lines)
+
+
 def _wiki_authorized_scopes() -> list[str]:
     """Scopes the local operator may write/read — the union of configured
     private scopes (this is the user's own machine and vault)."""

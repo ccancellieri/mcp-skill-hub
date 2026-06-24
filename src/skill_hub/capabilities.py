@@ -386,6 +386,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM)),
     ToolSpec("wiki_query", "Query the wiki: hybrid vector + index.md lexical ranking",
              hard=(BACKEND_DB, BACKEND_EMBED)),
+    ToolSpec("wiki_file_answer", "Query wiki and synthesize a cited answer via LLM",
+             hard=(BACKEND_DB, BACKEND_EMBED, BACKEND_REASON_LLM)),
 )
 
 
