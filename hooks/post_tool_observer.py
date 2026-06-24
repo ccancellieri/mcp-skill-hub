@@ -136,6 +136,69 @@ def _maybe_observe_claude_task(data: dict) -> None:
         log(f"claude_task  error={exc}")
 
 
+_SEARCH_SKILLS_TOOL = "mcp__skill-hub__search_skills"
+# Regex to extract "LOADED (N): id1, id2, ..." from search_skills response text.
+import re as _re
+_LOADED_RE = _re.compile(r"<!-- LOADED \(\d+\):\s*(.*?)-->")
+
+
+def _maybe_emit_skill_used(
+    tool_name: str, tool_response: object, session_id: str
+) -> None:
+    """Emit ``skill.used`` events when search_skills returns skill content.
+
+    Fires on PostToolUse for the search_skills MCP tool.  Parses the
+    ``LOADED (N): id1, id2`` header from the response text to identify
+    which skills were served, then calls ``store.record_skill_used`` for
+    each one (matched to the most-recent injection row for that
+    skill+session).  Never raises.
+    """
+    if tool_name != _SEARCH_SKILLS_TOOL:
+        return
+
+    # tool_response for MCP text tools is a string in the hook payload.
+    if isinstance(tool_response, dict):
+        response_text = (
+            tool_response.get("content") or tool_response.get("text") or ""
+        )
+        if isinstance(response_text, list):
+            # content may be [{"type":"text","text":"..."}]
+            response_text = " ".join(
+                p.get("text", "") if isinstance(p, dict) else str(p)
+                for p in response_text
+            )
+    elif isinstance(tool_response, str):
+        response_text = tool_response
+    else:
+        return
+
+    m = _LOADED_RE.search(response_text)
+    if not m:
+        return
+
+    raw_ids = m.group(1).strip()
+    if not raw_ids or raw_ids == "none":
+        return
+    skill_ids = [s.strip() for s in raw_ids.split(",") if s.strip() and s.strip() != "none"]
+    if not skill_ids:
+        return
+
+    try:
+        from pathlib import Path as _Path
+        import sys as _sys
+        _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "src"))
+        from skill_hub.store import SkillStore
+        store = SkillStore()
+        try:
+            for sid in skill_ids:
+                store.record_skill_used(sid, session_id)
+                log(f"skill.used  skill_id={sid}  session={session_id[:12]}")
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001
+        log(f"skill.used  error={exc}")
+
+
 def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
     """If a Write/Edit touched a feedback_*.md, auto-teach from it. Best-effort."""
     if tool_name not in ("Write", "Edit"):
@@ -228,6 +291,7 @@ def main() -> int:
     if event == "PostToolUse":
         _maybe_auto_teach_from_feedback(tool_name, tool_input)
         _maybe_observe_claude_task(data)
+        _maybe_emit_skill_used(tool_name, data.get("tool_response"), session_id)
 
     if tool_name != "Bash":
         return 0

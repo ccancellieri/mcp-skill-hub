@@ -295,25 +295,24 @@ def cluster_failures(
 # ---------------------------------------------------------------------------
 
 def skill_selection_stats(limit: int = 500) -> dict:
-    """Per-skill injection counts and feedback helpful-rates.
+    """Per-skill injection counts, used counts, and feedback helpful-rates.
 
-    Uses ``skill_injections`` (injection frequency) and ``feedback``
-    (helpful signal) tables. Results are joined on ``skill_id``.
+    Uses three tables:
+    - ``skill_injections`` — one row per skill returned by search_skills
+    - ``events`` (kind='skill.used') — one row per confirmed usage, emitted
+      by the PostToolUse hook when search_skills fires; payload carries
+      ``skill_id`` so we can count per-skill
+    - ``feedback`` — explicit helpful/unhelpful signal from record_feedback
 
-    Attribution gap
-    ---------------
-    There is no direct link between an injection row and a subsequent
-    ``record_feedback`` call — feedback is recorded by the user explicitly
-    after a search, not tied to a single injection event.  This function
-    therefore reports injection counts and feedback separately; true
-    injected-vs-used attribution requires a new ``injection_used`` event kind
-    (tracked as a follow-up).
+    ``used_rate = used / injections`` per skill.  Skills with injections > 0
+    and used == 0 are flagged as "injected-but-unused" candidates.
 
     Returns
     -------
     dict with keys:
         skills             — list of per-skill dicts sorted by injections desc
         total_injections   — total injection rows examined
+        total_used         — total skill.used events
         total_feedback     — total feedback rows
     """
     from . import store as _store_mod
@@ -336,6 +335,25 @@ def skill_selection_stats(limit: int = 500) -> dict:
         inj_rows = []
 
     total_injections = sum(r["cnt"] for r in inj_rows)
+
+    # Used counts per skill from skill.used events
+    used_map: dict[str, int] = {}
+    try:
+        used_rows = conn.execute(
+            "SELECT payload FROM events WHERE kind = 'skill.used'"
+        ).fetchall()
+        for row in used_rows:
+            try:
+                payload = json.loads(row["payload"])
+                sid = payload.get("skill_id", "")
+                if sid:
+                    used_map[sid] = used_map.get(sid, 0) + 1
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("skill_selection_stats: used-events query failed: %s", exc)
+
+    total_used = sum(used_map.values())
 
     # Feedback per skill: helpful-rate = sum(helpful) / count(*)
     try:
@@ -369,17 +387,29 @@ def skill_selection_stats(limit: int = 500) -> dict:
             fb_n = fb["n"]
             helpful_rate = fb["n_helpful"] / fb["n"]
 
-        # Status heuristic: injected many times but never given positive feedback
-        if fb_n > 0 and helpful_rate is not None and helpful_rate == 0.0:
+        used = used_map.get(sid, 0)
+        inj_cnt = r["cnt"]
+        used_rate: float | None = used / inj_cnt if inj_cnt > 0 else None
+
+        # Derive status. The "injected-but-unused" label requires that the
+        # PostToolUse hook has produced at least one skill.used event in this
+        # dataset (total_used > 0); otherwise every injected skill would be
+        # flagged before any hook data exists, which shadows the feedback-based
+        # heuristics that are valid on their own.
+        if total_used > 0 and inj_cnt > 0 and used == 0:
+            status = "injected-but-unused"
+        elif fb_n > 0 and helpful_rate is not None and helpful_rate == 0.0:
             status = "review: never-helpful"
-        elif fb_n == 0 and r["cnt"] >= 5:
+        elif fb_n == 0 and inj_cnt >= 5:
             status = "no feedback yet"
         else:
             status = ""
 
         skills.append({
             "skill_id": sid,
-            "injections": r["cnt"],
+            "injections": inj_cnt,
+            "used": used,
+            "used_rate": used_rate,
             "feedback_n": fb_n,
             "helpful_rate": helpful_rate,
             "status": status,
@@ -389,9 +419,12 @@ def skill_selection_stats(limit: int = 500) -> dict:
     for sid, fb in feedback_map.items():
         if sid not in injection_skill_ids:
             helpful_rate = fb["n_helpful"] / fb["n"] if fb["n"] > 0 else None
+            used = used_map.get(sid, 0)
             skills.append({
                 "skill_id": sid,
                 "injections": 0,
+                "used": used,
+                "used_rate": None,
                 "feedback_n": fb["n"],
                 "helpful_rate": helpful_rate,
                 "status": "feedback only (no recent injections)",
@@ -402,6 +435,7 @@ def skill_selection_stats(limit: int = 500) -> dict:
     return {
         "skills": skills,
         "total_injections": total_injections,
+        "total_used": total_used,
         "total_feedback": total_feedback,
     }
 

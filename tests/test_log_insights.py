@@ -465,3 +465,161 @@ class TestSkillSelectionStats:
 
         injection_counts = [r["injections"] for r in stats["skills"]]
         assert injection_counts == sorted(injection_counts, reverse=True)
+
+    def test_used_rate_is_zero_when_no_skill_used_events(self, isolated_store, monkeypatch):
+        """used_rate is 0/injections when no skill.used events exist; status is NOT
+        'injected-but-unused' because total_used==0 means the hook has no data yet."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-noused", query="q", session_id="s1")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        r = by_id["skill-noused"]
+        assert r["used"] == 0
+        assert r["used_rate"] == 0.0
+        # No hook data yet → do NOT flag as injected-but-unused
+        assert r["status"] != "injected-but-unused"
+        assert stats["total_used"] == 0
+
+    def test_injected_but_unused_requires_hook_data(self, isolated_store, monkeypatch):
+        """'injected-but-unused' is NOT assigned when total_used==0 (no hook data),
+        and IS assigned when total_used>0 and that specific skill has zero uses."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+
+        # Two skills injected; skill-live gets a used event, skill-dead does not.
+        isolated_store.log_skill_injection("skill-dead2", query="q", session_id="s1")
+        isolated_store.log_skill_injection("skill-live2", query="q", session_id="s1")
+
+        from skill_hub import log_insights
+
+        # Before any skill.used events: neither skill is flagged.
+        stats_before = log_insights.skill_selection_stats(limit=100)
+        by_id_before = {r["skill_id"]: r for r in stats_before["skills"]}
+        assert stats_before["total_used"] == 0
+        assert by_id_before["skill-dead2"]["status"] != "injected-but-unused"
+        assert by_id_before["skill-live2"]["status"] != "injected-but-unused"
+
+        # Emit a skill.used event only for skill-live2.
+        isolated_store.record_skill_used("skill-live2", "s1")
+
+        stats_after = log_insights.skill_selection_stats(limit=100)
+        by_id_after = {r["skill_id"]: r for r in stats_after["skills"]}
+        assert stats_after["total_used"] == 1
+        # skill-dead2 has injections but zero used events → flagged
+        assert by_id_after["skill-dead2"]["status"] == "injected-but-unused"
+        # skill-live2 was used → not flagged
+        assert by_id_after["skill-live2"]["status"] != "injected-but-unused"
+
+    def test_used_rate_computed_from_skill_used_events(self, isolated_store, monkeypatch):
+        """used_rate = used / injections when skill.used events are present."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-used", query="q", session_id="s1")
+        isolated_store.log_skill_injection("skill-used", query="q", session_id="s1")
+        # Emit one skill.used event (used=1, injections=2 → used_rate=0.5)
+        isolated_store.record_skill_used("skill-used", "s1")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        r = by_id["skill-used"]
+        assert r["used"] == 1
+        assert r["injections"] == 2
+        assert abs(r["used_rate"] - 0.5) < 1e-9
+        assert r["status"] != "injected-but-unused"
+        assert stats["total_used"] == 1
+
+    def test_injected_but_unused_flag(self, isolated_store, monkeypatch):
+        """A skill injected but never used must be flagged 'injected-but-unused'."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-dead", query="q", session_id="s1")
+        isolated_store.log_skill_injection("skill-live", query="q", session_id="s1")
+        # Only skill-live gets a used event
+        isolated_store.record_skill_used("skill-live", "s1")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        by_id = {r["skill_id"]: r for r in stats["skills"]}
+        assert by_id["skill-dead"]["status"] == "injected-but-unused"
+        assert by_id["skill-live"]["status"] != "injected-but-unused"
+
+    def test_result_shape_includes_used_fields(self, isolated_store, monkeypatch):
+        """Each skill row must include 'used', 'used_rate', and 'total_used'."""
+        monkeypatch.setattr("skill_hub.store._default_store", isolated_store)
+        isolated_store.log_skill_injection("skill-shape2", query="q", session_id="s")
+
+        from skill_hub import log_insights
+        stats = log_insights.skill_selection_stats(limit=100)
+
+        assert "total_used" in stats
+        for key in ("skill_id", "injections", "used", "used_rate",
+                    "feedback_n", "helpful_rate", "status"):
+            assert key in stats["skills"][0], f"skill row missing key '{key}'"
+
+
+# ===========================================================================
+# Part D — record_skill_used store method
+# ===========================================================================
+
+
+class TestRecordSkillUsed:
+    """Tests for SkillStore.record_skill_used."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        from skill_hub.store import SkillStore
+        return SkillStore(db_path=tmp_path / "skill_used.db")
+
+    def test_emits_skill_used_event(self, store):
+        """record_skill_used writes a skill.used event row."""
+        store.log_skill_injection("sk-a", query="q", session_id="sess-1")
+        eid = store.record_skill_used("sk-a", "sess-1")
+        assert eid is not None and eid > 0
+
+        rows = store.get_events(session_id="sess-1", kind="skill.used")
+        assert len(rows) == 1
+        payload = json.loads(rows[0]["payload"])
+        assert payload["skill_id"] == "sk-a"
+        assert payload["session_id"] == "sess-1"
+        assert payload["matched"] is True
+        assert payload["injection_id"] is not None
+
+    def test_resolves_injection_id_automatically(self, store):
+        """injection_id is the most recent skill_injections row for skill+session."""
+        store.log_skill_injection("sk-b", query="q1", session_id="sess-2")
+        store.log_skill_injection("sk-b", query="q2", session_id="sess-2")
+        # Get the last injection id
+        last_inj = store._conn.execute(
+            "SELECT id FROM skill_injections WHERE skill_id='sk-b' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert last_inj is not None
+
+        store.record_skill_used("sk-b", "sess-2")
+        rows = store.get_events(session_id="sess-2", kind="skill.used")
+        assert len(rows) == 1
+        payload = json.loads(rows[0]["payload"])
+        assert payload["injection_id"] == last_inj["id"]
+
+    def test_unmatched_when_no_prior_injection(self, store):
+        """skill.used is still written even with no matching injection (matched=False)."""
+        eid = store.record_skill_used("sk-orphan", "sess-3")
+        assert eid is not None
+
+        rows = store.get_events(session_id="sess-3", kind="skill.used")
+        assert len(rows) == 1
+        payload = json.loads(rows[0]["payload"])
+        assert payload["matched"] is False
+        assert payload["injection_id"] is None
+
+    def test_explicit_injection_id_bypasses_lookup(self, store):
+        """Passing injection_id=99 stores it directly without querying the DB."""
+        eid = store.record_skill_used("sk-c", "sess-4", injection_id=99)
+        assert eid is not None
+
+        rows = store.get_events(session_id="sess-4", kind="skill.used")
+        payload = json.loads(rows[0]["payload"])
+        assert payload["injection_id"] == 99
+        assert payload["matched"] is True

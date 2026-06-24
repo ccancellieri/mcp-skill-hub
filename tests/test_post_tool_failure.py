@@ -1,4 +1,6 @@
-"""Tests for post_tool_observer.py PostToolUseFailure branch (Claude Code 2.1.119)."""
+"""Tests for post_tool_observer.py PostToolUseFailure branch (Claude Code 2.1.119)
+and _maybe_emit_skill_used (issue #94).
+"""
 from __future__ import annotations
 
 import io
@@ -6,11 +8,14 @@ import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(HOOKS_DIR))
+sys.path.insert(0, str(SRC_DIR))
 
 
 @pytest.fixture
@@ -135,3 +140,96 @@ def test_post_tool_use_success_still_records_allow(isolated_verdict_db):
     assert len(rows) == 1
     assert rows[0]["decision"] == "allow"
     assert rows[0]["source"] == "user_approved"
+
+
+# ===========================================================================
+# _maybe_emit_skill_used — issue #94
+# ===========================================================================
+
+
+class TestMaybeEmitSkillUsed:
+    """Tests for post_tool_observer._maybe_emit_skill_used."""
+
+    def _make_store(self, tmp_path, name: str = "hook_test.db"):
+        from skill_hub.store import SkillStore
+        store = SkillStore(db_path=tmp_path / name)
+        store.close = lambda: None  # keep open for assertions
+        return store
+
+    def test_skill_used_event_emitted_on_search_skills(self, tmp_path):
+        """search_skills PostToolUse with LOADED skills emits skill.used events."""
+        import post_tool_observer as pto
+        import skill_hub.store as _s_mod
+
+        store = self._make_store(tmp_path, "hook1.db")
+        response_text = (
+            "<!-- Skill Hub search: query='test' top_k=3 mode=vector -->\n"
+            "<!-- LOADED (2): skill-alpha, skill-beta -->\n"
+            "<!-- NOT LOADED (1): skill-gamma -->\n"
+        )
+
+        with patch.object(_s_mod, "SkillStore", return_value=store):
+            pto._maybe_emit_skill_used(
+                pto._SEARCH_SKILLS_TOOL, response_text, "sess-hook-1"
+            )
+
+        rows = store.get_events(session_id="sess-hook-1", kind="skill.used")
+        assert len(rows) == 2
+        skill_ids = {json.loads(r["payload"])["skill_id"] for r in rows}
+        assert skill_ids == {"skill-alpha", "skill-beta"}
+
+    def test_matched_true_when_prior_injection_exists(self, tmp_path):
+        """injection_id is resolved when a skill_injections row exists."""
+        import post_tool_observer as pto
+        import skill_hub.store as _s_mod
+        from skill_hub.store import SkillStore
+
+        store = SkillStore(db_path=tmp_path / "match_test.db")
+        # Pre-populate an injection row
+        store.log_skill_injection("skill-match", query="q", session_id="sess-m")
+        store.close = lambda: None  # keep open for assertions
+
+        with patch.object(_s_mod, "SkillStore", return_value=store):
+            pto._maybe_emit_skill_used(
+                tool_name=pto._SEARCH_SKILLS_TOOL,
+                tool_response=(
+                    "<!-- LOADED (1): skill-match -->\n"
+                    "<!-- NOT LOADED (0): none -->\n"
+                ),
+                session_id="sess-m",
+            )
+
+        rows = store.get_events(session_id="sess-m", kind="skill.used")
+        assert len(rows) == 1
+        payload = json.loads(rows[0]["payload"])
+        assert payload["matched"] is True
+        assert payload["injection_id"] is not None
+
+    def test_no_event_for_non_search_skills_tool(self, tmp_path):
+        """Non-search_skills tools must not emit skill.used events."""
+        import post_tool_observer as pto
+        import skill_hub.store as _s_mod
+
+        store = self._make_store(tmp_path, "bash_test.db")
+
+        with patch.object(_s_mod, "SkillStore", return_value=store):
+            pto._maybe_emit_skill_used("Bash", "some output", "sess-bash")
+
+        rows = store.get_events(session_id="sess-bash", kind="skill.used")
+        assert rows == []
+
+    def test_no_event_when_loaded_is_none(self, tmp_path):
+        """Response with 'none' in LOADED list must produce no events."""
+        import post_tool_observer as pto
+        import skill_hub.store as _s_mod
+
+        store = self._make_store(tmp_path, "none_test.db")
+        response_text = "<!-- LOADED (0): none -->\n"
+
+        with patch.object(_s_mod, "SkillStore", return_value=store):
+            pto._maybe_emit_skill_used(
+                pto._SEARCH_SKILLS_TOOL, response_text, "sess-none"
+            )
+
+        rows = store.get_events(session_id="sess-none", kind="skill.used")
+        assert rows == []
