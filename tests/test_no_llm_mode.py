@@ -88,7 +88,7 @@ def test_embed_unavailable_reason_normal_path(tmp_path, monkeypatch):
     cfg_mod.set("no_llm_mode", False)
     msg = emb.embed_unavailable_reason()
     # When the flag is off the message points at the cascade backends.
-    assert "VOYAGE_API_KEY" in msg or "Ollama" in msg
+    assert "Ollama" in msg or "sentence-transformers" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,6 @@ def test_capabilities_matrix_marks_llm_backends_missing(tmp_path, monkeypatch):
     assert by_id[cap.BACKEND_EMBED]["ok"] is False
     assert by_id[cap.BACKEND_OLLAMA]["ok"] is False
     assert by_id[cap.BACKEND_REASON_LLM]["ok"] is False
-    assert by_id[cap.BACKEND_VOYAGE]["ok"] is False
 
     # MCP / DB / Git stay green — they don't need a local LLM.
     assert by_id[cap.BACKEND_MCP]["ok"] is True
@@ -151,7 +150,7 @@ def test_no_llm_summary_counts_match_capabilities_tools(tmp_path, monkeypatch):
 def test_no_llm_summary_disabled_tools_all_have_llm_hard_dep():
     """Every 'disabled' tool must hard-require an LLM-tier backend."""
     llm_backends = {cap.BACKEND_EMBED, cap.BACKEND_OLLAMA,
-                    cap.BACKEND_REASON_LLM, cap.BACKEND_VOYAGE}
+                    cap.BACKEND_REASON_LLM}
     ns = cap.no_llm_summary()
     spec_by_name = {t.name: t for t in cap.TOOLS}
     for name in ns["disabled_tools"]:

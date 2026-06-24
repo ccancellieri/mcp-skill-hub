@@ -34,7 +34,6 @@ def _isolated_config(tmp_path, monkeypatch):
     from skill_hub import config as cfg
 
     monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
-    cfg.reset_vault_migration_flag()
     yield
 
 
@@ -281,7 +280,6 @@ class TestPostcompactPressureGate:
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(json.dumps({"postcompact_pressure_max": "IDLE"}))
         monkeypatch.setattr(cfg_mod, "CONFIG_PATH", cfg_path)
-        cfg_mod.reset_vault_migration_flag()
 
         # LOW pressure (above IDLE) should be blocked when ceiling=IDLE
         monkeypatch.setattr(rm, "snapshot",

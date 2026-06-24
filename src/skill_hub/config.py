@@ -34,18 +34,9 @@ _DEFAULTS = {
     "no_llm_mode": False,
 
     # Embedding backend cascade
-    "embedding_backend": "auto",  # auto | voyage | ollama | sentence_transformers
-    "embedding_backend_priority": ["voyage", "ollama", "sentence_transformers"],
+    "embedding_backend": "auto",  # auto | ollama | sentence_transformers
+    "embedding_backend_priority": ["ollama", "sentence_transformers"],
     # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
-    "voyage_api_key": None,  # legacy literal; prefer voyage_api_key_ref + vault
-    "voyage_api_key_ref": None,  # vault ref name; populated by vault migration
-    "anthropic_api_key_ref": None,  # vault ref name; populated by vault migration
-
-    # Credential vault — 3-tier (keyring → file → env). When unset (None),
-    # the vault auto-detects A → B → C at startup. Set to "env" to force
-    # tier C (env-var pass-through) and skip migration.
-    "vault_backend": None,
-    "voyage_embed_model": "voyage/voyage-3-lite",
     "sentence_transformers_model": "all-MiniLM-L6-v2",
 
     # LLM backend config (for pipeline tiers, replacing the old Ollama-only approach)
@@ -564,6 +555,34 @@ _DEFAULTS = {
     # Default tier when code doesn't specify one.
     "llm_default_tier": "tier_cheap",
 
+    # S2b — auxiliary LLM escalation ladder (issue #117). Ordered provider
+    # registry; the escalation engine walks it by order → availability →
+    # model complexity → remaining quota. SECRET-FREE defaults: api_base is
+    # empty and api_key references an opencode provider id or an env var — the
+    # actual endpoint/key live only in the user's local opencode config / env.
+    "llm_provider_registry": [
+        {"name": "local-ollama", "level": "L1", "kind": "ollama",
+         "api_base": "", "api_key": {}, "enabled": True, "order": 10,
+         "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light"}]},
+        {"name": "remote-ollama", "level": "L2", "kind": "ollama",
+         "api_base": "", "api_key": {"source": "env", "ref": "SKILL_HUB_REMOTE_OLLAMA_BASE"},
+         "enabled": False, "order": 20, "models": []},
+        {"name": "work-gateway", "level": "L3", "kind": "openai_compatible",
+         "api_base": "", "api_key": {"source": "opencode", "ref": ""},
+         "enabled": False, "order": 30, "models": []},
+        {"name": "personal-claude", "level": "personal", "kind": "anthropic",
+         "api_base": "", "api_key": {"source": "env", "ref": "ANTHROPIC_API_KEY"},
+         "enabled": True, "order": 90,
+         "models": [{"id": "anthropic/claude-haiku-4-5", "complexity": "light"},
+                    {"id": "anthropic/claude-sonnet-4-6", "complexity": "heavy"}]},
+    ],
+    # Cooldown (seconds) before re-probing a model that returned a quota/429
+    # signal or hit its monthly cap. Assumption (no value given): 1h re-probe.
+    "llm_cooldown_seconds": 3600,
+    # Hard cap (USD/day) on personal-Claude *auxiliary* spend; null = no cap
+    # (opt-in). Over cap → auxiliary tasks degrade to L0/L1.
+    "llm_personal_daily_usd_cap": None,
+
     # Tier used by optimize_memory for LLM file classification.
     # cheap | mid | smart  (maps to llm_providers.tier_*)
     "optimize_memory_tier": "smart",
@@ -778,12 +797,8 @@ def _merge_defaults(cfg: dict) -> dict:
     return cfg
 
 
-_VAULT_MIGRATED_FLAG = False
-
-
 def load_config() -> dict:
     """Load config from file, fold legacy keys, and fill defaults."""
-    global _VAULT_MIGRATED_FLAG
     config: dict = {}
     if CONFIG_PATH.exists():
         try:
@@ -792,26 +807,7 @@ def load_config() -> dict:
             config = {}
     config = _migrate_legacy(config)
     config = _merge_defaults(config)
-
-    # One-shot vault migration of literal secrets (idempotent — second run
-    # is a no-op once *_ref fields are in place).
-    if not _VAULT_MIGRATED_FLAG:
-        _VAULT_MIGRATED_FLAG = True
-        try:
-            from . import vault as _vault_mod
-            v = _vault_mod.Vault.detect(config.get("vault_backend"))
-            _vault_mod.migrate_config_secrets(config, v, save_fn=save_config)
-        except Exception:
-            # Never block load on vault errors.
-            pass
-
     return config
-
-
-def reset_vault_migration_flag() -> None:
-    """Test helper — clear the one-shot migration guard."""
-    global _VAULT_MIGRATED_FLAG
-    _VAULT_MIGRATED_FLAG = False
 
 
 def save_config(config: dict) -> None:

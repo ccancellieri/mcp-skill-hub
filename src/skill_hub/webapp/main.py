@@ -40,6 +40,7 @@ from .routes import vector as vector_routes
 from .routes import verdicts as verdicts_routes
 from .routes import experiments as experiments_routes
 from .routes import wiki as wiki_routes
+from .routes import providers as providers_routes
 
 PKG_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PKG_DIR / "static"
@@ -55,6 +56,7 @@ _CORE_NAV: list[dict[str, Any]] = [
     {"key": "control", "label": "Control", "href": "/control"},
     {"key": "health", "label": "Health", "href": "/health"},
     {"key": "settings", "label": "Settings", "href": "/settings"},
+    {"key": "providers", "label": "Providers", "href": "/providers"},
     {"key": "logs", "label": "Logs", "href": "/logs"},
     {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
     {"key": "tasks", "label": "Tasks", "href": "/tasks"},
@@ -233,6 +235,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(wiki_routes.router)
     app.include_router(experiments_routes.router)
     app.include_router(capabilities_routes.router)
+    app.include_router(providers_routes.router)
 
     # Seed default cron jobs (no-op if table already populated) and start
     # the background scheduler when cron_jobs_enabled is True.

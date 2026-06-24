@@ -424,7 +424,7 @@ def api_get_tier_config() -> Any:
             {
                 "id": "L2",
                 "name": "Retrieve",
-                "backend": _cfg.get("embedding_backend_priority") or ["voyage", "ollama", "sentence_transformers"],
+                "backend": _cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"],
                 "timeout_ms": _cfg.get("pipeline_tier2_timeout_ms") or 400,
                 "description": "Semantic retrieval and task dedup",
             },
@@ -543,7 +543,7 @@ def api_backend_health() -> Any:
             )
             result["search_mode"] = "hybrid"
         priority = _cfg.get("embedding_backend_priority") or [
-            "voyage", "ollama", "sentence_transformers"
+            "ollama", "sentence_transformers"
         ]
         result["embedding"]["backend"] = (
             priority[0] if isinstance(priority, list) else str(priority)
