@@ -329,9 +329,63 @@ def _codegraph_indexed(cwd: str) -> bool:
     return False
 
 
+_CG_EMPTY_RE = _re.compile(
+    r"\bno (?:results|matches|nodes?|symbols?)\b|not found|0 results", _re.I)
+
+
+def _mcp_response_text(tool_response: object) -> str:
+    """Flatten an MCP tool_response (dict/list/str) to plain text."""
+    if isinstance(tool_response, dict):
+        c = tool_response.get("content") or tool_response.get("text") or ""
+        if isinstance(c, list):
+            return " ".join(
+                str(x.get("text", "") if isinstance(x, dict) else x) for x in c)
+        return str(c)
+    if isinstance(tool_response, str):
+        return tool_response
+    return ""
+
+
+def _codegraph_outcome(tool_response: object, event: str) -> str:
+    """Classify a codegraph tool call: ok | empty | fail.
+
+    ``empty`` (a successful call that found nothing) is the signal that matters —
+    it's what pushes an agent back to a heavy grep, so it's worth surfacing.
+    """
+    if event == "PostToolUseFailure":
+        return "fail"
+    if isinstance(tool_response, dict) and (
+            tool_response.get("is_error") or tool_response.get("error")):
+        return "fail"
+    text = _mcp_response_text(tool_response).strip()
+    if not text or len(text) < 8 or _CG_EMPTY_RE.search(text):
+        return "empty"
+    return "ok"
+
+
+def _meter_codegraph(tool: str, outcome: str) -> None:
+    """Best-effort telemetry: record a codegraph_call event. Never raises."""
+    try:
+        from skill_hub.store import get_store
+
+        get_store().append_event(
+            session_id="", kind="codegraph_call",
+            payload={"tool": tool, "outcome": outcome}, tool_name=tool,
+        )
+    except Exception:
+        pass
+
+
 def _emit_tool_activity(tool_name: str, tool_input: dict, cwd: str,
-                        cfg: dict) -> None:
-    """Write a compact `TOOL` line (and a codegraph `HINT`) to activity.log."""
+                        cfg: dict, tool_response: object = None,
+                        event: str = "PostToolUse") -> None:
+    """Write a compact `TOOL` line (and a codegraph `HINT`) to activity.log.
+
+    For codegraph calls the line carries the outcome (``[ok]`` / ``[empty]`` /
+    ``[fail]``) and a metered ``codegraph_call`` event, so actual codegraph usage
+    and its success/failure — and thus when agents are pushed back to grep — are
+    visible.
+    """
     if not tool_name or not cfg.get("log_tool_usage", True):
         return
     try:
@@ -339,7 +393,12 @@ def _emit_tool_activity(tool_name: str, tool_input: dict, cwd: str,
     except Exception:
         return
     name, detail, greplike = _describe_tool(tool_name, tool_input)
-    append_line(f"TOOL  {name:<22}{detail}".rstrip())
+    suffix = ""
+    if tool_name.startswith("mcp__codegraph__"):
+        outcome = _codegraph_outcome(tool_response, event)
+        suffix = f"  [{outcome}]"
+        _meter_codegraph(name, outcome)
+    append_line(f"TOOL  {name:<22}{detail}{suffix}".rstrip())
     if (greplike and cfg.get("tool_usage_codegraph_hint", True)
             and _codegraph_indexed(cwd)):
         append_line("HINT  codegraph indexed here — prefer codegraph_search")
@@ -367,8 +426,10 @@ def main() -> int:
     # of auto_approve_learn; continuous_teaching_enabled guards it internally).
     # Failure events skip auto-teach: a feedback file written then immediately
     # erroring out shouldn't propagate as a teaching.
+    if event in ("PostToolUse", "PostToolUseFailure"):
+        _emit_tool_activity(tool_name, tool_input, data.get("cwd") or "", cfg,
+                            data.get("tool_response"), event)
     if event == "PostToolUse":
-        _emit_tool_activity(tool_name, tool_input, data.get("cwd") or "", cfg)
         _maybe_auto_teach_from_feedback(tool_name, tool_input)
         _maybe_observe_claude_task(data)
         _maybe_emit_skill_used(tool_name, data.get("tool_response"), session_id)

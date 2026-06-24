@@ -139,6 +139,37 @@ def test_emit_tool_activity_logs_and_hints(observer, tmp_path, monkeypatch):
     assert "prefer codegraph_search" not in text
 
 
+def test_codegraph_outcome_classification(observer):
+    # Non-empty payload -> ok.
+    ok = observer._codegraph_outcome({"content": "def foo(): ... 12 callers"}, "PostToolUse")
+    assert ok == "ok"
+    # Empty / "no results" -> empty (the signal that pushes agents to grep).
+    assert observer._codegraph_outcome({"content": "No matches found"}, "PostToolUse") == "empty"
+    assert observer._codegraph_outcome({"content": ""}, "PostToolUse") == "empty"
+    # Error field or failure event -> fail.
+    assert observer._codegraph_outcome({"is_error": True}, "PostToolUse") == "fail"
+    assert observer._codegraph_outcome({"content": "x" * 50}, "PostToolUseFailure") == "fail"
+
+
+def test_emit_tool_activity_tags_codegraph_outcome(observer, tmp_path, monkeypatch):
+    from skill_hub import activity_log as al
+    log_file = tmp_path / "activity.log"
+    monkeypatch.setattr(al, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(al, "LOG_FILE", log_file)
+    metered: list = []
+    monkeypatch.setattr(observer, "_meter_codegraph",
+                        lambda tool, outcome: metered.append((tool, outcome)))
+    cfg = {"log_tool_usage": True}
+
+    observer._emit_tool_activity(
+        "mcp__codegraph__codegraph_search", {"query": "foo"}, str(tmp_path), cfg,
+        {"content": "No results"}, "PostToolUse",
+    )
+    text = log_file.read_text()
+    assert "TOOL  codegraph:search" in text and "[empty]" in text
+    assert metered == [("codegraph:search", "empty")]
+
+
 def test_emit_tool_activity_no_hint_without_index(observer, tmp_path, monkeypatch):
     from skill_hub import activity_log as al
     log_file = tmp_path / "activity.log"
