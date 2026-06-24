@@ -43,7 +43,7 @@
         {% endif %}
       </td>
       <td>
-        <button onclick="testProvider('{{ p.name }}')" class="btn-sm">Test</button>
+        <button class="btn-sm test-btn" data-name="{{ p.name }}">Test</button>
         <span id="test-result-{{ p.name }}"></span>
       </td>
     </tr>
@@ -59,7 +59,7 @@
   <p>Paste the full registry list as JSON. Every record is validated before saving.</p>
   <textarea id="registry-json" rows="20" style="width:100%; font-family:monospace; font-size:0.85em;">{{ providers | tojson(indent=2) }}</textarea>
   <div style="margin-top:0.5rem;">
-    <button onclick="saveRegistry()">Save Registry</button>
+    <button id="save-registry-btn">Save Registry</button>
     <span id="save-status" style="margin-left:1rem;"></span>
   </div>
 </section>
@@ -114,5 +114,11 @@ async function testProvider(name) {
     el.style.color = 'red';
   }
 }
+
+// Wire handlers without inline on* attributes (avoids JS-context escaping issues).
+document.getElementById('save-registry-btn')?.addEventListener('click', saveRegistry);
+document.querySelectorAll('.test-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () { testProvider(btn.dataset.name); });
+});
 </script>
 {% endblock %}

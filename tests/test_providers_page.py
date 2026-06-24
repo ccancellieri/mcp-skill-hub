@@ -61,3 +61,35 @@ def test_post_rejects_malformed(client):
     _write(cfg_path, {"llm_provider_registry": []})
     r = c.post("/providers", json={"registry": [{"name": "x", "level": "BAD", "kind": "ollama"}]})
     assert r.json()["ok"] is False
+
+
+def test_post_error_does_not_leak_inline_secret(client):
+    """A malformed record carrying an inline secret must not echo it in the error."""
+    c, cfg_path = client
+    _write(cfg_path, {"llm_provider_registry": []})
+    r = c.post("/providers", json={"registry": [
+        {"name": "x", "level": "BAD", "kind": "openai_compatible",
+         "api_key": {"source": "inline", "ref": "sk-LEAK-ME"}}]})
+    body = r.json()
+    assert body["ok"] is False
+    assert "sk-LEAK-ME" not in json.dumps(body)
+
+
+def test_post_from_view_preserves_stored_credential(client):
+    """Saving the secret-free page view (no api_key) must not wipe the stored cred."""
+    c, cfg_path = client
+    _write(cfg_path, {"llm_provider_registry": [
+        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+         "api_key": {"source": "inline", "ref": "sk-KEEP"}, "enabled": True, "order": 30,
+         "models": [{"id": "m1", "complexity": "light"}]}]})
+    # Post the view shape: cred_label instead of api_key, enabled toggled off.
+    view = {"registry": [
+        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+         "cred_label": "inline", "enabled": False, "order": 30,
+         "models": [{"id": "m1", "complexity": "light"}]}]}
+    r = c.post("/providers", json=view)
+    assert r.json()["ok"] is True
+    saved = cfg_mod.get("llm_provider_registry")[0]
+    assert saved["api_key"] == {"source": "inline", "ref": "sk-KEEP"}  # preserved
+    assert saved["enabled"] is False                                   # edit applied
+    assert "cred_label" not in saved                                   # view field stripped

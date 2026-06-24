@@ -83,12 +83,35 @@ async def providers_save(request: Request) -> JSONResponse:
     if not isinstance(registry_list, list):
         return JSONResponse({"ok": False, "error": "Body must have a 'registry' list"})
 
-    # Validate every record — reject the whole write if any parses to None.
-    for rec in registry_list:
-        if _registry._parse_provider(rec) is None:
-            return JSONResponse({"ok": False, "error": f"Invalid provider record: {rec!r}"})
+    # Preserve credentials across a save from the secret-free page view: the
+    # rendered table omits api_key, so a record posted without one (or with an
+    # empty one) inherits the stored provider's credential by name. This keeps
+    # the page secret-free yet prevents a Save from silently wiping creds.
+    stored = _config.get("llm_provider_registry") or []
+    stored_keys = {
+        r.get("name"): r.get("api_key")
+        for r in (stored if isinstance(stored, list) else [])
+        if isinstance(r, dict) and r.get("api_key")
+    }
 
-    _config.set("llm_provider_registry", registry_list)
+    merged: list = []
+    for rec in registry_list:
+        if isinstance(rec, dict):
+            rec = {k: v for k, v in rec.items() if k != "cred_label"}
+            if not rec.get("api_key") and rec.get("name") in stored_keys:
+                rec["api_key"] = stored_keys[rec["name"]]
+        merged.append(rec)
+
+    # Validate every record — reject the whole write if any parses to None.
+    # Error text is sanitized: never echo the raw record (it may carry an
+    # inline credential).
+    for i, rec in enumerate(merged):
+        if _registry._parse_provider(rec) is None:
+            label = rec.get("name") if isinstance(rec, dict) else None
+            ref = repr(label) if label else f"entry {i}"
+            return JSONResponse({"ok": False, "error": f"Invalid provider record: {ref}"})
+
+    _config.set("llm_provider_registry", merged)
     return JSONResponse({"ok": True})
 
 
