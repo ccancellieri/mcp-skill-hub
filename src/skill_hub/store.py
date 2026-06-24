@@ -1863,6 +1863,49 @@ class SkillStore:
         )
         self._conn.commit()
 
+    def record_skill_used(
+        self,
+        skill_id: str,
+        session_id: str,
+        injection_id: int | None = None,
+    ) -> int | None:
+        """Emit a ``skill.used`` event tied to the most-recent injection.
+
+        Resolves ``injection_id`` automatically when not supplied: queries
+        ``skill_injections`` for the latest row matching ``skill_id`` +
+        ``session_id``.  If no matching injection exists the event is still
+        written with ``injection_id=null`` so used-without-injection is
+        visible.
+
+        Returns the new event row id (or None on failure).
+        """
+        resolved_id = injection_id
+        if resolved_id is None and session_id:
+            try:
+                row = self._conn.execute(
+                    "SELECT id FROM skill_injections "
+                    "WHERE skill_id = ? AND session_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (skill_id, session_id),
+                ).fetchone()
+                if row:
+                    resolved_id = int(row["id"])
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("record_skill_used: injection lookup failed: %s", exc)
+
+        payload: dict = {
+            "skill_id": skill_id,
+            "session_id": session_id,
+            "injection_id": resolved_id,
+            "matched": resolved_id is not None,
+        }
+        return self.append_event(
+            session_id,
+            "skill.used",
+            payload,
+            tool_name="search_skills",
+        )
+
     def record_feedback(self, skill_id: str, query: str,
                         query_vector: list[float], helpful: bool) -> None:
         self._conn.execute("""

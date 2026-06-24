@@ -4217,21 +4217,22 @@ def analyze_failures(
 def analyze_skill_selection(
     limit: int = 500,
 ) -> str:
-    """Report per-skill injection counts and feedback helpful-rates.
+    """Report per-skill injection counts, used counts, used-rate, and feedback.
 
-    Uses ``skill_injections`` and ``feedback`` tables — no LLM.
+    Uses ``skill_injections``, ``events`` (kind='skill.used'), and
+    ``feedback`` tables — no LLM.
 
-    NOTE: True injected-vs-used attribution is not tracked in the current
-    schema.  This tool reports injection frequency and feedback signal as
-    separate dimensions; it cannot determine whether an injected skill was
-    actually read or acted on.  A follow-up issue is needed to add an
-    ``injection_used`` event kind to close this gap.
+    ``used_rate`` = used / injections per skill.  Skills with injections > 0
+    and used == 0 are flagged "injected-but-unused" — real candidates for
+    removal or rewrite, derived from actual tool-invocation data rather than
+    heuristics.
     """
     log_tool("analyze_skill_selection", limit=limit)
     from .log_insights import skill_selection_stats
     stats = skill_selection_stats(limit=limit)
     rows = stats.get("skills", [])
     total_injections = stats.get("total_injections", 0)
+    total_used = stats.get("total_used", 0)
     total_feedback = stats.get("total_feedback", 0)
     if not rows:
         return (
@@ -4240,26 +4241,28 @@ def analyze_skill_selection(
         )
     lines: list[str] = [
         f"## Skill selection metrics (last {limit} injections)\n",
-        f"Total injections: {total_injections}  |  Total feedback rows: {total_feedback}\n",
-        "| skill | injections | helpful_rate | feedback_n | status |",
-        "|-------|-----------|-------------|------------|--------|",
+        f"Total injections: {total_injections}  |  "
+        f"Total used: {total_used}  |  Total feedback rows: {total_feedback}\n",
+        "| skill | injections | used | used_rate | helpful_rate | feedback_n | status |",
+        "|-------|-----------|------|-----------|-------------|------------|--------|",
     ]
     for r in rows:
         helpful_rate = r.get("helpful_rate")
         rate_str = f"{helpful_rate:.0%}" if helpful_rate is not None else "n/a"
+        used_rate = r.get("used_rate")
+        used_rate_str = f"{used_rate:.0%}" if used_rate is not None else "n/a"
         status = r.get("status", "")
         lines.append(
-            f"| `{r['skill_id']}` | {r['injections']} | {rate_str} "
-            f"| {r['feedback_n']} | {status} |"
+            f"| `{r['skill_id']}` | {r['injections']} | {r.get('used', 0)} "
+            f"| {used_rate_str} | {rate_str} | {r['feedback_n']} | {status} |"
         )
-    # Attribution gap notice (always shown)
-    lines.append(
-        "\n> **Attribution gap**: true injected-vs-used tracking is not implemented. "
-        "Injection count reflects how often the skill was returned by search_skills; "
-        "feedback_helpful_rate comes from explicit record_feedback calls. "
-        "A follow-up issue is needed to add an `injection_used` event kind "
-        "to track whether injected skills were actually consulted."
-    )
+    # Surface injected-but-unused candidates explicitly
+    unused = [r for r in rows if r.get("status") == "injected-but-unused"]
+    if unused:
+        lines.append(
+            f"\n**Injected-but-unused candidates ({len(unused)})**: "
+            + ", ".join(f"`{r['skill_id']}`" for r in unused)
+        )
     return "\n".join(lines)
 
 
