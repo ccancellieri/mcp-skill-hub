@@ -89,6 +89,18 @@ def start_watcher() -> object | None:
     except Exception:
         pass
 
+    # Watch wiki vault directory — triggers full reindex on debounced .md change.
+    # Gated on the same watcher service config that gates this entire function.
+    # The vault root is resolved the same way wiki.py / cron.py resolve it:
+    # config key "wiki_root" with fallback to ~/.claude/mcp-skill-hub/wiki.
+    try:
+        wiki_vault = Path(str(_cfg.get("wiki_root") or
+                              Path.home() / ".claude" / "mcp-skill-hub" / "wiki")).expanduser()
+        if wiki_vault.exists():
+            observer.schedule(_WikiVaultHandler(), str(wiki_vault), recursive=True)
+    except Exception:
+        pass
+
     observer.start()
     return observer
 
@@ -201,6 +213,87 @@ class _DebounceHandler:
             with self._lock:
                 self._reindexing = False
                 self._last_reindex_done = time.monotonic()
+
+
+class _WikiVaultHandler:
+    """Debounced watcher for the wiki vault directory.
+
+    On any .md change under the vault root, triggers a full wiki.reindex().
+    The reindex is idempotent (delete-then-reinsert) so calling it on each
+    debounced change is safe and correct.
+
+    TODO (deferred): incremental re-embed — track changed page paths and
+    call wiki._index_pages(store, wiki_root, changed_pages) instead of a
+    full reindex, to reduce LLM/embed overhead when only a few pages change.
+    """
+
+    def __init__(self, delay: float = 2.0) -> None:
+        self._delay = delay
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+        self._last_changed: str = ""
+        self._busy: bool = False
+        self._last_done: float = 0.0
+
+    def dispatch(self, event: object) -> None:
+        src = getattr(event, "src_path", "")
+        if not src.endswith(".md"):
+            return
+        if any(part in src for part in _IGNORE_PATH_PARTS):
+            return
+        with self._lock:
+            import time as _time
+            if self._busy:
+                return
+            if (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL:
+                return
+            self._last_changed = src
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._delay, self._do_reindex)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _do_reindex(self) -> None:
+        import time
+        with self._lock:
+            if self._busy:
+                return
+            self._busy = True
+
+        try:
+            from .activity_log import log_event
+            from . import config as _cfg
+            from . import wiki as _wiki
+            from .store import SkillStore
+
+            wiki_root = Path(str(_cfg.get("wiki_root") or
+                                 Path.home() / ".claude" / "mcp-skill-hub" / "wiki")).expanduser()
+            changed_name = Path(self._last_changed).name if self._last_changed else "unknown"
+            log_event("WATCHER", f"wiki reindex triggered (change: {changed_name})")
+
+            t0 = time.monotonic()
+            store = SkillStore()
+            try:
+                result = _wiki.reindex(store, wiki_root, dry_run=False)
+            finally:
+                store.close()
+            elapsed = time.monotonic() - t0
+            log_event("WATCHER",
+                      f"wiki reindex complete: pages={result['pages']} "
+                      f"edges={result['edges']} vectors={result['vectors']} "
+                      f"in {elapsed:.1f}s")
+        except Exception as exc:
+            try:
+                from .activity_log import log_event
+                log_event("WATCHER", f"wiki reindex failed: {exc}")
+            except Exception:
+                pass
+        finally:
+            import time as _time
+            with self._lock:
+                self._busy = False
+                self._last_done = _time.monotonic()
 
 
 class _PluginPathHandler:

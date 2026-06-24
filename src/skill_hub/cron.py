@@ -103,6 +103,11 @@ def _log_digest_snapshot_handler() -> None:
     _log.debug("log_digest_snapshot: %s", _json.dumps(d, default=str))
 
 
+# Register module-level handlers so the scheduler can dispatch them.
+_HANDLERS["log_digest_snapshot"] = _log_digest_snapshot_handler
+_HANDLERS["wiki_reindex_nightly"] = _wiki_reindex_nightly_handler
+
+
 def human_schedule(schedule: str) -> str:
     """Return a human-readable description of a cron expression."""
     return _HUMAN_SCHEDULES.get(schedule, schedule)
