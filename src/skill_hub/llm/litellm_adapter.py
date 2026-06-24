@@ -169,6 +169,7 @@ class LitellmProvider:
         extra: dict[str, Any] | None = None,
         op: str = "",
         cache_ttl: str = "",
+        complexity: float | None = None,
     ) -> str:
         return self.chat(
             [Message(role="user", content=prompt)],
@@ -178,36 +179,40 @@ class LitellmProvider:
             extra={**(extra or {}), **({"stop": stop} if stop else {})},
             op=op,
             cache_ttl=cache_ttl,
+            complexity=complexity,
         )
 
-    def chat(
+    def _chat_once(
         self,
-        messages: list[Message] | list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
-        tier: str = "tier_cheap",
-        model: str | None = None,
-        max_tokens: int = 512,
-        temperature: float = 0.2,
-        timeout: float = 60.0,
-        cache: bool = False,
-        extra: dict[str, Any] | None = None,
-        op: str = "",
-        cache_ttl: str = "",
+        model: str,
+        api_base: str | None = None,
+        api_key: str | None = None,
+        max_tokens: int,
+        temperature: float,
+        timeout: float,
+        cache: bool,
+        extra: dict[str, Any] | None,
+        op: str,
+        cache_ttl: str,
+        tier: str,
     ) -> str:
-        resolved_model = self._resolve_model(tier, model)
+        """Single litellm completion attempt with an already-resolved model."""
         normalized = self._normalize_messages(messages)
         if cache:
-            normalized = self._apply_cache_control(normalized, resolved_model, cache_ttl)
+            normalized = self._apply_cache_control(normalized, model, cache_ttl)
         kwargs: dict[str, Any] = {
-            "model": resolved_model,
+            "model": model,
             "messages": normalized,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "timeout": timeout,
         }
-        api_base = self._api_base(resolved_model)
         if api_base:
             kwargs["api_base"] = api_base
+        if api_key:
+            kwargs["api_key"] = api_key
         if extra:
             kwargs.update(extra)
         _t0 = time.monotonic()
@@ -216,12 +221,12 @@ class LitellmProvider:
         except Exception as exc:  # noqa: BLE001
             _duration_ms = int(round((time.monotonic() - _t0) * 1000))
             _emit_llm_event(
-                op=op, model=resolved_model, tier=tier,
+                op=op, model=model, tier=tier,
                 duration_ms=_duration_ms,
                 prompt_tokens=0, completion_tokens=0, total_tokens=0,
                 status="error",
             )
-            raise LLMError(f"completion failed ({resolved_model}): {exc}") from exc
+            raise LLMError(f"completion failed ({model}): {exc}") from exc
         _duration_ms = int(round((time.monotonic() - _t0) * 1000))
         try:
             _raw_usage = resp.get("usage") if hasattr(resp, "get") else None
@@ -245,7 +250,7 @@ class LitellmProvider:
         except Exception:  # noqa: BLE001
             _usage = {}
         _emit_llm_event(
-            op=op, model=resolved_model, tier=tier,
+            op=op, model=model, tier=tier,
             duration_ms=_duration_ms,
             prompt_tokens=int(_usage.get("prompt_tokens") or 0),
             completion_tokens=int(_usage.get("completion_tokens") or 0),
@@ -255,7 +260,127 @@ class LitellmProvider:
         try:
             return resp["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"unexpected response shape from {resolved_model}: {exc}") from exc
+            raise LLMError(f"unexpected response shape from {model}: {exc}") from exc
+
+    def chat(
+        self,
+        messages: list[Message] | list[dict[str, str]],
+        *,
+        tier: str = "tier_cheap",
+        model: str | None = None,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout: float = 60.0,
+        cache: bool = False,
+        extra: dict[str, Any] | None = None,
+        op: str = "",
+        cache_ttl: str = "",
+        complexity: float | None = None,
+    ) -> str:
+        # --- Auxiliary escalation ladder -------------------------------------
+        # Engage only when the caller did not pin a model and left tier default
+        # but supplied a complexity signal.
+        if model is None and tier == "tier_cheap" and complexity is not None:
+            return self._chat_via_ladder(
+                self._normalize_messages(messages),
+                complexity=complexity, max_tokens=max_tokens,
+                temperature=temperature, timeout=timeout, cache=cache,
+                extra=extra, op=op, cache_ttl=cache_ttl,
+            )
+
+        resolved_model = self._resolve_model(tier, model)
+        return self._chat_once(
+            self._normalize_messages(messages),
+            model=resolved_model,
+            api_base=self._api_base(resolved_model),
+            api_key=None,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            cache=cache,
+            extra=extra,
+            op=op,
+            cache_ttl=cache_ttl,
+            tier=tier,
+        )
+
+    def _personal_over_cap(self) -> bool:
+        cap = _cfg.get("llm_personal_daily_usd_cap")
+        if cap is None:
+            return False
+        try:
+            spent = self._personal_spend_today_usd()
+        except Exception:  # noqa: BLE001
+            return False
+        return spent >= float(cap)
+
+    def _personal_spend_today_usd(self) -> float:
+        """Sum today's personal-Claude auxiliary spend from llm_call events.
+
+        ``store.get_events`` signature:
+        ``get_events(session_id="", since=0.0, kind="", limit=200)``
+        Each row's ``ts`` is a float epoch. Filter the current day with
+        ``since=<start-of-today epoch>``.
+        """
+        import time as _time
+        from .. import model_registry as _mr
+        from ..store import get_store
+        lt = _time.localtime()
+        start = _time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        total = 0.0
+        try:
+            events = get_store().get_events(kind="llm_call", since=start, limit=5000)
+        except Exception:  # noqa: BLE001
+            return 0.0
+        for ev in events:
+            payload = ev.get("payload") or {}
+            ev_model = str(payload.get("model") or "")
+            if "claude" not in ev_model and not ev_model.startswith("anthropic/"):
+                continue
+            rate = _mr.blended_usd_per_m(ev_model)
+            if rate:
+                total += rate * (int(payload.get("total_tokens") or 0) / 1_000_000)
+        return total
+
+    def _chat_via_ladder(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        complexity: float,
+        max_tokens: int,
+        temperature: float,
+        timeout: float,
+        cache: bool,
+        extra: dict[str, Any] | None,
+        op: str,
+        cache_ttl: str,
+    ) -> str:
+        from . import escalation
+        exclude: set[str] = set()
+        over_cap = self._personal_over_cap()
+        last_exc: Exception | None = None
+        for _ in range(64):
+            sel = escalation.select(complexity, exclude=exclude)
+            if sel is None:
+                break
+            if over_cap and sel.level == "personal":
+                exclude.add(sel.model)
+                continue
+            try:
+                return self._chat_once(
+                    messages, model=sel.model, api_base=sel.api_base,
+                    api_key=sel.api_key, max_tokens=max_tokens,
+                    temperature=temperature, timeout=timeout, cache=cache,
+                    extra=extra, op=op, cache_ttl=cache_ttl,
+                    tier=f"ladder:{sel.level}",
+                )
+            except LLMError as exc:
+                last_exc = exc
+                if escalation.looks_like_quota_error(exc):
+                    escalation.mark_cooldown(sel.model)
+                exclude.add(sel.model)
+                continue
+        raise LLMError(f"escalation ladder exhausted (complexity={complexity}): {last_exc}")
 
     def embed(
         self,
