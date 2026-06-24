@@ -494,6 +494,73 @@ class TestSessionEndPromotion:
 
 
 # ===========================================================================
+# Source C — most recent open task in _gather_context
+# ===========================================================================
+
+class TestGatherContextSourceC:
+    """_gather_context returns task title/summary from a sqlite3.Row via Source C."""
+
+    def test_source_c_contributes_when_open_task_present(self, tmp_store, monkeypatch):
+        """Source C must not raise on sqlite3.Row objects and must return title+summary."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.embeddings as _emb
+
+        # A: no session context
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        # B: embedding unavailable → skip
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+
+        # Insert a real open task so list_tasks returns an actual sqlite3.Row
+        tmp_store.save_task(
+            title="Fix the auth bug",
+            summary="Tokens expire too early causing login failures",
+            vector=[],
+        )
+
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        # Disable wiki (Source D) so we know Source C is the contributor
+        cfg: dict = {
+            "wiki_preload_enabled": False,
+            "wiki_enabled": False,
+            "wiki_root": "",
+        }
+
+        result = preloader._gather_context("auth login", "sess-c-001", cfg)
+
+        assert "Fix the auth bug" in result, (
+            f"Source C title not in context: {result!r}"
+        )
+        assert "Tokens expire too early" in result, (
+            f"Source C summary not in context: {result!r}"
+        )
+
+    def test_source_c_empty_list_yields_no_contribution(self, tmp_store, monkeypatch):
+        """When no open tasks exist Source C is skipped without error."""
+        import skill_hub.router.preloader as preloader
+        import skill_hub.store as _store_mod
+        import skill_hub.embeddings as _emb
+
+        monkeypatch.setattr(tmp_store, "get_session_context", lambda sid: {})
+        monkeypatch.setattr(_emb, "embed_available", lambda: False)
+        # No tasks inserted — list_tasks returns []
+
+        monkeypatch.setattr(_store_mod, "SkillStore", lambda: tmp_store)
+        monkeypatch.setattr(tmp_store, "close", lambda: None)
+
+        cfg: dict = {
+            "wiki_preload_enabled": False,
+            "wiki_enabled": False,
+            "wiki_root": "",
+        }
+
+        result = preloader._gather_context("auth login", "sess-c-002", cfg)
+        assert result == "", f"Expected empty string, got {result!r}"
+
+
+# ===========================================================================
 # Source D — wiki preload in _gather_context
 # ===========================================================================
 
