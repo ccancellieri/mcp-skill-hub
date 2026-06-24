@@ -52,11 +52,13 @@ def clear_handlers():
 # ---------------------------------------------------------------------------
 
 
-def test_seed_defaults_populates_five_jobs(db_path):
+def test_seed_defaults_populates_jobs(db_path):
+    # SkillStore seeds builtin jobs (including wiki-reindex-nightly); seed_defaults
+    # is a no-op when the table is already populated.
     seed_defaults(db_path)
     with sqlite3.connect(db_path) as conn:
         count = conn.execute("SELECT count(*) FROM cron_jobs").fetchone()[0]
-    assert count == 5
+    assert count >= 6  # 5 legacy + wiki-reindex-nightly
 
 
 def test_seed_defaults_idempotent(db_path):
@@ -64,7 +66,7 @@ def test_seed_defaults_idempotent(db_path):
     seed_defaults(db_path)  # second call must be a no-op
     with sqlite3.connect(db_path) as conn:
         count = conn.execute("SELECT count(*) FROM cron_jobs").fetchone()[0]
-    assert count == 5
+    assert count >= 6
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +190,45 @@ def test_run_job_skips_unknown_command(db_path):
     # No handler registered — should not raise, should not update DB
     job = {"id": None, "name": "ghost-job", "command": "no_such_handler"}
     scheduler._run_job(job)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Handler registration — wiki_reindex_nightly and log_digest_snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_wiki_reindex_nightly_handler_registered():
+    """_HANDLERS must contain 'wiki_reindex_nightly' after module import."""
+    # clear_handlers fixture restored the original dict; reimport to get the
+    # module-level registrations.
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+    assert "wiki_reindex_nightly" in _cron_mod._HANDLERS, (
+        "wiki_reindex_nightly handler not registered — cron job silently no-ops"
+    )
+    assert callable(_cron_mod._HANDLERS["wiki_reindex_nightly"])
+
+
+def test_log_digest_snapshot_handler_registered():
+    """_HANDLERS must contain 'log_digest_snapshot' after module import."""
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+    assert "log_digest_snapshot" in _cron_mod._HANDLERS
+    assert callable(_cron_mod._HANDLERS["log_digest_snapshot"])
+
+
+def test_wiki_reindex_nightly_job_seeded_in_store(db_path):
+    """wiki-reindex-nightly must be present in the cron_jobs table."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT command, enabled FROM cron_jobs WHERE name='wiki-reindex-nightly'"
+        ).fetchone()
+    assert row is not None, "wiki-reindex-nightly row missing from cron_jobs"
+    assert row[0] == "wiki_reindex_nightly"
+    # Disabled by default — enable explicitly via the cron UI.
+    assert row[1] == 0
 
 
 def test_run_job_records_error_on_handler_exception(db_path):

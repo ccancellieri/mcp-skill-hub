@@ -4578,6 +4578,8 @@ class SkillStore:
              "memexp_snapshot_create", {}, False, False),
             ("pipeline-health-check", "Pipeline backend health check", "*/15 * * * *",
              "check_embedding_backends", {}, True, False),
+            ("wiki-reindex-nightly", "Wiki vault nightly reindex + re-embed", "0 5 * * *",
+             "wiki_reindex_nightly", {}, False, False),
         ]
         for name, desc, sched, cmd, params, enabled, is_dangerous in defaults:
             self._conn.execute(
