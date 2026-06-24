@@ -1985,10 +1985,66 @@ def search_context(
                     "\nUse toggle_plugin() to enable."
                 )
 
-    # 5. Plugin memory (A4 + M2) — vectors from plugin-declared indexes.
+    # 5. Wiki knowledge layer — explicit search with private-access gate.
+    # ``wiki`` is always searched; ``wiki-private`` only for authorized scopes.
+    # Index hits (slug == "index" or rel_path contains "index.md") are promoted
+    # to the top so the curated overview ranks above raw log/source pages.
+    try:
+        from . import wiki as _wiki_mod
+        from pathlib import Path as _wpath
+        _wiki_root = _wpath(_cfg.get("wiki_root") or
+                            _wpath.home() / ".claude" / "mcp-skill-hub" / "wiki")
+        _wiki_auth = _wiki_authorized_scopes()
+        _wiki_ns = ["wiki"] + (["wiki-private"] if _wiki_auth else [])
+        _wiki_hits = _store.search_vectors(
+            query, namespaces=_wiki_ns, top_k=top_k * 2
+        )
+        if _wiki_hits:
+            # Promote index.md / slug=="index" hits to front.
+            def _is_index_hit(r: dict) -> bool:
+                meta = r.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        import json as _json; meta = _json.loads(meta)
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                rel = str(meta.get("rel_path") or "")
+                slug = str(meta.get("slug") or "")
+                return "index" in slug or rel.endswith("index.md")
+            _wiki_hits = sorted(
+                _wiki_hits, key=lambda r: (0 if _is_index_hit(r) else 1, -r.get("score", 0))
+            )
+            wiki_lines = []
+            for r in _wiki_hits[:top_k]:
+                meta = r.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        import json as _json2; meta = _json2.loads(meta)
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                ns = r.get("namespace", "")
+                # Gate: private results only for authorized scopes.
+                if ns == "wiki-private":
+                    scope_project = str(meta.get("projects") or [""])[1:-1].strip("'\"")
+                    if not _wiki_auth:
+                        continue
+                slug = meta.get("slug") or r.get("doc_id", "")
+                title = meta.get("title") or slug
+                rel = meta.get("rel_path") or ""
+                wiki_lines.append(
+                    f"- [[{slug}]] — {title} "
+                    f"(score={r.get('score', 0):.2f}, {ns}, {rel})"
+                )
+            if wiki_lines:
+                parts.append("## Wiki Knowledge\n\n" + "\n".join(wiki_lines))
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 6. Plugin memory (A4 + M2) — vectors from plugin-declared indexes.
     # Includes both the legacy ``memory:<plugin>`` namespace AND any custom
     # indexes a plugin declares via plugin.json ``vector_indexes`` (e.g.
     # ``career:profile``, ``career:narrative``).
+    # Wiki namespaces are excluded here — they are surfaced in section 5 above.
     if include_plugin_memory:
         try:
             # Namespaces that are NOT core ("skills") — everything else is plugin/memory.
@@ -1999,6 +2055,7 @@ def search_context(
                 and not str(r.get("namespace", "")).startswith("user:")
                 and not str(r.get("namespace", "")).startswith("habits:")
                 and not str(r.get("namespace", "")).startswith("session:")
+                and str(r.get("namespace", "")) not in ("wiki", "wiki-private")
             ][:top_k]
             if mem_rows:
                 mem_lines = []
@@ -2013,7 +2070,7 @@ def search_context(
         except Exception:  # noqa: BLE001
             pass
 
-    # 6. User identity + habits — surface only when relevant to the query.
+    # 7. User identity + habits — surface only when relevant to the query.
     try:
         id_rows = _store.search_vectors(
             query, namespaces=["user:identity", "user:preferences"],
@@ -2029,7 +2086,7 @@ def search_context(
     except Exception:  # noqa: BLE001
         pass
 
-    # 7. CodeGraph symbols — injected when the flag is on and an index exists.
+    # 8. CodeGraph symbols — injected when the flag is on and an index exists.
     if _cfg.get("search_context_use_codegraph"):
         try:
             from .codegraph_context import get_context_block, has_codegraph_index
