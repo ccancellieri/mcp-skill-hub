@@ -198,8 +198,12 @@ class LitellmProvider:
         cache_ttl: str,
         tier: str,
     ) -> str:
-        """Single litellm completion attempt with an already-resolved model."""
-        normalized = self._normalize_messages(messages)
+        """Single litellm completion attempt with an already-resolved model.
+
+        ``messages`` is expected already-normalized (both callers normalize
+        before dispatch), so this method does not normalize again.
+        """
+        normalized = messages
         if cache:
             normalized = self._apply_cache_control(normalized, model, cache_ttl)
         kwargs: dict[str, Any] = {
@@ -322,6 +326,7 @@ class LitellmProvider:
         Each row's ``ts`` is a float epoch. Filter the current day with
         ``since=<start-of-today epoch>``.
         """
+        import json as _json
         import time as _time
         from .. import model_registry as _mr
         from ..store import get_store
@@ -333,7 +338,16 @@ class LitellmProvider:
         except Exception:  # noqa: BLE001
             return 0.0
         for ev in events:
-            payload = ev.get("payload") or {}
+            # store.get_events returns ``payload`` as a raw JSON string (the
+            # store does not decode it on read — see get_compression_stats).
+            raw = ev.get("payload")
+            if isinstance(raw, str):
+                try:
+                    payload = _json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    continue
+            else:
+                payload = raw or {}
             ev_model = str(payload.get("model") or "")
             if "claude" not in ev_model and not ev_model.startswith("anthropic/"):
                 continue

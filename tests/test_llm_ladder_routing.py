@@ -113,3 +113,48 @@ def test_budget_cap_excludes_personal(monkeypatch, tmp_path):
 
     with pytest.raises(provider.LLMError):
         p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+
+
+def test_spend_decodes_json_string_payload_and_caps(monkeypatch, tmp_path):
+    """Regression: store.get_events returns ``payload`` as a JSON *string*.
+
+    The spend accounting must json.loads it (not call .get() on a str), or the
+    budget cap is silently disabled. With a priced personal-model event over
+    the cap and only the personal provider registered, the ladder exhausts.
+    """
+    cfg_data = {
+        "llm_metering_enabled": False,
+        "llm_personal_daily_usd_cap": 1.0,
+        "llm_provider_registry": [_REG["llm_provider_registry"][1]],
+    }
+    _write_cfg(monkeypatch, tmp_path, cfg_data)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+
+    import time as _t
+
+    class _FakeStore:
+        def get_events(self, *, session_id="", since=0.0, kind="", limit=200):
+            # payload is a raw JSON STRING, exactly as the real store returns it.
+            return [{
+                "ts": _t.time(),
+                "payload": json.dumps({
+                    "model": "anthropic/claude-haiku-4-5",
+                    "total_tokens": 1_000_000,
+                }),
+            }]
+
+    import skill_hub.store as store_mod
+    monkeypatch.setattr(store_mod, "get_store", lambda: _FakeStore())
+
+    p = litellm_adapter.LitellmProvider()
+    # Spend must be computed (proves json.loads ran) and exceed the $1 cap.
+    assert p._personal_spend_today_usd() > 1.0
+    assert p._personal_over_cap() is True
+
+    p._litellm = type("X", (), {
+        "suppress_debug_info": True, "drop_params": True,
+        "completion": lambda self, **k: 1 / 0,
+    })()
+    with pytest.raises(provider.LLMError):
+        p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
