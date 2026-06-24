@@ -7,6 +7,9 @@ A snapshot is a single ``.tar.gz`` containing:
 - ``hub/settings_enabled_plugins.json`` — slice of ~/.claude/settings.json
 - ``projects/<key>/<file>.md`` — per-project memory files (no private/)
 - ``local-skills/<file>.json`` — optional, controlled by export option
+- ``wiki/pages/...`` — public wiki pages, controlled by ``include_wiki``
+- ``wiki/_private/...`` — private wiki pages, only when ``wiki_export_private``
+  is explicitly True (default False — never leaked into portable bundles)
 
 Imports apply per-target conflict modes (skip / override / llm). The ``llm``
 mode delegates to :mod:`intelligent_merge`.
@@ -36,6 +39,7 @@ DEFAULT_CONFIG_PATH = DEFAULT_HUB_DIR / "config.json"
 DEFAULT_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 DEFAULT_LOCAL_SKILLS_DIR = Path.home() / ".claude" / "local-skills"
 DEFAULT_EXPORT_DIR = DEFAULT_HUB_DIR / "exports"
+DEFAULT_WIKI_ROOT = DEFAULT_HUB_DIR / "wiki"
 
 
 # ---------------------------------------------------------------------------
@@ -50,10 +54,16 @@ class ExportOptions:
     include_local_skills: bool = False
     include_config: bool = True
     include_enabled_plugins: bool = True
+    # Wiki scope — public pages only unless wiki_export_private is True.
+    # Privacy guarantee: wiki_export_private defaults to False so _private/
+    # pages are NEVER included in a portable bundle unless the caller opts in.
+    include_wiki: bool = False
+    wiki_export_private: bool = False
     db_path: Path = DEFAULT_DB_PATH
     config_path: Path = DEFAULT_CONFIG_PATH
     settings_path: Path = DEFAULT_SETTINGS_PATH
     local_skills_dir: Path = DEFAULT_LOCAL_SKILLS_DIR
+    wiki_root: Path = DEFAULT_WIKI_ROOT
     projects_root: Path = scope.DEFAULT_CLAUDE_PROJECTS_ROOT
     output_dir: Path = DEFAULT_EXPORT_DIR
 
@@ -65,6 +75,8 @@ class RestorePlan:
     ``hub_modes`` maps table-name → ``"skip" | "override" | "llm"``.
     ``project_modes`` maps project-key → ``{"mode": "...", "llm_tier": "..."}``.
     ``llm_per_target`` overrides the tier per hub-table when mode == "llm".
+    ``wiki_root`` controls where wiki pages are restored.  When None the wiki
+    segment in the snapshot (if any) is silently skipped.
     """
 
     hub_modes: dict[str, str] = field(default_factory=dict)
@@ -75,6 +87,7 @@ class RestorePlan:
     db_path: Path = DEFAULT_DB_PATH
     projects_root: Path = scope.DEFAULT_CLAUDE_PROJECTS_ROOT
     local_skills_dir: Path = DEFAULT_LOCAL_SKILLS_DIR
+    wiki_root: Path | None = None
     max_llm_calls: int = 200
 
     def hub_mode(self, table: str) -> str:
@@ -262,6 +275,38 @@ def build_snapshot(opts: ExportOptions) -> Path:
                 shutil.copy2(src, ls_out / src.name)
                 manifest["file_count"] += 1
 
+        # --- Wiki pages (optional) ---
+        # Public pages (pages/) are included when include_wiki is True.
+        # Private pages (_private/) require wiki_export_private=True in addition.
+        # The default (wiki_export_private=False) is the privacy-safe invariant:
+        # _private/ is NEVER written into the staging tree unless opted in.
+        if opts.include_wiki and opts.wiki_root.is_dir():
+            wiki_public = opts.wiki_root / "pages"
+            if wiki_public.is_dir():
+                wiki_out = staging / "wiki" / "pages"
+                wiki_out.mkdir(parents=True, exist_ok=True)
+                for src in wiki_public.rglob("*.md"):
+                    if not src.is_file():
+                        continue
+                    rel = src.relative_to(wiki_public)
+                    dest = wiki_out / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
+                    manifest["file_count"] += 1
+            if opts.wiki_export_private:
+                wiki_private = opts.wiki_root / "_private"
+                if wiki_private.is_dir():
+                    priv_out = staging / "wiki" / "_private"
+                    priv_out.mkdir(parents=True, exist_ok=True)
+                    for src in wiki_private.rglob("*.md"):
+                        if not src.is_file():
+                            continue
+                        rel = src.relative_to(wiki_private)
+                        dest = priv_out / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dest)
+                        manifest["file_count"] += 1
+
         # --- Manifest ---
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
@@ -375,20 +420,47 @@ def restore_snapshot(
                     shutil.copy2(src, dest)
                     report.files.written += 1
 
+        # --- Wiki pages (skip-only; _safe_extract already blocked _private/) ---
+        # Pages already on disk are preserved (skip). The caller should run
+        # ``wiki reindex`` after restore to rebuild the derived DB/vector index.
+        wiki_dir = staging / "wiki"
+        if wiki_dir.is_dir() and plan.wiki_root is not None:
+            for src in sorted(wiki_dir.rglob("*.md")):
+                if not src.is_file():
+                    continue
+                # _safe_extract blocks _private/ at extraction time; this guard
+                # is defence in depth for any future direct-path code paths.
+                if "_private" in src.parts:
+                    continue
+                rel = src.relative_to(wiki_dir)
+                dest = plan.wiki_root / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.exists():
+                    shutil.copy2(src, dest)
+                    report.files.written += 1
+                else:
+                    report.files.skipped += 1
+
     return report
 
 
 def _safe_extract(tar: tarfile.TarFile, dest: Path, report: RestoreReport) -> None:
-    """Extract ``tar`` into ``dest`` while rejecting traversal and private/."""
+    """Extract ``tar`` into ``dest`` while rejecting traversal and private paths.
+
+    Two path shapes are blocked:
+    - ``private/`` — used by project memory segments.
+    - ``_private/`` — used by the wiki vault for private-scoped pages.
+    Both are rejected even when they appear nested inside another directory.
+    """
     for member in tar.getmembers():
         # Reject path traversal and absolute paths.
         target = (dest / member.name).resolve()
         if not str(target).startswith(str(dest.resolve()) + "/") and target != dest.resolve():
             report.errors.append(f"refusing path-traversal entry: {member.name}")
             continue
-        # Defence in depth: snapshots must never carry private/ paths.
-        if any(part == "private" for part in Path(member.name).parts):
-            report.errors.append(f"refusing private/ entry: {member.name}")
+        # Defence in depth: snapshots must never carry private/ or _private/ paths.
+        if any(part in ("private", "_private") for part in Path(member.name).parts):
+            report.errors.append(f"refusing private entry: {member.name}")
             continue
         # ``filter="data"`` strips metadata/symlinks per Python 3.12+ guidance.
         tar.extract(member, dest, filter="data")
@@ -564,6 +636,7 @@ def preview(opts: ExportOptions) -> dict:
         "file_count": 0,
         "estimated_bytes": 0,
         "pii_offenders": [],
+        "wiki": None,
     }
     if opts.db_path.exists():
         with sqlite3.connect(opts.db_path) as conn:
@@ -595,4 +668,36 @@ def preview(opts: ExportOptions) -> dict:
                 pass
         pii_offenders.extend(scope.scan_for_pii(files))
     out["pii_offenders"] = [str(p) for p in pii_offenders]
+
+    if opts.include_wiki and opts.wiki_root.is_dir():
+        public_count = 0
+        private_count = 0
+        wiki_bytes = 0
+        wiki_public = opts.wiki_root / "pages"
+        if wiki_public.is_dir():
+            for f in wiki_public.rglob("*.md"):
+                if f.is_file():
+                    public_count += 1
+                    try:
+                        wiki_bytes += f.stat().st_size
+                    except OSError:
+                        pass
+        wiki_private = opts.wiki_root / "_private"
+        if wiki_private.is_dir():
+            for f in wiki_private.rglob("*.md"):
+                if f.is_file():
+                    private_count += 1
+                    if opts.wiki_export_private:
+                        try:
+                            wiki_bytes += f.stat().st_size
+                        except OSError:
+                            pass
+        out["wiki"] = {
+            "public_pages": public_count,
+            "private_pages": private_count,
+            "private_included": opts.wiki_export_private,
+        }
+        out["file_count"] += public_count + (private_count if opts.wiki_export_private else 0)
+        out["estimated_bytes"] += wiki_bytes
+
     return out
