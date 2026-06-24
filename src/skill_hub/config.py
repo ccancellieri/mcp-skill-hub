@@ -564,6 +564,34 @@ _DEFAULTS = {
     # Default tier when code doesn't specify one.
     "llm_default_tier": "tier_cheap",
 
+    # S2b — auxiliary LLM escalation ladder (issue #117). Ordered provider
+    # registry; the escalation engine walks it by order → availability →
+    # model complexity → remaining quota. SECRET-FREE defaults: api_base is
+    # empty and api_key references an opencode provider id or an env var — the
+    # actual endpoint/key live only in the user's local opencode config / env.
+    "llm_provider_registry": [
+        {"name": "local-ollama", "level": "L1", "kind": "ollama",
+         "api_base": "", "api_key": {}, "enabled": True, "order": 10,
+         "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light"}]},
+        {"name": "remote-ollama", "level": "L2", "kind": "ollama",
+         "api_base": "", "api_key": {"source": "env", "ref": "SKILL_HUB_REMOTE_OLLAMA_BASE"},
+         "enabled": False, "order": 20, "models": []},
+        {"name": "work-gateway", "level": "L3", "kind": "openai_compatible",
+         "api_base": "", "api_key": {"source": "opencode", "ref": ""},
+         "enabled": False, "order": 30, "models": []},
+        {"name": "personal-claude", "level": "personal", "kind": "anthropic",
+         "api_base": "", "api_key": {"source": "env", "ref": "ANTHROPIC_API_KEY"},
+         "enabled": True, "order": 90,
+         "models": [{"id": "anthropic/claude-haiku-4-5", "complexity": "light"},
+                    {"id": "anthropic/claude-sonnet-4-6", "complexity": "heavy"}]},
+    ],
+    # Cooldown (seconds) before re-probing a model that returned a quota/429
+    # signal or hit its monthly cap. Assumption (no value given): 1h re-probe.
+    "llm_cooldown_seconds": 3600,
+    # Hard cap (USD/day) on personal-Claude *auxiliary* spend; null = no cap
+    # (opt-in). Over cap → auxiliary tasks degrade to L0/L1.
+    "llm_personal_daily_usd_cap": None,
+
     # Tier used by optimize_memory for LLM file classification.
     # cheap | mid | smart  (maps to llm_providers.tier_*)
     "optimize_memory_tier": "smart",
