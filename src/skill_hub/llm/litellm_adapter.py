@@ -30,6 +30,9 @@ _OP_ROUTING: dict[str, tuple[float, str]] = {
     "wiki_file_answer": (0.5, "reasoning"),
     "wiki_ingest": (0.4, "writing"),
     "exhaustion_save": (0.4, "writing"),
+    # Prompt optimisation runs on a cheap auxiliary model via the ladder so the
+    # main coding loop never pays for it (G4: prompt-opt via gateway).
+    "improve_prompt": (0.2, "fast"),
 }
 
 # Default complexity per tier, used when an op carries no explicit signal but

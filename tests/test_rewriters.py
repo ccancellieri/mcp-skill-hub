@@ -93,6 +93,51 @@ def test_default_chain_runs_when_rewriters_none(store, monkeypatch):
     assert "hello" in result.prompt
 
 
+def test_normalize_language_routes_via_ladder(store, monkeypatch):
+    """G4: the optimizer must hit the gateway ladder, not pin a local model.
+
+    It calls the provider with ``op="improve_prompt"`` (ladder-eligible) and no
+    explicit ``model``, so chat() routes through L1 -> work gateway.
+    """
+    from skill_hub.router import rewriters
+    from skill_hub import llm as _llm
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def chat(self, messages, **kwargs):
+            captured.update(kwargs)
+            captured["messages"] = messages
+            return "tighten the OLAP pagination question"
+
+    monkeypatch.setattr(_llm, "get_provider", lambda: _FakeProvider())
+    result = rewriters.improve_prompt(
+        "please help me figure out how olap dimension pagination should work",
+        store, rewriters=["normalize_language"],
+    )
+    assert captured.get("op") == "improve_prompt"
+    assert "model" not in captured  # no pinned model -> ladder picks it
+    assert result.applied == ["normalize_language"]
+    assert result.prompt == "tighten the OLAP pagination question"
+
+
+def test_normalize_language_skips_short_prompt(store):
+    from skill_hub.router import rewriters
+
+    result = rewriters.improve_prompt("hi", store, rewriters=["normalize_language"])
+    assert result.applied == []
+    assert any("too short" in n for n in result.notes)
+
+
+def test_improve_prompt_op_is_ladder_eligible():
+    """The op must carry a routing signal so chat() escalates to the gateway."""
+    from skill_hub.llm import litellm_adapter as la
+
+    assert "improve_prompt" in la._OP_ROUTING
+    complexity, domain = la._OP_ROUTING["improve_prompt"]
+    assert 0.0 < complexity <= 0.5 and domain  # cheap + signalled
+
+
 def test_body_rewrite_replaces_prompt(store, monkeypatch):
     from skill_hub.router import rewriters
 

@@ -158,24 +158,26 @@ _NORMALIZE_SYSTEM = (
 
 
 def _rw_normalize_language(prompt: str, store: Any, cfg: dict[str, Any]) -> RewriterResult:
-    """LLM paraphrase via F-LLM provider. Opt-in: only runs on explicit select."""
+    """LLM prompt optimisation via the auxiliary escalation ladder.
+
+    Routes through the gateway ladder (local L1 → work gateway) by passing the
+    ``improve_prompt`` op and no pinned model, so the rewrite runs on a cheap
+    auxiliary model and the main coding loop never pays for it. The provider
+    emits ladder telemetry for the call. Opt-in: only runs on explicit select.
+    """
     if len(prompt.strip()) < 12:
         return RewriterResult(note="normalize: too short to paraphrase")
     try:
         from ..llm import get_provider
     except ImportError:
         return RewriterResult(note="normalize: provider unavailable")
-    providers = cfg.get("llm_providers") or {}
-    model = providers.get("tier_cheap") if isinstance(providers, dict) else None
-    if not model:
-        return RewriterResult(note="normalize: no tier_cheap model configured")
     try:
         text = get_provider().chat(
             [
                 {"role": "system", "content": _NORMALIZE_SYSTEM},
                 {"role": "user", "content": prompt},
             ],
-            model=str(model),
+            op="improve_prompt",  # ladder-eligible signal (see _OP_ROUTING)
             max_tokens=180,
             temperature=0.2,
             timeout=8.0,
@@ -185,7 +187,7 @@ def _rw_normalize_language(prompt: str, store: Any, cfg: dict[str, Any]) -> Rewr
     clean = (text or "").strip().strip("\"'")
     if not clean or clean == prompt.strip():
         return RewriterResult(note="normalize: no change")
-    return RewriterResult(body=clean, note="normalize: paraphrased", applied=True)
+    return RewriterResult(body=clean, note="normalize: optimized via ladder", applied=True)
 
 
 register("add_skill_context", _rw_add_skill_context)
