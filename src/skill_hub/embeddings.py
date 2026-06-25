@@ -154,7 +154,15 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
 
 
 def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:
-    """Embed via Ollama multi-endpoint client."""
+    """Embed via Ollama multi-endpoint client.
+
+    Skips the HTTP attempt entirely when the daemon is known-down (cached probe),
+    so the ``embed()`` cascade falls through to the next backend without burning
+    latency on a doomed call.
+    """
+    from .llm.escalation import ollama_daemon_reachable
+    if not ollama_daemon_reachable():
+        raise RuntimeError("Ollama daemon is not reachable (cached probe)")
     from .ollama_client import get_ollama_client
     client = get_ollama_client()
     api_base = client.get_api_base(model)
