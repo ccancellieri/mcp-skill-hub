@@ -1950,6 +1950,46 @@ def _build_keyword_context_injection(message: str) -> str | None:
     return header + "\n\n".join(parts)
 
 
+_SEARCH_INTENT_RE = __import__("re").compile(
+    r"\b(grep|rg|ripgrep|ag|find|locate|search(?:\s+for)?|where\s+is|"
+    r"look\s+for|trace|callers?|callees?|references?\s+to|usages?\s+of|"
+    r"who\s+calls|impact\s+of)\b",
+    __import__("re").IGNORECASE,
+)
+
+
+def _tool_steering_hint(message: str, cwd: str | None = None) -> str | None:
+    """G2 — proactive, deterministic tool steering (no LLM).
+
+    When the working repo carries a ``.codegraph/`` index AND the prompt shows
+    search/grep intent, emit one concise line nudging Claude toward codegraph
+    queries and compact shell output. Intent-gated so it never fires on
+    unrelated prompts — a one-time-ish nudge exactly when it saves context,
+    not per-prompt noise. Returns None when not applicable.
+    """
+    import os as _os
+
+    from . import config as _cfg
+
+    if not _cfg.get("tool_steering_enabled"):
+        return None
+    if not _SEARCH_INTENT_RE.search(message or ""):
+        return None
+    root = cwd or _os.getcwd()
+    try:
+        if not _os.path.isdir(_os.path.join(root, ".codegraph")):
+            return None
+    except Exception:
+        return None
+    return (
+        "[Skill Hub — this repo is codegraph-indexed. Prefer "
+        "codegraph_search / codegraph_callers / codegraph_callees / "
+        "codegraph_impact over grep for symbol, call-flow, and impact "
+        "lookups. For shell output, keep it compact (rg --count, head -n, "
+        "jq -c) to conserve context.]"
+    )
+
+
 def _precompact_hint(message: str) -> str | None:
     """
     Strategy #4: Pre-compact long messages so Claude can focus on what matters.
@@ -4596,6 +4636,12 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     precompact = _precompact_hint(message)
     if precompact:
         system_parts.append(precompact)
+
+    # G2: proactive tool steering (codegraph-first + compact output) when the
+    # prompt shows search intent in a codegraph-indexed repo.
+    steering = _tool_steering_hint(message)
+    if steering:
+        system_parts.append(steering)
 
     # ── Dynamic skill lifecycle + prompt optimization ──
     optimized_prompt: str | None = None

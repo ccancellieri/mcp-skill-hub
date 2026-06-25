@@ -409,6 +409,12 @@ _DEFAULTS = {
     "improve_prompt_skill_top_k": 3,
     "improve_prompt_tasks_limit": 2,
 
+    # G2 — proactive tool steering. When the working repo is codegraph-indexed
+    # and the prompt shows search/grep intent, nudge Claude toward codegraph
+    # queries + compact shell output (saves context vs. raw grep dumps).
+    # Intent-gated, so it never fires on unrelated prompts (no per-prompt noise).
+    "tool_steering_enabled": True,
+
     # Tier 3: Claude Haiku 4.5 batched call (opt-in)
     # Enable via /control or env SKILL_HUB_ROUTER_HAIKU=1; stored as services.haiku_router.enabled
     # Requires ANTHROPIC_API_KEY in environment
