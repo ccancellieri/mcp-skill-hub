@@ -70,8 +70,11 @@ def reset_reachability() -> None:
 def ollama_daemon_reachable(*, ttl: float = _REACH_TTL) -> bool:
     """Cheap, cached probe: is the local Ollama daemon answering right now?
 
-    Cached for ``ttl`` seconds so it adds no latency to the common path. A
-    refused connection (daemon stopped/killed under load) returns fast.
+    Cached for ``ttl`` seconds when the daemon is up, or for
+    ``ollama_down_probe_ttl_seconds`` (config, default 120s) when it is down.
+    A refused connection (daemon stopped/killed under load) returns fast; the
+    longer down-TTL prevents bursts of doomed calls from re-probing on every
+    attempt.
     """
     now = time.time()
     hit = _REACH_CACHE.get("ollama")
@@ -87,7 +90,11 @@ def ollama_daemon_reachable(*, ttl: float = _REACH_TTL) -> bool:
             ok = True
     except Exception:  # noqa: BLE001 - any failure means "treat as down"
         ok = False
-    _REACH_CACHE["ollama"] = (now + ttl, ok)
+    if ok:
+        cache_ttl = ttl
+    else:
+        cache_ttl = float(_cfg.get("ollama_down_probe_ttl_seconds") or 120)
+    _REACH_CACHE["ollama"] = (now + cache_ttl, ok)
     return ok
 
 

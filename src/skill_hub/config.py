@@ -594,6 +594,10 @@ _DEFAULTS = {
     # Cooldown (seconds) before re-probing a model that returned a quota/429
     # signal or hit its monthly cap. Assumption (no value given): 1h re-probe.
     "llm_cooldown_seconds": 3600,
+    # How long (seconds) to cache a "daemon is down" probe result. A confirmed-down
+    # result is cached much longer than the "up" TTL (30s) so that rapid call bursts
+    # do not repeatedly attempt and fail against a stopped daemon.
+    "ollama_down_probe_ttl_seconds": 120,
     # Hard cap (USD/day) on personal-Claude *auxiliary* spend; null = no cap
     # (opt-in). Over cap → auxiliary tasks degrade to L0/L1.
     "llm_personal_daily_usd_cap": None,
