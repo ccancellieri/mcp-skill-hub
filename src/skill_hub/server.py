@@ -3168,13 +3168,23 @@ def _compression_report() -> str:
         c = _store.get_compression_stats()
     except Exception:  # noqa: BLE001
         return ""
-    ml = "on" if _cfg.get("compression_ml_enabled") else "off"
-    code = "on" if _cfg.get("compression_code_aware_enabled") else "off"
+    from skill_hub.compression import is_available as _compression_available
+
+    headroom_installed = _compression_available()
     master = "on" if _cfg.get("compression_enabled") else "off"
+    # Show whether the lossy Kompress path is actually reachable at runtime:
+    # config says "on" but headroom-ai absent → flag the no-op explicitly.
+    if _cfg.get("compression_ml_enabled"):
+        ml = "on" if headroom_installed else "on (headroom-ai not installed — no-op; install compression_full extra)"
+    else:
+        ml = "off"
+    code = "on" if _cfg.get("compression_code_aware_enabled") else "off"
+    headroom_line = "headroom-ai=installed" if headroom_installed else "headroom-ai=missing (deterministic built-ins only)"
     if not c.get("calls"):
         return (
             "\n=== Tool-output Compression (headroom) ===\n"
             f"  master={master}  ml/Kompress={ml}  code-aware={code}\n"
+            f"  {headroom_line}\n"
             "  No compression activity recorded yet."
         )
     saved = c["saved"]
@@ -3183,6 +3193,7 @@ def _compression_report() -> str:
     lines = [
         "\n=== Tool-output Compression (headroom) ===",
         f"  master={master}  ml/Kompress={ml}  code-aware={code}",
+        f"  {headroom_line}",
         f"  Calls: {c['calls']:,}  ({c['hits']:,} compressed, {hit_rate:.0f}% hit-rate)",
         f"  Bytes: {c['bytes_before']:,} → {c['bytes_after']:,}  (saved {saved:,} bytes)",
         f"  Tokens saved (est.): ~{tok:,}"

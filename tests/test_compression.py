@@ -118,3 +118,59 @@ def test_malformed_input_never_raises():
     # Always returns a usable payload; compressed is at worst the original.
     assert isinstance(payload.compressed, str)
     assert payload.bytes_before == len(garbage)
+
+
+# --- _compression_report observability when headroom-ai is absent -----------
+
+def _fake_compression_stats() -> dict:
+    return {
+        "calls": 0, "hits": 0, "saved": 0, "tokens_saved": 0,
+        "bytes_before": 0, "bytes_after": 0, "avg_ratio": 1.0,
+        "by_strategy": {},
+    }
+
+
+def test_compression_report_flags_missing_headroom(monkeypatch, tmp_path):
+    """When compression_ml_enabled=True but headroom-ai is not installed,
+    _compression_report() must include an explicit 'no-op' or 'not installed'
+    annotation so token_stats() doesn't silently lie about runtime state."""
+    from skill_hub import config
+    import skill_hub.server as _server
+
+    # Isolate config to a temp file.
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "cfg.json")
+    config.set("compression_enabled", True)
+    config.set("compression_ml_enabled", True)
+    config.set("compression_code_aware_enabled", False)
+
+    # Simulate headroom-ai absent by patching is_available to return False.
+    monkeypatch.setattr(compression, "is_available", lambda: False)
+    monkeypatch.setattr(_server._store, "get_compression_stats", _fake_compression_stats)
+
+    report = _server._compression_report()
+
+    # The report must flag that headroom-ai is missing, NOT silently show ml=on.
+    assert "not installed" in report or "no-op" in report or "missing" in report, (
+        f"Expected 'not installed'/'no-op'/'missing' in report when headroom absent, got:\n{report}"
+    )
+    # The ml flag must still show the config intent (ml/Kompress=on ...).
+    assert "ml/Kompress=on" in report
+
+
+def test_compression_report_no_flag_when_headroom_present(monkeypatch, tmp_path):
+    """When headroom-ai IS available, the report must NOT mention 'not installed'."""
+    from skill_hub import config
+    import skill_hub.server as _server
+
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "cfg2.json")
+    config.set("compression_enabled", True)
+    config.set("compression_ml_enabled", True)
+    config.set("compression_code_aware_enabled", False)
+
+    monkeypatch.setattr(compression, "is_available", lambda: True)
+    monkeypatch.setattr(_server._store, "get_compression_stats", _fake_compression_stats)
+
+    report = _server._compression_report()
+
+    assert "not installed" not in report
+    assert "ml/Kompress=on" in report
