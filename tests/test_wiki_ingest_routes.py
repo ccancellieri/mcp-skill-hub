@@ -66,3 +66,33 @@ def test_preview_rejects_sensitive_path(env):
     # Defense in depth: sensitive paths are never extracted.
     assert "ssn" not in r.text
     assert "000-00-0000" not in r.text
+
+
+def test_write_creates_private_career_page_and_enqueues(env):
+    _, client, _, wiki_root = env
+    r = client.post("/wiki/ingest/write", data={"rel": "cv.md"})
+    assert r.status_code == 200
+    pages = [p for p in (wiki_root / "_private" / "career").glob("*.md")
+             if p.name != "index.md"]
+    assert len(pages) == 1
+    assert pages[0].name.startswith("source-doc-")
+    body = pages[0].read_text(encoding="utf-8")
+    assert "jane@example.com" in body          # PII retained in private scope
+    assert "written" in r.text                  # per-file result reported
+
+
+def test_write_unchanged_is_idempotent(env):
+    _, client, _, _ = env
+    client.post("/wiki/ingest/write", data={"rel": "cv.md"})
+    r = client.post("/wiki/ingest/write", data={"rel": "cv.md"})
+    assert "unchanged" in r.text
+
+
+def test_write_rejects_sensitive(env):
+    _, client, _, wiki_root = env
+    r = client.post("/wiki/ingest/write", data={"rel": "_sensitive/secret.md"})
+    career_dir = wiki_root / "_private" / "career"
+    source_pages = [p for p in career_dir.glob("*.md") if p.name != "index.md"] \
+        if career_dir.exists() else []
+    assert not source_pages
+    assert "excluded" in r.text or "unavailable" in r.text

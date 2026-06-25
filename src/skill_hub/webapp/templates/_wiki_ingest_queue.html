@@ -1,0 +1,34 @@
+{% if results is defined and results %}
+<div class="write-results">
+  {% for r in results %}
+  <div class="chip {{ 'bad' if r.status in ('error','excluded') else 'good' }}">
+    {{ r.rel }} — {{ r.status }}{% if r.detail %} ({{ r.detail }}){% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="queue">
+  <h3>Distillation queue</h3>
+  <table class="data">
+    <thead><tr><th>Slug</th><th>Scope</th><th>Reason</th><th>Cost</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for q in queue %}
+      <tr>
+        <td>{{ q.slug }}</td><td>{{ q.scope }}</td><td>{{ q.reason }}</td>
+        <td>{{ q.est_calls }}</td><td>{{ q.status }}</td>
+        <td>
+          {% if q.status == 'pending' %}
+            <button type="button" hx-post="/wiki/ingest/approve"
+                    hx-vals='{"slug": {{ q.slug | tojson }}}' hx-target="#queue">Approve</button>
+          {% elif q.status == 'approved' and provider_available %}
+            <button type="button" hx-post="/wiki/ingest/distill"
+                    hx-vals='{"slug": {{ q.slug | tojson }}, "dry_run": "1"}'
+                    hx-target="#distill-{{ loop.index }}">Preview distill</button>
+            <div id="distill-{{ loop.index }}"></div>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>

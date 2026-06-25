@@ -175,6 +175,51 @@ def wiki_ingest_page(request: Request) -> Any:
     )
 
 
+@router.post("/wiki/ingest/write", response_class=HTMLResponse)
+async def wiki_ingest_write(request: Request) -> Any:
+    from skill_hub import doc_extract, wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    wiki_root = _wiki_root()
+    docs_root = _docs_root()
+    form = await request.form()
+    rels = form.getlist("rel")
+    results: list[dict] = []
+    for rel in rels:
+        if not isinstance(rel, str):
+            continue  # ignore accidental file uploads on the 'rel' field
+        fp = _safe_doc_path(docs_root, rel)
+        if fp is None:
+            results.append({"rel": rel, "status": "excluded"})
+            continue
+        # Isolate per-file: a markitdown failure on one doc must not abort the batch.
+        try:
+            doc = doc_extract.extract_text(fp)
+        except Exception as exc:  # noqa: BLE001 — fail soft per file
+            results.append({"rel": rel, "status": "error", "detail": str(exc)})
+            continue
+        if doc.error or not doc.markdown:
+            results.append({"rel": rel, "status": "error",
+                            "detail": doc.error or "empty"})
+            continue
+        # NOTE: source_id slugs collapse punctuation, so two rel paths that differ
+        # only in punctuation would collide on the same source slug (last-write-wins).
+        slug = _wiki.write_source_page(
+            store, wiki_root, source_id=f"doc:{rel}", title=doc.title,
+            body=doc.markdown, url="", scope="private", project="career",
+        )
+        results.append({"rel": rel,
+                        "status": "written" if slug else "unchanged",
+                        "slug": slug})
+    _wiki.scan_and_enqueue(store, wiki_root)
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": results, "summary": summary, "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
 @router.post("/wiki/ingest/preview", response_class=HTMLResponse)
 async def wiki_ingest_preview(request: Request) -> Any:
     from skill_hub import doc_extract, pii_gate
