@@ -77,6 +77,7 @@ def build_session_memory(
         timeout=60.0,
         cache=True,  # ephemeral cache_control on Anthropic tiers
         cache_ttl="1h",  # long-lived prefix reused within a session (opt-in tier)
+        op="session_memory",
     )
     return text.strip()
 
@@ -109,6 +110,7 @@ def update_session_memory(
         timeout=60.0,
         cache=True,  # ephemeral cache_control on Anthropic tiers
         cache_ttl="1h",  # long-lived prefix reused within a session (opt-in tier)
+        op="session_memory",
     )
     return text.strip()
 

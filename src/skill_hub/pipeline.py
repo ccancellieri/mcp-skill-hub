@@ -108,6 +108,7 @@ Output ONLY a JSON object with these fields:
             max_tokens=150,
             temperature=0.0,
             timeout=2.0,
+            op="intent_classify",
         )
         m = _re.search(r"\{.*\}", raw, _re.DOTALL)
         if m:
@@ -276,6 +277,7 @@ Output ONLY the synthesis text, no labels or headers."""
             max_tokens=300,
             temperature=0.1,
             timeout=5.0,
+            op="context_synth",
         ).strip()
     except Exception:
         # Fallback: simple concat of top-3 items
@@ -320,6 +322,7 @@ Do not change the intent. Output ONLY the rewritten prompt, no labels or explana
             max_tokens=400,
             temperature=0.1,
             timeout=8.0,
+            op="prompt_rewrite",
         ).strip()
     except Exception:
         return None
