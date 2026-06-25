@@ -44,6 +44,40 @@
     margin:var(--space-4) 0;
   }
 
+  /* ── Controls bar (folder / target / filter / page size) ────── */
+  .ingest-controls {
+    display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--space-3);
+    padding:var(--space-3) var(--space-4); margin-bottom:var(--space-4);
+  }
+  .ingest-controls .ctl { display:flex; flex-direction:column; gap:4px; }
+  .ingest-controls label {
+    font-size:var(--font-size-xs); text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); font-weight:600;
+  }
+  .ingest-controls input[type=text],
+  .ingest-controls input[type=search],
+  .ingest-controls select {
+    background:var(--color-bg); color:var(--color-fg);
+    border:1px solid var(--color-border); border-radius:var(--radius-sm);
+    padding:var(--space-1) var(--space-2); font-size:var(--font-size-sm);
+    font-family:inherit;
+  }
+  .ingest-controls input[type=text] { min-width:260px; }
+  .ingest-controls input[type=search] { min-width:160px; }
+  .ingest-controls input:focus-visible,
+  .ingest-controls select:focus-visible {
+    outline:2px solid var(--color-accent); outline-offset:1px;
+  }
+
+  /* ── Pager ──────────────────────────────────────────────────── */
+  .ingest-pager {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:var(--space-3); margin:var(--space-3) 0; flex-wrap:wrap;
+    font-size:var(--font-size-sm); color:var(--color-muted);
+  }
+  .pager-links { display:flex; gap:var(--space-2); }
+  .ingest-empty { padding:var(--space-4); text-align:center; color:var(--color-muted); }
+
   /* ── Preview cards ──────────────────────────────────────────── */
   .preview-list { display:flex; flex-direction:column; gap:var(--space-3); margin-top:var(--space-3); }
   .preview-card {
@@ -153,19 +187,62 @@
   <a href="/wiki" class="btn sm" style="margin-left:auto">Back to wiki</a>
 </div>
 <p class="ingest-subtitle">
-  Source: <code>{{ docs_root }}</code> &middot; target scope: <strong>{{ scope_label }}</strong>
+  Source: <code>{{ docs_root }}</code> &middot; target wiki:
+  <strong>{{ scope }} / {{ project }}</strong>
   {% if not provider_available %}
   &middot; <span style="color:var(--color-warn)">distillation disabled (no LLM provider)</span>
   {% endif %}
 </p>
 
+<form method="get" action="/wiki/ingest" class="ingest-controls card" role="search">
+  <div class="ctl">
+    <label for="ctl-root">Folder</label>
+    <input id="ctl-root" type="text" name="root" value="{{ root }}"
+           placeholder="{{ docs_root }}" spellcheck="false" autocapitalize="off">
+  </div>
+  <div class="ctl">
+    <label for="ctl-scope">Scope</label>
+    <select id="ctl-scope" name="scope">
+      {% for s in scope_options %}
+      <option value="{{ s }}" {{ 'selected' if s == scope else '' }}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="ctl">
+    <label for="ctl-project">Project</label>
+    <input id="ctl-project" type="text" name="project" value="{{ project }}"
+           placeholder="career" spellcheck="false" autocapitalize="off">
+  </div>
+  <div class="ctl">
+    <label for="ctl-q">Filter</label>
+    <input id="ctl-q" type="search" name="q" value="{{ q }}"
+           placeholder="path contains&hellip;" spellcheck="false">
+  </div>
+  <div class="ctl">
+    <label for="ctl-size">Per page</label>
+    <select id="ctl-size" name="size">
+      {% for opt in [25, 50, 100, 0] %}
+      <option value="{{ opt }}" {{ 'selected' if opt == size else '' }}>{{ opt if opt else 'all' }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button type="submit" class="btn">Apply</button>
+</form>
+
 <form id="ingest-form">
+  {# Mirror the chosen target so preview/write POSTs carry it (hx-include). #}
+  <input type="hidden" name="root" value="{{ root }}">
+  <input type="hidden" name="scope" value="{{ scope }}">
+  <input type="hidden" name="project" value="{{ project }}">
   <div class="card" style="padding:0">
     <div class="ingest-table-wrap">
       <table class="ingest-table" aria-label="Documents available for ingest">
         <thead>
           <tr>
-            <th><span class="sr-only">Select</span></th>
+            <th>
+              <input type="checkbox" id="select-all"
+                     aria-label="Select all supported files on this page">
+            </th>
             <th>File</th>
             <th>Type</th>
             <th>Size</th>
@@ -187,10 +264,28 @@
             </td>
             <td class="ingest-size">{{ e.size }}</td>
           </tr>
+        {% else %}
+          <tr><td colspan="4" class="ingest-empty">
+            No documents found{% if q %} matching &ldquo;{{ q }}&rdquo;{% endif %}.
+          </td></tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
+  </div>
+
+  <div class="ingest-pager">
+    <span>
+      {{ total }} file{{ '' if total == 1 else 's' }}{% if q %} (filtered){% endif %}
+      {% if pages > 1 %}&middot; page {{ page }} of {{ pages }}{% endif %}
+    </span>
+    {% if pages > 1 %}
+    {% set base = '/wiki/ingest?root=' ~ (root | urlencode) ~ '&scope=' ~ scope ~ '&project=' ~ (project | urlencode) ~ '&q=' ~ (q | urlencode) ~ '&size=' ~ size %}
+    <span class="pager-links">
+      {% if page > 1 %}<a class="btn sm" href="{{ base }}&page={{ page - 1 }}">&larr; Prev</a>{% endif %}
+      {% if page < pages %}<a class="btn sm" href="{{ base }}&page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+    </span>
+    {% endif %}
   </div>
 
   <div class="ingest-actions">
@@ -211,4 +306,16 @@
 
 <div id="preview" aria-live="polite"></div>
 <div id="queue" hx-get="/wiki/ingest/queue" hx-trigger="load" aria-live="polite"></div>
+
+<script>
+  (function () {
+    var all = document.getElementById('select-all');
+    if (!all) return;
+    all.addEventListener('change', function () {
+      document
+        .querySelectorAll('#ingest-form input[name="rel"]:not([disabled])')
+        .forEach(function (b) { b.checked = all.checked; });
+    });
+  })();
+</script>
 {% endblock %}

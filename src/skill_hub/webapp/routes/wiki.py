@@ -165,20 +165,63 @@ def wiki_index(request: Request, q: str = "") -> Any:
     )
 
 
+_SCOPE_OPTIONS = ["private", "public"]
+
+
+def _ingest_target(scope: str, project: str) -> tuple[str, str]:
+    """Normalise a requested (scope, project) to safe write-target values."""
+    scope = scope if scope in _SCOPE_OPTIONS else "private"
+    project = project.strip() or "career"
+    return scope, project
+
+
 @router.get("/wiki/ingest", response_class=HTMLResponse)
-def wiki_ingest_page(request: Request) -> Any:
+def wiki_ingest_page(
+    request: Request,
+    root: str = "",
+    q: str = "",
+    scope: str = "private",
+    project: str = "career",
+    page: int = 1,
+    size: int = 50,
+) -> Any:
     from skill_hub import doc_extract
     templates = request.app.state.templates
-    docs_root = _docs_root()
+    root = root.strip()
+    docs_root = Path(root).expanduser() if root else _docs_root()
+    scope, project = _ingest_target(scope, project)
+
     entries = doc_extract.list_documents(docs_root)
+    qn = q.strip().lower()
+    if qn:
+        entries = [e for e in entries if qn in e.rel.lower()]
+    total = len(entries)
+
+    # size <= 0 means "all"; otherwise slice to the requested page.
+    if size and size > 0:
+        pages = max(1, (total + size - 1) // size)
+        page = min(max(1, page), pages)
+        start = (page - 1) * size
+        shown = entries[start:start + size]
+    else:
+        pages, page, shown = 1, 1, entries
+
     return templates.TemplateResponse(
         request,
         "wiki_ingest.html",
         {
             "active_tab": "wiki",
             "docs_root": str(docs_root),
-            "entries": entries,
-            "scope_label": "private / career",
+            "root": root,
+            "entries": shown,
+            "scope": scope,
+            "project": project,
+            "scope_options": _SCOPE_OPTIONS,
+            "q": q,
+            "size": size,
+            "page": page,
+            "pages": pages,
+            "total": total,
             "provider_available": _provider_available(),
         },
     )
@@ -190,8 +233,16 @@ async def wiki_ingest_write(request: Request) -> Any:
     templates = request.app.state.templates
     store = request.app.state.store
     wiki_root = _wiki_root()
-    docs_root = _docs_root()
     form = await request.form()
+    _root = form.get("root")
+    root_s = _root.strip() if isinstance(_root, str) else ""
+    docs_root = Path(root_s).expanduser() if root_s else _docs_root()
+    _scope = form.get("scope")
+    _project = form.get("project")
+    scope, project = _ingest_target(
+        _scope if isinstance(_scope, str) else "",
+        _project if isinstance(_project, str) else "",
+    )
     rels = form.getlist("rel")
     results: list[dict] = []
     for rel in rels:
@@ -215,7 +266,7 @@ async def wiki_ingest_write(request: Request) -> Any:
         # only in punctuation would collide on the same source slug (last-write-wins).
         slug = _wiki.write_source_page(
             store, wiki_root, source_id=f"doc:{rel}", title=doc.title,
-            body=doc.markdown, url="", scope="private", project="career",
+            body=doc.markdown, url="", scope=scope, project=project,
         )
         results.append({"rel": rel,
                         "status": "written" if slug else "unchanged",
@@ -291,7 +342,9 @@ async def wiki_ingest_preview(request: Request) -> Any:
     templates = request.app.state.templates
     form = await request.form()
     rels = form.getlist("rel")
-    docs_root = _docs_root()
+    _root = form.get("root")
+    root_s = _root.strip() if isinstance(_root, str) else ""
+    docs_root = Path(root_s).expanduser() if root_s else _docs_root()
     previews: list[dict] = []
     for rel in rels:
         if not isinstance(rel, str):

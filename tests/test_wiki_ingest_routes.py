@@ -123,6 +123,74 @@ def test_approve_moves_row_to_approved(env):
     assert status == "approved"
 
 
+def test_write_honors_scope_and_project(env):
+    app, client, _, _ = env
+    r = client.post("/wiki/ingest/write",
+                    data={"rel": "cv.md", "scope": "public", "project": "research"})
+    assert r.status_code == 200
+    row = app.state.store._conn.execute(
+        "SELECT scope, projects FROM wiki_pages WHERE type='source'").fetchone()
+    assert row["scope"] == "public"
+    assert "research" in row["projects"]
+
+
+def test_write_unknown_scope_falls_back_to_private(env):
+    app, client, _, _ = env
+    r = client.post("/wiki/ingest/write",
+                    data={"rel": "cv.md", "scope": "bogus", "project": ""})
+    assert r.status_code == 200
+    row = app.state.store._conn.execute(
+        "SELECT scope, projects FROM wiki_pages WHERE type='source'").fetchone()
+    assert row["scope"] == "private"          # unknown scope rejected
+    assert "career" in row["projects"]        # empty project defaults to career
+
+
+def test_write_honors_custom_root(env, tmp_path):
+    _, client, _, wiki_root = env
+    alt = tmp_path / "altdocs"
+    alt.mkdir()
+    (alt / "note.md").write_text("# Note\n\nfrom alt root", encoding="utf-8")
+    r = client.post("/wiki/ingest/write",
+                    data={"root": str(alt), "rel": "note.md"})
+    assert r.status_code == 200
+    assert "written" in r.text
+    pages = [p for p in (wiki_root / "_private" / "career").glob("*.md")
+             if p.name != "index.md"]
+    assert any("from alt root" in p.read_text(encoding="utf-8") for p in pages)
+
+
+def test_ingest_page_filters_by_query(env):
+    _, client, docs_root, _ = env
+    (docs_root / "resume.md").write_text("# Resume", encoding="utf-8")
+    r = client.get("/wiki/ingest", params={"q": "resume"})
+    assert r.status_code == 200
+    assert "resume.md" in r.text
+    assert "cv.md" not in r.text
+
+
+def test_ingest_page_paginates(env):
+    _, client, docs_root, _ = env
+    for n in ("a.md", "b.md", "c.md"):
+        (docs_root / n).write_text(f"# {n}", encoding="utf-8")
+    # 4 supported docs total (cv.md + a/b/c); size=2 → 2 shown, 2 pages.
+    r1 = client.get("/wiki/ingest", params={"size": 2, "page": 1})
+    assert r1.status_code == 200
+    assert r1.text.count('id="cb-') == 2
+    assert "page 1 of 2" in r1.text
+    r2 = client.get("/wiki/ingest", params={"size": 2, "page": 2})
+    assert r2.text.count('id="cb-') == 2
+    assert "page 2 of 2" in r2.text
+
+
+def test_ingest_page_size_all_shows_everything(env):
+    _, client, docs_root, _ = env
+    for n in ("a.md", "b.md", "c.md"):
+        (docs_root / n).write_text(f"# {n}", encoding="utf-8")
+    r = client.get("/wiki/ingest", params={"size": 0})
+    assert r.status_code == 200
+    assert r.text.count('id="cb-') == 4   # all supported docs, no pagination
+
+
 def test_distill_dry_run_writes_nothing(env, monkeypatch):
     app, client, _, wiki_root = env
     _seed_one_pending(client)
