@@ -65,6 +65,45 @@
 {% endif %}
 
 <section style="margin-top:2rem;">
+  <h2>Import / Sync providers</h2>
+  <p>
+    Pull providers from an external config and <strong>merge</strong> them into
+    the registry. Your per-model <code>complexity</code> and <code>tags</code>
+    are preserved for models that still exist; new models are added, removed
+    ones dropped. Preview shows the diff before anything is written.
+  </p>
+  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-bottom:0.5rem;">
+    <button id="sync-opencode-btn" title="Read ~/.config/opencode and preview the merge">
+      Sync from opencode
+    </button>
+    <label for="import-format" style="margin-left:1rem;">Format:</label>
+    <select id="import-format">
+      <option value="opencode">opencode</option>
+      <option value="openai">openai-compatible</option>
+      <option value="litellm">litellm</option>
+    </select>
+    <button id="import-preview-btn">Preview</button>
+    <span id="import-status" style="margin-left:0.5rem;"></span>
+  </div>
+  <p style="font-size:0.85em; color:#888; margin:0.25rem 0;">
+    For <code>opencode</code> the textarea is optional — leave it empty to read
+    <code>~/.config/opencode/config.json</code>. For <code>openai</code> paste
+    <code>{"baseURL":"…","apiKey":"…","models":["id",…]}</code>; for
+    <code>litellm</code> paste a config with a <code>model_list</code>. Pasted
+    inline keys are stored in your local config.
+  </p>
+  <textarea id="import-payload" rows="6" placeholder="(optional for opencode) paste source config JSON here"
+            style="width:100%; font-family:monospace; font-size:0.85em;"></textarea>
+  <div id="import-diff" style="margin-top:0.75rem;"></div>
+  <div id="import-apply-wrap" style="margin-top:0.5rem; display:none;">
+    <button id="import-apply-btn">Apply merge</button>
+    <span style="font-size:0.85em; color:#888; margin-left:0.5rem;">
+      writes the merged registry above to your config
+    </span>
+  </div>
+</section>
+
+<section style="margin-top:2rem;">
   <h2>Edit Registry (JSON)</h2>
   <p>Paste the full registry list as JSON. Every record is validated before saving.</p>
   <textarea id="registry-json" rows="20" style="width:100%; font-family:monospace; font-size:0.85em;">{{ providers | tojson(indent=2) }}</textarea>
@@ -124,6 +163,113 @@ async function testProvider(name) {
     el.style.color = 'red';
   }
 }
+
+// ── Import / Sync ───────────────────────────────────────────────────────────
+let lastImportReq = null;
+
+function buildImportBody() {
+  const fmt = document.getElementById('import-format').value;
+  const raw = document.getElementById('import-payload').value.trim();
+  const body = {format: fmt};
+  if (raw) {
+    try {
+      body.payload = JSON.parse(raw);
+    } catch (e) {
+      return {error: 'Invalid JSON in paste box: ' + e.message};
+    }
+  }
+  return {body: body};
+}
+
+function renderImportDiff(diff) {
+  const el = document.getElementById('import-diff');
+  if (!diff || !diff.length) {
+    el.innerHTML = '<em>No changes.</em>';
+    return;
+  }
+  const esc = (s) => String(s).replace(/[&<>]/g, (c) =>
+    ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+  let html = '<table class="data-table" style="width:100%; border-collapse:collapse;">'
+    + '<thead><tr><th>Provider</th><th>Status</th><th>Credential</th>'
+    + '<th>+ Added</th><th>− Removed</th><th>Kept</th></tr></thead><tbody>';
+  for (const d of diff) {
+    const added = (d.models_added || []);
+    const removed = (d.models_removed || []);
+    html += '<tr>'
+      + '<td><strong>' + esc(d.provider) + '</strong></td>'
+      + '<td><span class="badge" style="background:'
+        + (d.status === 'new' ? '#2d6' : '#36c') + ';">' + esc(d.status) + '</span></td>'
+      + '<td><code>' + esc(d.cred_label) + '</code></td>'
+      + '<td>' + (added.length
+          ? added.map((m) => '<div><code style="color:#2d6;">' + esc(m) + '</code></div>').join('')
+          : '—') + '</td>'
+      + '<td>' + (removed.length
+          ? removed.map((m) => '<div><code style="color:#d33;">' + esc(m) + '</code></div>').join('')
+          : '—') + '</td>'
+      + '<td>' + ((d.models_kept || []).length) + '</td>'
+      + '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function importPreview(presetFormat) {
+  const status = document.getElementById('import-status');
+  if (presetFormat) document.getElementById('import-format').value = presetFormat;
+  const built = buildImportBody();
+  if (built.error) {
+    status.textContent = built.error; status.style.color = 'red';
+    return;
+  }
+  status.textContent = 'Previewing…'; status.style.color = '';
+  try {
+    const resp = await fetch('/providers/import/preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(built.body),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      status.textContent = 'Error: ' + (data.error || 'unknown');
+      status.style.color = 'red';
+      document.getElementById('import-apply-wrap').style.display = 'none';
+      return;
+    }
+    lastImportReq = built.body;
+    renderImportDiff(data.diff);
+    document.getElementById('import-apply-wrap').style.display = 'block';
+    status.textContent = 'Preview ready — review the diff, then Apply.';
+    status.style.color = 'green';
+  } catch (e) {
+    status.textContent = '✗ ' + e.message; status.style.color = 'red';
+  }
+}
+
+async function importApply() {
+  const status = document.getElementById('import-status');
+  if (!lastImportReq) { return; }
+  status.textContent = 'Applying…'; status.style.color = '';
+  try {
+    const resp = await fetch('/providers/import/apply', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(lastImportReq),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      status.textContent = 'Merged ✓ (' + data.count + ' providers) — reloading…';
+      status.style.color = 'green';
+      setTimeout(() => window.location.reload(), 700);
+    } else {
+      status.textContent = 'Error: ' + (data.error || 'unknown');
+      status.style.color = 'red';
+    }
+  } catch (e) {
+    status.textContent = '✗ ' + e.message; status.style.color = 'red';
+  }
+}
+
+document.getElementById('sync-opencode-btn')?.addEventListener('click', () => importPreview('opencode'));
+document.getElementById('import-preview-btn')?.addEventListener('click', () => importPreview());
+document.getElementById('import-apply-btn')?.addEventListener('click', importApply);
 
 // Wire handlers without inline on* attributes (avoids JS-context escaping issues).
 document.getElementById('save-registry-btn')?.addEventListener('click', saveRegistry);

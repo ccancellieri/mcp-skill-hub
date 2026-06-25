@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from ... import config as _config
 from ...llm import credentials as _creds
+from ...llm import importers as _importers
 from ...llm import registry as _registry
 
 router = APIRouter()
@@ -183,3 +184,60 @@ async def providers_test(request: Request) -> JSONResponse:
         return JSONResponse({"ok": resp.status_code < 400, "status": resp.status_code, "models_count": count})
     except Exception:
         return JSONResponse({"ok": False, "status": 0, "models_count": 0})
+
+
+async def _import_incoming(body: dict) -> tuple[list, str | None]:
+    """Resolve (incoming_providers, error) from an import request body.
+
+    For ``opencode`` with no pasted payload, reads the on-disk opencode config
+    (the one-click Sync path). Other formats require a pasted ``payload`` object.
+    """
+    fmt = body.get("format")
+    if fmt not in _importers.SUPPORTED_FORMATS:
+        return [], "Unsupported format"
+    payload = body.get("payload")
+    if fmt == "opencode" and not payload:
+        payload = _importers.read_opencode_config()
+    if not isinstance(payload, dict) or not payload:
+        return [], "No config payload (paste one, or check ~/.config/opencode)"
+    try:
+        incoming = _importers.normalize(fmt, payload)
+    except Exception:  # noqa: BLE001 — never echo the payload (may carry a secret)
+        return [], "Could not parse the config for this format"
+    if not incoming:
+        return [], "No providers found in the config"
+    return incoming, None
+
+
+@router.post("/providers/import/preview")
+async def providers_import_preview(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"})
+    incoming, err = await _import_incoming(body)
+    if err:
+        return JSONResponse({"ok": False, "error": err})
+    current = _config.get("llm_provider_registry") or []
+    return JSONResponse({"ok": True, "diff": _importers.diff_registry(current, incoming)})
+
+
+@router.post("/providers/import/apply")
+async def providers_import_apply(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"})
+    incoming, err = await _import_incoming(body)
+    if err:
+        return JSONResponse({"ok": False, "error": err})
+    current = _config.get("llm_provider_registry") or []
+    merged, diff = _importers.merge_registry(current, incoming)
+    # Validate the whole write; reject if any record is malformed.
+    for i, rec in enumerate(merged):
+        if _registry._parse_provider(rec) is None:
+            label = rec.get("name") if isinstance(rec, dict) else None
+            return JSONResponse({"ok": False,
+                                 "error": f"Invalid provider record: {label or i}"})
+    _config.set("llm_provider_registry", merged)
+    return JSONResponse({"ok": True, "diff": diff, "count": len(merged)})
