@@ -1571,8 +1571,7 @@ def _dynamic_context_stage(
     header = (
         f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
         f"complexity={complexity} | "
-        f"skills {lifecycle_str} | "
-        f"log: tail -f {LOG_FILE}]\n\n"
+        f"skills {lifecycle_str}]\n\n"
     )
 
     result = header + "\n\n".join(parts)
@@ -1795,8 +1794,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     header = (
         f"[Skill Hub — auto-injected context | "
         f"complexity={complexity} | "
-        f"skills {skill_summary} | "
-        f"log: tail -f {LOG_FILE}]\n\n"
+        f"skills {skill_summary}]\n\n"
     )
     return header + "\n\n".join(parts)
 
