@@ -84,6 +84,7 @@ def classify(
             max_tokens=150,
             temperature=0.05,
             timeout=timeout,
+            op="router_classify",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)

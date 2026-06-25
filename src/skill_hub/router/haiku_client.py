@@ -144,6 +144,7 @@ def classify(
             max_tokens=400,
             temperature=0.2,
             timeout=15.0,
+            op="router_classify",
         )
         m = re.search(r"\{.*\}", content, re.DOTALL)
         if not m:

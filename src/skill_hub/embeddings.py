@@ -431,7 +431,7 @@ def rewrite_query(message: str, context: str = "",
     log_llm("rewrite_query", model=model)
     prompt = _REWRITE_PROMPT.format(message=message, context=context[:1000])
     try:
-        raw = _generate(prompt, model=model, timeout=30.0)
+        raw = _generate(prompt, model=model, timeout=30.0, op="rewrite_query")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         if raw and len(raw) > 5:
             return raw
@@ -494,7 +494,7 @@ def optimize_context(entries: list[dict],
 
     results = []
     try:
-        raw = _generate(prompt, model=model, timeout=300.0)
+        raw = _generate(prompt, model=model, timeout=300.0, op="optimize_context")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
         # Extract all JSON objects from the response
@@ -975,7 +975,7 @@ def eval_skill_lifecycle(
         with llm_timer() as _t:
             raw = _generate(
                 prompt, model=model, timeout=15.0,
-                temperature=0.0, num_predict=250,
+                temperature=0.0, num_predict=250, op="skill_lifecycle",
             )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1020,7 +1020,7 @@ def optimize_prompt(
         with llm_timer() as _t:
             result = _generate(
                 prompt, model=model, timeout=15.0,
-                temperature=0.2, num_predict=400,
+                temperature=0.2, num_predict=400, op="improve_prompt",
             ).strip()
         log_llm("optimize_prompt", model=model, duration=_t.duration,
                 message_len=len(message))
@@ -1144,7 +1144,7 @@ def verify_cache_hit(cached_query: str, cached_response: str,
     try:
         raw = _generate(
             prompt, model=model, timeout=10.0,
-            temperature=0.0, num_predict=80,
+            temperature=0.0, num_predict=80, op="verify_cache_hit",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1167,7 +1167,7 @@ def decompose_task(message: str, model: str = RERANK_MODEL) -> dict:
     try:
         raw = _generate(
             prompt, model=model, timeout=12.0,
-            temperature=0.0, num_predict=300,
+            temperature=0.0, num_predict=300, op="decompose_task",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1199,7 +1199,7 @@ def extract_error_pattern(response_text: str,
     try:
         raw = _generate(
             prompt, model=model, timeout=10.0,
-            temperature=0.0, num_predict=150,
+            temperature=0.0, num_predict=150, op="extract_error",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1221,7 +1221,7 @@ def generate_auto_skill(canonical: str, count: int,
     try:
         raw = _generate(
             prompt, model=model, timeout=20.0,
-            temperature=0.2, num_predict=500,
+            temperature=0.2, num_predict=500, op="generate_auto_skill",
         )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # strip markdown fences if present

@@ -159,6 +159,7 @@ def _summarize_results(query: str, results: list[dict]) -> str:
             prompt, model=resolved,
             max_tokens=220, temperature=0.3,
             timeout=float(_cfg.get("searxng_timeout") or 5) + 20,
+            op="search_summarize",
         ).strip()
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         return raw

@@ -799,7 +799,7 @@ def _generate_title(summary: str, context: str = "") -> str:
                 "Reply with only the title, no punctuation at the end.\n\n"
                 f"{content[:600]}\n\nTitle:"
             )
-            generated = _generate(prompt, model=RERANK_MODEL, timeout=15.0, num_predict=30)
+            generated = _generate(prompt, model=RERANK_MODEL, timeout=15.0, num_predict=30, op="task_title")
             generated = generated.strip().strip('"').strip("'")
             if generated and len(generated) < 120:
                 return generated
@@ -2935,6 +2935,7 @@ def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
             max_tokens=2000,
             temperature=0.0,
             timeout=300.0,
+            op="optimize_context",
         )
         import re as _re
         raw = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
