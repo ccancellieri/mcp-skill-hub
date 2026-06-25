@@ -61,11 +61,20 @@ def _safe_doc_path(root: Path, rel: str) -> Path | None:
 
 
 def _provider_available() -> bool:
+    """Whether the distillation (LLM) step should be offered.
+
+    ``get_provider()`` is a litellm-backed singleton that is effectively always
+    constructible (litellm is a core dep), so it can't tell us whether a model
+    is actually usable. The one explicit, truthful signal is ``no_llm_mode``:
+    when the operator has turned LLM off, distillation cannot run. Otherwise we
+    offer it and let the call-time guard / graceful degradation handle real
+    provider failures (surfaced as a denied/error result in the distill panel).
+    """
     try:
-        from skill_hub.llm import get_provider
-        return get_provider() is not None
+        from skill_hub import capabilities
+        return not capabilities.no_llm_mode_active()
     except Exception:  # noqa: BLE001
-        return False
+        return True
 
 
 def _authorized_scopes() -> list[str]:
