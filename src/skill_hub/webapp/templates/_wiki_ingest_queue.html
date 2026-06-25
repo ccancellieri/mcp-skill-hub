@@ -1,34 +1,56 @@
 {% if results is defined and results %}
-<div class="write-results">
+<div class="write-results" aria-live="polite">
   {% for r in results %}
-  <div class="chip {{ 'bad' if r.status in ('error','excluded') else 'good' }}">
-    {{ r.rel }} — {{ r.status }}{% if r.detail %} ({{ r.detail }}){% endif %}
-  </div>
+  <span class="write-chip {{ 'ok' if r.status not in ('error','excluded') else 'bad' }}">
+    {{ r.rel }} &mdash; {{ r.status }}{% if r.detail %} ({{ r.detail }}){% endif %}
+  </span>
   {% endfor %}
 </div>
 {% endif %}
-<div class="queue">
-  <h3>Distillation queue</h3>
-  <table class="data">
-    <thead><tr><th>Slug</th><th>Scope</th><th>Reason</th><th>Cost</th><th>Status</th><th></th></tr></thead>
-    <tbody>
-    {% for q in queue %}
-      <tr>
-        <td>{{ q.slug }}</td><td>{{ q.scope }}</td><td>{{ q.reason }}</td>
-        <td>{{ q.est_calls }}</td><td>{{ q.status }}</td>
-        <td>
-          {% if q.status == 'pending' %}
-            <button type="button" hx-post="/wiki/ingest/approve"
-                    hx-vals='{"slug": {{ q.slug | tojson }}}' hx-target="#queue">Approve</button>
-          {% elif q.status == 'approved' and provider_available %}
-            <button type="button" hx-post="/wiki/ingest/distill"
+
+<div class="queue-section">
+  <h2>Distillation queue</h2>
+  <div class="card" style="padding:0">
+    <table class="queue-table" aria-label="Distillation queue">
+      <thead>
+        <tr>
+          <th>Slug</th>
+          <th>Scope</th>
+          <th>Reason</th>
+          <th>Est. calls</th>
+          <th>Status</th>
+          <th><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for q in queue %}
+        <tr>
+          <td class="queue-slug">{{ q.slug }}</td>
+          <td class="queue-scope">{{ q.scope }}</td>
+          <td class="queue-reason">{{ q.reason }}</td>
+          <td class="queue-cost">{{ q.est_calls }}</td>
+          <td>
+            <span class="status-badge status-{{ q.status }}">{{ q.status }}</span>
+          </td>
+          <td>
+            {% if q.status == 'pending' %}
+            <button type="button" class="btn sm"
+                    hx-post="/wiki/ingest/approve"
+                    hx-vals='{"slug": {{ q.slug | tojson }}}'
+                    hx-target="#queue"
+                    aria-label="Approve {{ q.slug }}">Approve</button>
+            {% elif q.status == 'approved' and provider_available %}
+            <button type="button" class="btn sm"
+                    hx-post="/wiki/ingest/distill"
                     hx-vals='{"slug": {{ q.slug | tojson }}, "dry_run": "1"}'
-                    hx-target="#distill-{{ loop.index }}">Preview distill</button>
-            <div id="distill-{{ loop.index }}"></div>
-          {% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+                    hx-target="#distill-{{ loop.index }}"
+                    aria-label="Preview distillation for {{ q.slug }}">Preview distill</button>
+            <div id="distill-{{ loop.index }}" aria-live="polite"></div>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
