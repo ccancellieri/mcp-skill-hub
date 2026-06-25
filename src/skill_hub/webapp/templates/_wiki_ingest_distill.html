@@ -1,0 +1,17 @@
+<div class="distill-result">
+  {% if result.status in ('ok','skipped') %}
+    {% if dry_run %}
+      <p class="muted">Proposed changes for <code>{{ slug }}</code>:</p>
+      <ul>
+        {% for p in result.pages %}<li>{{ p.action|default('update') }} — {{ p.slug }}</li>{% endfor %}
+      </ul>
+      <button type="button" hx-post="/wiki/ingest/distill"
+              hx-vals='{"slug": "{{ slug }}", "dry_run": "0"}'
+              hx-target="#queue">Run distillation</button>
+    {% else %}
+      <p class="good">Distilled <code>{{ slug }}</code>.</p>
+    {% endif %}
+  {% else %}
+    <p class="bad">{{ result.status }}: {{ result.reason|default('failed') }}</p>
+  {% endif %}
+</div>

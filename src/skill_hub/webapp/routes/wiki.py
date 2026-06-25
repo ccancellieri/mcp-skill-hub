@@ -220,6 +220,62 @@ async def wiki_ingest_write(request: Request) -> Any:
     )
 
 
+@router.get("/wiki/ingest/queue", response_class=HTMLResponse)
+def wiki_ingest_queue(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": [], "summary": summary,
+         "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
+@router.post("/wiki/ingest/approve", response_class=HTMLResponse)
+async def wiki_ingest_approve(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    form = await request.form()
+    _slug = form.get("slug")
+    slug = _slug.strip() if isinstance(_slug, str) else ""
+    if slug:
+        store._conn.execute(
+            "UPDATE wiki_queue SET status='approved', decided_at=datetime('now') "
+            "WHERE slug=? AND status='pending'", (slug,))
+        store._conn.commit()
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": [], "summary": summary,
+         "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
+@router.post("/wiki/ingest/distill", response_class=HTMLResponse)
+async def wiki_ingest_distill(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    wiki_root = _wiki_root()
+    form = await request.form()
+    _slug = form.get("slug")
+    slug = _slug.strip() if isinstance(_slug, str) else ""
+    _dry = form.get("dry_run")
+    dry_run = (_dry if isinstance(_dry, str) else "1") != "0"
+    result = _wiki.ingest_queued(
+        store, wiki_root, slug,
+        authorized_scopes=_authorized_scopes(), dry_run=dry_run)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_distill.html",
+        {"slug": slug, "dry_run": dry_run, "result": result},
+    )
+
+
 @router.post("/wiki/ingest/preview", response_class=HTMLResponse)
 async def wiki_ingest_preview(request: Request) -> Any:
     from skill_hub import doc_extract, pii_gate

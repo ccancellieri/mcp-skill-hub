@@ -96,3 +96,48 @@ def test_write_rejects_sensitive(env):
         if career_dir.exists() else []
     assert not source_pages
     assert "excluded" in r.text or "unavailable" in r.text
+
+
+def _seed_one_pending(client):
+    client.post("/wiki/ingest/write", data={"rel": "cv.md"})
+
+
+def test_queue_endpoint_lists_pending(env):
+    _, client, _, _ = env
+    _seed_one_pending(client)
+    r = client.get("/wiki/ingest/queue")
+    assert r.status_code == 200
+    assert "Distillation queue" in r.text
+    assert "pending" in r.text
+
+
+def test_approve_moves_row_to_approved(env):
+    app, client, _, _ = env
+    _seed_one_pending(client)
+    slug = app.state.store._conn.execute(
+        "SELECT slug FROM wiki_queue LIMIT 1").fetchone()["slug"]
+    r = client.post("/wiki/ingest/approve", data={"slug": slug})
+    assert r.status_code == 200
+    status = app.state.store._conn.execute(
+        "SELECT status FROM wiki_queue WHERE slug=?", (slug,)).fetchone()["status"]
+    assert status == "approved"
+
+
+def test_distill_dry_run_writes_nothing(env, monkeypatch):
+    app, client, _, wiki_root = env
+    _seed_one_pending(client)
+    slug = app.state.store._conn.execute(
+        "SELECT slug FROM wiki_queue LIMIT 1").fetchone()["slug"]
+    # stub the LLM distill so no provider is needed
+    import skill_hub.wiki as wmod
+    monkeypatch.setattr(
+        wmod, "ingest_queued",
+        lambda *a, **k: {"status": "ok",
+                         "pages": [{"slug": "entity-jane", "action": "create"}]})
+    r = client.post("/wiki/ingest/distill", data={"slug": slug, "dry_run": "1"})
+    assert r.status_code == 200
+    assert "entity-jane" in r.text
+    # still queued (dry run does not mark done)
+    status = app.state.store._conn.execute(
+        "SELECT status FROM wiki_queue WHERE slug=?", (slug,)).fetchone()["status"]
+    assert status in ("pending", "approved")
