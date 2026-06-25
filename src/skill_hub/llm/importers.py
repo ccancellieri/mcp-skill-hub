@@ -277,3 +277,121 @@ def merge_registry(current: list, incoming: list[NormalizedProvider]) -> tuple[l
 def diff_registry(current: list, incoming: list[NormalizedProvider]) -> list[dict]:
     """Secret-free preview of what merging *incoming* would change."""
     return merge_registry(current, incoming)[1]
+
+
+# ── complexity / tag classification ───────────────────────────────────────────
+# New models merge in as ``complexity: "light"`` with no tags — a source config
+# carries neither. Left as-is the router treats a frontier model the same as a
+# tiny one. ``classify_models`` asks the cheapest reachable LLM to label each
+# *new* id; ``apply_classification`` folds the labels onto the merged records.
+# Both are best-effort: any failure leaves the safe ``light`` default in place.
+
+_TAG_VOCAB = ("code", "python", "reasoning", "chat", "vision",
+              "embedding", "fast", "multilingual")
+
+
+def _classify_prompt(ids: list[str]) -> str:
+    listing = "\n".join(f"- {mid}" for mid in ids)
+    vocab = ", ".join(_TAG_VOCAB)
+    return (
+        "You are labelling LLM model identifiers for a routing registry.\n"
+        "For each model id, decide:\n"
+        '- "complexity": "heavy" for large/frontier reasoning or top-tier coding '
+        "models (e.g. opus, gpt-4/5 class, deepseek-r1, 70B+); \"light\" for "
+        "small/fast/cheap models (e.g. haiku, mini, flash, 7B/8B, embeddings).\n"
+        f'- "tags": 0-3 lowercase tags chosen ONLY from: {vocab}. '
+        "Include a tag only when the id clearly implies it.\n\n"
+        "Return ONLY a JSON object mapping each exact id to "
+        '{"complexity": "...", "tags": [...]}. No prose, no code fences.\n\n'
+        "Model ids:\n" + listing
+    )
+
+
+def _parse_classification(text: str, ids: list[str]) -> dict[str, dict]:
+    """Parse the LLM reply into ``{id: {complexity, tags}}``; tolerant of fences.
+
+    Keeps only requested ids and coerces values to the registry's vocabulary.
+    """
+    if not text:
+        return {}
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        raw = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    wanted = set(ids)
+    out: dict[str, dict] = {}
+    for mid, info in raw.items():
+        if mid not in wanted or not isinstance(info, dict):
+            continue
+        cx = info.get("complexity")
+        cx = cx if cx in ("light", "heavy") else "light"
+        raw_tags = info.get("tags")
+        tags_in = raw_tags if isinstance(raw_tags, list) else []
+        tags = [t for t in (str(x).strip().lower() for x in tags_in)
+                if t in _TAG_VOCAB]
+        out[mid] = {"complexity": cx, "tags": tags}
+    return out
+
+
+def classify_models(model_ids: list[str]) -> dict[str, dict]:
+    """Best-effort label for each id via the cheapest reachable LLM.
+
+    Routes through the escalation ladder at ``complexity=0.0`` (cheapest light
+    model — local Ollama if up, else the work gateway). Returns ``{}`` on any
+    failure so the caller falls back to the ``light`` default.
+    """
+    ids = [i for i in dict.fromkeys(model_ids) if i]
+    if not ids:
+        return {}
+    try:
+        from . import get_provider
+        text = get_provider().complete(
+            _classify_prompt(ids), complexity=0.0, max_tokens=800,
+            temperature=0.0, op="provider_classify",
+        )
+    except Exception:  # noqa: BLE001 — classification is optional enrichment
+        return {}
+    return _parse_classification(text, ids)
+
+
+def apply_classification(merged: list[dict], diffs: list[dict],
+                         classify=classify_models) -> dict[str, dict]:
+    """Label newly-added models in *merged* in place; return what was applied.
+
+    Only ids reported as added in *diffs* are touched — surviving models keep
+    their hand-tuned complexity/tags. Best-effort: a classifier error or empty
+    result leaves every new model at the ``light`` default.
+    """
+    # Scope "added" by (provider, id): two providers in one batch may share a
+    # model id where one is added and the other survives — a bare-id set would
+    # then re-label the survivor, violating the preservation contract.
+    added_pairs = {(d.get("provider"), mid)
+                   for d in diffs for mid in (d.get("models_added") or [])
+                   if d.get("provider")}
+    if not added_pairs:
+        return {}
+    ids = sorted({mid for _, mid in added_pairs})
+    try:
+        labels = classify(ids)
+    except Exception:  # noqa: BLE001 — classification is optional enrichment
+        return {}
+    if not isinstance(labels, dict) or not labels:
+        return {}
+    applied: dict[str, dict] = {}
+    for rec in merged:
+        for m in rec.get("models") or []:
+            mid = m.get("id")
+            if (rec.get("name"), mid) not in added_pairs:
+                continue
+            info = labels.get(mid)
+            if not isinstance(info, dict):
+                continue
+            m["complexity"] = info.get("complexity", "light")
+            m["tags"] = list(info.get("tags") or [])
+            applied[mid] = {"complexity": m["complexity"], "tags": m["tags"]}
+    return applied

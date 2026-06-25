@@ -83,6 +83,9 @@
       <option value="litellm">litellm</option>
     </select>
     <button id="import-preview-btn">Preview</button>
+    <label style="margin-left:1rem;" title="Label new models (light/heavy + tags) with a light LLM on Apply">
+      <input type="checkbox" id="import-classify" checked> Auto-classify new models
+    </label>
     <span id="import-status" style="margin-left:0.5rem;"></span>
   </div>
   <p style="font-size:0.85em; color:#888; margin:0.25rem 0;">
@@ -249,13 +252,15 @@ async function importApply() {
   if (!lastImportReq) { return; }
   status.textContent = 'Applying…'; status.style.color = '';
   try {
+    const classify = document.getElementById('import-classify').checked;
     const resp = await fetch('/providers/import/apply', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(lastImportReq),
+      body: JSON.stringify({...lastImportReq, classify: classify}),
     });
     const data = await resp.json();
     if (data.ok) {
-      status.textContent = 'Merged ✓ (' + data.count + ' providers) — reloading…';
+      const labelled = data.classified ? ', ' + data.classified + ' classified' : '';
+      status.textContent = 'Merged ✓ (' + data.count + ' providers' + labelled + ') — reloading…';
       status.style.color = 'green';
       setTimeout(() => window.location.reload(), 700);
     } else {

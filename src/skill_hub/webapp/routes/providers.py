@@ -1,6 +1,7 @@
 """Providers settings route — auxiliary LLM registry editor."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -233,6 +234,16 @@ async def providers_import_apply(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": err})
     current = _config.get("llm_provider_registry") or []
     merged, diff = _importers.merge_registry(current, incoming)
+    # Best-effort: label newly-added models (complexity + tags) with a light LLM
+    # so they don't all land as "light". On by default; skipped if the client
+    # opts out or the classifier is unreachable (new models stay "light").
+    classified: dict = {}
+    if body.get("classify", True):
+        # classify_models does a blocking LLM round-trip — offload it so the
+        # event loop is not stalled for the duration of the gateway call.
+        classified = await asyncio.to_thread(
+            _importers.apply_classification, merged, diff,
+            _importers.classify_models)
     # Validate the whole write; reject if any record is malformed.
     for i, rec in enumerate(merged):
         if _registry._parse_provider(rec) is None:
@@ -240,4 +251,5 @@ async def providers_import_apply(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False,
                                  "error": f"Invalid provider record: {label or i}"})
     _config.set("llm_provider_registry", merged)
-    return JSONResponse({"ok": True, "diff": diff, "count": len(merged)})
+    return JSONResponse({"ok": True, "diff": diff, "count": len(merged),
+                         "classified": len(classified)})

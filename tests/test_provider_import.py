@@ -170,3 +170,106 @@ def test_inline_key_can_be_rotated():
                                         "apiKey": "NEW", "models": ["m"]})
     merged, _ = imp.merge_registry(current, incoming)
     assert merged[0]["api_key"] == {"source": "inline", "ref": "NEW"}
+
+
+# ── classification ────────────────────────────────────────────────────────────
+
+def test_parse_classification_keeps_known_ids_and_coerces():
+    text = ('noise {"opus": {"complexity": "heavy", "tags": ["reasoning", "code"]}, '
+            '"mini": {"complexity": "light", "tags": ["fast"]}, '
+            '"ghost": {"complexity": "heavy"}} trailing')
+    out = imp._parse_classification(text, ["opus", "mini"])
+    assert out == {
+        "opus": {"complexity": "heavy", "tags": ["reasoning", "code"]},
+        "mini": {"complexity": "light", "tags": ["fast"]},
+    }                                              # unrequested "ghost" dropped
+
+
+def test_parse_classification_unknown_complexity_defaults_light():
+    out = imp._parse_classification('{"m": {"complexity": "medium", "tags": ["bogus"]}}',
+                                    ["m"])
+    assert out == {"m": {"complexity": "light", "tags": []}}  # bad tag filtered
+
+
+def test_parse_classification_bad_json_returns_empty():
+    assert imp._parse_classification("not json at all", ["m"]) == {}
+    assert imp._parse_classification("", ["m"]) == {}
+
+
+def test_classify_models_best_effort_on_llm_error(monkeypatch):
+    class _Boom:
+        def complete(self, *a, **k):
+            raise RuntimeError("ladder exhausted")
+    # get_provider is imported lazily via `from . import get_provider`, which
+    # resolves through the skill_hub.llm package — patch it there.
+    import skill_hub.llm as _llm
+    monkeypatch.setattr(_llm, "get_provider", lambda: _Boom())
+    assert imp.classify_models(["a", "b"]) == {}
+
+
+def test_apply_classification_labels_only_added_models():
+    merged = [{
+        "name": "g", "level": "L3", "kind": "openai_compatible", "api_base": "",
+        "api_key": {}, "enabled": True, "order": 30,
+        "models": [
+            {"id": "kept", "complexity": "heavy", "tags": ["git"]},   # surviving
+            {"id": "new-opus", "complexity": "light", "tags": []},    # added
+        ],
+    }]
+    diffs = [{"provider": "g", "status": "update",
+              "models_added": ["new-opus"], "models_removed": [], "models_kept": ["kept"]}]
+
+    def fake_classify(ids):
+        assert ids == ["new-opus"]                 # only the added id is classified
+        return {"new-opus": {"complexity": "heavy", "tags": ["reasoning"]}}
+
+    applied = imp.apply_classification(merged, diffs, fake_classify)
+    by_id = {m["id"]: m for m in merged[0]["models"]}
+    assert by_id["new-opus"]["complexity"] == "heavy"
+    assert by_id["new-opus"]["tags"] == ["reasoning"]
+    assert by_id["kept"]["complexity"] == "heavy" and by_id["kept"]["tags"] == ["git"]
+    assert applied == {"new-opus": {"complexity": "heavy", "tags": ["reasoning"]}}
+
+
+def test_apply_classification_best_effort_leaves_light_on_failure():
+    merged = [{
+        "name": "g", "level": "L3", "kind": "openai_compatible", "api_base": "",
+        "api_key": {}, "enabled": True, "order": 30,
+        "models": [{"id": "new-x", "complexity": "light", "tags": []}],
+    }]
+    diffs = [{"provider": "g", "status": "new",
+              "models_added": ["new-x"], "models_removed": [], "models_kept": []}]
+
+    def boom(ids):
+        raise RuntimeError("classifier down")
+
+    # Both an empty result and a raising classifier must leave the safe default.
+    assert imp.apply_classification(merged, diffs, lambda ids: {}) == {}
+    assert imp.apply_classification(merged, diffs, boom) == {}
+    assert merged[0]["models"][0]["complexity"] == "light"
+
+
+def test_apply_classification_shared_id_across_providers_does_not_touch_survivor():
+    # Two providers both expose "shared": provider A has it as a surviving
+    # (tuned) model, provider B adds it. Only B's copy may be relabelled.
+    merged = [
+        {"name": "A", "level": "L3", "kind": "openai_compatible", "api_base": "",
+         "api_key": {}, "enabled": True, "order": 10,
+         "models": [{"id": "shared", "complexity": "heavy", "tags": ["git"]}]},
+        {"name": "B", "level": "L3", "kind": "openai_compatible", "api_base": "",
+         "api_key": {}, "enabled": True, "order": 20,
+         "models": [{"id": "shared", "complexity": "light", "tags": []}]},
+    ]
+    diffs = [
+        {"provider": "A", "status": "update", "models_added": [],
+         "models_removed": [], "models_kept": ["shared"]},
+        {"provider": "B", "status": "new", "models_added": ["shared"],
+         "models_removed": [], "models_kept": []},
+    ]
+    imp.apply_classification(
+        merged, diffs,
+        lambda ids: {"shared": {"complexity": "heavy", "tags": ["reasoning"]}})
+    a = merged[0]["models"][0]
+    b = merged[1]["models"][0]
+    assert a["complexity"] == "heavy" and a["tags"] == ["git"]   # survivor intact
+    assert b["complexity"] == "heavy" and b["tags"] == ["reasoning"]  # added labelled
