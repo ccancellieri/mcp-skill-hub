@@ -40,6 +40,43 @@ def _wiki_root() -> Path:
     )
 
 
+def _docs_root() -> Path:
+    from skill_hub import config as _cfg
+    return Path(_cfg.get("wiki_docs_root") or Path.home() / "Documents")
+
+
+def _safe_doc_path(root: Path, rel: str) -> Path | None:
+    """Resolve ``rel`` under ``root``; reject traversal and _sensitive paths."""
+    root = root.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        rel_parts = candidate.relative_to(root).parts
+    except ValueError:
+        return None  # escaped the docs root
+    if any(part == "_sensitive" for part in rel_parts):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _provider_available() -> bool:
+    """Whether the distillation (LLM) step should be offered.
+
+    ``get_provider()`` is a litellm-backed singleton that is effectively always
+    constructible (litellm is a core dep), so it can't tell us whether a model
+    is actually usable. The one explicit, truthful signal is ``no_llm_mode``:
+    when the operator has turned LLM off, distillation cannot run. Otherwise we
+    offer it and let the call-time guard / graceful degradation handle real
+    provider failures (surfaced as a denied/error result in the distill panel).
+    """
+    try:
+        from skill_hub import capabilities
+        return not capabilities.no_llm_mode_active()
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _authorized_scopes() -> list[str]:
     """Scopes visible on this local machine — union of configured private scopes."""
     from skill_hub import config as _cfg
@@ -126,6 +163,156 @@ def wiki_index(request: Request, q: str = "") -> Any:
             "authorized": authorized,
         },
     )
+
+
+@router.get("/wiki/ingest", response_class=HTMLResponse)
+def wiki_ingest_page(request: Request) -> Any:
+    from skill_hub import doc_extract
+    templates = request.app.state.templates
+    docs_root = _docs_root()
+    entries = doc_extract.list_documents(docs_root)
+    return templates.TemplateResponse(
+        request,
+        "wiki_ingest.html",
+        {
+            "active_tab": "wiki",
+            "docs_root": str(docs_root),
+            "entries": entries,
+            "scope_label": "private / career",
+            "provider_available": _provider_available(),
+        },
+    )
+
+
+@router.post("/wiki/ingest/write", response_class=HTMLResponse)
+async def wiki_ingest_write(request: Request) -> Any:
+    from skill_hub import doc_extract, wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    wiki_root = _wiki_root()
+    docs_root = _docs_root()
+    form = await request.form()
+    rels = form.getlist("rel")
+    results: list[dict] = []
+    for rel in rels:
+        if not isinstance(rel, str):
+            continue  # ignore accidental file uploads on the 'rel' field
+        fp = _safe_doc_path(docs_root, rel)
+        if fp is None:
+            results.append({"rel": rel, "status": "excluded"})
+            continue
+        # Isolate per-file: a markitdown failure on one doc must not abort the batch.
+        try:
+            doc = doc_extract.extract_text(fp)
+        except Exception as exc:  # noqa: BLE001 — fail soft per file
+            results.append({"rel": rel, "status": "error", "detail": str(exc)})
+            continue
+        if doc.error or not doc.markdown:
+            results.append({"rel": rel, "status": "error",
+                            "detail": doc.error or "empty"})
+            continue
+        # NOTE: source_id slugs collapse punctuation, so two rel paths that differ
+        # only in punctuation would collide on the same source slug (last-write-wins).
+        slug = _wiki.write_source_page(
+            store, wiki_root, source_id=f"doc:{rel}", title=doc.title,
+            body=doc.markdown, url="", scope="private", project="career",
+        )
+        results.append({"rel": rel,
+                        "status": "written" if slug else "unchanged",
+                        "slug": slug})
+    _wiki.scan_and_enqueue(store, wiki_root)
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": results, "summary": summary, "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
+@router.get("/wiki/ingest/queue", response_class=HTMLResponse)
+def wiki_ingest_queue(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": [], "summary": summary,
+         "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
+@router.post("/wiki/ingest/approve", response_class=HTMLResponse)
+async def wiki_ingest_approve(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    form = await request.form()
+    _slug = form.get("slug")
+    slug = _slug.strip() if isinstance(_slug, str) else ""
+    if slug:
+        store._conn.execute(
+            "UPDATE wiki_queue SET status='approved', decided_at=datetime('now') "
+            "WHERE slug=? AND status='pending'", (slug,))
+        store._conn.commit()
+    summary = _wiki._queue_summary(store)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_queue.html",
+        {"results": [], "summary": summary,
+         "queue": summary["queue"],
+         "provider_available": _provider_available()},
+    )
+
+
+@router.post("/wiki/ingest/distill", response_class=HTMLResponse)
+async def wiki_ingest_distill(request: Request) -> Any:
+    from skill_hub import wiki as _wiki
+    templates = request.app.state.templates
+    store = request.app.state.store
+    wiki_root = _wiki_root()
+    form = await request.form()
+    _slug = form.get("slug")
+    slug = _slug.strip() if isinstance(_slug, str) else ""
+    _dry = form.get("dry_run")
+    dry_run = (_dry if isinstance(_dry, str) else "1") != "0"
+    result = _wiki.ingest_queued(
+        store, wiki_root, slug,
+        authorized_scopes=_authorized_scopes(), dry_run=dry_run)
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_distill.html",
+        {"slug": slug, "dry_run": dry_run, "result": result},
+    )
+
+
+@router.post("/wiki/ingest/preview", response_class=HTMLResponse)
+async def wiki_ingest_preview(request: Request) -> Any:
+    from skill_hub import doc_extract, pii_gate
+    templates = request.app.state.templates
+    form = await request.form()
+    rels = form.getlist("rel")
+    docs_root = _docs_root()
+    previews: list[dict] = []
+    for rel in rels:
+        if not isinstance(rel, str):
+            continue  # ignore accidental file uploads on the 'rel' field
+        fp = _safe_doc_path(docs_root, rel)
+        if fp is None:
+            previews.append({"rel": rel, "error": "unavailable or excluded path",
+                             "title": "", "excerpt": "", "flags": []})
+            continue
+        doc = doc_extract.extract_text(fp)
+        flags = [{"label": h.pattern, "snippet": h.match}
+                 for h in pii_gate.scan(doc.markdown)] if doc.markdown else []
+        previews.append({
+            "rel": rel,
+            "error": doc.error,
+            "title": doc.title,
+            "excerpt": doc.markdown[:1500],
+            "flags": flags,
+        })
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_preview.html", {"previews": previews})
 
 
 @router.get("/wiki/{slug:path}", response_class=HTMLResponse)

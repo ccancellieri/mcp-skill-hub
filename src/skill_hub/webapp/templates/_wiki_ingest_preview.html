@@ -1,0 +1,17 @@
+<div class="preview-list">
+  {% for p in previews %}
+  <div class="preview-card">
+    <h3>{{ p.title or p.rel }}</h3>
+    {% if p.error %}<p class="preview-error">{{ p.error }}</p>{% endif %}
+    {% if p.flags %}
+    <div class="preview-pii" role="alert" aria-label="PII detected">
+      <span class="preview-pii-label">PII detected (retained, private scope):</span>
+      {% for f in p.flags %}
+      <span class="pii-chip">{{ f.label }}: {{ f.snippet }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <pre class="preview-excerpt">{{ p.excerpt }}</pre>
+  </div>
+  {% endfor %}
+</div>
