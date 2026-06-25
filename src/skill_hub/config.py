@@ -570,14 +570,37 @@ _DEFAULTS = {
     # model complexity → remaining quota. SECRET-FREE defaults: api_base is
     # empty and api_key references an opencode provider id or an env var — the
     # actual endpoint/key live only in the user's local opencode config / env.
+    #
+    # ADDING A REMOTE PROVIDER — no code changes needed; add a row here (or via
+    # the /providers page). Any endpoint reachable over HTTP works:
+    #
+    #   Remote Ollama (kind: "ollama"):
+    #     {"name": "my-remote-ollama", "level": "L2", "kind": "ollama",
+    #      "api_base": "http://ollama.example.internal:11434",
+    #      "api_key": {},
+    #      "enabled": true, "order": 20,
+    #      "models": [{"id": "ollama/qwen2.5-coder:7b", "complexity": "heavy",
+    #                  "tags": ["programming"]}]}
+    #
+    #   OpenAI-compatible gateway (kind: "openai_compatible"):
+    #     api_key source options: "env" (ref = env-var name holding the key),
+    #     "opencode" (ref = opencode provider id), or "inline" (ref = key value,
+    #     NOT for tracked configs). Model ids must start with "openai/" so
+    #     litellm routes through the configured api_base.
+    #
+    #   Anthropic or Anthropic-compatible (kind: "anthropic"):
+    #     Set api_key.source="env", api_key.ref="<ENV_VAR_NAME>".
+    #     api_base may be left empty for the public endpoint.
+    #
+    # For embeddings, a remote Ollama endpoint is also added to the separate
+    # ollama_endpoints list so the multi-endpoint client can serve them:
+    #   {"name": "remote", "url": "http://ollama.example.internal:11434",
+    #    "priority": 2, "enabled": true}
     "llm_provider_registry": [
         {"name": "local-ollama", "level": "L1", "kind": "ollama",
          "api_base": "", "api_key": {}, "enabled": True, "order": 10,
          "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light",
                      "tags": ["fast", "digest", "programming"]}]},
-        {"name": "remote-ollama", "level": "L2", "kind": "ollama",
-         "api_base": "", "api_key": {"source": "env", "ref": "SKILL_HUB_REMOTE_OLLAMA_BASE"},
-         "enabled": False, "order": 20, "models": []},
         # An OpenAI-compatible gateway. Leave models empty here (secret-free
         # default); configure base/key/models per-user via the /providers page
         # or by pointing api_key.ref at an opencode provider id. Per-model
