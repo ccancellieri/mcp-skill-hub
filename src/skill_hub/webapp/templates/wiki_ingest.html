@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}wiki ingest{% endblock %}
+{% block content %}
+<div class="page">
+  <h1>Ingest documents → private wiki</h1>
+  <p class="muted">Source: <code>{{ docs_root }}</code> · target scope:
+    <strong>{{ scope_label }}</strong>
+    {% if not provider_available %}· <span class="warn">distillation disabled (no LLM provider)</span>{% endif %}
+  </p>
+
+  <form id="ingest-form">
+    <table class="data">
+      <thead><tr><th></th><th>File</th><th>Type</th><th>Size</th></tr></thead>
+      <tbody>
+      {% for e in entries %}
+        <tr>
+          <td><input type="checkbox" name="rel" value="{{ e.rel }}"
+                     {% if not e.supported %}disabled{% endif %}></td>
+          <td>{{ e.rel }}</td>
+          <td>{{ e.ext or "?" }}{% if not e.supported %} <span class="muted">(unsupported)</span>{% endif %}</td>
+          <td>{{ e.size }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="actions">
+      <button type="button"
+              hx-post="/wiki/ingest/preview"
+              hx-include="#ingest-form"
+              hx-target="#preview">Preview selected</button>
+      <button type="button"
+              hx-post="/wiki/ingest/write"
+              hx-include="#ingest-form"
+              hx-target="#queue">Write to wiki</button>
+    </div>
+  </form>
+
+  <div id="preview"></div>
+  <div id="queue" hx-get="/wiki/ingest/queue" hx-trigger="load"></div>
+</div>
+{% endblock %}

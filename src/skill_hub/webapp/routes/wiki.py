@@ -40,6 +40,34 @@ def _wiki_root() -> Path:
     )
 
 
+def _docs_root() -> Path:
+    from skill_hub import config as _cfg
+    return Path(_cfg.get("wiki_docs_root") or Path.home() / "Documents")
+
+
+def _safe_doc_path(root: Path, rel: str) -> Path | None:
+    """Resolve ``rel`` under ``root``; reject traversal and _sensitive paths."""
+    root = root.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        rel_parts = candidate.relative_to(root).parts
+    except ValueError:
+        return None  # escaped the docs root
+    if any(part == "_sensitive" for part in rel_parts):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _provider_available() -> bool:
+    try:
+        from skill_hub.llm import get_provider
+        return get_provider() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _authorized_scopes() -> list[str]:
     """Scopes visible on this local machine — union of configured private scopes."""
     from skill_hub import config as _cfg
@@ -126,6 +154,55 @@ def wiki_index(request: Request, q: str = "") -> Any:
             "authorized": authorized,
         },
     )
+
+
+@router.get("/wiki/ingest", response_class=HTMLResponse)
+def wiki_ingest_page(request: Request) -> Any:
+    from skill_hub import doc_extract
+    templates = request.app.state.templates
+    docs_root = _docs_root()
+    entries = doc_extract.list_documents(docs_root)
+    return templates.TemplateResponse(
+        request,
+        "wiki_ingest.html",
+        {
+            "active_tab": "wiki",
+            "docs_root": str(docs_root),
+            "entries": entries,
+            "scope_label": "private / career",
+            "provider_available": _provider_available(),
+        },
+    )
+
+
+@router.post("/wiki/ingest/preview", response_class=HTMLResponse)
+async def wiki_ingest_preview(request: Request) -> Any:
+    from skill_hub import doc_extract, pii_gate
+    templates = request.app.state.templates
+    form = await request.form()
+    rels = form.getlist("rel")
+    docs_root = _docs_root()
+    previews: list[dict] = []
+    for rel in rels:
+        if not isinstance(rel, str):
+            continue  # ignore accidental file uploads on the 'rel' field
+        fp = _safe_doc_path(docs_root, rel)
+        if fp is None:
+            previews.append({"rel": rel, "error": "unavailable or excluded path",
+                             "title": "", "excerpt": "", "flags": []})
+            continue
+        doc = doc_extract.extract_text(fp)
+        flags = [{"label": h.pattern, "snippet": h.match}
+                 for h in pii_gate.scan(doc.markdown)] if doc.markdown else []
+        previews.append({
+            "rel": rel,
+            "error": doc.error,
+            "title": doc.title,
+            "excerpt": doc.markdown[:1500],
+            "flags": flags,
+        })
+    return templates.TemplateResponse(
+        request, "_wiki_ingest_preview.html", {"previews": previews})
 
 
 @router.get("/wiki/{slug:path}", response_class=HTMLResponse)
