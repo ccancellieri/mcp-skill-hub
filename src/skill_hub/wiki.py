@@ -1585,6 +1585,9 @@ def ingest_queued(
     :func:`ingest_source` updating the same source slug in place. Marks the
     queue row ``done`` on success.
     """
+    from . import config as _cfg
+    if model is None:
+        model = _cfg.get("wiki_ingest_model") or None
     wiki_root = Path(wiki_root)
     page = _find_page_by_slug(store, wiki_root, slug)
     if page is None:
@@ -1639,6 +1642,9 @@ def ingest_approved(
     today: str | None = None, tier: str = "tier_smart", model: str | None = None,
 ) -> dict:
     """Batch-ingest up to ``limit`` approved queue rows. ``limit`` is the cost cap."""
+    from . import config as _cfg
+    if model is None:
+        model = _cfg.get("wiki_ingest_model") or None
     rows = store._conn.execute(
         "SELECT slug FROM wiki_queue WHERE status='approved' ORDER BY slug LIMIT ?",
         (max(0, limit),),
@@ -1688,6 +1694,9 @@ def ingest_source(
     Returns a dict with ``status`` in {dry_run, ok, skipped, denied, llm_failed}.
     """
     from . import embeddings as _emb
+    from . import config as _cfg
+    if model is None:
+        model = _cfg.get("wiki_ingest_model") or None
 
     wiki_root = Path(wiki_root)
     today = today or date.today().isoformat()
