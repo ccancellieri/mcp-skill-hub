@@ -136,7 +136,9 @@ _DEFAULTS = {
     # default after eval (scripts/compression_eval.py): avg ratio 0.60, avg
     # embedding-fidelity 0.87. It deletes low-salience tokens — LOSSY and (for prose)
     # irreversible. Requires the `compression_full` extra (headroom-ai[ml]); auto-
-    # no-ops without it, so machines lacking the extra behave exactly as before.
+    # no-ops silently without it. To install: `uv pip install mcp-skill-hub[compression_full]`
+    # or `pip install headroom-ai[ml]`. token_stats() will report "no-op" when the
+    # extra is missing even though this flag is True.
     # NOTE: search-result/memory-like text compresses at ~0.79 fidelity (marginal);
     # raise compression_ml_target_ratio toward 1.0 for higher fidelity / less saving,
     # or set compression_ml_enabled=False to revert to lossless-only.
