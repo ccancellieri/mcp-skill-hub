@@ -205,6 +205,11 @@ def test_embed_uses_remote_endpoint_when_configured(monkeypatch, tmp_path):
         "embed_model": "nomic-embed-text",
         "embedding_backend_priority": ["ollama", "sentence_transformers"],
     }.get(k)})())
+    # This test exercises endpoint selection, not the down-gate; force the
+    # reachability probe up so a "down" result cached by another test does not
+    # short-circuit before the endpoint URL is forwarded.
+    import skill_hub.llm.escalation as esc
+    monkeypatch.setattr(esc, "ollama_daemon_reachable", lambda *a, **k: True)
 
     result = emb._embed_ollama("hello world", model="nomic-embed-text")
 
