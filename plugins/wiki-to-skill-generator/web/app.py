@@ -1,7 +1,7 @@
-"""FastAPI sub-app for the /skill-evolution mount.
+"""FastAPI sub-app for the /wiki-skill-generator mount.
 
 ``get_app()`` returns a FastAPI instance that mcp-skill-hub mounts under the
-path declared in ``plugin.json -> web_mount.mount`` (``/skill-evolution``).
+path declared in ``plugin.json -> web_mount.mount`` (``/wiki-skill-generator``).
 """
 from __future__ import annotations
 
@@ -18,9 +18,6 @@ HERE = Path(__file__).parent
 PLUGIN_ROOT = HERE.parent
 TEMPLATES_DIR = HERE / "templates"
 STATIC_DIR = HERE / "static"
-
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
 
 _DEFAULT_SHARED = (
     "/Users/ccancellieri/work/code/mcp-skill-hub/src/skill_hub/webapp/templates"
@@ -45,8 +42,8 @@ def _build_templates() -> Jinja2Templates:
 def get_app() -> FastAPI:
     """Return the mounted FastAPI sub-app."""
     app = FastAPI(
-        title="Skill Evolution",
-        description="Review and approve auto-generated skill proposals",
+        title="Wiki Skill Generator",
+        description="Generate skills from high-access wiki pages",
         docs_url="/docs",
     )
     templates = _build_templates()

@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}wiki-skill-generator{% endblock %}
+{% block content %}
+<style>
+  /* ── page layout ── */
+  .wsk-page { padding: 1.25rem 1.5rem; max-width: 900px; margin: 0 auto; }
+  .wsk-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .wsk-page-header h1 { margin:0; }
+  .wsk-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 20px; }
+
+  /* ── section headings ── */
+  .wsk-section { margin-bottom: 20px; }
+  .wsk-section-head {
+    padding:14px 18px 12px;
+    border-bottom:1px solid var(--color-border);
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .wsk-section-head h2 {
+    margin:0; font-size:14px; font-weight:600;
+  }
+  .wsk-section-body { padding:16px 18px; }
+
+  /* ── stats row ── */
+  .wsk-stats {
+    display:flex; gap:20px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .wsk-stat { display:flex; flex-direction:column; gap:2px; }
+  .wsk-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .wsk-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  /* ── spinner ── */
+  .wsk-spinner {
+    display:inline-block; width:12px; height:12px;
+    border:2px solid rgba(255,255,255,0.2);
+    border-top-color:var(--color-fg,#e8eaf0);
+    border-radius:50%; animation:wsk-spin .65s linear infinite;
+    vertical-align:middle; margin-right:5px;
+  }
+  @keyframes wsk-spin { to { transform:rotate(360deg); } }
+
+  /* ── action row ── */
+  .wsk-action-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px; }
+  .wsk-result { font-size:12px; }
+  .wsk-result.ok  { color:#5fcf7b; }
+  .wsk-result.err { color:var(--color-bad,#e06060); }
+
+  /* ── status pills ── */
+  .wsk-status { font-size:12px; padding:5px 12px; border-radius:5px; }
+  .wsk-status.ok   { background:rgba(74,211,107,0.12); color:#5fcf7b; border:1px solid rgba(74,211,107,0.25); }
+  .wsk-status.err  { background:rgba(192,57,43,0.12);  color:#e06060; border:1px solid rgba(192,57,43,0.25); }
+  .wsk-status.info { color:var(--color-muted); border:1px solid var(--color-border); background:transparent; }
+
+  /* ── scoped table styles ── */
+  .wsk-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .wsk-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .wsk-table td {
+    padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .wsk-table tr:last-child td { border-bottom:none; }
+  .wsk-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .wsk-table code { font-size:11px; }
+
+  /* ── pill ── */
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
+  .pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .pill-ok   { background:rgba(74,211,107,0.2);  color:#5fcf7b; }
+  .pill-warn { background:rgba(224,160,64,0.2);  color:#e0a040; }
+
+  /* ── empty state ── */
+  .wsk-empty { padding:18px 10px; color:var(--color-muted); font-size:12px; text-align:center; }
+  .wsk-ts { font-size:10px; font-family:ui-monospace,monospace; color:var(--color-muted); }
+</style>
+
+<div class="wsk-page">
+
+  <div class="wsk-page-header">
+    <h1 class="page-h" style="margin:0">Wiki Skill Generator</h1>
+    <span class="pill pill-none" id="wsk-status-pill">loading…</span>
+  </div>
+  <p class="wsk-subtitle">
+    Auto-generates skills from wiki entity/concept pages with high access counts.
+    Pages accessed <code id="wsk-min-access">3</code>+ times become candidates.
+  </p>
+
+  <!-- ═══════════════════════ SECTION 1: STATS & ACTIONS ═══════════════════════ -->
+  <div class="card wsk-section" style="padding:0">
+    <div class="wsk-section-head">
+      <h2>Overview</h2>
+    </div>
+    <div class="wsk-section-body">
+      <!-- Stats row -->
+      <div class="wsk-stats" id="wsk-stats-row">
+        <div class="wsk-stat">
+          <span class="wsk-stat-label">Wiki Pages</span>
+          <span class="wsk-stat-value" id="wsk-wiki-count">—</span>
+        </div>
+        <div class="wsk-stat">
+          <span class="wsk-stat-label">Generated Skills</span>
+          <span class="wsk-stat-value" id="wsk-skills-count">—</span>
+        </div>
+        <div class="wsk-stat">
+          <span class="wsk-stat-label">Pending Candidates</span>
+          <span class="wsk-stat-value" id="wsk-pending-count">—</span>
+        </div>
+      </div>
+
+      <!-- Action row -->
+      <div class="wsk-action-row">
+        <button class="btn" id="wsk-generate-btn" onclick="handleGenerate()">
+          Generate Skills
+        </button>
+        <label style="display:inline-flex;gap:6px;align-items:center;font-size:12px">
+          <input type="checkbox" id="wsk-dry-run">
+          Dry run (preview only)
+        </label>
+        <span id="wsk-generate-feedback" class="wsk-result" style="display:none"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ SECTION 2: CANDIDATES ═══════════════════════ -->
+  <div class="card wsk-section" style="padding:0">
+    <div class="wsk-section-head">
+      <h2>Pending Candidates</h2>
+      <span class="pill pill-none" id="wsk-candidates-pill">—</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="wsk-table" id="wsk-candidates-table">
+        <thead>
+          <tr>
+            <th>Wiki Page</th>
+            <th>Type</th>
+            <th>Access Count</th>
+          </tr>
+        </thead>
+        <tbody id="wsk-candidates-tbody">
+          <tr><td colspan="3" class="wsk-empty">Loading candidates…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ SECTION 3: GENERATED SKILLS ═══════════════════════ -->
+  <div class="card wsk-section" style="padding:0">
+    <div class="wsk-section-head">
+      <h2>Generated Skills</h2>
+      <span class="pill pill-none" id="wsk-skills-pill">—</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="wsk-table" id="wsk-skills-table">
+        <thead>
+          <tr>
+            <th>Skill</th>
+            <th>Wiki Source</th>
+            <th>Type</th>
+            <th>Access</th>
+            <th>Generated</th>
+          </tr>
+        </thead>
+        <tbody id="wsk-skills-tbody">
+          <tr><td colspan="5" class="wsk-empty">Loading skills…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- .wsk-page -->
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── element refs ── */
+  var wikiCountEl    = document.getElementById('wsk-wiki-count');
+  var skillsCountEl  = document.getElementById('wsk-skills-count');
+  var pendingCountEl = document.getElementById('wsk-pending-count');
+  var statusPill     = document.getElementById('wsk-status-pill');
+  var candidatesTbody = document.getElementById('wsk-candidates-tbody');
+  var candidatesPill  = document.getElementById('wsk-candidates-pill');
+  var skillsTbody     = document.getElementById('wsk-skills-tbody');
+  var skillsPill      = document.getElementById('wsk-skills-pill');
+  var minAccessEl     = document.getElementById('wsk-min-access');
+  var generateBtn     = document.getElementById('wsk-generate-btn');
+  var dryRunEl        = document.getElementById('wsk-dry-run');
+  var feedbackEl      = document.getElementById('wsk-generate-feedback');
+
+  /* ── spinner factory ── */
+  function makeSpinner() {
+    var s = document.createElement('span');
+    s.className = 'wsk-spinner';
+    return s;
+  }
+
+  /* ── load stats ── */
+  function loadStats() {
+    fetch('/wiki-skill-generator/api/stats')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        wikiCountEl.textContent = (j.wiki_pages_count || 0).toLocaleString();
+        skillsCountEl.textContent = (j.generated_skills_count || 0).toLocaleString();
+        pendingCountEl.textContent = (j.pending_candidates || 0).toLocaleString();
+        minAccessEl.textContent = j.min_access_threshold || 3;
+        statusPill.textContent = (j.generated_skills_count || 0) + ' skills';
+        statusPill.className = j.generated_skills_count ? 'pill pill-ok' : 'pill pill-none';
+      })
+      .catch(function () {
+        statusPill.textContent = 'error';
+        statusPill.className = 'pill pill-warn';
+      });
+  }
+
+  /* ── load candidates ── */
+  function loadCandidates() {
+    fetch('/wiki-skill-generator/api/candidates')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var candidates = j.candidates || [];
+        candidatesPill.textContent = candidates.length;
+        candidatesPill.className = candidates.length ? 'pill pill-warn' : 'pill pill-none';
+        while (candidatesTbody.firstChild) candidatesTbody.removeChild(candidatesTbody.firstChild);
+        if (!candidates.length) {
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.colSpan = 3;
+          td.className = 'wsk-empty';
+          td.textContent = 'No pending candidates. Wiki pages with ' + minAccessEl.textContent + '+ accesses will appear here.';
+          tr.appendChild(td);
+          candidatesTbody.appendChild(tr);
+          return;
+        }
+        candidates.forEach(function (c) {
+          var tr = document.createElement('tr');
+          [
+            c.title || c.slug,
+            c.type || '—',
+            (c.access_count || 0).toLocaleString()
+          ].forEach(function (val) {
+            var td = document.createElement('td');
+            td.textContent = val;
+            tr.appendChild(td);
+          });
+          candidatesTbody.appendChild(tr);
+        });
+      })
+      .catch(function () {
+        while (candidatesTbody.firstChild) candidatesTbody.removeChild(candidatesTbody.firstChild);
+        var tr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'wsk-empty';
+        td.textContent = 'Could not load candidates.';
+        tr.appendChild(td);
+        candidatesTbody.appendChild(tr);
+      });
+  }
+
+  /* ── load skills ── */
+  function loadSkills() {
+    fetch('/wiki-skill-generator/api/skills')
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var skills = j.skills || [];
+        skillsPill.textContent = skills.length;
+        skillsPill.className = skills.length ? 'pill pill-ok' : 'pill pill-none';
+        while (skillsTbody.firstChild) skillsTbody.removeChild(skillsTbody.firstChild);
+        if (!skills.length) {
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.colSpan = 5;
+          td.className = 'wsk-empty';
+          td.textContent = 'No skills generated yet. Click "Generate Skills" to start.';
+          tr.appendChild(td);
+          skillsTbody.appendChild(tr);
+          return;
+        }
+        skills.forEach(function (s) {
+          var tr = document.createElement('tr');
+          [
+            s.skill_id || s.skill_path || '—',
+            s.wiki_title || s.wiki_slug,
+            s.wiki_type || '—',
+            (s.access_count || 0).toLocaleString(),
+            s.generated_at ? s.generated_at.replace('T', ' ').slice(0, 16) : '—'
+          ].forEach(function (val) {
+            var td = document.createElement('td');
+            td.textContent = val;
+            tr.appendChild(td);
+          });
+          skillsTbody.appendChild(tr);
+        });
+      })
+      .catch(function () {
+        while (skillsTbody.firstChild) skillsTbody.removeChild(skillsTbody.firstChild);
+        var tr = document.createElement('tr');
+        var td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'wsk-empty';
+        td.textContent = 'Could not load skills.';
+        tr.appendChild(td);
+        skillsTbody.appendChild(tr);
+      });
+  }
+
+  /* ── generate handler ── */
+  window.handleGenerate = function () {
+    var dryRun = dryRunEl && dryRunEl.checked;
+    generateBtn.disabled = true;
+    feedbackEl.textContent = '';
+    feedbackEl.appendChild(makeSpinner());
+    feedbackEl.appendChild(document.createTextNode('Generating' + (dryRun ? ' (dry run)' : '') + '\u2026'));
+    feedbackEl.className = 'wsk-result';
+    feedbackEl.style.display = '';
+
+    fetch('/wiki-skill-generator/api/generate?dry_run=' + dryRun, {method: 'POST'})
+      .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, j: j}; }); })
+      .then(function (res) {
+        if (res.ok) {
+          feedbackEl.textContent = 'Generation completed.';
+          feedbackEl.className = 'wsk-result ok';
+          loadStats();
+          loadCandidates();
+          loadSkills();
+        } else {
+          feedbackEl.textContent = 'Generation failed: ' + (res.j.detail || 'unknown error');
+          feedbackEl.className = 'wsk-result err';
+        }
+      })
+      .catch(function (err) {
+        feedbackEl.textContent = 'Error: ' + err.message;
+        feedbackEl.className = 'wsk-result err';
+      })
+      .finally(function () {
+        generateBtn.disabled = false;
+      });
+  };
+
+  /* ── initial load ── */
+  loadStats();
+  loadCandidates();
+  loadSkills();
+}());
+</script>
+{% endblock %}

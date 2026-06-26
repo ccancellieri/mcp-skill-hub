@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Knowledge Bridge{% endblock %}
+{% block content %}
+<style>
+  .cpb-page { padding: 1.25rem 1.5rem; max-width: 1100px; margin: 0 auto; }
+  .cpb-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .cpb-page-header h1 { margin:0; }
+  .cpb-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 16px; }
+
+  .cpb-stats {
+    display:flex; gap:16px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .cpb-stat { display:flex; flex-direction:column; gap:2px; }
+  .cpb-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .cpb-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  .cpb-grid { display:grid; grid-template-columns:280px 1fr; gap:16px; }
+  @media (max-width:900px) { .cpb-grid { grid-template-columns:1fr; } }
+
+  .cpb-sidebar {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); padding:12px;
+  }
+  .cpb-sidebar h3 { font-size:12px; margin:0 0 8px; color:var(--color-muted); text-transform:uppercase; letter-spacing:.06em; }
+  .cpb-project-list { display:flex; flex-direction:column; gap:6px; }
+  .cpb-project-item {
+    padding:8px 10px; border-radius:var(--radius-sm); cursor:pointer;
+    border:1px solid transparent; transition:background .15s,border-color .15s;
+  }
+  .cpb-project-item:hover { background:rgba(255,255,255,0.03); }
+  .cpb-project-item.active { background:rgba(58,160,255,0.1); border-color:var(--color-accent); }
+  .cpb-project-name { font-size:13px; font-weight:600; margin-bottom:2px; }
+  .cpb-project-tags { display:flex; gap:4px; flex-wrap:wrap; }
+  .cpb-tag {
+    font-size:9px; padding:2px 5px; border-radius:3px;
+    background:rgba(255,255,255,0.06); color:var(--color-muted);
+  }
+  .cpb-project-missing { color:var(--color-warn); font-size:10px; margin-top:4px; }
+
+  .cpb-graph-container {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md); min-height:500px; position:relative;
+  }
+  .cpb-graph { width:100%; height:500px; }
+  .cpb-graph-loading {
+    position:absolute; inset:0; display:flex; align-items:center;
+    justify-content:center; color:var(--color-muted); font-size:12px;
+  }
+
+  .cpb-node { cursor:pointer; }
+  .cpb-node-project circle { fill:rgba(58,160,255,0.3); stroke:var(--color-accent); stroke-width:2; }
+  .cpb-node-entity circle { fill:rgba(74,211,107,0.2); stroke:#5fcf7b; stroke-width:1.5; }
+  .cpb-node-tag circle { fill:rgba(200,100,255,0.2); stroke:#cc88ff; stroke-width:1.5; }
+  .cpb-node text { font-size:11px; fill:var(--color-fg); pointer-events:none; }
+  .cpb-node:hover circle { stroke-width:3; }
+
+  .cpb-edge { stroke:rgba(255,255,255,0.15); stroke-width:1; fill:none; }
+  .cpb-edge-tag { stroke:rgba(200,100,255,0.3); stroke-dasharray:4,2; }
+
+  .cpb-legend {
+    position:absolute; bottom:10px; right:10px; background:rgba(0,0,0,0.6);
+    padding:8px 10px; border-radius:var(--radius-sm); font-size:10px;
+  }
+  .cpb-legend-item { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  .cpb-legend-item:last-child { margin-bottom:0; }
+  .cpb-legend-dot { width:10px; height:10px; border-radius:50%; }
+  .cpb-legend-project { background:rgba(58,160,255,0.5); border:2px solid var(--color-accent); }
+  .cpb-legend-entity { background:rgba(74,211,107,0.3); border:1.5px solid #5fcf7b; }
+  .cpb-legend-tag { background:rgba(200,100,255,0.3); border:1.5px solid #cc88ff; }
+
+  .cpb-info-panel {
+    position:absolute; top:10px; left:10px; max-width:280px;
+    background:rgba(0,0,0,0.75); border-radius:var(--radius-sm);
+    padding:10px; font-size:12px; display:none;
+  }
+  .cpb-info-panel.visible { display:block; }
+  .cpb-info-title { font-weight:600; margin-bottom:6px; }
+  .cpb-info-meta { color:var(--color-muted); font-size:10px; margin-bottom:6px; }
+  .cpb-info-body { line-height:1.5; max-height:150px; overflow:hidden; }
+
+  .cpb-controls { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .cpb-controls .btn { font-size:12px; }
+
+  .cpb-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .cpb-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .cpb-table td {
+    padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .cpb-table tr:last-child td { border-bottom:none; }
+  .cpb-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .cpb-table code { font-size:11px; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
+  .pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .pill-ok   { background:rgba(74,211,107,0.2);  color:#5fcf7b; }
+</style>
+
+<div class="cpb-page">
+  <div class="cpb-page-header">
+    <h1 class="page-h" style="margin:0">Knowledge Bridge</h1>
+    <span style="font-size:11px;color:var(--color-muted)">{{ graph.nodes|length }} nodes, {{ graph.edges|length }} edges</span>
+  </div>
+  <p class="cpb-subtitle">
+    Cross-project knowledge graph showing decisions, patterns, and connections across your repos.
+  </p>
+
+  <div class="cpb-controls">
+    <button class="btn" id="sync-btn">Sync Wikis</button>
+    <button class="btn" id="reset-btn">Reset View</button>
+  </div>
+
+  <div class="cpb-stats">
+    <div class="cpb-stat">
+      <span class="cpb-stat-label">Projects</span>
+      <span class="cpb-stat-value">{{ projects|length }}</span>
+    </div>
+    <div class="cpb-stat">
+      <span class="cpb-stat-label">Entities</span>
+      <span class="cpb-stat-value">{{ graph.nodes|selectattr('type', 'equalto', 'entity')|list|length }}</span>
+    </div>
+    <div class="cpb-stat">
+      <span class="cpb-stat-label">Shared Tags</span>
+      <span class="cpb-stat-value">{{ graph.nodes|selectattr('type', 'equalto', 'tag')|list|length }}</span>
+    </div>
+  </div>
+
+  <div class="cpb-grid">
+    <div class="cpb-sidebar">
+      <h3>Projects</h3>
+      <div class="cpb-project-list" id="project-list">
+        {% for proj in projects %}
+        <div class="cpb-project-item" data-project="{{ proj.name }}">
+          <div class="cpb-project-name">{{ proj.name }}</div>
+          <div class="cpb-project-tags">
+            {% for tag in proj.tags %}
+            <span class="cpb-tag">{{ tag }}</span>
+            {% endfor %}
+          </div>
+          {% if not proj.exists %}
+          <div class="cpb-project-missing">Path not found</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="cpb-graph-container">
+      <div class="cpb-graph-loading" id="graph-loading">Loading graph...</div>
+      <svg class="cpb-graph" id="graph-svg"></svg>
+      <div class="cpb-legend">
+        <div class="cpb-legend-item"><div class="cpb-legend-dot cpb-legend-project"></div>Project</div>
+        <div class="cpb-legend-item"><div class="cpb-legend-dot cpb-legend-entity"></div>Entity</div>
+        <div class="cpb-legend-item"><div class="cpb-legend-dot cpb-legend-tag"></div>Tag</div>
+      </div>
+      <div class="cpb-info-panel" id="info-panel">
+        <div class="cpb-info-title" id="info-title"></div>
+        <div class="cpb-info-meta" id="info-meta"></div>
+        <div class="cpb-info-body" id="info-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0; margin-top:20px;">
+    <div style="padding:14px 18px 12px; border-bottom:1px solid var(--color-border);">
+      <h2 style="margin:0; font-size:14px; font-weight:600;">Project Connections</h2>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="cpb-table">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Path</th>
+            <th>Tags</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for proj in projects %}
+          <tr>
+            <td><code>{{ proj.name }}</code></td>
+            <td style="font-size:11px;color:var(--color-muted)">{{ proj.path }}</td>
+            <td>
+              {% for tag in proj.tags %}
+              <span class="cpb-tag">{{ tag }}</span>
+              {% endfor %}
+            </td>
+            <td>
+              {% if proj.exists %}
+              <span class="pill pill-ok">available</span>
+              {% else %}
+              <span class="pill pill-none">missing</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js" integrity="sha512-M7uzkXJF6L9wGBsMdnUnJ4GtkB6lH4wLTo3ambdaXN9ZtetPJF9lO1p9MnDzIQ6Ta5F9RkSYbOKB6I/szJkPlA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+(function() {
+  const graphData = {{ graph | tojson }};
+  const loading = document.getElementById('graph-loading');
+  const svg = d3.select('#graph-svg');
+  const container = svg.node().parentElement;
+  const width = container.clientWidth;
+  const height = 500;
+  svg.attr('viewBox', `0 0 ${width} ${height}`);
+
+  const nodeRadius = { project: 20, entity: 12, tag: 16 };
+
+  const simulation = d3.forceSimulation(graphData.nodes)
+    .force('link', d3.forceLink(graphData.edges).id(d => d.id).distance(80))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => nodeRadius[d.type] + 5));
+
+  const linkG = svg.append('g').attr('class', 'edges');
+  const nodeG = svg.append('g').attr('class', 'nodes');
+
+  const links = linkG.selectAll('line')
+    .data(graphData.edges)
+    .enter().append('line')
+    .attr('class', d => 'cpb-edge cpb-edge-' + d.type);
+
+  const nodes = nodeG.selectAll('g')
+    .data(graphData.nodes)
+    .enter().append('g')
+    .attr('class', d => 'cpb-node cpb-node-' + d.type)
+    .call(d3.drag()
+      .on('start', dragStarted)
+      .on('drag', dragged)
+      .on('end', dragEnded));
+
+  nodes.append('circle')
+    .attr('r', d => nodeRadius[d.type]);
+
+  nodes.append('text')
+    .attr('dy', d => nodeRadius[d.type] + 12)
+    .attr('text-anchor', 'middle')
+    .text(d => d.label.length > 15 ? d.label.slice(0, 14) + '\u2026' : d.label);
+
+  nodes.on('click', (event, d) => showInfo(d));
+  nodes.on('mouseover', function() { d3.select(this).raise(); });
+
+  simulation.on('tick', () => {
+    links
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    nodes.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+
+  loading.style.display = 'none';
+
+  function dragStarted(event, d) {
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+  }
+
+  function dragged(event, d) {
+    d.fx = event.x;
+    d.fy = event.y;
+  }
+
+  function dragEnded(event, d) {
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = null;
+    d.fy = null;
+  }
+
+  function showInfo(d) {
+    const panel = document.getElementById('info-panel');
+    const title = document.getElementById('info-title');
+    const meta = document.getElementById('info-meta');
+    const body = document.getElementById('info-body');
+    title.textContent = d.label;
+    meta.textContent = 'Type: ' + d.type + (d.project ? ' | Project: ' + d.project : '');
+    body.textContent = d.tags ? 'Tags: ' + d.tags.join(', ') : '';
+    panel.classList.add('visible');
+  }
+
+  document.getElementById('project-list').addEventListener('click', (e) => {
+    const item = e.target.closest('.cpb-project-item');
+    if (!item) return;
+    document.querySelectorAll('.cpb-project-item').forEach(el => el.classList.remove('active'));
+    item.classList.add('active');
+    const projectName = item.dataset.project;
+    nodes.style('opacity', d =>
+      d.id === 'project:' + projectName ||
+      d.project === projectName ||
+      d.type === 'tag'
+        ? 1 : 0.2);
+    links.style('opacity', d =>
+      d.source.id === 'project:' + projectName ||
+      d.target.id === 'project:' + projectName
+        ? 1 : 0.1);
+  });
+
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    document.querySelectorAll('.cpb-project-item').forEach(el => el.classList.remove('active'));
+    nodes.style('opacity', 1);
+    links.style('opacity', 1);
+    simulation.alpha(1).restart();
+  });
+
+  document.getElementById('sync-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    try {
+      const resp = await fetch('/knowledge-bridge/api/sync', { method: 'POST' });
+      const data = await resp.json();
+      btn.textContent = data.status === 'ok' ? 'Synced!' : 'Error';
+      if (data.status === 'ok') setTimeout(() => location.reload(), 1000);
+    } catch (err) {
+      btn.textContent = 'Error';
+    }
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Sync Wikis'; }, 2000);
+  });
+})();
+</script>
+{% endblock %}

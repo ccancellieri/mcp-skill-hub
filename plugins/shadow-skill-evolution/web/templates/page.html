@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}skill-evolution{% endblock %}
+{% block content %}
+<style>
+  /* ── page layout ── */
+  .sse-page { padding: 1.25rem 1.5rem; max-width: 1000px; margin: 0 auto; }
+  .sse-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .sse-page-header h1 { margin:0; }
+  .sse-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 20px; }
+
+  /* ── section headings ── */
+  .sse-section { margin-bottom: 20px; }
+  .sse-section-head {
+    padding:14px 18px 12px;
+    border-bottom:1px solid var(--color-border);
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .sse-section-head h2 {
+    margin:0; font-size:14px; font-weight:600;
+  }
+  .sse-section-body { padding:16px 18px; }
+
+  /* ── stats row ── */
+  .sse-stats {
+    display:flex; gap:20px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .sse-stat { display:flex; flex-direction:column; gap:2px; }
+  .sse-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .sse-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  /* ── tabs ── */
+  .sse-tabs { display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--color-border); padding-bottom:0; }
+  .sse-tab {
+    padding:8px 16px; font-size:12px; font-weight:600;
+    border:1px solid transparent; border-bottom:none;
+    border-radius:6px 6px 0 0;
+    background:transparent; color:var(--color-muted);
+    cursor:pointer; text-decoration:none;
+    transition:background .15s, color .15s;
+  }
+  .sse-tab:hover { background:rgba(255,255,255,0.03); color:var(--color-fg); }
+  .sse-tab.active {
+    background:var(--color-surface); color:var(--color-fg);
+    border-color:var(--color-border);
+  }
+  .sse-tab .pill {
+    display:inline-block; padding:2px 8px; border-radius:10px;
+    font-size:10px; font-weight:600; margin-left:6px;
+  }
+  .sse-tab .pill.pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .sse-tab .pill.pill-ok { background:rgba(74,211,107,0.2); color:#5fcf7b; }
+  .sse-tab .pill.pill-warn { background:rgba(224,160,64,0.2); color:#e0a040; }
+  .sse-tab .pill.pill-bad { background:rgba(192,57,43,0.2); color:#e06060; }
+
+  /* ── proposal cards ── */
+  .sse-proposals { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; }
+  .sse-proposal-card {
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:8px; display:flex; flex-direction:column;
+  }
+  .sse-proposal-head {
+    padding:12px 14px; border-bottom:1px solid var(--color-border);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .sse-proposal-title { font-weight:600; font-size:13px; }
+  .sse-proposal-badge {
+    padding:3px 8px; border-radius:10px; font-size:10px; font-weight:600;
+  }
+  .sse-proposal-badge.badge-ok { background:rgba(74,211,107,0.15); color:#5fcf7b; }
+  .sse-proposal-badge.badge-warn { background:rgba(224,160,64,0.15); color:#e0a040; }
+  .sse-proposal-badge.badge-bad { background:rgba(192,57,43,0.15); color:#e06060; }
+  .sse-proposal-badge.badge-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+
+  .sse-proposal-body { padding:12px 14px; flex:1; }
+  .sse-proposal-name { font-size:11px; color:var(--color-muted); margin-bottom:8px; }
+  .sse-proposal-desc { font-size:12px; line-height:1.5; margin-bottom:10px; }
+  .sse-proposal-triggers { margin-bottom:8px; }
+  .sse-proposal-triggers-label { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); margin-bottom:4px; }
+  .sse-proposal-triggers code { font-size:11px; margin-right:6px; }
+  .sse-proposal-meta { font-size:11px; color:var(--color-muted); margin-top:8px; }
+
+  .sse-proposal-foot {
+    padding:10px 14px; border-top:1px solid var(--color-border);
+    display:flex; gap:8px; align-items:center;
+  }
+  .sse-proposal-foot form { display:inline; }
+  .sse-btn {
+    padding:6px 12px; border-radius:5px; font-size:11px; font-weight:600;
+    border:1px solid var(--color-border); background:var(--color-surface);
+    color:var(--color-fg); cursor:pointer;
+    transition:background .15s;
+  }
+  .sse-btn:hover { background:rgba(255,255,255,0.05); }
+  .sse-btn.sse-btn-ok {
+    background:rgba(74,211,107,0.12); border-color:rgba(74,211,107,0.3); color:#5fcf7b;
+  }
+  .sse-btn.sse-btn-ok:hover { background:rgba(74,211,107,0.2); }
+  .sse-btn.sse-btn-bad {
+    background:rgba(192,57,43,0.08); border-color:rgba(192,57,43,0.25); color:#e06060;
+  }
+  .sse-btn.sse-btn-bad:hover { background:rgba(192,57,43,0.15); }
+  .sse-btn:disabled { opacity:.5; cursor:not-allowed; }
+
+  /* ── spinner ── */
+  .sse-spinner {
+    display:inline-block; width:12px; height:12px;
+    border:2px solid rgba(255,255,255,0.2);
+    border-top-color:var(--color-fg,#e8eaf0);
+    border-radius:50%; animation:sse-spin .65s linear infinite;
+    vertical-align:middle; margin-right:5px;
+  }
+  @keyframes sse-spin { to { transform:rotate(360deg); } }
+
+  /* ── empty state ── */
+  .sse-empty {
+    padding:40px 20px; text-align:center; color:var(--color-muted); font-size:12px;
+    background:var(--color-surface); border:1px solid var(--color-border); border-radius:8px;
+  }
+  .sse-empty code { font-size:11px; }
+
+  /* ── analyze button ── */
+  .sse-actions { display:flex; gap:10px; margin-bottom:16px; }
+</style>
+
+<div class="sse-page">
+  <div class="sse-page-header">
+    <h1 class="page-h" style="margin:0">Skill Evolution</h1>
+  </div>
+  <p class="sse-subtitle">
+    Auto-generated skill proposals from tool-call pattern analysis.
+    Review and approve to create local skills.
+  </p>
+
+  <!-- ═══════════════════════ STATS ═══════════════════════ -->
+  <div class="sse-stats">
+    <div class="sse-stat">
+      <span class="sse-stat-label">Tool chains</span>
+      <span class="sse-stat-value">{{ stats.chains }}</span>
+    </div>
+    <div class="sse-stat">
+      <span class="sse-stat-label">Pending</span>
+      <span class="sse-stat-value">{{ stats.pending }}</span>
+    </div>
+    <div class="sse-stat">
+      <span class="sse-stat-label">Approved</span>
+      <span class="sse-stat-value">{{ stats.approved }}</span>
+    </div>
+    <div class="sse-stat">
+      <span class="sse-stat-label">Rejected</span>
+      <span class="sse-stat-value">{{ stats.rejected }}</span>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ TABS ═══════════════════════ -->
+  <div class="sse-tabs">
+    <a class="sse-tab {% if status == 'pending' %}active{% endif %}" href="?status=pending">
+      Pending
+      <span class="pill pill-warn">{{ stats.pending }}</span>
+    </a>
+    <a class="sse-tab {% if status == 'approved' %}active{% endif %}" href="?status=approved">
+      Approved
+      <span class="pill pill-ok">{{ stats.approved }}</span>
+    </a>
+    <a class="sse-tab {% if status == 'rejected' %}active{% endif %}" href="?status=rejected">
+      Rejected
+      <span class="pill pill-bad">{{ stats.rejected }}</span>
+    </a>
+  </div>
+
+  <!-- ═══════════════════════ ACTIONS ═══════════════════════ -->
+  {% if status == 'pending' %}
+  <div class="sse-actions">
+    <button class="sse-btn" id="sse-analyze-btn" onclick="triggerAnalysis()">
+      Analyze Patterns
+    </button>
+  </div>
+  {% endif %}
+
+  <!-- ═══════════════════════ PROPOSALS ═══════════════════════ -->
+  {% if not proposals %}
+  <div class="sse-empty">
+    No {{ status }} proposals.<br>
+    Run the <code>propose_skills</code> scheduled task to analyze tool chains and generate new proposals.
+  </div>
+  {% else %}
+  <div class="sse-proposals">
+    {% for proposal in proposals %}
+    <div class="sse-proposal-card">
+      <div class="sse-proposal-head">
+        <span class="sse-proposal-title">{{ proposal.title }}</span>
+        <span class="sse-proposal-badge badge-{{ 'ok' if status == 'approved' else ('bad' if status == 'rejected' else 'none') }}">
+          {{ proposal.cluster_size }} sessions
+        </span>
+      </div>
+      <div class="sse-proposal-body">
+        <div class="sse-proposal-name"><code>{{ proposal.name }}</code></div>
+        <div class="sse-proposal-desc">{{ proposal.description }}</div>
+
+        {% if proposal.triggers %}
+        <div class="sse-proposal-triggers">
+          <div class="sse-proposal-triggers-label">Triggers</div>
+          {% for t in proposal.triggers %}<code>{{ t }}</code>{% endfor %}
+        </div>
+        {% endif %}
+
+        {% if proposal.steps %}
+        <details class="small" style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:11px;color:var(--color-muted)">{{ proposal.steps|length }} steps</summary>
+          <pre style="background:rgba(0,0,0,0.2);padding:8px;margin-top:6px;border-radius:4px;font-size:10px;overflow:auto">{{ proposal.steps | tojson(indent=2) }}</pre>
+        </details>
+        {% endif %}
+
+        <div class="sse-proposal-meta">
+          Similarity: {{ "%.2f"|format(proposal.similarity_score or 0) }}
+        </div>
+      </div>
+      <div class="sse-proposal-foot">
+        {% if status == 'pending' %}
+        <form action="/skill-evolution/api/proposals/{{ proposal.id }}/approve" method="post" class="sse-approve-form">
+          <button type="submit" class="sse-btn sse-btn-ok">Approve</button>
+        </form>
+        <form action="/skill-evolution/api/proposals/{{ proposal.id }}/reject" method="post" class="sse-reject-form">
+          <button type="submit" class="sse-btn sse-btn-bad">Reject</button>
+        </form>
+        {% elif status == 'approved' %}
+        <span style="font-size:11px;color:#5fcf7b">
+          Written to <code>~/.claude/local-skills/{{ proposal.name }}.json</code>
+        </span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  function makeSpinner() {
+    var s = document.createElement('span');
+    s.className = 'sse-spinner';
+    return s;
+  }
+
+  window.triggerAnalysis = function () {
+    var btn = document.getElementById('sse-analyze-btn');
+    if (!btn) return;
+    btn.disabled = true;
+    var origText = btn.textContent;
+    btn.textContent = '';
+    btn.appendChild(makeSpinner());
+    btn.appendChild(document.createTextNode('Analyzing\u2026'));
+
+    fetch('/skill-evolution/api/analyze', {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.status === 'triggered') {
+          btn.textContent = 'Analysis complete. Reloading\u2026';
+          setTimeout(function () { window.location.reload(); }, 1000);
+        } else {
+          btn.textContent = j.message || 'Error';
+          setTimeout(function () { btn.textContent = origText; btn.disabled = false; }, 2000);
+        }
+      })
+      .catch(function (err) {
+        btn.textContent = 'Error: ' + err.message;
+        setTimeout(function () { btn.textContent = origText; btn.disabled = false; }, 2000);
+      });
+  };
+
+  document.querySelectorAll('.sse-approve-form, .sse-reject-form').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      var btn = form.querySelector('button');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '';
+        btn.appendChild(makeSpinner());
+      }
+    });
+  });
+}());
+</script>
+{% endblock %}

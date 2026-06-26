@@ -1,0 +1,13 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--wiki-skill-generator">
+  <header class="dash-card-head">
+    <h3>Wiki Skill Generator</h3>
+    <a class="dash-card-link" href="/wiki-skill-generator/">Open →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Generated skills", generated_count|string, kind="good") }}
+    {{ kpi_card("Pending candidates", pending_count|string,
+                kind=("warn" if pending_count else "default"),
+                sub=(min_access ~ "+ accesses")) }}
+  </div>
+</section>

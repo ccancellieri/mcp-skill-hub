@@ -2,12 +2,8 @@
   "name": "cross-project-knowledge-bridge",
   "version": "0.1.0",
   "description": "Federates wiki knowledge across related repos, showing cross-project knowledge graphs and syncing decisions/patterns",
-  "web_mount": {
-    "mount": "/knowledge-bridge",
-    "title": "Knowledge Bridge",
-    "icon": "project",
-    "nav": true
-  },
+  "web_mount": {"mount": "/knowledge-bridge", "title": "Knowledge Bridge", "icon": "link", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py",
   "watch_paths": [".memory/*.md"],
   "hooks": {
     "on_session_start": "hooks/on_session_start.py"

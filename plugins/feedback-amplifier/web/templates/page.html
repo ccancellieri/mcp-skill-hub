@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}feedback-amplifier{% endblock %}
+{% block content %}
+<style>
+  .fa-page { padding: 1.25rem 1.5rem; max-width: 900px; margin: 0 auto; }
+  .fa-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .fa-page-header h1 { margin:0; }
+  .fa-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 20px; }
+
+  .fa-section { margin-bottom: 20px; }
+  .fa-section-head {
+    padding:14px 18px 12px;
+    border-bottom:1px solid var(--color-border);
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .fa-section-head h2 { margin:0; font-size:14px; font-weight:600; }
+  .fa-section-body { padding:16px 18px; }
+
+  .fa-stats {
+    display:flex; gap:20px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .fa-stat { display:flex; flex-direction:column; gap:2px; }
+  .fa-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .fa-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .fa-stat-value.good { color:#5fcf7b; }
+  .fa-stat-value.warn { color:#e0a040; }
+
+  .fa-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .fa-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .fa-table td {
+    padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .fa-table tr:last-child td { border-bottom:none; }
+  .fa-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .fa-table code { font-size:11px; }
+
+  .fa-empty { padding:18px 10px; color:var(--color-muted); font-size:12px; text-align:center; }
+
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
+  .pill-none { background:rgba(125,136,150,0.15); color:var(--color-muted); }
+  .pill-ok { background:rgba(74,211,107,0.2); color:#5fcf7b; }
+  .pill-warn { background:rgba(224,160,64,0.2); color:#e0a040; }
+
+  .fa-recompute-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:4px; }
+  .fa-result { font-size:12px; }
+  .fa-result.ok { color:#5fcf7b; }
+  .fa-result.err { color:var(--color-bad,#e06060); }
+
+  .fa-spinner {
+    display:inline-block; width:12px; height:12px;
+    border:2px solid rgba(255,255,255,0.2);
+    border-top-color:var(--color-fg,#e8eaf0);
+    border-radius:50%; animation:fa-spin .65s linear infinite;
+    vertical-align:middle; margin-right:5px;
+  }
+  @keyframes fa-spin { to { transform:rotate(360deg); } }
+
+  .fa-score-bar {
+    display:inline-block; height:6px; border-radius:3px; background:rgba(255,255,255,0.1);
+    min-width:40px; position:relative; vertical-align:middle; margin-left:6px;
+  }
+  .fa-score-fill {
+    position:absolute; left:0; top:0; height:100%; border-radius:3px;
+    transition:width .2s;
+  }
+  .fa-score-fill.good { background:#5fcf7b; }
+  .fa-score-fill.neutral { background:#6bbeff; }
+  .fa-score-fill.warn { background:#e0a040; }
+</style>
+
+<div class="fa-page">
+
+  <div class="fa-page-header">
+    <h1 class="page-h" style="margin:0">Feedback Amplifier</h1>
+    <span class="pill pill-none" id="fa-score-pill">loading…</span>
+  </div>
+  <p class="fa-subtitle">
+    Enhanced EMA feedback scoring with cross-session learning and decay for unused skills.
+    Scores reflect skill usefulness based on injection→usage ratio over time.
+  </p>
+
+  <div class="card fa-section" style="padding:0">
+    <div class="fa-section-head">
+      <h2>Overview</h2>
+    </div>
+    <div class="fa-section-body">
+      <div class="fa-stats">
+        <div class="fa-stat">
+          <span class="fa-stat-label">Feedback Events</span>
+          <span class="fa-stat-value" id="fa-total-feedback">{{ total_feedback }}</span>
+        </div>
+        <div class="fa-stat">
+          <span class="fa-stat-label">Boosted Skills</span>
+          <span class="fa-stat-value good">{{ skills_boosted }}</span>
+        </div>
+        <div class="fa-stat">
+          <span class="fa-stat-label">Decayed Skills</span>
+          <span class="fa-stat-value warn">{{ skills_decayed }}</span>
+        </div>
+        <div class="fa-stat">
+          <span class="fa-stat-label">Half-Life</span>
+          <span class="fa-stat-value">{{ decay_half_life }} days</span>
+        </div>
+      </div>
+
+      <div class="fa-recompute-row">
+        <button class="btn" id="fa-recompute-btn">Recompute Scores</button>
+        <span id="fa-recompute-result" class="fa-result" style="display:none"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card fa-section" style="padding:0">
+    <div class="fa-section-head">
+      <h2>Skill Scores</h2>
+      <span class="pill pill-none" id="fa-skills-count">{{ skill_scores|length }} skills</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="fa-table" id="fa-scores-table">
+        <thead>
+          <tr>
+            <th>Skill ID</th>
+            <th>EMA Score</th>
+            <th>Injections</th>
+            <th>Used</th>
+            <th>Last Used</th>
+          </tr>
+        </thead>
+        <tbody id="fa-scores-tbody">
+        {% if skill_scores %}
+          {% for s in skill_scores %}
+          <tr>
+            <td><code>{{ s.skill_id }}</code></td>
+            <td>
+              {{ s.ema_score }}
+              <span class="fa-score-bar">
+                <span class="fa-score-fill {% if s.ema_score > 1.1 %}good{% elif s.ema_score < 0.9 %}warn{% else %}neutral{% endif %}"
+                      style="width:{{ (s.ema_score / 2.0 * 100)|round }}%"></span>
+              </span>
+            </td>
+            <td>{{ s.injection_count }}</td>
+            <td>{{ s.used_count }}</td>
+            <td class="fa-ts">{{ s.last_used }}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="5" class="fa-empty">No skill scores recorded yet.</td></tr>
+        {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card fa-section" style="padding:0">
+    <div class="fa-section-head">
+      <h2>About</h2>
+    </div>
+    <div class="fa-section-body">
+      <p style="font-size:12px;color:var(--color-muted);margin:0 0 12px">
+        The feedback-amplifier plugin tracks when skills are injected into sessions
+        and whether they are subsequently used. This implicit feedback is aggregated
+        into an Exponential Moving Average (EMA) score per skill.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);font-weight:600">EMA Formula</span>
+          <span style="font-size:12px;color:var(--color-muted)">new = old × (1-α) + signal × α</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-muted);font-weight:600">Decay</span>
+          <span style="font-size:12px;color:var(--color-muted)">exp(-days / half-life) for unused skills</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var btn = document.getElementById('fa-recompute-btn');
+  var result = document.getElementById('fa-recompute-result');
+  var pill = document.getElementById('fa-score-pill');
+
+  function makeSpinner() {
+    var s = document.createElement('span');
+    s.className = 'fa-spinner';
+    return s;
+  }
+
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    btn.textContent = 'Computing…';
+    result.textContent = '';
+    result.appendChild(makeSpinner());
+    result.appendChild(document.createTextNode('Running…'));
+    result.className = 'fa-result';
+    result.style.display = '';
+
+    fetch('/feedback-amp/api/recompute', {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.ok) {
+          result.textContent = 'Done. ' + (j.stdout.split('\n').filter(function(l) { return l.trim(); }).length) + ' scores updated.';
+          result.className = 'fa-result ok';
+          pill.textContent = 'updated';
+          pill.className = 'pill pill-ok';
+          setTimeout(function () { location.reload(); }, 800);
+        } else {
+          result.textContent = 'Error: ' + (j.stderr || 'unknown');
+          result.className = 'fa-result err';
+        }
+      })
+      .catch(function (err) {
+        result.textContent = 'Request failed: ' + err.message;
+        result.className = 'fa-result err';
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = 'Recompute Scores';
+      });
+  });
+
+  fetch('/feedback-amp/api/stats')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      pill.textContent = j.total_feedback + ' events';
+      pill.className = j.total_feedback > 0 ? 'pill pill-ok' : 'pill pill-none';
+    })
+    .catch(function () {
+      pill.textContent = 'error';
+      pill.className = 'pill pill-warn';
+    });
+
+}());
+</script>
+{% endblock %}

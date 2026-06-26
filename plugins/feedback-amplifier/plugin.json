@@ -2,6 +2,8 @@
   "name": "feedback-amplifier",
   "version": "0.1.0",
   "description": "Enhanced EMA feedback scoring with cross-session learning, skill context capture, and decay for unused skills",
+  "web_mount": {"mount": "/feedback-amp", "title": "Feedback Amplifier", "icon": "trending-up", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py",
   "hooks": {
     "on_skill_activated": {"script": "hooks/on_skill_activated.py", "async": true},
     "on_session_end": "hooks/on_session_end.py"

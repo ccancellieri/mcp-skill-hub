@@ -112,7 +112,7 @@
         <a href="/wiki/{{ finding.page_a }}" class="cd-panel-link" target="_blank">View in Wiki &rarr;</a>
       </div>
       <div class="cd-panel-body">
-        {{ page_a.body if page_a else 'Page not found' }}
+        {{ page_a_body }}
       </div>
     </div>
 
@@ -122,7 +122,7 @@
         <a href="/wiki/{{ finding.page_b }}" class="cd-panel-link" target="_blank">View in Wiki &rarr;</a>
       </div>
       <div class="cd-panel-body">
-        {{ page_b.body if page_b else 'Page not found' }}
+        {{ page_b_body }}
       </div>
     </div>
   </div>

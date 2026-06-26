@@ -2,6 +2,8 @@
   "name": "wiki-to-skill-generator",
   "version": "0.1.0",
   "description": "Auto-generates skills from wiki entity/concept pages with high access counts",
+  "web_mount": {"mount": "/wiki-skill-generator", "title": "Wiki Skill Generator", "icon": "lightbulb", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py",
   "hooks": {
     "on_session_start": "hooks/on_session_start.py"
   },

@@ -1,0 +1,13 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--feedback-amplifier">
+  <header class="dash-card-head">
+    <h3>Feedback Amplifier</h3>
+    <a class="dash-card-link" href="/feedback-amp/">Open →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Feedback events", total_feedback|string, kind=("good" if total_feedback > 0 else "warn")) }}
+    {{ kpi_card("Avg score", avg_score|string, kind=("good" if avg_score > 1.0 else "warn" if avg_score < 1.0 else "default")) }}
+    {{ kpi_card("Boosted", skills_boosted|string, kind="good") }}
+    {{ kpi_card("Decayed", skills_decayed|string, kind="warn") }}
+  </div>
+</section>

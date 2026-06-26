@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api")
+
+DB_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "skill_hub.db"
 
 RESOLUTION_OPTIONS = [
     ("keep_a", "Keep A — Page A's claim is correct"),
@@ -18,6 +21,12 @@ RESOLUTION_OPTIONS = [
 ]
 
 
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 @router.post("/resolve")
 async def resolve_finding(
     request: Request,
@@ -25,9 +34,6 @@ async def resolve_finding(
     resolution: str = Form(...),
     notes: str = Form(default=""),
 ):
-    store = request.app.state.store
-    conn = store._conn
-
     valid_resolutions = [r[0] for r in RESOLUTION_OPTIONS]
     if resolution not in valid_resolutions:
         return JSONResponse(
@@ -35,27 +41,28 @@ async def resolve_finding(
             status_code=400,
         )
 
-    row = conn.execute(
-        "SELECT id, page_a, page_b, claim_a, claim_b FROM plugin_contradiction_findings WHERE id = ?",
-        (finding_id,),
-    ).fetchone()
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, page_a, page_b, claim_a, claim_b FROM plugin_contradiction_findings WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
 
-    if not row:
-        return JSONResponse({"error": "Finding not found"}, status_code=404)
+        if not row:
+            return JSONResponse({"error": "Finding not found"}, status_code=404)
 
-    resolved_at = datetime.utcnow().isoformat()
-    conn.execute(
-        """
-        UPDATE plugin_contradiction_findings
-        SET resolution_status = 'resolved',
-            resolution = ?,
-            resolved_by = 'user',
-            resolved_at = ?
-        WHERE id = ?
-        """,
-        (json.dumps({"action": resolution, "notes": notes}), resolved_at, finding_id),
-    )
-    conn.commit()
+        resolved_at = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE plugin_contradiction_findings
+            SET resolution_status = 'resolved',
+                resolution = ?,
+                resolved_by = 'user',
+                resolved_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps({"action": resolution, "notes": notes}), resolved_at, finding_id),
+        )
+        conn.commit()
 
     return JSONResponse({
         "ok": True,
@@ -67,10 +74,10 @@ async def resolve_finding(
 
 @router.post("/run-detection")
 async def run_detection(request: Request, dry_run: bool = False):
-    store = request.app.state.store
     try:
         from scripts.detect_contradictions import detect_contradictions
-        result = detect_contradictions(store, dry_run=dry_run)
+        with _get_conn() as conn:
+            result = detect_contradictions(conn, dry_run=dry_run)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -78,24 +85,22 @@ async def run_detection(request: Request, dry_run: bool = False):
 
 @router.get("/stats")
 def get_stats(request: Request):
-    store = request.app.state.store
-    conn = store._conn
+    with _get_conn() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM plugin_contradiction_findings WHERE resolution_status = 'pending'"
+        ).fetchone()[0]
 
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM plugin_contradiction_findings WHERE resolution_status = 'pending'"
-    ).fetchone()[0]
+        resolved = conn.execute(
+            "SELECT COUNT(*) FROM plugin_contradiction_findings WHERE resolution_status = 'resolved'"
+        ).fetchone()[0]
 
-    resolved = conn.execute(
-        "SELECT COUNT(*) FROM plugin_contradiction_findings WHERE resolution_status = 'resolved'"
-    ).fetchone()[0]
-
-    last_run = conn.execute(
-        """
-        SELECT id, started_at, completed_at, status, contradictions_found
-        FROM plugin_contradiction_runs
-        ORDER BY started_at DESC LIMIT 1
-        """
-    ).fetchone()
+        last_run = conn.execute(
+            """
+            SELECT id, started_at, completed_at, status, contradictions_found
+            FROM plugin_contradiction_runs
+            ORDER BY started_at DESC LIMIT 1
+            """
+        ).fetchone()
 
     return JSONResponse({
         "pending": pending,
@@ -104,18 +109,17 @@ def get_stats(request: Request):
     })
 
 
-@router.get("/list")
+@router.get("/contradictions")
 def list_findings(request: Request, status: str = "pending", limit: int = 50):
-    store = request.app.state.store
-    conn = store._conn
-    rows = conn.execute(
-        """
-        SELECT id, page_a, page_b, claim_a, claim_b, confidence, detected_at
-        FROM plugin_contradiction_findings
-        WHERE resolution_status = ?
-        ORDER BY confidence DESC
-        LIMIT ?
-        """,
-        (status, limit),
-    ).fetchall()
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, page_a, page_b, claim_a, claim_b, confidence, detected_at
+            FROM plugin_contradiction_findings
+            WHERE resolution_status = ?
+            ORDER BY confidence DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ).fetchall()
     return JSONResponse([dict(r) for r in rows])

@@ -17,10 +17,6 @@
     "namespace": "shadow_skill_evolution",
     "schema": "storage/schema.sql"
   },
-  "web_mount": {
-    "mount": "/shadow-skill-evolution",
-    "title": "Skill Evolution",
-    "icon": "sparkles",
-    "nav": true
-  }
+  "web_mount": {"mount": "/skill-evolution", "title": "Skill Evolution", "icon": "dna", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py"
 }

@@ -1,0 +1,21 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--contradiction-detector">
+  <header class="dash-card-head">
+    <h3>Contradiction Detector</h3>
+    <a class="dash-card-link" href="/contradiction-detector/">Review →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Pending", pending|string,
+                kind=("warn" if pending > 0 else "good"),
+                sub=("contradictions" if pending != 1 else "contradiction")) }}
+    {{ kpi_card("Resolved", resolved|string, kind="default",
+                sub=("contradictions" if resolved != 1 else "contradiction")) }}
+    {% if last_run %}
+    {{ kpi_card("Last scan", last_run.started_at[:10] if last_run.started_at else "—",
+                kind=("good" if last_run.status == "completed" else "warn"),
+                sub=(last_run.contradictions_found|string + " found" if last_run.contradictions_found else "0 found")) }}
+    {% else %}
+    {{ kpi_card("Last scan", "never", kind="default", sub="") }}
+    {% endif %}
+  </div>
+</section>

@@ -1,0 +1,14 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--skill-evolution">
+  <header class="dash-card-head">
+    <h3>Skill Evolution</h3>
+    <a class="dash-card-link" href="/skill-evolution/">Open →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Pending proposals", pending_proposals|string,
+                kind=("warn" if pending_proposals > 0 else "default")) }}
+    {{ kpi_card("Approved skills", approved_skills|string,
+                kind=("good" if approved_skills > 0 else "default")) }}
+    {{ kpi_card("Tool chains", tool_chains|string, kind="default") }}
+  </div>
+</section>

@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+{% block title %}Cost Router{% endblock %}
+{% block content %}
+<style>
+  .car-page { padding: 1.25rem 1.5rem; max-width: 900px; margin: 0 auto; }
+  .car-page-header { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+  .car-page-header h1 { margin:0; }
+  .car-subtitle { font-size:12px; color:var(--color-muted); margin:0 0 20px; }
+
+  .car-stats {
+    display:flex; gap:20px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:var(--color-surface); border:1px solid var(--color-border);
+    border-radius:var(--radius-md,6px); margin-bottom:14px;
+  }
+  .car-stat { display:flex; flex-direction:column; gap:2px; }
+  .car-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-muted); font-weight:600; }
+  .car-stat-value { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  .car-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .car-table th {
+    font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--color-muted); padding:6px 10px; text-align:left;
+    border-bottom:1px solid var(--color-border); white-space:nowrap; font-weight:600;
+  }
+  .car-table td {
+    padding:7px 10px; border-bottom:1px solid rgba(255,255,255,0.04);
+    vertical-align:middle;
+  }
+  .car-table tr:last-child td { border-bottom:none; }
+  .car-table tr:hover td { background:rgba(255,255,255,0.02); }
+  .car-table code { font-size:11px; }
+
+  .car-section { margin-bottom: 20px; }
+  .car-section-head {
+    padding:14px 18px 12px;
+    border-bottom:1px solid var(--color-border);
+    display:flex; gap:10px; align-items:baseline;
+  }
+  .car-section-head h2 {
+    margin:0; font-size:14px; font-weight:600;
+  }
+  .car-section-body { padding:16px 18px; }
+
+  .car-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600; }
+  .car-badge-good { background:rgba(74,211,107,0.2); color:#5fcf7b; }
+  .car-badge-warn { background:rgba(224,160,64,0.2); color:#e0a040; }
+  .car-badge-bad { background:rgba(192,57,43,0.2); color:#e06060; }
+
+  .car-empty { padding:18px 10px; color:var(--color-muted); font-size:12px; text-align:center; }
+
+  .car-form-group { margin-bottom: 12px; }
+  .car-form-label { display:block; font-size:11px; font-weight:600; margin-bottom:4px; color:var(--color-muted); }
+  .car-form-input {
+    background:var(--color-surface); color:var(--color-fg);
+    border:1px solid var(--color-border); border-radius:4px; padding:6px 10px;
+    font-size:12px; width:100%; max-width:300px;
+  }
+  .car-btn {
+    background:var(--color-accent,#6bbeff); color:#111;
+    border:none; border-radius:5px; padding:6px 14px;
+    font-size:12px; font-weight:600; cursor:pointer;
+  }
+  .car-btn:hover { opacity:0.9; }
+
+  .car-savings { color:#5fcf7b; font-weight:600; }
+</style>
+
+<div class="car-page">
+
+  <div class="car-page-header">
+    <h1 class="page-h" style="margin:0">Cost Router</h1>
+  </div>
+  <p class="car-subtitle">
+    Track API costs, enforce budgets, and find cheaper model alternatives.
+  </p>
+
+  <div class="card car-section" style="padding:0">
+    <div class="car-section-body">
+      <div class="car-stats">
+        <div class="car-stat">
+          <span class="car-stat-label">Today</span>
+          <span class="car-stat-value">${{ (daily.total_usd or 0)|round(4) }}</span>
+        </div>
+        <div class="car-stat">
+          <span class="car-stat-label">This Month</span>
+          <span class="car-stat-value">${{ monthly_cost|round(4) }}</span>
+        </div>
+        <div class="car-stat">
+          <span class="car-stat-label">Sessions</span>
+          <span class="car-stat-value">{{ session_count }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if budget %}
+  <div class="card car-section" style="padding:0">
+    <div class="car-section-head">
+      <h2>Budget Status</h2>
+      {% if budget.pct_used > 80 %}
+      <span class="car-badge car-badge-bad">{{ budget.pct_used|round(1) }}%</span>
+      {% elif budget.pct_used > 50 %}
+      <span class="car-badge car-badge-warn">{{ budget.pct_used|round(1) }}%</span>
+      {% else %}
+      <span class="car-badge car-badge-good">{{ budget.pct_used|round(1) }}%</span>
+      {% endif %}
+    </div>
+    <div class="car-section-body">
+      <div class="car-stats">
+        <div class="car-stat">
+          <span class="car-stat-label">Spent</span>
+          <span class="car-stat-value">${{ (budget.spent_usd or 0)|round(2) }}</span>
+        </div>
+        <div class="car-stat">
+          <span class="car-stat-label">Budget</span>
+          <span class="car-stat-value">${{ budget.budget_usd }}</span>
+        </div>
+        <div class="car-stat">
+          <span class="car-stat-label">Remaining</span>
+          <span class="car-stat-value">${{ (budget.remaining_usd or 0)|round(2) }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card car-section" style="padding:0">
+    <div class="car-section-head">
+      <h2>Cost by Model</h2>
+    </div>
+    <div class="car-section-body" style="padding:0">
+      {% if model_totals %}
+      <table class="car-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Calls</th>
+            <th>Input</th>
+            <th>Output</th>
+            <th>Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in model_totals %}
+          <tr>
+            <td><code>{{ m.model }}</code></td>
+            <td>{{ m.calls or 0 }}</td>
+            <td>{{ (m.in_tok or 0)|int }}</td>
+            <td>{{ (m.out_tok or 0)|int }}</td>
+            <td>${{ (m.total or 0)|round(4) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="car-empty">No cost data yet. Start using LLM tools to see costs here.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if cheaper_alternatives %}
+  <div class="card car-section" style="padding:0">
+    <div class="car-section-head">
+      <h2>Cheaper Alternatives</h2>
+    </div>
+    <div class="car-section-body" style="padding:0">
+      <table class="car-table">
+        <thead>
+          <tr>
+            <th>Current Model</th>
+            <th>Alternative</th>
+            <th>Current Cost</th>
+            <th>Alternative Cost</th>
+            <th>Savings</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for alt in cheaper_alternatives %}
+          <tr>
+            <td><code>{{ alt.current }}</code></td>
+            <td><code>{{ alt.alternative }}</code></td>
+            <td>${{ (alt.current_cost or 0)|round(4) }}</td>
+            <td>${{ (alt.alternative_cost or 0)|round(4) }}</td>
+            <td class="car-savings">${{ (alt.savings or 0)|round(4) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card car-section" style="padding:0">
+    <div class="car-section-head">
+      <h2>Set Budget</h2>
+    </div>
+    <div class="car-section-body">
+      <form id="car-budget-form">
+        <div class="car-form-group">
+          <label class="car-form-label" for="scope">Scope</label>
+          <input type="text" id="scope" name="scope" class="car-form-input" placeholder="global or session ID" value="global" required>
+        </div>
+        <div class="car-form-group">
+          <label class="car-form-label" for="budget">Budget (USD)</label>
+          <input type="number" id="budget" name="budget" class="car-form-input" step="0.01" min="0.01" value="{{ budget.budget_usd if budget else 10.0 }}" required>
+        </div>
+        <button type="submit" class="car-btn">Set Budget</button>
+        <span id="car-budget-feedback" style="margin-left:10px;font-size:12px;display:none"></span>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var form = document.getElementById('car-budget-form');
+  var feedback = document.getElementById('car-budget-feedback');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var scope = document.getElementById('scope').value;
+    var budget = document.getElementById('budget').value;
+    feedback.textContent = 'Saving...';
+    feedback.style.color = 'var(--color-muted)';
+    feedback.style.display = '';
+    fetch('/cost-router/api/budget/' + encodeURIComponent(scope) + '?budget_usd=' + budget, {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.ok) {
+          feedback.textContent = 'Budget saved.';
+          feedback.style.color = '#5fcf7b';
+        } else {
+          feedback.textContent = 'Error: ' + (j.detail || 'unknown');
+          feedback.style.color = '#e06060';
+        }
+      })
+      .catch(function (err) {
+        feedback.textContent = 'Error: ' + err.message;
+        feedback.style.color = '#e06060';
+      });
+  });
+})();
+</script>
+{% endblock %}

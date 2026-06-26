@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Scan wiki pages for contradictory claims, review them via UI, and resolve conflicts",
   "web_mount": {"mount": "/contradiction-detector", "title": "Contradiction Detector", "icon": "alert-triangle", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py",
   "storage": {"namespace": "contradiction", "schema": "storage/schema.sql"},
   "scheduled_tasks": [
     {

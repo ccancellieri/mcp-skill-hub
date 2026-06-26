@@ -1,7 +1,7 @@
-"""FastAPI sub-app for the /skill-evolution mount.
+"""FastAPI sub-app for the /feedback-amp mount.
 
 ``get_app()`` returns a FastAPI instance that mcp-skill-hub mounts under the
-path declared in ``plugin.json -> web_mount.mount`` (``/skill-evolution``).
+path declared in ``plugin.json -> web_mount.mount`` (``/feedback-amp``).
 """
 from __future__ import annotations
 
@@ -45,8 +45,8 @@ def _build_templates() -> Jinja2Templates:
 def get_app() -> FastAPI:
     """Return the mounted FastAPI sub-app."""
     app = FastAPI(
-        title="Skill Evolution",
-        description="Review and approve auto-generated skill proposals",
+        title="Feedback Amplifier",
+        description="Enhanced EMA feedback scoring with decay",
         docs_url="/docs",
     )
     templates = _build_templates()
