@@ -1,0 +1,24 @@
+{
+  "name": "feedback-amplifier",
+  "version": "0.1.0",
+  "description": "Enhanced EMA feedback scoring with cross-session learning, skill context capture, and decay for unused skills",
+  "hooks": {
+    "on_skill_activated": {"script": "hooks/on_skill_activated.py", "async": true},
+    "on_session_end": "hooks/on_session_end.py"
+  },
+  "storage": {
+    "schema": "storage/schema.sql",
+    "namespace": "fbamp"
+  },
+  "memory_optimizer": {
+    "roots": ["~/.claude/mcp-skill-hub/feedback-amplifier/**"],
+    "compaction_prompt": "prompts/compaction.md"
+  },
+  "config": {
+    "decay_half_life_days": 30,
+    "ema_alpha": 0.15,
+    "min_injections_for_decay": 3,
+    "boost_on_skill_used": 0.1,
+    "penalty_on_injection_not_used": 0.05
+  }
+}

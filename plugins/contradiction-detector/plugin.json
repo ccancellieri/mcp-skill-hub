@@ -1,0 +1,22 @@
+{
+  "name": "contradiction-detector",
+  "version": "0.1.0",
+  "description": "Scan wiki pages for contradictory claims, review them via UI, and resolve conflicts",
+  "web_mount": {"mount": "/contradiction-detector", "title": "Contradiction Detector", "icon": "alert-triangle", "nav": true},
+  "storage": {"namespace": "contradiction", "schema": "storage/schema.sql"},
+  "scheduled_tasks": [
+    {
+      "name": "detect_contradictions",
+      "cron": "0 3 * * 0",
+      "prompt_template": "templates/detect_task.md",
+      "description": "Weekly scan for contradictory claims across wiki pages",
+      "enabled_default": false
+    }
+  ],
+  "config": {
+    "llm_tier": "tier_mid",
+    "batch_size": 10,
+    "confidence_threshold": 0.7,
+    "max_page_pairs": 100
+  }
+}

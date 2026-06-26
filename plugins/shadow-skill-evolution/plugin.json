@@ -1,0 +1,26 @@
+{
+  "name": "shadow-skill-evolution",
+  "version": "0.1.0",
+  "description": "Analyze tool-call patterns and propose new local skills. Hooks on_session_end to extract patterns, scheduled task clusters similar chains via embeddings, and generates skill proposals for approval.",
+  "hooks": {
+    "on_session_end": "hooks/on_session_end.py"
+  },
+  "scheduled_tasks": [
+    {
+      "name": "propose_skills",
+      "description": "Cluster tool-chain patterns and generate skill proposals",
+      "schedule": "0 3 * * 0",
+      "script": "scripts/propose_skills.py"
+    }
+  ],
+  "storage": {
+    "namespace": "shadow_skill_evolution",
+    "schema": "storage/schema.sql"
+  },
+  "web_mount": {
+    "mount": "/shadow-skill-evolution",
+    "title": "Skill Evolution",
+    "icon": "sparkles",
+    "nav": true
+  }
+}

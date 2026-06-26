@@ -1,0 +1,33 @@
+{
+  "name": "cost-aware-router",
+  "version": "0.1.0",
+  "description": "Track API costs, enforce budgets, and suggest cheaper model alternatives",
+  "web_mount": {"mount": "/cost-router", "title": "Cost Router", "icon": "dollar-sign", "nav": true},
+  "dashboard_sections": "web/dashboard_sections.py",
+  "hooks": {
+    "on_tool_call": {"script": "hooks/on_tool_call.py", "async": true}
+  },
+  "storage": {
+    "namespace": "cost_router",
+    "schema": "storage/schema.sql"
+  },
+  "config": {
+    "pricing": {
+      "claude-opus-4": {"input": 15.0, "output": 75.0},
+      "claude-sonnet-4": {"input": 3.0, "output": 15.0},
+      "claude-haiku-4": {"input": 0.25, "output": 1.25},
+      "opus": {"input": 15.0, "output": 75.0},
+      "sonnet": {"input": 3.0, "output": 15.0},
+      "haiku": {"input": 0.80, "output": 4.0},
+      "deepseek-r1": {"input": 0.55, "output": 2.19},
+      "deepseek-r1:1.5b": {"input": 0.0, "output": 0.0},
+      "deepseek-r1:7b": {"input": 0.0, "output": 0.0},
+      "deepseek-r1:14b": {"input": 0.0, "output": 0.0},
+      "qwen2.5-coder:7b": {"input": 0.0, "output": 0.0},
+      "ollama": {"input": 0.0, "output": 0.0}
+    },
+    "default_budget_usd": 10.0,
+    "budget_alert_threshold": 0.8,
+    "suggest_downgrade_at": 0.7
+  }
+}

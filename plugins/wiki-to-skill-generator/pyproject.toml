@@ -1,0 +1,8 @@
+[project]
+name = "wiki-to-skill-generator-skill-hub-plugin"
+version = "0.1.0"
+description = "Bundled mcp-skill-hub plugin: auto-generate skills from wiki pages"
+requires-python = ">=3.10"
+dependencies = [
+    "jinja2>=3.0.0",
+]

@@ -1,0 +1,32 @@
+{
+  "name": "decision-to-teaching",
+  "description": "Extract pattern rules from .memory/decisions.md and create teaching rules",
+  "triggers": ["sync teachings", "extract patterns", "from decisions", "create teachings"],
+  "steps": [
+    {
+      "description": "Read decisions.md",
+      "read": ".memory/decisions.md",
+      "as": "decisions"
+    },
+    {
+      "description": "Extract patterns using LLM",
+      "llm_prompt": "You are analyzing project decisions to extract reusable patterns.\n\nFrom the following decisions.md content, extract pattern rules in JSON format.\nEach rule should be an object with 'rule' (the trigger condition) and 'suggest' (the recommended action).\n\nFormat:\n[{\"rule\": \"when X\", \"suggest\": \"do Y\"}]\n\nOnly extract actionable patterns that apply broadly, not project-specific details.\n\nDecisions:\n{decisions}",
+      "as": "patterns_json"
+    },
+    {
+      "description": "Parse JSON response",
+      "parse_json": "{patterns_json}",
+      "as": "patterns"
+    },
+    {
+      "description": "Create teaching rules",
+      "iterate": "{patterns}",
+      "mcp_tool": "skill-hub_teach",
+      "args": {
+        "rule": "{item.rule}",
+        "suggest": "{item.suggest}"
+      }
+    }
+  ],
+  "output": "Created {patterns.length} teaching rules from decisions.md"
+}

@@ -1,0 +1,26 @@
+{
+  "name": "wiki-to-skill-generator",
+  "version": "0.1.0",
+  "description": "Auto-generates skills from wiki entity/concept pages with high access counts",
+  "hooks": {
+    "on_session_start": "hooks/on_session_start.py"
+  },
+  "scheduled_tasks": [
+    {
+      "name": "generate-skills",
+      "cron": "0 3 * * *",
+      "prompt_template": "tasks/generate_skills.md",
+      "enabled_default": false
+    }
+  ],
+  "storage": {
+    "schema": "storage/schema.sql",
+    "namespace": "wiki_skills"
+  },
+  "config": {
+    "min_access_count": 3,
+    "skill_output_dir": "skills/generated/",
+    "exclude_types": ["source", "overview"],
+    "llm_tier": "tier_mid"
+  }
+}

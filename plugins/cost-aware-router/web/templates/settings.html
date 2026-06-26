@@ -1,0 +1,52 @@
+{% extends "_base.html" %}
+{% block title %}Budget Settings{% endblock %}
+{% block content %}
+<div class="settings-page">
+  <h1>Budget Settings</h1>
+
+  <section class="settings-section">
+    <h2>Active Budgets</h2>
+    {% if budgets %}
+    <table class="settings-table">
+      <thead>
+        <tr>
+          <th>Scope</th>
+          <th>Type</th>
+          <th>Budget (USD)</th>
+          <th>Spent (USD)</th>
+          <th>Remaining</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in budgets %}
+        <tr>
+          <td><code>{{ b.scope }}</code></td>
+          <td>{{ b.scope_type }}</td>
+          <td>${{ b.budget_usd }}</td>
+          <td>${{ b.spent_usd | round(2) }}</td>
+          <td>${{ (b.budget_usd - b.spent_usd) | round(2) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>No budgets configured. Use the API to set budgets.</p>
+    {% endif %}
+  </section>
+
+  <section class="settings-section">
+    <h2>Set Budget</h2>
+    <form id="budget-form" class="settings-form">
+      <div class="form-group">
+        <label for="scope">Scope</label>
+        <input type="text" id="scope" name="scope" placeholder="global or session ID" required>
+      </div>
+      <div class="form-group">
+        <label for="budget">Budget (USD)</label>
+        <input type="number" id="budget" name="budget" step="0.01" min="0.01" required>
+      </div>
+      <button type="submit">Set Budget</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

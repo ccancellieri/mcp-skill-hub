@@ -1,0 +1,105 @@
+{% extends "_base.html" %}
+{% block title %}Cost Router{% endblock %}
+{% block content %}
+<div class="cost-dashboard">
+  <h1>Cost Router</h1>
+
+  <section class="cost-kpis">
+    <div class="kpi-card">
+      <span class="kpi-label">Today's Cost</span>
+      <span class="kpi-value">${{ daily.total_usd | round(4) }}</span>
+    </div>
+    <div class="kpi-card">
+      <span class="kpi-label">Global Budget</span>
+      <span class="kpi-value">${{ budget.spent_usd | round(2) }} / ${{ budget.budget_usd }}</span>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: {{ budget.pct_used | round(1) }}%"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cost-section">
+    <h2>Cost by Model</h2>
+    {% if model_totals %}
+    <table class="cost-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Calls</th>
+          <th>Input Tokens</th>
+          <th>Output Tokens</th>
+          <th>Cost (USD)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in model_totals %}
+        <tr>
+          <td><code>{{ m.model }}</code></td>
+          <td>{{ m.calls }}</td>
+          <td>{{ m.in_tok | int | default(0) | format_number }}</td>
+          <td>{{ m.out_tok | int | default(0) | format_number }}</td>
+          <td>${{ (m.total or 0) | round(4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No cost data yet. Start using LLM tools to see costs here.</p>
+    {% endif %}
+  </section>
+
+  <section class="cost-section">
+    <h2>Recent Sessions</h2>
+    {% if recent_sessions %}
+    <table class="cost-table">
+      <thead>
+        <tr>
+          <th>Session</th>
+          <th>Calls</th>
+          <th>Cost</th>
+          <th>Last Activity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in recent_sessions %}
+        <tr>
+          <td><code title="{{ s.session_id }}">{{ s.session_id[:12] }}...</code></td>
+          <td>{{ s.calls }}</td>
+          <td>${{ (s.total or 0) | round(4) }}</td>
+          <td>{{ s.last_call }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No session data yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="cost-section">
+    <h2>Daily Breakdown</h2>
+    {% if daily.by_model %}
+    <table class="cost-table">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Calls</th>
+          <th>Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for model, data in daily.by_model.items() %}
+        <tr>
+          <td><code>{{ model }}</code></td>
+          <td>{{ data.calls }}</td>
+          <td>${{ (data.cost or 0) | round(4) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No data for today.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

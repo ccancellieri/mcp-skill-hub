@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+{% block title %}Contradiction Detector{% endblock %}
+{% block content %}
+<style>
+  .cd-page { padding: 1.25rem 1.5rem; max-width: 1100px; margin: 0 auto; }
+  .cd-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+  .cd-header h1 { margin: 0; }
+  .cd-subtitle { font-size: 12px; color: var(--color-muted); margin: 0 0 20px; }
+
+  .cd-stats {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    padding: 10px 14px;
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 6px); margin-bottom: 14px;
+  }
+  .cd-stat { display: flex; flex-direction: column; gap: 2px; }
+  .cd-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-muted); font-weight: 600; }
+  .cd-stat-value { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .cd-section { margin-bottom: 20px; }
+  .cd-section-head {
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid var(--color-border);
+    display: flex; gap: 10px; align-items: baseline; justify-content: space-between;
+  }
+  .cd-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .cd-section-body { padding: 16px 18px; }
+
+  .cd-finding {
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 12px;
+    background: var(--color-surface);
+  }
+  .cd-finding-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 10px;
+  }
+  .cd-finding-pages {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  .cd-page-link {
+    font-size: 12px;
+    padding: 4px 10px;
+    background: rgba(58, 160, 255, 0.1);
+    border-radius: 4px;
+    text-decoration: none;
+    color: #6bbeff;
+  }
+  .cd-page-link:hover { background: rgba(58, 160, 255, 0.2); }
+  .cd-confidence {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+  .cd-conf-high { background: rgba(232, 166, 75, 0.2); color: #e0a040; }
+  .cd-conf-med { background: rgba(125, 136, 150, 0.15); color: var(--color-muted); }
+
+  .cd-claims {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    margin-bottom: 12px;
+  }
+  @media (max-width: 700px) { .cd-claims { grid-template-columns: 1fr; } }
+
+  .cd-claim-box {
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+  }
+  .cd-claim-label { font-size: 10px; text-transform: uppercase; color: var(--color-muted); margin-bottom: 4px; }
+  .cd-claim-text { font-size: 13px; line-height: 1.5; }
+
+  .cd-resolution {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding-top: 10px; border-top: 1px solid var(--color-border);
+  }
+  .cd-res-btn {
+    font-size: 11px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-fg);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .cd-res-btn:hover { background: rgba(255, 255, 255, 0.05); }
+  .cd-res-btn.primary { background: #6bbeff; border-color: #6bbeff; color: #000; }
+  .cd-res-btn.primary:hover { background: #5ab0f5; }
+
+  .cd-empty { padding: 30px; text-align: center; color: var(--color-muted); font-size: 13px; }
+  .cd-pending-badge { background: rgba(232, 166, 75, 0.2); color: #e0a040; }
+  .cd-resolved-badge { background: rgba(74, 211, 107, 0.2); color: #5fcf7b; }
+
+  .cd-run-btn {
+    font-size: 12px;
+    padding: 8px 16px;
+    background: #6bbeff;
+    border: none;
+    border-radius: 6px;
+    color: #000;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .cd-run-btn:hover { background: #5ab0f5; }
+
+  .cd-filter-tabs {
+    display: flex; gap: 4px; margin-bottom: 16px;
+  }
+  .cd-filter-tab {
+    font-size: 12px;
+    padding: 6px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-muted);
+    text-decoration: none;
+  }
+  .cd-filter-tab.active {
+    background: var(--color-surface);
+    color: var(--color-fg);
+    border-color: #6bbeff;
+  }
+</style>
+
+<div class="cd-page">
+  <div class="cd-header">
+    <h1 class="page-h" style="margin:0">Contradiction Detector</h1>
+    <span class="pill {% if status_filter == 'pending' %}cd-pending-badge{% else %}cd-resolved-badge{% endif %}">
+      {{ findings|length }} {{ status_filter }}
+    </span>
+  </div>
+  <p class="cd-subtitle">
+    Scan wiki pages for contradictory claims. Review and resolve conflicts to keep your knowledge base consistent.
+  </p>
+
+  <div class="cd-stats">
+    <div class="cd-stat">
+      <span class="cd-stat-label">Wiki Pages</span>
+      <span class="cd-stat-value">{{ wiki_stats.pages_db or 0 }}</span>
+    </div>
+    <div class="cd-stat">
+      <span class="cd-stat-label">Wiki Edges</span>
+      <span class="cd-stat-value">{{ wiki_stats.edges or 0 }}</span>
+    </div>
+    <div class="cd-stat">
+      <span class="cd-stat-label">Pending</span>
+      <span class="cd-stat-value" id="cd-pending-count">—</span>
+    </div>
+    <div class="cd-stat">
+      <span class="cd-stat-label">Resolved</span>
+      <span class="cd-stat-value" id="cd-resolved-count">—</span>
+    </div>
+  </div>
+
+  <div class="card cd-section" style="padding:0">
+    <div class="cd-section-head">
+      <h2>Findings</h2>
+      <a href="/contradiction-detector/api/run-detection?dry_run=1" class="cd-run-btn" id="cd-run-btn">
+        Run Detection (dry run)
+      </a>
+    </div>
+    <div class="cd-section-body">
+      <div class="cd-filter-tabs">
+        <a href="?status=pending" class="cd-filter-tab {% if status_filter == 'pending' %}active{% endif %}">Pending</a>
+        <a href="?status=resolved" class="cd-filter-tab {% if status_filter == 'resolved' %}active{% endif %}">Resolved</a>
+      </div>
+
+      <div id="cd-findings-list">
+        {% if findings %}
+          {% for f in findings %}
+          <div class="cd-finding" data-id="{{ f.id }}">
+            <div class="cd-finding-header">
+              <div class="cd-finding-pages">
+                <a href="/wiki/{{ f.page_a }}" class="cd-page-link" target="_blank">
+                  {{ titles.get(f.page_a, f.page_a) }}
+                </a>
+                <span style="color:var(--color-muted)">vs</span>
+                <a href="/wiki/{{ f.page_b }}" class="cd-page-link" target="_blank">
+                  {{ titles.get(f.page_b, f.page_b) }}
+                </a>
+              </div>
+              <span class="cd-confidence {% if f.confidence >= 0.8 %}cd-conf-high{% else %}cd-conf-med{% endif %}">
+                {{ "%.0f"|format(f.confidence * 100) }}% confidence
+              </span>
+            </div>
+
+            <div class="cd-claims">
+              <div class="cd-claim-box">
+                <div class="cd-claim-label">Claim from {{ titles.get(f.page_a, 'Page A') }}</div>
+                <div class="cd-claim-text">{{ f.claim_a }}</div>
+              </div>
+              <div class="cd-claim-box">
+                <div class="cd-claim-label">Claim from {{ titles.get(f.page_b, 'Page B') }}</div>
+                <div class="cd-claim-text">{{ f.claim_b }}</div>
+              </div>
+            </div>
+
+            {% if status_filter == 'pending' %}
+            <form class="cd-resolution" onsubmit="return resolveFinding(this)">
+              <input type="hidden" name="finding_id" value="{{ f.id }}">
+              <button type="submit" name="resolution" value="keep_a" class="cd-res-btn">Keep A</button>
+              <button type="submit" name="resolution" value="keep_b" class="cd-res-btn">Keep B</button>
+              <button type="submit" name="resolution" value="merge" class="cd-res-btn">Merge</button>
+              <button type="submit" name="resolution" value="both_valid" class="cd-res-btn primary">Both Valid</button>
+            </form>
+            {% endif %}
+
+            {% if f.resolution %}
+            <div class="cd-resolution">
+              <span style="font-size:11px;color:var(--color-muted)">
+                Resolved: {{ f.resolution }} ({{ f.resolved_at }})
+              </span>
+            </div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="cd-empty">
+            No {{ status_filter }} contradictions found.
+            {% if status_filter == 'pending' %}
+            Run detection to scan your wiki for conflicts.
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  fetch('/contradiction-detector/api/stats')
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('cd-pending-count').textContent = data.pending || 0;
+      document.getElementById('cd-resolved-count').textContent = data.resolved || 0;
+    })
+    .catch(() => {});
+
+  window.resolveFinding = function(form) {
+    var fd = new FormData(form);
+    var resolution = fd.get('resolution');
+    var findingId = fd.get('finding_id');
+
+    var btn = form.querySelector('button[value="' + resolution + '"]');
+    if (btn) {
+      btn.textContent = 'Resolving...';
+      btn.disabled = true;
+    }
+
+    fd.set('resolution', resolution);
+    fetch('/contradiction-detector/api/resolve', {
+      method: 'POST',
+      body: fd
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        var finding = document.querySelector('.cd-finding[data-id="' + findingId + '"]');
+        if (finding) {
+          finding.style.opacity = '0.5';
+          finding.querySelector('.cd-resolution').innerHTML =
+            '<span style="font-size:11px;color:#5fcf7b">Resolved: ' + resolution + '</span>';
+        }
+        fetch('/contradiction-detector/api/stats')
+          .then(r => r.json())
+          .then(d => {
+            document.getElementById('cd-pending-count').textContent = d.pending || 0;
+            document.getElementById('cd-resolved-count').textContent = d.resolved || 0;
+          });
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+        if (btn) {
+          btn.textContent = resolution;
+          btn.disabled = false;
+        }
+      }
+    })
+    .catch(err => {
+      alert('Request failed: ' + err.message);
+      if (btn) {
+        btn.textContent = resolution;
+        btn.disabled = false;
+      }
+    });
+
+    return false;
+  };
+})();
+</script>
+{% endblock %}

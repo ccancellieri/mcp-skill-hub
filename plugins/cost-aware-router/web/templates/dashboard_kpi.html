@@ -1,0 +1,12 @@
+{% from "_macros/kpi.html" import kpi_card %}
+<section class="dash-card dash-card--cost-router">
+  <header class="dash-card-head">
+    <h3>Cost Router</h3>
+    <a class="dash-card-link" href="/cost-router/">Open →</a>
+  </header>
+  <div class="kpi-row">
+    {{ kpi_card("Today's cost", "$%.4f"|format(daily_cost), kind=("warn" if daily_cost > 1 else "default")) }}
+    {{ kpi_card("Budget used", "%.1f%%"|format(budget_pct), kind=("bad" if budget_pct > 80 else ("warn" if budget_pct > 50 else "good")), sub="$%.2f remaining"|format(budget_remaining)) }}
+    {{ kpi_card("Sessions tracked", session_count|string, kind="default") }}
+  </div>
+</section>

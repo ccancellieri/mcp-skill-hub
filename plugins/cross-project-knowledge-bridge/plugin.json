@@ -1,0 +1,30 @@
+{
+  "name": "cross-project-knowledge-bridge",
+  "version": "0.1.0",
+  "description": "Federates wiki knowledge across related repos, showing cross-project knowledge graphs and syncing decisions/patterns",
+  "web_mount": {
+    "mount": "/knowledge-bridge",
+    "title": "Knowledge Bridge",
+    "icon": "project",
+    "nav": true
+  },
+  "watch_paths": [".memory/*.md"],
+  "hooks": {
+    "on_session_start": "hooks/on_session_start.py"
+  },
+  "vector_indexes": [
+    {"name": "knowledge:federated", "default_level": "L3", "half_life_days": 180.0}
+  ],
+  "config": {
+    "projects": [
+      {"name": "geoid", "path": "~/work/code/geoid", "tags": ["ogc", "stac", "dynastore"]},
+      {"name": "dynastore", "path": "~/work/code/dynastore", "tags": ["dynastore"]},
+      {"name": "fao-aip-catalog", "path": "~/work/code/fao-aip-catalog", "tags": ["stac", "catalog"]}
+    ],
+    "sync_interval_seconds": 300,
+    "wiki_roots": {
+      "geoid": "~/.claude/projects/geoid/wiki",
+      "shared": "~/.claude/mcp-skill-hub/wiki"
+    }
+  }
+}

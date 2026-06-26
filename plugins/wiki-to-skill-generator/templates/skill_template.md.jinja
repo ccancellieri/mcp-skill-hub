@@ -1,0 +1,45 @@
+---
+name: {{ skill_name }}
+description: {{ description }}
+triggers:
+{%- for trigger in triggers %}
+  - "{{ trigger }}"
+{%- endfor %}
+source: wiki-generated
+wiki_slug: {{ wiki_slug }}
+generated_at: {{ generated_at }}
+---
+
+# {{ title }}
+
+{% if overview %}
+{{ overview }}
+{% endif %}
+
+{% if context %}
+## Context
+
+{{ context }}
+{% endif %}
+
+{% if procedure %}
+## Procedure
+
+{{ procedure }}
+{% endif %}
+
+{% if examples %}
+## Examples
+
+{{ examples }}
+{% endif %}
+
+{% if gotchas %}
+## Gotchas
+
+{{ gotchas }}
+{% endif %}
+
+---
+*This skill was auto-generated from wiki page [[{{ wiki_slug }}]].*
+*Last updated: {{ generated_at }}*
