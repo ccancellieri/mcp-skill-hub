@@ -253,3 +253,14 @@ async def providers_import_apply(request: Request) -> JSONResponse:
     _config.set("llm_provider_registry", merged)
     return JSONResponse({"ok": True, "diff": diff, "count": len(merged),
                          "classified": len(classified)})
+
+
+@router.post("/providers/opencode/inject-mcp")
+async def providers_opencode_inject_mcp() -> JSONResponse:
+    """(Re)write the skill-hub MCP server block into the opencode config so
+    opencode regains skill-hub's tools after its config is regenerated."""
+    try:
+        result = _importers.inject_skill_hub_mcp()
+    except Exception:  # noqa: BLE001 — never leak a filesystem path detail
+        return JSONResponse({"ok": False, "error": "Could not write opencode config"})
+    return JSONResponse({"ok": True, **result})

@@ -1854,14 +1854,39 @@ class SkillStore:
         self._conn.commit()
 
     def log_skill_injection(self, skill_id: str, query: str = "",
-                            session_id: str | None = None) -> None:
-        """Record that a skill's content was returned to the model."""
-        self._conn.execute(
+                            session_id: str | None = None,
+                            domain_hints: list[str] | None = None) -> int:
+        """Record that a skill's content was returned to the model.
+
+        Dispatches the ``on_skill_activated`` plugin hook so plugins can
+        capture context for feedback scoring.
+
+        Returns the injection row id.
+        """
+        cursor = self._conn.execute(
             "INSERT INTO skill_injections (skill_id, query, session_id) "
             "VALUES (?, ?, ?)",
             (skill_id, query[:200] if query else "", session_id),
         )
+        injection_id = cursor.lastrowid
         self._conn.commit()
+
+        try:
+            from . import plugin_hooks
+            plugin_hooks.dispatch(
+                "on_skill_activated",
+                {
+                    "skill_id": skill_id,
+                    "query": query,
+                    "session_id": session_id or "",
+                    "domain_hints": domain_hints or [],
+                    "injection_id": injection_id,
+                },
+            )
+        except Exception:
+            pass
+
+        return injection_id
 
     def record_skill_used(
         self,

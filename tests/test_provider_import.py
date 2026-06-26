@@ -1,5 +1,6 @@
 # tests/test_provider_import.py
 from __future__ import annotations
+import json
 import sys
 from pathlib import Path
 
@@ -273,3 +274,40 @@ def test_apply_classification_shared_id_across_providers_does_not_touch_survivor
     b = merged[1]["models"][0]
     assert a["complexity"] == "heavy" and a["tags"] == ["git"]   # survivor intact
     assert b["complexity"] == "heavy" and b["tags"] == ["reasoning"]  # added labelled
+
+
+# ── inject_skill_hub_mcp ──────────────────────────────────────────────────────
+
+def test_inject_skill_hub_mcp_creates_block(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfgdir = tmp_path / "opencode"
+    cfgdir.mkdir(parents=True)
+    (cfgdir / "config.json").write_text(
+        '{"$schema":"x","provider":{"p":{"name":"P"}}}')
+    result = imp.inject_skill_hub_mcp()
+    assert result["replaced"] is False
+    assert result["command"]                      # non-empty launch command
+    doc = json.loads((cfgdir / "config.json").read_text())
+    assert doc["mcp"]["skill-hub"]["type"] == "local"
+    assert doc["mcp"]["skill-hub"]["enabled"] is True
+    assert doc["mcp"]["skill-hub"]["command"] == result["command"]
+    assert doc["provider"]["p"]["name"] == "P"     # untouched
+    assert doc["$schema"] == "x"
+
+
+def test_inject_skill_hub_mcp_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "opencode").mkdir(parents=True)
+    imp.inject_skill_hub_mcp()
+    result2 = imp.inject_skill_hub_mcp()
+    assert result2["replaced"] is True
+    doc = json.loads((tmp_path / "opencode" / "config.json").read_text())
+    assert "skill-hub" in doc["mcp"]
+
+
+def test_inject_skill_hub_mcp_creates_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    result = imp.inject_skill_hub_mcp()
+    assert result["replaced"] is False
+    doc = json.loads(Path(result["path"]).read_text())
+    assert doc["mcp"]["skill-hub"]["enabled"] is True

@@ -107,6 +107,22 @@
 </section>
 
 <section style="margin-top:2rem;">
+  <h2>opencode integration</h2>
+  <p>
+    Write (or refresh) a <code>mcp.skill-hub</code> entry in
+    <code>~/.config/opencode/config.json</code> so opencode can call skill-hub's
+    wiki / search tools. Run this again any time you replace that file — it
+    only touches the <code>mcp.skill-hub</code> key and preserves everything else.
+  </p>
+  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+    <button id="inject-opencode-mcp-btn" title="Write the skill-hub MCP block into the opencode config">
+      Inject skill-hub into opencode
+    </button>
+    <span id="inject-mcp-status" style="font-size:0.85em;"></span>
+  </div>
+</section>
+
+<section style="margin-top:2rem;">
   <h2>Edit Registry (JSON)</h2>
   <p>Paste the full registry list as JSON. Every record is validated before saving.</p>
   <textarea id="registry-json" rows="20" style="width:100%; font-family:monospace; font-size:0.85em;">{{ providers | tojson(indent=2) }}</textarea>
@@ -272,6 +288,26 @@ async function importApply() {
   }
 }
 
+async function injectOpencodeMcp() {
+  const status = document.getElementById('inject-mcp-status');
+  status.textContent = 'Injecting…'; status.style.color = '#888';
+  try {
+    const resp = await fetch('/providers/opencode/inject-mcp', {method: 'POST'});
+    const data = await resp.json();
+    if (data.ok) {
+      const verb = data.replaced ? 'Refreshed' : 'Added';
+      status.textContent = verb + ' ✓ — ' + data.path + '  (' + (data.command || []).join(' ') + ')';
+      status.style.color = 'green';
+    } else {
+      status.textContent = 'Error: ' + (data.error || 'unknown');
+      status.style.color = 'red';
+    }
+  } catch (e) {
+    status.textContent = '✗ ' + e.message; status.style.color = 'red';
+  }
+}
+
+document.getElementById('inject-opencode-mcp-btn')?.addEventListener('click', injectOpencodeMcp);
 document.getElementById('sync-opencode-btn')?.addEventListener('click', () => importPreview('opencode'));
 document.getElementById('import-preview-btn')?.addEventListener('click', () => importPreview());
 document.getElementById('import-apply-btn')?.addEventListener('click', importApply);

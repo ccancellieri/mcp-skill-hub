@@ -160,6 +160,60 @@ def read_opencode_config() -> dict:
     return {}
 
 
+def _opencode_config_path() -> Path:
+    """Path to the opencode config to read/write: an existing file if present,
+    else the default ``config.json``. Mirrors :func:`read_opencode_config`'s
+    search so an inject writes to the same file the importer reads."""
+    home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    base = home / "opencode"
+    for fname in ("config.json", "opencode.json"):
+        p = base / fname
+        if p.exists():
+            return p
+    return base / "config.json"
+
+
+def skill_hub_mcp_command() -> list[str]:
+    """Best-effort launch command for this skill-hub server as a local MCP
+    stdio child. Prefers the console script next to the running interpreter
+    (the venv that owns this process), then PATH, then a bare name."""
+    import shutil
+    import sys
+    cand = Path(sys.executable).parent / "skill-hub"
+    if cand.exists():
+        return [str(cand)]
+    found = shutil.which("skill-hub")
+    if found:
+        return [found]
+    return ["skill-hub"]
+
+
+def inject_skill_hub_mcp() -> dict:
+    """Write/refresh the ``mcp.skill-hub`` block in the opencode config.
+
+    opencode drops unknown keys when its config is regenerated; this restores
+    the entry (a local stdio launch of this server) so opencode regains the
+    skill-hub tools. Idempotent — re-running refreshes the command in place and
+    preserves every other key. Returns ``{path, command, replaced}``."""
+    path = _opencode_config_path()
+    try:
+        doc = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        doc = {}
+    if not isinstance(doc, dict):
+        doc = {}
+    command = skill_hub_mcp_command()
+    mcp = doc.get("mcp")
+    if not isinstance(mcp, dict):
+        mcp = {}
+    replaced = "skill-hub" in mcp
+    mcp["skill-hub"] = {"type": "local", "command": command, "enabled": True}
+    doc["mcp"] = mcp
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2) + "\n")
+    return {"path": str(path), "command": command, "replaced": replaced}
+
+
 # ── matching + merge + diff ───────────────────────────────────────────────────
 
 def _cred_label(api_key: dict) -> str:

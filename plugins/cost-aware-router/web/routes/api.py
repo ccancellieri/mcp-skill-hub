@@ -20,14 +20,14 @@ def session_cost(session_id: str):
 
 
 @router.get("/api/cost/daily")
-def daily_cost(date: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$")):
+def daily_cost(date: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
     return JSONResponse(cost_tracker.get_daily_cost(date))
 
 
 @router.get("/api/cost/range")
 def cost_range(
-    start: str = Query(..., regex=r"^\d{4}-\d{2}-\d{2}$"),
-    end: str = Query(..., regex=r"^\d{4}-\d{2}-\d{2}$"),
+    start: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     if not DB_PATH.exists():
         return JSONResponse({"days": [], "total_usd": 0.0})
@@ -54,8 +54,8 @@ def cost_range(
 
 @router.get("/api/cost/by-model")
 def cost_by_model(
-    start: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
-    end: Optional[str] = Query(None, regex=r"^\d{4}-\d{2}-\d{2}$"),
+    start: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     if not DB_PATH.exists():
         return JSONResponse({"models": []})

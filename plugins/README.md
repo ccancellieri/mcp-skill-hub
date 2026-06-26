@@ -8,4 +8,5 @@ Each subdirectory is a self-contained plugin with its own `plugin.json`, optiona
 
 | Name | Mount | Purpose |
 |---|---|---|
+| `cost-aware-router` | `/cost-router` | Track API costs, enforce budgets, suggest cheaper model alternatives |
 | `memory-export` | `/memory-export` | Export and import the full hub memory (DB + project memories) as portable tar.gz, with optional LLM-driven conflict resolution |
