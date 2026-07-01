@@ -2912,6 +2912,27 @@ def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
         f"via tier={tier}...\n",
     ]
 
+    # Deterministic-first: shrink each file losslessly before spending LLM
+    # tokens on it. compress_payload() runs the dependency-free JSON-minify +
+    # duplicate-line collapse pass (and the headroom router when installed);
+    # it passes prose through untouched, so this only helps and never garbles
+    # the content the classifier reads. Lets more files fit per pass.
+    from .compression import compress_payload
+    det_saved = 0
+    for e in entries:
+        try:
+            payload = compress_payload(e["content"], allow_lossy=False)
+        except Exception:  # noqa: BLE001 — compression must never break analysis
+            continue
+        if not payload.lossy and payload.bytes_after < payload.bytes_before:
+            det_saved += payload.bytes_before - payload.bytes_after
+            e["content"] = payload.compressed
+    if det_saved:
+        lines.append(
+            f"Deterministic pre-compression saved ~{det_saved // 4:,} tokens "
+            f"(lossless, no LLM) before classification.\n"
+        )
+
     # Call LLM via tier-based routing
     from .embeddings import _OPTIMIZE_CONTEXT_PROMPT
     formatted = []
@@ -2932,7 +2953,7 @@ def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
         raw = _provider.complete(
             classification_prompt,
             tier=tier_key,
-            max_tokens=2000,
+            max_tokens=int(_cfg.get("optimize_memory_max_tokens") or 4000),
             temperature=0.0,
             timeout=300.0,
             op="optimize_context",

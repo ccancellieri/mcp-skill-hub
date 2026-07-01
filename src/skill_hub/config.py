@@ -631,6 +631,12 @@ _DEFAULTS = {
     # cheap | mid | smart  (maps to llm_providers.tier_*)
     "optimize_memory_tier": "smart",
 
+    # Max completion tokens for the optimize_memory classification call. Must be
+    # generous: reasoning models on the escalation ladder spend tokens thinking
+    # before emitting the per-file JSON, so a low cap (e.g. 2000) truncates the
+    # response to nothing and the report comes back empty.
+    "optimize_memory_max_tokens": 4000,
+
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
     # Default OFF: skills-archive holds retired skills that must not be indexed
@@ -868,19 +874,46 @@ def save_config(config: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(config, indent=2))
 
 
+def _coerce_to_default_type(key: str, value: Any) -> Any:
+    """Repair a value that was persisted as a JSON string for a structured key.
+
+    UIs/CLIs that pass every field as text can store a key like
+    ``llm_providers`` as a JSON *string* instead of a dict. Consumers then do
+    ``providers.get(...)`` or ``dict(providers)`` and crash — which silently
+    disables tier resolution and the whole L0→LN escalation ladder. When the
+    key's default is a dict/list and the stored value is a matching JSON
+    string, parse it back to the structured form.
+    """
+    default = _DEFAULTS.get(key)
+    if isinstance(default, (dict, list)) and isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return value
+        if isinstance(parsed, type(default)):
+            return parsed
+    return value
+
+
 def get(key: str) -> Any:
     """Get a single config value.
 
     Returns ``Any`` because values span scalars and lists; callers coerce with
-    ``int()`` / ``float()`` / ``str()`` at the use site.
+    ``int()`` / ``float()`` / ``str()`` at the use site. Structured keys stored
+    as JSON strings are coerced back so consumers never see a stringified dict.
     """
-    return load_config().get(key, _DEFAULTS.get(key))
+    value = load_config().get(key, _DEFAULTS.get(key))
+    return _coerce_to_default_type(key, value)
 
 
 def set(key: str, value) -> None:  # noqa: A001
-    """Persist a single top-level config key."""
+    """Persist a single top-level config key.
+
+    Coerces JSON-string values for structured keys so the file self-heals on
+    the next write instead of persisting a stringified dict/list.
+    """
     cfg = load_config()
-    cfg[key] = value
+    cfg[key] = _coerce_to_default_type(key, value)
     save_config(cfg)
 
 
