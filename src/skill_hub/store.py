@@ -4749,6 +4749,8 @@ class SkillStore:
              "memexp_snapshot_create", {}, False, False),
             ("pipeline-health-check", "Pipeline backend health check", "*/15 * * * *",
              "check_embedding_backends", {}, True, False),
+            ("codegraph-sync", "Keep configured CodeGraph indexes fresh (incremental)",
+             "*/30 * * * *", "codegraph_sync", {}, True, False),
             ("wiki-reindex-nightly", "Wiki vault nightly reindex + re-embed", "0 5 * * *",
              "wiki_reindex_nightly", {}, False, False),
             ("discussions-sync-nightly", "GitHub Discussions periodic sync into wiki", "0 1 * * *",

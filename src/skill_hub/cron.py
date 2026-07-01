@@ -33,6 +33,8 @@ _DEFAULT_JOBS = [
     ("archive-closed-tasks",    "0 4 * * *",   "archive_memory_to_db_dry_run", 1),
     ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
+    # Keeps configured CodeGraph indexes fresh; inert until roots are set.
+    ("codegraph-sync",          "*/30 * * * *", "codegraph_sync",             1),
     # Disabled by default — enable explicitly via the cron UI or config.
     ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
     ("wiki-reindex-nightly",       "0 5 * * *",   "wiki_reindex_nightly",        0),
@@ -65,6 +67,7 @@ _HUMAN_SCHEDULES: dict[str, str] = {
     "0 6 * * *":    "daily at 6:00 AM",
     "0 0 * * 0":    "weekly on Sunday at midnight",
     "*/15 * * * *": "every 15 minutes",
+    "*/30 * * * *": "every 30 minutes",
 }
 
 
@@ -311,6 +314,61 @@ def _discussions_sync_nightly_handler() -> None:
         )
 
 
+def _codegraph_sync_handler() -> None:
+    """Cron handler: keep configured CodeGraph indexes fresh (incremental sync).
+
+    For each repo in ``codegraph_reindex_roots`` that already has a
+    ``.codegraph/`` index, shells out to ``codegraph sync`` — which only
+    processes files changed since the last index, so it is near-instant when
+    nothing changed. Deterministic (no LLM), bounded (per-repo timeout), and a
+    cheap no-op when the roots list is empty or the binary is absent.
+
+    Enabled by default but inert until roots are configured, so a fresh install
+    does no work while a configured one stays continuously up to date.
+    """
+    import subprocess
+    from pathlib import Path
+    from . import config as _cfg
+    from .codegraph_context import has_codegraph_index, _find_codegraph_bin
+
+    roots = _cfg.get("codegraph_reindex_roots") or []
+    if not isinstance(roots, list) or not roots:
+        return
+    bin_path = _find_codegraph_bin()
+    if bin_path is None:
+        _log.debug("codegraph_sync: binary not found; skipping")
+        return
+    timeout = float(_cfg.get("codegraph_reindex_timeout_seconds") or 120)
+
+    synced = 0
+    skipped = 0
+    for raw in roots:
+        try:
+            root = Path(str(raw)).expanduser()
+            if not has_codegraph_index(root):
+                skipped += 1
+                continue
+            result = subprocess.run(
+                [bin_path, "sync", "--quiet", str(root)],
+                capture_output=True, timeout=timeout, check=False,
+            )
+            if result.returncode == 0:
+                synced += 1
+            else:
+                skipped += 1
+                _log.warning(
+                    "codegraph_sync: %s exited %d: %s", root, result.returncode,
+                    result.stderr.decode(errors="replace")[:120],
+                )
+        except subprocess.TimeoutExpired:
+            skipped += 1
+            _log.warning("codegraph_sync: timed out for %s", raw)
+        except Exception as exc:  # noqa: BLE001 — best-effort per repo
+            skipped += 1
+            _log.warning("codegraph_sync: failed for %s: %s", raw, exc)
+    _log.info("codegraph_sync: synced=%d skipped=%d", synced, skipped)
+
+
 def _check_embedding_backends_handler() -> None:
     """Cron handler: probe the configured embedding backend and log reachability.
 
@@ -347,6 +405,7 @@ _HANDLERS["feedback_to_teachings"] = _feedback_to_teachings_handler
 _HANDLERS["archive_memory_to_db_dry_run"] = _archive_memory_to_db_dry_run_handler
 _HANDLERS["memexp_snapshot_create"] = _memexp_snapshot_create_handler
 _HANDLERS["check_embedding_backends"] = _check_embedding_backends_handler
+_HANDLERS["codegraph_sync"] = _codegraph_sync_handler
 _HANDLERS["discussions_sync_nightly"] = _discussions_sync_nightly_handler
 
 

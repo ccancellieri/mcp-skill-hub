@@ -298,3 +298,75 @@ def test_run_job_records_error_on_handler_exception(db_path):
         ).fetchone()
     assert row[0] == "error"
     assert "intentional test error" in (row[1] or "")
+
+
+# ---------------------------------------------------------------------------
+# codegraph_sync handler — deterministic keep-updated job
+# ---------------------------------------------------------------------------
+
+
+def test_codegraph_sync_handler_registered():
+    import importlib
+    import skill_hub.cron as _cron_mod
+    importlib.reload(_cron_mod)
+    assert "codegraph_sync" in _cron_mod._HANDLERS
+    assert callable(_cron_mod._HANDLERS["codegraph_sync"])
+
+
+def test_codegraph_sync_job_seeded_enabled(db_path):
+    """codegraph-sync is enabled by default but inert until roots are set."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT command, enabled FROM cron_jobs WHERE name='codegraph-sync'"
+        ).fetchone()
+    assert row is not None, "codegraph-sync row missing from cron_jobs"
+    assert row[0] == "codegraph_sync"
+    assert row[1] == 1
+
+
+def test_codegraph_sync_noop_when_no_roots(monkeypatch):
+    import skill_hub.cron as _cron_mod
+    import skill_hub.config as _cfg
+    import skill_hub.codegraph_context as _cg
+
+    monkeypatch.setattr(_cfg, "get",
+                        lambda k, d=None: [] if k == "codegraph_reindex_roots" else d)
+    # Binary lookup must not even be reached; assert by making it explode.
+    monkeypatch.setattr(_cg, "_find_codegraph_bin",
+                        lambda: (_ for _ in ()).throw(AssertionError("reached")))
+    _cron_mod._codegraph_sync_handler()  # must not raise
+
+
+def test_codegraph_sync_syncs_indexed_root(monkeypatch):
+    import subprocess
+    import skill_hub.cron as _cron_mod
+    import skill_hub.config as _cfg
+    import skill_hub.codegraph_context as _cg
+
+    cfg_vals = {
+        "codegraph_reindex_roots": ["/repo/a", "/repo/b"],
+        "codegraph_reindex_timeout_seconds": 30,
+    }
+    monkeypatch.setattr(_cfg, "get", lambda k, d=None: cfg_vals.get(k, d))
+    monkeypatch.setattr(_cg, "_find_codegraph_bin", lambda: "/usr/bin/codegraph")
+    # /repo/a is indexed, /repo/b is not
+    monkeypatch.setattr(_cg, "has_codegraph_index",
+                        lambda root: str(root) == "/repo/a")
+
+    runs = []
+
+    class _R:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(cmd, **kw):
+        runs.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    _cron_mod._codegraph_sync_handler()
+
+    # only the indexed root triggers a sync, with the incremental command shape
+    assert len(runs) == 1
+    assert runs[0][:2] == ["/usr/bin/codegraph", "sync"]
+    assert "/repo/a" in runs[0]

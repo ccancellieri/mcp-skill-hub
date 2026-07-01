@@ -111,10 +111,18 @@ _DEFAULTS = {
     "feedback_boost_max": 1.5,          # maximum feedback boost factor
     "teaching_min_similarity": 0.6,     # minimum sim for teaching rule match
 
-    # CodeGraph enrichment in search_context — off by default.
-    # When True, search_context appends a bounded symbol block from the project's
-    # CodeGraph index (if one exists at the active repo root).
-    "search_context_use_codegraph": False,
+    # CodeGraph enrichment in search_context — deterministic, on by default.
+    # search_context appends a bounded symbol block from the project's CodeGraph
+    # index when one exists at the active repo root. The lookup is LLM-free
+    # (pure index query), bounded (top-k + char cap), cached, and never raises,
+    # so it is a no-op for repos without a ``.codegraph/`` index.
+    "search_context_use_codegraph": True,
+    # Repos whose CodeGraph index the ``codegraph-sync`` cron job keeps fresh
+    # (incremental ``codegraph sync``). Empty → the job is a cheap no-op. Add
+    # absolute repo roots (each must already be ``codegraph init``-ed).
+    "codegraph_reindex_roots": [],
+    # Per-repo wall-clock cap for one incremental sync in the cron handler.
+    "codegraph_reindex_timeout_seconds": 120,
 
     # Compaction
     "compact_max_input_chars": 4000,
