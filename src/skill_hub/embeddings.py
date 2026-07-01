@@ -1,6 +1,7 @@
 """Ollama embedding, re-ranking, and LLM compaction."""
 
 import json
+import os
 import re
 import threading
 from typing import Any
@@ -63,6 +64,20 @@ def _embed_is_enabled() -> bool:
     return daemon_on and embed_on
 
 
+def _hot_path() -> bool:
+    """True inside a per-prompt UserPromptSubmit hook (set by the hook wrappers).
+
+    On the hot path we accept only the *fast local* backends: Ollama for
+    embeddings and generation. The remote LLM ladder (seconds per round-trip)
+    and the sentence-transformers embedding fallback (~12s of torch import +
+    model construction on every fresh CLI subprocess) both blow the hook's
+    ~20s budget, so the enriched output ends up computed then discarded. When
+    the local daemon is down we degrade to heuristics instead — fast and useful,
+    never a doomed remote/ST detour. The long-lived server and cron jobs do NOT
+    set this, so they keep the full ladder and the ST fallback."""
+    return os.environ.get("SKILL_HUB_LOCAL_ONLY") == "1"
+
+
 def _generate(
     prompt: str,
     *,
@@ -71,6 +86,7 @@ def _generate(
     temperature: float = 0.2,
     num_predict: int = 512,
     op: str = "",
+    local_only: bool = False,
 ) -> str:
     """Thin wrapper over ``LLMProvider.complete()`` matching the old
     ``httpx.post(/api/generate).json()['response']`` shape. Returns ``""`` on
@@ -78,7 +94,22 @@ def _generate(
 
     Pass ``model=None`` to let the escalation ladder pick the level (used when
     no local model is available, so a known ``op`` routes to a remote
-    specialist instead of failing)."""
+    specialist instead of failing).
+
+    Pass ``local_only=True`` for latency-critical hot-path calls (the
+    per-prompt UserPromptSubmit hooks). When the local daemon is down these
+    must NOT escalate to the remote ladder — a remote round-trip blows the
+    hook's ~20s budget, so the whole enriched output is computed then discarded
+    (wasted latency *and* tokens). Instead we fail fast here and let the caller
+    fall back to its deterministic path. Background/explicit tools leave this
+    False so they keep the full escalation ladder."""
+    if (local_only or _hot_path()) and model:
+        # Cached, cheap probe (same one _embed_ollama uses). A down local daemon
+        # means complete() would silently ladder to a remote provider — exactly
+        # what we must avoid on the hot path.
+        from .llm.escalation import ollama_daemon_reachable
+        if not ollama_daemon_reachable():
+            return ""
     try:
         return get_provider().complete(
             prompt,
@@ -132,6 +163,13 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
     if model is None:
         model = str(_cfg.get("embed_model") or "nomic-embed-text")
     priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"])
+    if _hot_path():
+        # Per-prompt hook: Ollama-only. The sentence-transformers fallback pays
+        # ~12s of torch import + model construction on every fresh CLI subprocess
+        # (no warm cache across invocations), which alone exceeds the hook budget.
+        # With Ollama down we return no RAG candidates and let the caller fall
+        # back to heuristics — fast beats a discarded 18s result.
+        priority = [b for b in priority if b == "ollama"] or ["ollama"]
     errors: list[str] = []
 
     for backend in priority:
@@ -976,6 +1014,7 @@ def eval_skill_lifecycle(
             raw = _generate(
                 prompt, model=model, timeout=15.0,
                 temperature=0.0, num_predict=250, op="skill_lifecycle",
+                local_only=True,
             )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1021,6 +1060,7 @@ def optimize_prompt(
             result = _generate(
                 prompt, model=model, timeout=15.0,
                 temperature=0.2, num_predict=400, op="improve_prompt",
+                local_only=True,
             ).strip()
         log_llm("optimize_prompt", model=model, duration=_t.duration,
                 message_len=len(message))

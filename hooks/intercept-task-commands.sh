@@ -14,6 +14,12 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="$SCRIPT_DIR/.venv/bin/skill-hub-cli"
 
+# Hot path: this hook runs before every prompt under a hard timeout. Restrict LLM
+# + embedding work to the fast local (Ollama) backends so a down daemon degrades
+# to heuristics instead of a slow remote-ladder / sentence-transformers detour
+# that would blow the budget and get the whole result discarded.
+export SKILL_HUB_LOCAL_ONLY=1
+
 # Debug: log every invocation
 DEBUG_LOG="$HOME/.claude/mcp-skill-hub/logs/hook-debug.log"
 echo "[$(date '+%H:%M:%S')] Hook fired — SHELL=$SHELL CWD=$(pwd)" >> "$DEBUG_LOG"

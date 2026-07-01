@@ -72,6 +72,14 @@ def classify(
 
     full_prompt = project_prefix + _CLASSIFY_PROMPT.format(prompt=prompt[:1500])
 
+    # Tier 2 IS the local tier. If the daemon is down, skip straight to
+    # Tier 3 (Haiku) / heuristics — do NOT let the provider silently rescue a
+    # dead local model onto the remote ladder here (that would spend a slow
+    # gateway round-trip inside the per-prompt hook and duplicate Tier 3).
+    from ..llm.escalation import ollama_daemon_reachable
+    if not ollama_daemon_reachable():
+        return None
+
     # Route via pluggable LLM provider (litellm). ``model`` is resolved below
     # in the same order of precedence:
     #   1. explicit services.ollama_router.model  → wrapped as "ollama/<m>"

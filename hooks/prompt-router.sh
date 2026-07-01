@@ -12,6 +12,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 HOOK="$SCRIPT_DIR/hooks/prompt_router.py"
 
+# Hot path: restrict LLM + embedding work to the fast local (Ollama) backends so
+# a down daemon degrades to heuristics instead of a slow remote-ladder /
+# sentence-transformers detour that blows the 20s budget and gets discarded.
+export SKILL_HUB_LOCAL_ONLY=1
+
 DEBUG_LOG="$HOME/.claude/mcp-skill-hub/logs/hook-debug.log"
 echo "[$(date '+%H:%M:%S')] Router hook fired" >> "$DEBUG_LOG"
 
