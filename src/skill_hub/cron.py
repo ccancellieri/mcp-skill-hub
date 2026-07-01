@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 _log = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ def register_handler(name: str, fn: Callable[[], None]) -> None:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_JOBS = [
-    ("memory-optimize-preview", "0 2 * * *",   "optimize_memory_dry_run",    1),
+    ("memory-optimize", "0 2 * * *",   "optimize_memory_apply",    1),
     ("teachings-sync",          "0 3 * * *",   "feedback_to_teachings",       1),
     ("archive-closed-tasks",    "0 4 * * *",   "archive_memory_to_db_dry_run", 1),
     ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
@@ -146,6 +147,53 @@ def _optimize_memory_dry_run_handler() -> None:
     from . import server as _server
     result = _server.optimize_memory(dry_run=True)
     _log.info("optimize_memory_dry_run: %s", str(result)[:200])
+
+
+# Where nightly memory snapshots are kept before an apply pass, and how many to
+# retain (one month of nightly runs).
+_MEM_BACKUP_DIR = Path.home() / ".claude" / "mcp-skill-hub" / "memory-backups"
+_MEM_BACKUP_KEEP = 30
+
+
+def _snapshot_memory_dir() -> Path | None:
+    """Copy the auto-memory dir to a timestamped backup before a destructive pass.
+
+    Returns the backup path, or None if the memory dir does not exist. Prunes
+    old snapshots beyond ``_MEM_BACKUP_KEEP`` so backups never grow unbounded.
+    Best-effort: a copy failure raises so the caller can abort the apply.
+    """
+    import shutil
+    import time as _time
+
+    mem_path = (Path.home() / ".claude" / "projects"
+                / "-Users-ccancellieri-work-code" / "memory")
+    if not mem_path.exists():
+        return None
+    _MEM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _MEM_BACKUP_DIR / _time.strftime("%Y%m%d-%H%M%S")
+    shutil.copytree(mem_path, dest, dirs_exist_ok=True)
+    # Retention: keep the newest N snapshots, drop the rest.
+    snaps = sorted(p for p in _MEM_BACKUP_DIR.iterdir() if p.is_dir())
+    for old in snaps[:-_MEM_BACKUP_KEEP]:
+        shutil.rmtree(old, ignore_errors=True)
+    return dest
+
+
+def _optimize_memory_apply_handler() -> None:
+    """Cron handler: APPLY memory optimisation (deletes PRUNE-flagged files).
+
+    Snapshots the memory dir first (reversible), then runs
+    ``optimize_memory(dry_run=False)``. Two safety layers remain in force:
+    the IDLE-pressure gate inside ``optimize_memory`` (skips under load), and
+    the LLM escalation ladder — if the local Ollama daemon is down the call is
+    automatically routed to the gateway/personal provider tier instead of
+    failing, so the pass still runs when Ollama is unavailable.
+    """
+    from . import server as _server
+    backup = _snapshot_memory_dir()
+    result = _server.optimize_memory(dry_run=False)
+    _log.info("optimize_memory_apply: backup=%s result=%s",
+              backup, str(result)[:200])
 
 
 def _archive_memory_to_db_dry_run_handler() -> None:
@@ -294,6 +342,7 @@ def _check_embedding_backends_handler() -> None:
 _HANDLERS["log_digest_snapshot"] = _log_digest_snapshot_handler
 _HANDLERS["wiki_reindex_nightly"] = _wiki_reindex_nightly_handler
 _HANDLERS["optimize_memory_dry_run"] = _optimize_memory_dry_run_handler
+_HANDLERS["optimize_memory_apply"] = _optimize_memory_apply_handler
 _HANDLERS["feedback_to_teachings"] = _feedback_to_teachings_handler
 _HANDLERS["archive_memory_to_db_dry_run"] = _archive_memory_to_db_dry_run_handler
 _HANDLERS["memexp_snapshot_create"] = _memexp_snapshot_create_handler

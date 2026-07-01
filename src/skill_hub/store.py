@@ -1684,6 +1684,44 @@ class SkillStore:
         ).fetchone()
         return row["content_hash"] if row else None
 
+    def delete_skill(self, skill_id: str) -> None:
+        """Remove a skill and all its companion rows.
+
+        Deleting from ``skills`` cascades to ``skills_fts`` via trigger, but the
+        vector tables (``embeddings``, ``skills_vec_bin``, ``skills_vec_f32``)
+        are managed manually in :meth:`upsert_embedding` and must be cleaned
+        here too, or they leak orphaned vectors that keep surfacing in search.
+        """
+        self._conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+        self._conn.execute("DELETE FROM embeddings WHERE skill_id = ?", (skill_id,))
+        self._conn.execute("DELETE FROM skills_vec_bin WHERE skill_id = ?", (skill_id,))
+        self._conn.execute("DELETE FROM skills_vec_f32 WHERE skill_id = ?", (skill_id,))
+        self._conn.commit()
+        self._vec_cache_valid = False
+
+    def prune_skills(self, excluded_substrings: tuple[str, ...] = ()) -> list[str]:
+        """Delete indexed skills whose backing file is gone or excluded.
+
+        A skill is pruned when its ``file_path`` no longer exists on disk
+        (the plugin/skill was uninstalled) or when the path contains any of
+        ``excluded_substrings`` (e.g. archive dirs, transient ``temp_git_``
+        marketplace clones). ``index_all`` upserts but never deletes, so
+        without this the index accumulates stale rows forever. Returns the list
+        of pruned skill ids.
+        """
+        pruned: list[str] = []
+        rows = self._conn.execute(
+            "SELECT id, file_path FROM skills WHERE target = 'claude'"
+        ).fetchall()
+        for row in rows:
+            path = row["file_path"] or ""
+            excluded = any(sub in path for sub in excluded_substrings)
+            missing = bool(path) and not Path(path).exists()
+            if excluded or missing:
+                self.delete_skill(row["id"])
+                pruned.append(row["id"])
+        return pruned
+
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
         norm = math.sqrt(sum(x * x for x in vector))
         self._conn.execute("""

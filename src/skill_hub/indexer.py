@@ -30,6 +30,19 @@ PLUGIN_DIRS: list[Path] = [
     Path.home() / ".claude" / "skills",          # user-local skills
 ]
 
+# Path fragments that must never be indexed:
+#  - skills-archive: explicitly retired skills (policy: never load/reference)
+#  - temp_git_: transient marketplace git clones that vanish after a fetch,
+#    leaving orphaned rows behind.
+EXCLUDED_PATH_PARTS: tuple[str, ...] = ("skills-archive", "temp_git_")
+
+
+def _is_excluded(path: Path) -> bool:
+    parts = path.parts
+    return any(
+        any(frag in part for frag in EXCLUDED_PATH_PARTS) for part in parts
+    )
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _FM_FIELD_RE    = re.compile(r"^(\w+)\s*:\s*(.+)$", re.MULTILINE)
 
@@ -83,12 +96,16 @@ def _skill_id_from_path(path: Path) -> str:
     try:
         idx = next(i for i in range(len(parts) - 1, -1, -1) if parts[i] == "skills")
         skill_name = parts[idx + 1] if idx + 1 < len(parts) - 1 else path.parent.name
-        # Walk backwards to find plugin name (skip version hashes)
+        # Walk backwards to find plugin name (skip version hashes and
+        # version-number dirs like "0.2.0"/"1.0.9" which are NOT plugin names —
+        # treating them as one produced bogus ids like "0.2.0:autopilot-loop").
         plugin_name = ""
         for p in reversed(parts[:idx]):
-            if re.match(r"^[0-9a-f]{8,}$", p) or p in ("cache", "marketplaces",
-                                                         "claude-plugins-official",
-                                                         "anthropic-agent-skills"):
+            if (re.match(r"^[0-9a-f]{8,}$", p)
+                    or re.match(r"^v?\d+(\.\d+)+$", p)
+                    or p in ("cache", "marketplaces",
+                             "claude-plugins-official",
+                             "anthropic-agent-skills")):
                 continue
             plugin_name = p
             break
@@ -204,7 +221,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
-            if not _path_allowed(skill_file):
+            if not _path_allowed(skill_file) or _is_excluded(skill_file):
                 continue
             skill_id = _skill_id_from_path(skill_file)
             _index_skill_file(skill_file, skill_id, _plugin_from_id(skill_id))
@@ -218,7 +235,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
-            if not _path_allowed(skill_file):
+            if not _path_allowed(skill_file) or _is_excluded(skill_file):
                 continue
             skill_id = f"{source}:{skill_file.parent.name}"
             _index_skill_file(skill_file, skill_id, source)
@@ -235,6 +252,17 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
     # Skip the heavy whole-corpus passes (plugin memory, user memory, registry
     # seeding) when we're doing a targeted incremental reindex.
     if changed_paths is None:
+        # Prune stale rows: skills whose backing file was uninstalled/removed,
+        # or that live under an excluded dir. Upsert-only indexing would
+        # otherwise let the index grow orphaned entries forever, which then
+        # keep surfacing in router injections.
+        try:
+            pruned = store.prune_skills(excluded_substrings=EXCLUDED_PATH_PARTS)
+            if pruned:
+                errors.append(f"info: pruned {len(pruned)} stale/excluded skills")
+        except Exception as exc:  # noqa: BLE001 — pruning must never break indexing
+            errors.append(f"prune stale skills: {exc}")
+
         # Phase M2 — seed vector_index_config from plugin.json "vector_indexes".
         try:
             from .plugin_registry import register_plugin_vector_indexes

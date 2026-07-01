@@ -633,11 +633,13 @@ _DEFAULTS = {
 
     # Extra skill directories — indexed alongside the plugin cache
     # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
+    # Default OFF: skills-archive holds retired skills that must not be indexed
+    # or surfaced in router injections. Enabling it re-pollutes the skill index.
     "extra_skill_dirs": [
         {
             "path": str(Path.home() / ".claude" / "skills-archive"),
             "source": "archive",
-            "enabled": True,
+            "enabled": False,
         }
     ],
 
