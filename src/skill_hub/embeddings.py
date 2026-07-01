@@ -981,11 +981,18 @@ def eval_skill_lifecycle(
     loaded_skills: list[dict],
     candidate_skills: list[dict],
     model: str = RERANK_MODEL,
+    local_only: bool = True,
 ) -> dict:
     """Decide which skills to keep/add/drop and update the rolling context summary.
 
     Focused single-task call: structured classification only.
     Runs at temperature=0.0 with a tight token budget (250).
+
+    ``local_only`` defaults to True so the per-prompt hot path fast-fails when
+    the local daemon is down (never a doomed remote round-trip inside the hook
+    budget). The detached async-escalation worker passes ``local_only=False``
+    (with ``model=None``) so the same work runs off the critical path on the
+    remote ladder and lands in session state for the next turn.
 
     Returns {"keep": [...], "add": [...], "drop": [...], "context_summary": "..."}
     """
@@ -1014,7 +1021,7 @@ def eval_skill_lifecycle(
             raw = _generate(
                 prompt, model=model, timeout=15.0,
                 temperature=0.0, num_predict=250, op="skill_lifecycle",
-                local_only=True,
+                local_only=local_only,
             )
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -1041,12 +1048,16 @@ def optimize_prompt(
     message: str,
     context_summary: str,
     model: str = RERANK_MODEL,
+    local_only: bool = True,
 ) -> str:
     """Rewrite the user message into a richer, better-structured prompt for Claude.
 
     Only called when there is meaningful conversation context and the message is
     long enough to benefit from enrichment (≥ 150 chars).
     Runs at temperature=0.2 for more expressive rewrites.
+
+    ``local_only`` defaults to True (hot-path fast-fail when the local daemon is
+    down). See :func:`eval_skill_lifecycle` for the rationale.
 
     Returns the optimized prompt string, or the original message on failure.
     """
@@ -1060,7 +1071,7 @@ def optimize_prompt(
             result = _generate(
                 prompt, model=model, timeout=15.0,
                 temperature=0.2, num_predict=400, op="improve_prompt",
-                local_only=True,
+                local_only=local_only,
             ).strip()
         log_llm("optimize_prompt", model=model, duration=_t.duration,
                 message_len=len(message))

@@ -1275,6 +1275,139 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
     return f"[{name}]\n\n" + "\n\n".join(step_outputs)
 
 
+def _maybe_spawn_async_enrich(session_id: str, message: str) -> None:
+    """Fire-and-forget delegation of per-prompt enrichment to the remote ladder
+    when the local LLM (Ollama) is down.
+
+    The current turn already received deterministic FTS skills synchronously.
+    This spawns a detached worker (no ``SKILL_HUB_LOCAL_ONLY``) that recomputes
+    the skill lifecycle + rolling summary on the remote escalation ladder off the
+    critical path, landing the result in session state for the NEXT turn — so a
+    down daemon no longer means "no LLM enrichment at all", it means "enrichment
+    one turn late from a higher tier".
+
+    Gated on: config flag, a configured remote provider (cheap credential check,
+    no network), and a short per-session lock so overlapping prompts don't pile
+    up doomed workers.
+    """
+    from . import config as _cfg
+    if _cfg.get("hook_async_escalation") is False or not session_id:
+        return
+    try:
+        from .llm.escalation import has_remote_provider
+        if not has_remote_provider():
+            return
+    except Exception:
+        return
+
+    import tempfile
+    import time as _time
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", session_id)[:64] or "anon"
+    lock = Path(tempfile.gettempdir()) / f"skill-hub-async-enrich-{safe}.lock"
+    try:
+        if lock.exists() and (_time.time() - lock.stat().st_mtime) < 90:
+            return  # a worker for this session is already in flight
+        lock.write_text(str(_time.time()))
+    except OSError:
+        return
+
+    try:
+        import os as _os
+        import subprocess
+        env = dict(_os.environ)
+        env.pop("SKILL_HUB_LOCAL_ONLY", None)  # allow the full remote ladder
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "skill_hub.cli", "async-enrich",
+             "--session-id", session_id],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env=env, start_new_session=True,
+        )
+        try:
+            if proc.stdin:
+                proc.stdin.write(message.encode("utf-8", "replace")[:8000])
+                proc.stdin.close()
+        except (OSError, BrokenPipeError):
+            pass
+    except Exception:
+        pass
+
+
+def _run_async_enrich(session_id: str, message: str) -> None:
+    """Worker body for async remote-ladder enrichment.
+
+    Runs OFF the per-prompt hot path (detached subprocess spawned by
+    :func:`_maybe_spawn_async_enrich`, no ``SKILL_HUB_LOCAL_ONLY``) so it may
+    escalate to the remote LLM ladder. Recomputes the skill lifecycle + rolling
+    context summary the hot path had to skip (local daemon down) and persists the
+    result to session state for the next turn. Message-specific prompt
+    optimization is intentionally NOT done here — it would arrive after the
+    prompt it was computed for.
+    """
+    if not session_id or not message:
+        return
+    from . import config as _cfg
+    top_k_skills = int(_cfg.get("hook_context_top_k_skills") or 5)
+    store = SkillStore()
+    try:
+        ctx = store.get_session_context(session_id)
+        prev_loaded_ids: list[str] = ctx["loaded_skills"]
+        context_summary: str = ctx["context_summary"]
+        msg_count: int = ctx["message_count"]
+
+        # Deterministic candidates — no embeddings (the daemon that would serve
+        # them is what's down); the remote LLM only reranks/summarizes.
+        candidates = store.search_fts(message, top_k=top_k_skills * 3, target="claude")
+        if not candidates:
+            return
+        loaded_ids = set(prev_loaded_ids)
+        loaded_skills = [s for s in candidates if s["id"] in loaded_ids]
+        seen = {s["id"] for s in loaded_skills}
+        for sid in prev_loaded_ids:
+            if sid not in seen:
+                row = store.get_skill(sid)
+                if row:
+                    loaded_skills.append(dict(row))
+                    seen.add(sid)
+        candidate_skills = [s for s in candidates if s["id"] not in loaded_ids]
+
+        lifecycle = eval_skill_lifecycle(
+            message=message,
+            context_summary=context_summary,
+            loaded_skills=loaded_skills,
+            candidate_skills=candidate_skills,
+            model=None,        # let the escalation ladder pick a remote level
+            local_only=False,  # off the hot path — full ladder allowed
+        )
+        keep_ids = set(lifecycle.get("keep", []))
+        add_ids = set(lifecycle.get("add", []))
+        new_summary = lifecycle.get("context_summary", context_summary) or context_summary
+        max_summary_chars = int(_cfg.get("hook_context_summary_max_chars") or 800)
+        if len(new_summary) > max_summary_chars:
+            new_summary = new_summary[:max_summary_chars]
+
+        final_ids = list(keep_ids | add_ids)[:top_k_skills]
+        if not final_ids and new_summary == context_summary:
+            return  # remote ladder produced nothing usable — don't churn state
+
+        # Preserve msg_count as-is: the hot path owns turn counting. We only
+        # upgrade the skill set + rolling summary for the next turn to consume.
+        store.save_session_context(
+            session_id=session_id,
+            loaded_skills=final_ids or prev_loaded_ids,
+            context_summary=new_summary,
+            message_count=msg_count,
+            recent_messages=list(ctx.get("recent_messages", [])),
+        )
+        log_step(
+            f"async-enrich: refreshed session {session_id[:8]} via remote ladder "
+            f"({len(final_ids)} skills, summary {len(new_summary)}c)"
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort background worker
+        log_detail(f"async-enrich failed: {str(exc)[:120]}")
+    finally:
+        store.close()
+
+
 def _dynamic_context_stage(
     message: str,
     session_id: str,
@@ -1451,6 +1584,13 @@ def _dynamic_context_stage(
         if not (loaded_skills or candidate_skills):
             reason = "no_candidates"
         log_detail(f"dynamic_context: skip ({reason})")
+
+        # The local LLM is down but skills/candidates exist — don't abandon the
+        # enrichment. Delegate it to the remote ladder in a detached worker that
+        # refreshes session state for the next turn (deterministic FTS skills
+        # already selected above serve the current turn).
+        if reason == "no_model" and session_id and (loaded_skills or candidate_skills):
+            _maybe_spawn_async_enrich(session_id, message)
 
     # 4. Build systemMessage with selected skills (full content)
     max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
@@ -7176,6 +7316,23 @@ def main() -> None:
         from .router.route import route as _route
         result = _route(message.strip(), session_id=session_id, cwd=cwd, task_id=task_id)
         print(json.dumps(result))
+
+    elif cmd == "async-enrich":
+        # Detached worker (spawned by _maybe_spawn_async_enrich) that runs the
+        # per-prompt enrichment on the remote ladder when the local LLM is down.
+        # Reads the prompt from stdin so arbitrary content is passed safely.
+        session_id = ""
+        filtered_args = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--session-id" and i + 1 < len(args):
+                session_id = args[i + 1]
+                i += 2
+            else:
+                filtered_args.append(args[i])
+                i += 1
+        message = " ".join(filtered_args) if filtered_args else sys.stdin.read()
+        _run_async_enrich(session_id, message.strip())
 
     else:
         print(f"Unknown command: {cmd}")

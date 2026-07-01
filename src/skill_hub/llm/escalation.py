@@ -98,6 +98,25 @@ def ollama_daemon_reachable(*, ttl: float = _REACH_TTL) -> bool:
     return ok
 
 
+def has_remote_provider() -> bool:
+    """Cheap, network-free check: is at least one non-local provider configured
+    with resolvable credentials?
+
+    Walks the registry and resolves credentials (env / config lookups only — no
+    HTTP). Used by the hot path to decide whether firing an async remote-ladder
+    enrichment worker can succeed before spending a subprocess on it. Returns
+    False when only local Ollama is configured, so a down daemon degrades to
+    deterministic output instead of spawning a doomed worker.
+    """
+    for p in load_registry():
+        if p.kind == "ollama":
+            continue
+        _, api_key = resolve_credentials(p)
+        if api_key:
+            return True
+    return False
+
+
 def cool_ollama(*, seconds: int = 30) -> None:
     """Put every local (ollama-kind) model on a short cooldown so the ladder
     skips the dead local level instead of trying and failing on each call.

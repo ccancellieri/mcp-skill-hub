@@ -623,6 +623,13 @@ _DEFAULTS = {
     # result is cached much longer than the "up" TTL (30s) so that rapid call bursts
     # do not repeatedly attempt and fail against a stopped daemon.
     "ollama_down_probe_ttl_seconds": 120,
+    # When the local LLM (Ollama) is down, the per-prompt hot path can't run the
+    # rich skill-lifecycle + rolling-summary enrichment inside its budget. With
+    # this on, it instead fires a detached worker that runs the same work on the
+    # remote escalation ladder off the critical path; the refreshed summary +
+    # skill set land in session state for the NEXT turn. Deterministic FTS skills
+    # still surface synchronously for the current turn regardless.
+    "hook_async_escalation": True,
     # Hard cap (USD/day) on personal-Claude *auxiliary* spend; null = no cap
     # (opt-in). Over cap → auxiliary tasks degrade to L0/L1.
     "llm_personal_daily_usd_cap": None,
