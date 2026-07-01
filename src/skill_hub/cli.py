@@ -1309,18 +1309,33 @@ def _dynamic_context_stage(
     context_summary: str = ctx["context_summary"]
     msg_count: int = ctx["message_count"]
 
-    # 2. Embed message + fetch candidates via RAG
-    msg_vector = embed(message[:500])
+    # 2. Fetch candidates via RAG. Prefer semantic (embedding) search, but the
+    #    embedding backend may be unavailable (e.g. Ollama down on the hot path,
+    #    where the heavy sentence-transformers fallback is intentionally skipped).
+    #    In that case fall back to deterministic BM25 keyword search so skill
+    #    candidates STILL surface — deterministic work must run regardless of the
+    #    local model's state.
+    msg_vector: list[float] | None = None
+    try:
+        msg_vector = embed(message[:500])
+    except Exception as _embed_exc:  # noqa: BLE001 — degrade to keyword search
+        log_detail(f"embed unavailable, using deterministic FTS candidates: {_embed_exc}")
 
-    # Classify complexity for adaptive budget + model hints
-    complexity = _classify_complexity(msg_vector)
+    if msg_vector:
+        # Classify complexity for adaptive budget + model hints
+        complexity = _classify_complexity(msg_vector)
+        all_candidates = store.search(
+            msg_vector, top_k=top_k_skills * 3,
+            similarity_threshold=0.35, target="claude",
+        )
+    else:
+        # No vector: keyword-rank the skills and use a neutral budget.
+        complexity = "moderate"
+        all_candidates = store.search_fts(
+            message, top_k=top_k_skills * 3, target="claude",
+        )
     _session_complexity_counts[complexity] = _session_complexity_counts.get(complexity, 0) + 1
     max_chars = _BUDGET_BY_COMPLEXITY.get(complexity, default_max)
-    # Fetch wider pool of candidates for the LLM to choose from
-    all_candidates = store.search(
-        msg_vector, top_k=top_k_skills * 3,
-        similarity_threshold=0.35, target="claude",
-    )
 
     # Separate previously loaded skills from new candidates
     loaded_skills: list[dict] = []

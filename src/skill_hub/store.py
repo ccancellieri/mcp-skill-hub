@@ -24,6 +24,18 @@ from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
+# Common English + generic-imperative words that pollute BM25 keyword search
+# (they match almost every skill's prose). Filtered out of ``search_fts`` so the
+# deterministic fallback ranks on meaningful terms, not filler.
+_FTS_STOPWORDS: frozenset[str] = frozenset({
+    "the", "and", "all", "for", "with", "you", "your", "our", "are", "was",
+    "this", "that", "then", "than", "into", "onto", "from", "have", "has",
+    "not", "but", "can", "may", "will", "would", "should", "could", "any",
+    "run", "use", "using", "get", "got", "let", "via", "per", "out", "off",
+    "please", "also", "them", "they", "some", "such", "when", "what", "which",
+    "how", "who", "why", "where", "want", "need", "make", "made", "done",
+})
+
 
 def _resolve_node_id() -> str:
     """Resolve this host's federation node_id.
@@ -2141,6 +2153,59 @@ class SkillStore:
             scored.append((sim * boost, d))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
+
+    def search_fts(self, query_text: str, top_k: int = 3,
+                   target: str | None = None) -> list[dict]:
+        """Deterministic keyword search over ``skills_fts`` (BM25) — no embeddings.
+
+        This is the offline/local-down fallback for :meth:`search`: it needs no
+        Ollama and no vector engine, so skill candidates still surface when the
+        embedding backend is unavailable. Returns the same dict shape as
+        ``search`` (id/name/description/content/plugin/target/feedback_score),
+        ranked by BM25 and boosted by the pre-aggregated feedback score.
+        """
+        # Build a safe FTS5 MATCH expr: FTS5 treats punctuation as syntax, so a
+        # raw prompt would raise "fts5: syntax error". Extract word tokens, drop
+        # stopwords/noise (which otherwise dominate BM25 and surface irrelevant
+        # skills), quote each, OR them together.
+        tokens = [t for t in re.findall(r"[A-Za-z0-9_]+", query_text.lower())
+                  if len(t) >= 3 and t not in _FTS_STOPWORDS][:12]
+        if not tokens:
+            return []
+        match_expr = " OR ".join(f'"{t}"' for t in dict.fromkeys(tokens))
+
+        sql = """
+            SELECT s.id, s.name, s.description, s.content, s.plugin,
+                   s.target, s.feedback_score,
+                   bm25(skills_fts) AS rank
+            FROM skills_fts
+            JOIN skills s ON s.id = skills_fts.skill_id
+            WHERE skills_fts MATCH ?
+        """
+        params: list = [match_expr]
+        if target:
+            sql += " AND s.target = ?"
+            params.append(target)
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(max(top_k, 1))
+        try:
+            rows = self._conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as exc:  # malformed MATCH — never crash the hook
+            _log.warning("search_fts failed: %s", exc)
+            return []
+
+        # bm25 returns negative scores (lower = better). Rank by bm25 asc, but
+        # let a strong feedback boost reorder near-ties (mirrors search()).
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            boost = float(row["feedback_score"] or 1.0)
+            # Lower bm25 is better; divide by boost so well-liked skills rise.
+            scored.append((float(row["rank"]) / boost,
+                           {k: row[k] for k in ("id", "name", "description",
+                                                 "content", "plugin", "target",
+                                                 "feedback_score")}))
+        scored.sort(key=lambda x: x[0])
         return [item for _, item in scored[:top_k]]
 
 
