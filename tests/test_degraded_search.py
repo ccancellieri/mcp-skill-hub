@@ -294,6 +294,50 @@ def test_keyword_context_injection_enriches_without_embeddings(tmp_path, monkeyp
     assert "keyword fallback" in out
 
 
+def test_keyword_context_injection_dedupes_versioned_duplicates(tmp_path, monkeypatch):
+    """Byte-identical copies of one skill under version-prefixed ids
+    (1.0.8/1.0.9/1.0.10:foo) must collapse to a single injection entry, not
+    consume the whole top-K budget with repeats."""
+    from skill_hub.store import SkillStore, Skill
+    monkeypatch.setenv("HOME", str(tmp_path))
+    st = SkillStore(db_path=tmp_path / "kw_dup.db")
+    for ver in ("1.0.8", "1.0.9", "1.0.10"):
+        st.upsert_skill(Skill(
+            id=f"{ver}:widget-flux", name="widget-flux",
+            description="unique-widgetflux-token gpu compute demo",
+            content="Steps: build the widget flux capacitor.",
+            file_path="", plugin=ver, target="claude",
+        ))
+    import skill_hub.cli as cli
+    monkeypatch.setattr(cli, "SkillStore", lambda *a, **k: st)
+
+    out = cli._build_keyword_context_injection("widget flux gpu compute demo")
+    assert out is not None
+    # The description should appear exactly once despite three indexed copies.
+    assert out.count("unique-widgetflux-token") == 1
+
+
+def test_keyword_context_injection_keeps_same_name_different_content(tmp_path, monkeypatch):
+    """Same-named skills from different plugins (discord:configure vs
+    telegram:configure) have distinct content and must NOT be collapsed."""
+    from skill_hub.store import SkillStore, Skill
+    monkeypatch.setenv("HOME", str(tmp_path))
+    st = SkillStore(db_path=tmp_path / "kw_names.db")
+    for plugin, channel in (("discord", "discordium"), ("telegram", "telegramium")):
+        st.upsert_skill(Skill(
+            id=f"{plugin}:configure", name="configure",
+            description=f"configure the {channel} bridge connector",
+            content=f"Steps: set the {channel} token.",
+            file_path="", plugin=plugin, target="claude",
+        ))
+    import skill_hub.cli as cli
+    monkeypatch.setattr(cli, "SkillStore", lambda *a, **k: st)
+
+    out = cli._build_keyword_context_injection("configure the bridge connector token")
+    assert out is not None
+    assert "discordium" in out and "telegramium" in out
+
+
 def test_keyword_context_injection_returns_none_on_no_match(tmp_path, monkeypatch):
     from skill_hub.store import SkillStore
     monkeypatch.setenv("HOME", str(tmp_path))

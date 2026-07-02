@@ -2056,6 +2056,22 @@ def _build_keyword_context_injection(message: str) -> str | None:
                         merged.setdefault(s["id"], s)
                 skills = list(merged.values())[:top_k_skills]
 
+            # Collapse duplicate rows of the same skill. The index can carry
+            # byte-identical copies under version/source-prefixed ids (e.g.
+            # 1.0.8/1.0.9/1.0.10:huggingface-zerogpu), which would otherwise
+            # spend the whole top-K budget repeating one skill. Key on
+            # name+content so same-named but genuinely different skills
+            # (discord:configure vs telegram:configure) both survive.
+            _seen_keys: set[tuple] = set()
+            _deduped: list[dict] = []
+            for s in skills:
+                key = (s.get("name") or s["id"], hash(s.get("content") or ""))
+                if key in _seen_keys:
+                    continue
+                _seen_keys.add(key)
+                _deduped.append(s)
+            skills = _deduped[:top_k_skills]
+
             for i, s in enumerate(skills):
                 if budget <= 200:
                     break
