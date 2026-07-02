@@ -23,7 +23,12 @@ def _content_hash(name: str, description: str, content: str) -> str:
     h.update(content.encode("utf-8", "replace"))
     return h.hexdigest()
 
-# Plugin directories Claude Code uses
+# Plugin directories Claude Code uses. Both "cache" (installed copies) and
+# "marketplaces" (git checkouts, still scanned so update_marketplace() can
+# report/reindex skills straight from a pulled marketplace) are walked, so
+# the same skill can end up indexed under two different ids — that overlap
+# is cleaned up by store.dedupe_skills_by_content_hash(), not by skipping a
+# directory here.
 PLUGIN_DIRS: list[Path] = [
     Path.home() / ".claude" / "plugins" / "cache",
     Path.home() / ".claude" / "plugins" / "marketplaces",
@@ -96,16 +101,19 @@ def _skill_id_from_path(path: Path) -> str:
     try:
         idx = next(i for i in range(len(parts) - 1, -1, -1) if parts[i] == "skills")
         skill_name = parts[idx + 1] if idx + 1 < len(parts) - 1 else path.parent.name
-        # Walk backwards to find plugin name (skip version hashes and
-        # version-number dirs like "0.2.0"/"1.0.9" which are NOT plugin names —
-        # treating them as one produced bogus ids like "0.2.0:autopilot-loop").
+        # Walk backwards to find plugin name (skip version hashes, version-number
+        # dirs like "0.2.0"/"1.0.9", and the literal "unknown" version dir Claude
+        # Code's plugin cache uses when it hasn't recorded a version — none of
+        # these are plugin names; treating them as one produced bogus ids like
+        # "0.2.0:autopilot-loop" or "unknown:build-mcp-server").
         plugin_name = ""
         for p in reversed(parts[:idx]):
             if (re.match(r"^[0-9a-f]{8,}$", p)
                     or re.match(r"^v?\d+(\.\d+)+$", p)
                     or p in ("cache", "marketplaces",
                              "claude-plugins-official",
-                             "anthropic-agent-skills")):
+                             "anthropic-agent-skills",
+                             "unknown")):
                 continue
             plugin_name = p
             break
@@ -262,6 +270,17 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
                 errors.append(f"info: pruned {len(pruned)} stale/excluded skills")
         except Exception as exc:  # noqa: BLE001 — pruning must never break indexing
             errors.append(f"prune stale skills: {exc}")
+
+        # Dedupe byte-identical skills that ended up under more than one id —
+        # a marketplace git checkout and its installed cache copy, or sibling
+        # plugins in one marketplace sharing a single skills/ tree, each get
+        # their own skill_id and upsert-by-id never catches the overlap.
+        try:
+            deduped = store.dedupe_skills_by_content_hash()
+            if deduped:
+                errors.append(f"info: deduped {len(deduped)} duplicate-content skills")
+        except Exception as exc:  # noqa: BLE001 — dedup must never break indexing
+            errors.append(f"dedupe stale skills: {exc}")
 
         # Phase M2 — seed vector_index_config from plugin.json "vector_indexes".
         try:

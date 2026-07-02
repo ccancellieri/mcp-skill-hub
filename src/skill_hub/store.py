@@ -1721,11 +1721,17 @@ class SkillStore:
         vector tables (``embeddings``, ``skills_vec_bin``, ``skills_vec_f32``)
         are managed manually in :meth:`upsert_embedding` and must be cleaned
         here too, or they leak orphaned vectors that keep surfacing in search.
+        The vec0 tables are created lazily on first embedding write (legacy
+        engine never creates them at all), so they may not exist yet — best
+        effort, matching :meth:`upsert_embedding`'s own lazy-create handling.
         """
         self._conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
         self._conn.execute("DELETE FROM embeddings WHERE skill_id = ?", (skill_id,))
-        self._conn.execute("DELETE FROM skills_vec_bin WHERE skill_id = ?", (skill_id,))
-        self._conn.execute("DELETE FROM skills_vec_f32 WHERE skill_id = ?", (skill_id,))
+        for table in ("skills_vec_bin", "skills_vec_f32"):
+            try:
+                self._conn.execute(f"DELETE FROM {table} WHERE skill_id = ?", (skill_id,))
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
         self._vec_cache_valid = False
 
@@ -1751,6 +1757,42 @@ class SkillStore:
                 self.delete_skill(row["id"])
                 pruned.append(row["id"])
         return pruned
+
+    def dedupe_skills_by_content_hash(self) -> list[str]:
+        """Collapse byte-identical skills indexed under more than one id.
+
+        A plugin's skills can be reachable from several on-disk sources that
+        each get their own ``skill_id`` (a marketplace git checkout vs. its
+        installed cache copy; sibling plugins in one marketplace that share a
+        single ``skills/`` tree). ``index_all`` upserts by id, so it never
+        catches these — same content, different id, extra row. Group
+        ``target='claude'`` rows by ``content_hash`` and keep exactly one per
+        group: prefer a row whose ``file_path`` lives under
+        ``plugins/cache/`` (the installed copy actually served to Claude
+        Code) over one that doesn't; break remaining ties on the smaller id
+        for determinism. Returns the list of deleted skill ids.
+        """
+        rows = self._conn.execute(
+            "SELECT id, file_path, content_hash FROM skills "
+            "WHERE target = 'claude' AND content_hash IS NOT NULL"
+        ).fetchall()
+        groups: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            groups.setdefault(row["content_hash"], []).append(row)
+
+        def _sort_key(row: sqlite3.Row) -> tuple[bool, str]:
+            is_cache = "/plugins/cache/" in (row["file_path"] or "")
+            return (not is_cache, row["id"])
+
+        deleted: list[str] = []
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            keep, *rest = sorted(group, key=_sort_key)
+            for row in rest:
+                self.delete_skill(row["id"])
+                deleted.append(row["id"])
+        return deleted
 
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
         norm = math.sqrt(sum(x * x for x in vector))
