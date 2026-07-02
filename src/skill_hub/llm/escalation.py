@@ -141,7 +141,8 @@ def _provider_needs_key(p: Provider) -> bool:
 
 def _pick_model(p: Provider, wanted: str, exclude: set[str],
                 domain: str | None) -> ProviderModel | None:
-    avail = [m for m in p.models if m.id not in exclude and not is_cooled(m.id)]
+    avail = [m for m in p.models
+             if not m.embed and m.id not in exclude and not is_cooled(m.id)]
     if domain is not None:
         avail = [m for m in avail if domain in m.tags]
     if not avail:
@@ -195,3 +196,61 @@ def pick_model_for(domain: str, *, complexity: float = 0.5,
     whole registry is unreachable.
     """
     return select(complexity, domain=domain, exclude=exclude)
+
+
+# --- embed lane (#134) ------------------------------------------------------
+# Chat and embeddings are separate lanes over the same registry: a model
+# record flagged ``embed: true`` is never picked for chat (see ``_pick_model``)
+# and only those records are candidates here. Anthropic has no embeddings API,
+# so anthropic-kind providers are skipped.
+
+def _embed_candidates(p: Provider, exclude: set[str]) -> ProviderModel | None:
+    for m in p.models:
+        if m.embed and m.id not in exclude and not is_cooled(m.id):
+            return m
+    return None
+
+
+def select_embed(*, exclude: set[str] | None = None) -> Selection | None:
+    """First usable embedding model walking the ladder in ``order``.
+
+    The caller owns dimension compatibility (an index built with one model
+    cannot be queried with another's vectors) and marks failed models on
+    cooldown before re-selecting with ``exclude``.
+    """
+    exclude = exclude or set()
+    for p in load_registry():
+        if p.kind == "anthropic":
+            continue
+        if p.kind == "ollama" and not p.api_base:
+            continue   # local daemon — the plain "ollama" backend's job
+        api_base, api_key = resolve_credentials(p)
+        if _provider_needs_key(p) and not api_key:
+            continue
+        m = _embed_candidates(p, exclude)
+        if m is None:
+            continue
+        return Selection(model=m.id, api_base=api_base, api_key=api_key,
+                         provider=p.name, kind=p.kind, personal=p.personal)
+    return None
+
+
+def has_ladder_embed_provider() -> bool:
+    """Network-free: is any *remote* embed-capable provider configured?
+
+    Remote means an ollama-kind provider with an explicit ``api_base`` (a
+    second Ollama host) or a credentialed openai_compatible provider. The
+    local daemon is the plain "ollama" backend's job, not the ladder's.
+    """
+    for p in load_registry():
+        if not any(m.embed for m in p.models):
+            continue
+        if p.kind == "ollama":
+            if p.api_base:
+                return True
+            continue
+        if p.kind == "openai_compatible":
+            _, api_key = resolve_credentials(p)
+            if api_key:
+                return True
+    return False

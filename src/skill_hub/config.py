@@ -35,7 +35,7 @@ _DEFAULTS = {
 
     # Embedding backend cascade
     "embedding_backend": "auto",  # auto | ollama | sentence_transformers
-    "embedding_backend_priority": ["ollama", "sentence_transformers"],
+    "embedding_backend_priority": ["ollama", "ladder", "sentence_transformers"],
     # embedding_fallback_on_error removed — cascade always raises RuntimeError on total failure
     "sentence_transformers_model": "all-MiniLM-L6-v2",
 
@@ -525,6 +525,14 @@ _DEFAULTS = {
     # Minimum minutes between sweep runs.  A sweep that ran (or was skipped due
     # to pressure) within this window will not attempt again until it expires.
     "continuous_sweep_interval_minutes": 60,
+
+    # Index freshness sweep (#134) — periodic staleness-gated wiki/vector
+    # reindex plus memory re-embedding, and the task-close refresh trigger.
+    # The periodic tick runs only when IDLE and only when source files changed
+    # since the last run; task-close refresh always re-embeds memory.
+    "reindex_sweep_enabled": True,
+    "reindex_sweep_interval_minutes": 1440,   # daily
+    "reindex_on_task_close": True,
 
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,

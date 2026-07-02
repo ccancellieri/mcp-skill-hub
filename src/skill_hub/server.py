@@ -177,6 +177,13 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+# Index freshness sweep (#134) — periodic staleness-gated wiki/memory reindex.
+try:
+    from .reindex_sweep import start as _start_reindex_sweep
+    _start_reindex_sweep()
+except Exception:  # noqa: BLE001
+    pass
+
 # In-process session tracking
 _session = {
     "id": str(uuid.uuid4()),
@@ -1049,6 +1056,15 @@ def close_task(
 
     _store.close_task(task_id, compact_text, compact_vector)
     _clear_active_task_marker(task_id)
+
+    # Index freshness (#134): re-embed memory files written during the task and
+    # reindex the wiki if its pages changed — so the next search_context sees
+    # this task's output without a manual reindex. Fire-and-forget.
+    try:
+        from .reindex_sweep import refresh_after_task_close
+        refresh_after_task_close(_store, task_id)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Optional worktree cleanup. Default is to keep the worktree on disk so
     # reopen_task() can spawn back into it.

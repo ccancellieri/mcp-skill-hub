@@ -19,6 +19,7 @@ class ProviderModel:
     complexity: str = "light"          # "light" | "heavy"
     monthly_cap_tokens: int | None = None
     tags: list[str] = field(default_factory=list)   # specializations, e.g. ["python","git"]
+    embed: bool = False                # embedding model — never picked for chat
 
 
 @dataclass
@@ -44,7 +45,8 @@ def _parse_model(raw: dict) -> ProviderModel | None:
     raw_tags = raw.get("tags") or []
     tags = [str(t).strip().lower() for t in raw_tags if isinstance(t, str) and t.strip()] \
         if isinstance(raw_tags, list) else []
-    return ProviderModel(id=str(raw["id"]), complexity=cx, monthly_cap_tokens=cap, tags=tags)
+    return ProviderModel(id=str(raw["id"]), complexity=cx, monthly_cap_tokens=cap,
+                         tags=tags, embed=bool(raw.get("embed")))
 
 
 def _parse_provider(raw: dict) -> Provider | None:

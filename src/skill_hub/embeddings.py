@@ -151,13 +151,15 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
 
     Tries backends in order from config `embedding_backend_priority`:
     - "ollama": via multi-endpoint OllamaMultiClient
+    - "ladder": remote embed-capable providers from the registry (#134)
     - "sentence_transformers": via SentenceTransformers (lazy-loaded, CPU)
 
     Raises RuntimeError if all backends fail.
     """
     if model is None:
         model = str(_cfg.get("embed_model") or "nomic-embed-text")
-    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"])
+    priority: list[str] = list(_cfg.get("embedding_backend_priority")
+                               or ["ollama", "ladder", "sentence_transformers"])
     if _hot_path():
         # Per-prompt hook: Ollama-only. The sentence-transformers fallback pays
         # ~12s of torch import + model construction on every fresh CLI subprocess
@@ -171,6 +173,8 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
         try:
             if backend == "ollama":
                 vec = _embed_ollama(text, model=model, timeout=timeout)
+            elif backend == "ladder":
+                vec = _embed_ladder(text, timeout=timeout)
             elif backend == "sentence_transformers":
                 vec = _embed_sentence_transformers(text)
             else:
@@ -209,6 +213,68 @@ def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float
         if inner:
             return inner
     raise RuntimeError(f"unexpected embed response shape: {type(result)!r}")
+
+
+def _embed_ladder(text: str, *, timeout: float = 15.0) -> list[float]:
+    """Embed via the provider ladder's embed lane (#134).
+
+    Walks ``select_embed()`` candidates in registry order: a remote Ollama
+    host (``/api/embed``) or an OpenAI-compatible endpoint (``/embeddings``).
+    A failed model is marked on cooldown and the walk continues. Vectors whose
+    dimension differs from the active index's expected dimension are rejected
+    — a mismatched vector space would silently poison search results.
+    """
+    from .llm.escalation import mark_cooldown, select_embed
+
+    # Guard against the *index's* vector space: the primary index is built
+    # with ``embed_model``, so a remote vector must match that dimension.
+    em = str(_cfg.get("embed_model") or "nomic-embed-text")
+    expected = KNOWN_EMBED_DIMS.get(em) or KNOWN_EMBED_DIMS.get(f"{em}:latest")
+    exclude: set[str] = set()
+    errors: list[str] = []
+    while True:
+        sel = select_embed(exclude=exclude)
+        if sel is None:
+            raise RuntimeError(
+                "no ladder embed provider usable"
+                + (f" ({'; '.join(errors)})" if errors else "")
+            )
+        exclude.add(sel.model)
+        try:
+            if sel.kind == "ollama":
+                r = httpx.post(
+                    f"{(sel.api_base or '').rstrip('/')}/api/embed",
+                    json={"model": sel.model, "input": text},
+                    timeout=timeout,
+                )
+                r.raise_for_status()
+                data = r.json().get("embeddings") or []
+                vec = data[0] if data else []
+            else:   # openai_compatible
+                headers = {"Authorization": f"Bearer {sel.api_key}"} if sel.api_key else {}
+                r = httpx.post(
+                    f"{(sel.api_base or '').rstrip('/')}/embeddings",
+                    json={"model": sel.model, "input": text},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                r.raise_for_status()
+                data = r.json().get("data") or []
+                vec = (data[0] or {}).get("embedding") or [] if data else []
+        except Exception as exc:  # noqa: BLE001 - cool and rotate
+            mark_cooldown(sel.model)
+            errors.append(f"{sel.provider}/{sel.model}: {str(exc)[:80]}")
+            continue
+        if not vec:
+            errors.append(f"{sel.provider}/{sel.model}: empty vector")
+            continue
+        if expected is not None and len(vec) != expected:
+            # Config mismatch, not a transient failure — exclude without cooldown.
+            errors.append(
+                f"{sel.provider}/{sel.model}: dim {len(vec)} != index dim {expected}"
+            )
+            continue
+        return vec
 
 
 def _embed_sentence_transformers(text: str) -> list[float]:
@@ -1380,7 +1446,8 @@ def embed_unavailable_reason() -> str:
 def embed_available() -> bool:
     """Return True if at least one embedding backend is usable.
 
-    Checks cascade: Ollama (healthy endpoint) → SentenceTransformers (installed).
+    Checks cascade: Ollama (healthy endpoint) → ladder (remote embed-capable
+    provider configured) → SentenceTransformers (installed).
     Does NOT make network calls — only checks config and installed packages.
 
     When ``no_llm_mode`` (issue #6) is on we skip every probe and return False
@@ -1389,12 +1456,20 @@ def embed_available() -> bool:
     """
     if _cfg.get("no_llm_mode"):
         return False
-    priority: list[str] = list(_cfg.get("embedding_backend_priority") or ["ollama", "sentence_transformers"])
+    priority: list[str] = list(_cfg.get("embedding_backend_priority")
+                               or ["ollama", "ladder", "sentence_transformers"])
     for backend in priority:
         if backend == "ollama":
             from .ollama_client import get_ollama_client
             if get_ollama_client().get_api_base(None) is not None:
                 return True
+        elif backend == "ladder":
+            try:
+                from .llm.escalation import has_ladder_embed_provider
+                if has_ladder_embed_provider():
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
         elif backend == "sentence_transformers":
             try:
                 import sentence_transformers  # noqa: F401
