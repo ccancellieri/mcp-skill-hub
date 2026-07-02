@@ -15,6 +15,7 @@ providers with only a config change.
 from .provider import LLMProvider, Message, LLMError
 from .litellm_adapter import LitellmProvider, get_provider
 from .prompts import load_prompt
+from .request import request
 
 __all__ = [
     "LLMProvider",
@@ -23,4 +24,5 @@ __all__ = [
     "LLMError",
     "get_provider",
     "load_prompt",
+    "request",
 ]

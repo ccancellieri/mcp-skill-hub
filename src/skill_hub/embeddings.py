@@ -10,7 +10,7 @@ import httpx
 
 from . import config as _cfg
 from .activity_log import get_logger, log_llm, llm_timer
-from .llm import LLMError, get_provider
+from .llm import get_provider
 
 # Known embedding dimensions for common models — used to resolve the active
 # vector dim WITHOUT loading the model (constraint #33 / issue #35).
@@ -75,7 +75,8 @@ def _hot_path() -> bool:
     the local daemon is down we degrade to heuristics instead — fast and useful,
     never a doomed remote/ST detour. The long-lived server and cron jobs do NOT
     set this, so they keep the full ladder and the ST fallback."""
-    return os.environ.get("SKILL_HUB_LOCAL_ONLY") == "1"
+    from .llm.request import hot_path_only
+    return hot_path_only()
 
 
 def _generate(
@@ -88,9 +89,9 @@ def _generate(
     op: str = "",
     local_only: bool = False,
 ) -> str:
-    """Thin wrapper over ``LLMProvider.complete()`` matching the old
-    ``httpx.post(/api/generate).json()['response']`` shape. Returns ``""`` on
-    error so callers can keep their tolerant fallbacks.
+    """Thin wrapper over the unified :func:`skill_hub.llm.request.request` call,
+    matching the old ``httpx.post(/api/generate).json()['response']`` shape.
+    Returns ``""`` on error so callers can keep their tolerant fallbacks.
 
     Pass ``model=None`` to let the escalation ladder pick the level (used when
     no local model is available, so a known ``op`` routes to a remote
@@ -103,24 +104,18 @@ def _generate(
     (wasted latency *and* tokens). Instead we fail fast here and let the caller
     fall back to its deterministic path. Background/explicit tools leave this
     False so they keep the full escalation ladder."""
-    if (local_only or _hot_path()) and model:
-        # Cached, cheap probe (same one _embed_ollama uses). A down local daemon
-        # means complete() would silently ladder to a remote provider — exactly
-        # what we must avoid on the hot path.
-        from .llm.escalation import ollama_daemon_reachable
-        if not ollama_daemon_reachable():
-            return ""
-    try:
-        return get_provider().complete(
-            prompt,
-            model=_wrap_ollama(model) if model else None,
-            max_tokens=num_predict,
-            temperature=temperature,
-            timeout=timeout,
-            op=op,
-        )
-    except LLMError:
-        return ""
+    from .llm.request import request as _llm_request
+    return _llm_request(
+        "cheap",
+        prompt,
+        local_only=local_only,
+        model=_wrap_ollama(model) if model else None,
+        op=op,
+        timeout=timeout,
+        temperature=temperature,
+        max_tokens=num_predict,
+        get_provider_fn=get_provider,  # module-level (test-patchable) singleton
+    )
 
 _RERANK_PROMPT = """\
 You are a relevance judge. Given a user query and a skill description, reply with a
@@ -336,17 +331,19 @@ def compact_master_state(
 ) -> dict:
     """Generate a Master Project State JSON snapshot for a multi-repo system.
 
-    Routes through `get_provider()` so the best configured model wins:
-    `tier_smart` resolves to Claude Opus / Sonnet when an Anthropic key is set,
-    falling back to the local "smart" Ollama model otherwise. Prompt caching
-    is enabled (`cache=True`) so the existing snapshot + memory entries do
-    not pay full cost on repeat compactions.
+    Routes through the unified :func:`skill_hub.llm.request.request` call so
+    the best configured model wins: `tier_smart` resolves to Claude Opus /
+    Sonnet when an Anthropic key is set, falling back to the local "smart"
+    Ollama model otherwise. Prompt caching is enabled (`cache=True`) so the
+    existing snapshot + memory entries do not pay full cost on repeat
+    compactions.
 
     Returns a dict with keys: architecture, invariants, active_modules,
     recent_pivots, assumptions. On any failure, returns a minimal fallback
     so callers always have a renderable shape.
     """
     from .llm.prompts import load_prompt
+    from .llm.request import request as _llm_request
 
     log_llm("compact_master_state", model=model or tier,
             input_chars=len(existing_snapshot) + len(task_summaries) + len(memory_entries))
@@ -358,9 +355,9 @@ def compact_master_state(
         window_days=window_days,
     )
     try:
-        raw = get_provider().complete(
+        raw = _llm_request(
+            tier,
             prompt,
-            tier=tier,
             model=model,
             max_tokens=4096,
             temperature=0.1,
@@ -368,6 +365,7 @@ def compact_master_state(
             cache=True,
             cache_ttl="1h",  # master-state snapshot is a long-lived reused prefix (opt-in tier)
             op="compact_master_state",
+            get_provider_fn=get_provider,  # module-level (test-patchable) singleton
         )
         raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -404,10 +402,11 @@ def wiki_ingest(
 ) -> dict:
     """Distill one source into wiki page rewrites via an LLM.
 
-    Routes through ``get_provider()`` (``tier_smart`` → Claude when an Anthropic
-    key is set, else the local "smart" Ollama model). Prompt caching is enabled
-    so the candidate-page context does not pay full cost on repeat ingests of
-    the same neighbourhood.
+    Routes through the unified :func:`skill_hub.llm.request.request` call
+    (``tier_smart`` → Claude when an Anthropic key is set, else the local
+    "smart" Ollama model). Prompt caching is enabled so the candidate-page
+    context does not pay full cost on repeat ingests of the same
+    neighbourhood.
 
     Returns a dict with keys: source_page (dict), page_updates (list),
     index_entries (list), assumptions (list). On any failure returns a minimal
@@ -415,6 +414,7 @@ def wiki_ingest(
     renderable shape and never raise.
     """
     from .llm.prompts import load_prompt
+    from .llm.request import request as _llm_request
 
     log_llm("wiki_ingest", model=model or tier,
             input_chars=len(source_text) + len(candidate_pages))
@@ -427,9 +427,9 @@ def wiki_ingest(
         target_project=target_project or "_global",
     )
     try:
-        raw = get_provider().complete(
+        raw = _llm_request(
+            tier,
             prompt,
-            tier=tier,
             model=model,
             max_tokens=4096,
             temperature=0.1,
@@ -437,6 +437,7 @@ def wiki_ingest(
             cache=True,
             cache_ttl="1h",  # candidate-page context is a reused prefix
             op="wiki_ingest",
+            get_provider_fn=get_provider,  # module-level (test-patchable) singleton
         )
         raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
