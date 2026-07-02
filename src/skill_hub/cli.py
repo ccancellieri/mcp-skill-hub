@@ -3878,10 +3878,9 @@ def _cmd_precompact_snapshot(session_id: str, trigger: str = "",
                              transcript_path: str = "") -> dict:
     """PreCompact hook handler — snapshot routing/tool-chain state.
 
-    Compaction discards the in-flight tool-chain window and the bandit's
-    recent reward signal. We persist a marker into the ``session:log``
-    namespace keyed on session_id+timestamp so post-compact queries can
-    surface it via search_context.
+    Compaction discards the in-flight tool-chain window. We persist a
+    marker into the ``session:log`` namespace keyed on session_id+timestamp
+    so post-compact queries can surface it via search_context.
     """
     import time
     log_event("PRECOMPACT", f"session={session_id[:12]} trigger={trigger}")

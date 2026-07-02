@@ -84,7 +84,7 @@ Config knobs (all in `config.json`):
 
 ## 4. Benefit/cost dashboard
 
-Every `close_task()` (and any manual `render_dashboard()` MCP call) refreshes
+Every `close_task()` call refreshes
 `~/.claude/mcp-skill-hub/reports/dashboard.html`. It combines DB counters
 (tokens saved, tasks, skills, embeddings, feedback ratio, triage log) with a
 tail-parse of `hook-debug.log` for hook-specific metrics (auto-approve
@@ -113,8 +113,8 @@ automatically picks up where the last one died.
 
 ## 6. Dashboard v3 (FastAPI suite)
 
-`render_dashboard()` (and every `close_task`) boots a FastAPI + HTMX +
-Alpine.js webapp via uvicorn in a daemon thread on loopback
+Every `close_task` (and the server's own startup warm-up) boots a FastAPI +
+HTMX + Alpine.js webapp via uvicorn in a daemon thread on loopback
 (default `http://127.0.0.1:8765/`). Singleton per MCP process; bind
 failure returns `None` and falls back to the static HTML snapshot at
 `~/.claude/mcp-skill-hub/reports/dashboard.html`. No Node, no CDN —

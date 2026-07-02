@@ -472,18 +472,6 @@ function getHelpContent(pageId) {
         <p><code>router_enrich_thin_prompts</code> — prepends task context to short prompts (&lt;60 chars) so they route correctly.</p>
       `
     },
-    'settings-router_bandit': {
-      title: 'Router bandit',
-      html: `
-        <p>ε-greedy bandit continuously optimizes the tier selection over cheap / mid / smart model groups.</p>
-        <ul>
-          <li><strong>ε (epsilon):</strong> Exploration rate. 0.1 = 10% random exploration, 90% exploit current best</li>
-          <li><strong>Reward signal:</strong> Explicit feedback (<code>record_feedback</code>) + implicit session signals</li>
-          <li><strong>Warmup:</strong> Exploration-heavy until each arm has 10+ samples</li>
-        </ul>
-        <p>Disable if you want deterministic routing based solely on confidence thresholds.</p>
-      `
-    },
     'settings-improve_prompt': {
       title: 'Prompt rewriters',
       html: `

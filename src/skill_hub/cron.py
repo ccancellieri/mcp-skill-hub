@@ -31,14 +31,11 @@ _DEFAULT_JOBS = [
     ("memory-optimize", "0 2 * * *",   "optimize_memory_apply",    1),
     ("teachings-sync",          "0 3 * * *",   "feedback_to_teachings",       1),
     ("archive-closed-tasks",    "0 4 * * *",   "archive_memory_to_db_dry_run", 1),
-    ("memory-export-snapshot",  "0 0 * * 0",   "memexp_snapshot_create",      0),
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
     # Keeps configured CodeGraph indexes fresh; inert until roots are set.
     ("codegraph-sync",          "*/30 * * * *", "codegraph_sync",             1),
     # Disabled by default — enable explicitly via the cron UI or config.
     ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
-    ("wiki-reindex-nightly",       "0 5 * * *",   "wiki_reindex_nightly",        0),
-    ("discussions-sync-nightly",   "0 1 * * *",   "discussions_sync_nightly",    0),
 ]
 
 

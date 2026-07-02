@@ -43,14 +43,6 @@ Everything callable from Claude (as MCP tools) or from a terminal (via `skill-hu
 | `delete_profile(name)` | Delete a custom profile |
 | `auto_curate_plugins(query)` | LLM recommends a profile for a task |
 
-### Routing (bandit)
-
-| Tool | Description |
-|------|-------------|
-| `route_to_model(query, tier)` | Pick a model via ε-greedy bandit (`tier_cheap`/`tier_mid`/`tier_smart`) |
-| `record_model_reward(model, reward)` | Record outcome quality for bandit learning |
-| `bandit_stats()` | Per-model pull counts + estimated reward |
-
 ### Prompt improvement
 
 | Tool | Description |

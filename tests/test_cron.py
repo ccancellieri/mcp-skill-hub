@@ -53,12 +53,12 @@ def clear_handlers():
 
 
 def test_seed_defaults_populates_jobs(db_path):
-    # SkillStore seeds builtin jobs (including wiki-reindex-nightly); seed_defaults
-    # is a no-op when the table is already populated.
+    # SkillStore already seeds its own builtin jobs on init; seed_defaults()
+    # is a no-op once the table is non-empty.
     seed_defaults(db_path)
     with sqlite3.connect(db_path) as conn:
         count = conn.execute("SELECT count(*) FROM cron_jobs").fetchone()[0]
-    assert count >= 6  # 5 legacy + wiki-reindex-nightly
+    assert count >= 5
 
 
 def test_seed_defaults_idempotent(db_path):
@@ -66,7 +66,7 @@ def test_seed_defaults_idempotent(db_path):
     seed_defaults(db_path)  # second call must be a no-op
     with sqlite3.connect(db_path) as conn:
         count = conn.execute("SELECT count(*) FROM cron_jobs").fetchone()[0]
-    assert count >= 6
+    assert count >= 5
 
 
 # ---------------------------------------------------------------------------
@@ -219,16 +219,15 @@ def test_log_digest_snapshot_handler_registered():
     assert callable(_cron_mod._HANDLERS["log_digest_snapshot"])
 
 
-def test_wiki_reindex_nightly_job_seeded_in_store(db_path):
-    """wiki-reindex-nightly must be present in the cron_jobs table."""
+def test_wiki_reindex_nightly_job_not_seeded_by_default(db_path):
+    """wiki-reindex-nightly's disabled cron seed was dropped; the handler
+    itself stays registered (see test_wiki_reindex_nightly_handler_registered)
+    so it can still be enabled manually via the cron UI."""
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             "SELECT command, enabled FROM cron_jobs WHERE name='wiki-reindex-nightly'"
         ).fetchone()
-    assert row is not None, "wiki-reindex-nightly row missing from cron_jobs"
-    assert row[0] == "wiki_reindex_nightly"
-    # Disabled by default — enable explicitly via the cron UI.
-    assert row[1] == 0
+    assert row is None
 
 
 def test_discussions_sync_nightly_handler_registered():
@@ -242,16 +241,16 @@ def test_discussions_sync_nightly_handler_registered():
     assert callable(_cron_mod._HANDLERS["discussions_sync_nightly"])
 
 
-def test_discussions_sync_nightly_job_seeded_disabled(db_path):
-    """discussions-sync-nightly must be seeded in cron_jobs and disabled by default."""
+def test_discussions_sync_nightly_job_not_seeded_by_default(db_path):
+    """discussions-sync-nightly's disabled cron seed was dropped; the handler
+    itself stays registered (see test_discussions_sync_nightly_handler_registered)
+    so it can still be enabled manually via the cron UI."""
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             "SELECT command, enabled FROM cron_jobs"
             " WHERE name='discussions-sync-nightly'"
         ).fetchone()
-    assert row is not None, "discussions-sync-nightly row missing from cron_jobs"
-    assert row[0] == "discussions_sync_nightly"
-    assert row[1] == 0, "discussions-sync-nightly must be disabled by default"
+    assert row is None
 
 
 def test_all_default_job_commands_have_handlers():

@@ -3,8 +3,6 @@
 Covers issue #28 acceptance criteria:
 - Replay correctness: events for a session are read in order.
 - Cache rebuild: _vec_cache is invalidated so next search reloads from DB.
-- Bandit rebuild: in-flight record_model_reward events are replayed into the
-  model_rewards table.
 - In-flight detection: a tool_invoke with no matching tool_result is detected
   and reported.
 - Resume-after-kill: a session with an interrupted tool_invoke is recovered.
@@ -70,35 +68,6 @@ def _wake_session(store: Any, session_id: str) -> dict:
             invoke_stack.pop(tool_name, None)
 
     in_flight = list(invoke_stack.values())
-    replay_targets = [ev for ev in in_flight if ev.get("tool_name") == "record_model_reward"]
-
-    # Replay in-flight record_model_reward events.
-    from skill_hub.router import bandit as _bandit
-
-    replayed = 0
-    replay_errors: list[str] = []
-    for ev in replay_targets:
-        try:
-            payload = json.loads(ev.get("payload") or "{}")
-            kw = payload.get("kwargs") or payload.get("args") or {}
-            if isinstance(kw, dict):
-                tier = str(kw.get("tier", ""))
-                task_class = str(kw.get("task_class", ""))
-                domain = str(kw.get("domain", "_none"))
-                success = float(kw.get("success", 0.5))
-                if tier and task_class:
-                    _bandit.record_reward(store, tier, task_class, domain, success)
-                    replayed += 1
-                else:
-                    complexity = float(kw.get("complexity", -1.0))
-                    domain_hints_raw = str(kw.get("domain_hints", ""))
-                    hints = [h.strip() for h in domain_hints_raw.split(",") if h.strip()]
-                    if tier and complexity >= 0.0:
-                        task_class, domain = _bandit.bucket(complexity, hints)
-                        _bandit.record_reward(store, tier, task_class, domain, success)
-                        replayed += 1
-        except Exception as exc:  # noqa: BLE001
-            replay_errors.append(str(exc)[:80])
 
     # Invalidate in-process vector cache.
     store._vec_cache_valid = False
@@ -110,8 +79,6 @@ def _wake_session(store: Any, session_id: str) -> dict:
         "events": events,
         "events_count": len(events),
         "in_flight": in_flight,
-        "replayed": replayed,
-        "replay_errors": replay_errors,
         "elapsed_load_ms": elapsed_load_ms,
         "elapsed_total_ms": elapsed_total_ms,
         "vec_cache_invalidated": True,
@@ -244,103 +211,6 @@ def test_vec_cache_invalidated_after_wake(store):
 
 
 # ---------------------------------------------------------------------------
-# Bandit rebuild: replay in-flight record_model_reward
-# ---------------------------------------------------------------------------
-
-
-def test_bandit_in_flight_reward_replayed(store):
-    """An in-flight record_model_reward (no tool_result) is re-applied to the DB."""
-    from skill_hub.router import bandit as _bandit
-
-    t0 = time.time()
-    # Simulate: record_model_reward was invoked but server died before tool_result.
-    payload = {
-        "kwargs": {
-            "tier": "tier_cheap",
-            "task_class": "simple",
-            "domain": "_none",
-            "success": "1.0",
-        }
-    }
-    store.append_event(
-        "sess-bandit", "tool_invoke", payload,
-        tool_name="record_model_reward", ts=t0,
-    )
-    # No tool_result.
-
-    # Sanity: no rewards before wake.
-    before = _bandit._fetch_stats(store, "simple", "_none")
-    assert before.get("tier_cheap", {}).get("trials", 0) == 0
-
-    result = _wake_session(store, "sess-bandit")
-
-    assert result["replayed"] == 1
-    after = _bandit._fetch_stats(store, "simple", "_none")
-    assert after.get("tier_cheap", {}).get("trials", 0) == 1
-    assert after.get("tier_cheap", {}).get("successes", 0.0) == pytest.approx(1.0)
-
-
-def test_bandit_completed_reward_not_double_counted(store):
-    """A record_model_reward with a matching tool_result must NOT be replayed."""
-    from skill_hub.router import bandit as _bandit
-
-    t0 = time.time()
-    payload = {
-        "kwargs": {
-            "tier": "tier_mid",
-            "task_class": "moderate",
-            "domain": "_none",
-            "success": "0.8",
-        }
-    }
-    store.append_event(
-        "sess-nodup", "tool_invoke", payload,
-        tool_name="record_model_reward", ts=t0,
-    )
-    # Matching result — this invoke completed.
-    store.append_event(
-        "sess-nodup", "tool_result", {"ok": True},
-        tool_name="record_model_reward", ts=t0 + 1,
-    )
-
-    # Apply the real reward through the normal path.
-    _bandit.record_reward(store, "tier_mid", "moderate", "_none", 0.8)
-
-    result = _wake_session(store, "sess-nodup")
-
-    assert result["replayed"] == 0, "completed reward must not be replayed"
-    # Exactly one trial in the DB (from normal path above).
-    stats = _bandit._fetch_stats(store, "moderate", "_none")
-    assert stats.get("tier_mid", {}).get("trials", 0) == 1
-
-
-def test_bandit_reward_with_complexity_hint_replayed(store):
-    """In-flight reward using complexity/domain_hints (not task_class) is replayed."""
-    from skill_hub.router import bandit as _bandit
-
-    t0 = time.time()
-    payload = {
-        "kwargs": {
-            "tier": "tier_smart",
-            "complexity": "0.8",
-            "domain_hints": "debugging",
-            "success": "1.0",
-        }
-    }
-    store.append_event(
-        "sess-hint", "tool_invoke", payload,
-        tool_name="record_model_reward", ts=t0,
-    )
-
-    result = _wake_session(store, "sess-hint")
-
-    assert result["replayed"] == 1
-    # bucket(0.8, ["debugging"]) -> ("complex", "debugging")
-    stats = _bandit._fetch_stats(store, "complex", "debugging")
-    assert stats.get("tier_smart", {}).get("trials", 0) == 1
-
-
-# ---------------------------------------------------------------------------
 # Resume-after-kill (acceptance criterion)
 # ---------------------------------------------------------------------------
 
@@ -453,16 +323,14 @@ def test_wake_session_snapshot_only_session(store):
 
 
 def test_wake_session_empty_payload_invoke_does_not_crash(store):
-    """An in-flight record_model_reward with malformed/empty payload is skipped gracefully."""
+    """An in-flight tool_invoke with an empty payload is skipped gracefully."""
     t0 = time.time()
     store.append_event(
         "sess-bad", "tool_invoke", {},
-        tool_name="record_model_reward", ts=t0,
+        tool_name="some_tool", ts=t0,
     )
 
     result = _wake_session(store, "sess-bad")
 
-    # Must not crash; replayed stays 0 (payload lacks required fields).
-    assert result["replayed"] == 0
-    # The in-flight event is still reported.
+    # Must not crash; the in-flight event is still reported.
     assert len(result["in_flight"]) == 1

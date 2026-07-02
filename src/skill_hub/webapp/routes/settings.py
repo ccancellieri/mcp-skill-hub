@@ -26,7 +26,6 @@ _BUCKETS = [
     ("hook", "Hook behavior"),          # remaining hook_* core
     # ── Router ────────────────────────────────────────────────────────────────
     ("router_haiku", "Haiku router"),   # router_haiku_* — must precede "router"
-    ("router_bandit", "Router bandit"), # router_bandit_* — must precede "router"
     ("improve_prompt", "Prompt rewriters"),  # improve_prompt_*
     ("router", "Router core"),          # remaining router_*
     # ── Execution ─────────────────────────────────────────────────────────────
@@ -67,7 +66,6 @@ _BUCKET_HELP = {
     "hook_context": "RAG context injection into systemMessage — skills, tasks, precompact budget.",
     "hook_llm": "Local LLM pre-triage of every prompt before Claude — confidence gating and timeout.",
     "router_haiku": "Haiku 4.5 batched escalation tasks — classify, compact-hint, subtask decomp.",
-    "router_bandit": "ε-greedy bandit over cheap/mid/smart tiers — exploration vs exploitation.",
     "improve_prompt": "Prompt-rewriter chain — skill-context enrichment and recent-task injection.",
     "router": "Router core — enable/disable, tier-2 Ollama gate, compact advisor, thin-prompt fill.",
     "local_persona": "Local LLM identity — static bio seed, TTL, and max assembled persona length.",
@@ -132,9 +130,6 @@ _FIELD_HINTS = {
     "router_log": "Path to JSONL audit log (one line per prompt)",
     "router_compact_threshold": "Inject /compact suggestion when context is ≥ this fraction full",
     "router_enrich_thin_prompts": "Prepend task context for very short messages (<60 chars)",
-    # Router bandit
-    "router_bandit_enabled": "Enable ε-greedy bandit optimization over tier_cheap/mid/smart",
-    "router_bandit_epsilon": "Exploration probability (0–1): higher = more exploration",
     # Router Haiku
     "router_haiku_threshold": "Tier-2 confidence below this escalates to Tier-3 Haiku",
     "router_haiku_classify": "Enable Haiku complexity/ambiguity/scope classification",

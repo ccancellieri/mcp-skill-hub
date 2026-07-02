@@ -126,8 +126,7 @@ def _refresh_active_marker_options(task_id: int, task, options: dict) -> None:
 
 
 # Warm up the FastAPI dashboard in a daemon thread so it's ready before
-# the first close_task / render_dashboard call. Safe no-op if disabled or
-# the port is busy.
+# the first close_task call. Safe no-op if disabled or the port is busy.
 try:
     _dashboard.render_interactive(_store)
 except Exception:  # noqa: BLE001
@@ -1307,43 +1306,6 @@ def worktree_preflight(
 
 
 @mcp.tool()
-@requires_capability("none")
-def federation_view(remote_db_path: str, alias: str = "remote") -> str:
-    """M4-3 federation-lite — open a peer host's skill-hub DB read-only.
-
-    Attaches ``remote_db_path`` to the local SQLite connection, reports a
-    summary of what's visible there (task / event counts, distinct node_ids),
-    then detaches. Intended for multi-host setups where the DB file is shared
-    via Syncthing / rsync / git-annex — no network protocol involved.
-
-    Use cases:
-    - "Whose tasks are these?" — list node_ids in the synced replica.
-    - "Did host X record events I haven't seen?" — count by node_id.
-    - Cross-host queries can be built manually by ATTACHing in a session.
-    """
-    log_tool("federation_view", remote_db_path=remote_db_path, alias=alias)
-    try:
-        info = _store.federation_view(remote_db_path, alias=alias)
-    except FileNotFoundError as exc:
-        return f"federation_view error: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        return f"federation_view failed: {exc.__class__.__name__}: {exc}"
-
-    nodes = info["remote_nodes"]
-    nodes_line = ", ".join(nodes) if nodes else "(none)"
-    return (
-        f"federation_view: {info['remote_path']}\n"
-        f"  alias:        {info['alias']}\n"
-        f"  local node:   {info['local_node']}\n"
-        f"  remote nodes: {nodes_line}\n"
-        f"  tasks  local={info['tasks']['local']}  remote={info['tasks']['remote']}\n"
-        f"  events local={info['events']['local']}  remote={info['events']['remote']}\n"
-        f"  schemas: tasks={info['schemas']['tasks_remote']} "
-        f"events={info['schemas']['events_remote']}"
-    )
-
-
-@mcp.tool()
 @requires_capability("llm")
 def compact_master_state(
     project_root: str,
@@ -1397,56 +1359,6 @@ def compact_master_state(
             f"{prune_line}"
         )
     return f"{result.get('status', 'unknown')}: {result.get('reason', '')}"
-
-
-@mcp.tool()
-@requires_capability("none")
-def export_policies(
-    project_root: str,
-    output_file: str = ".skill-hub/POLICY.md",
-    dry_run: bool = False,
-    force: bool = False,
-) -> str:
-    """Render feedback_* memory files as a per-repo POLICY.md.
-
-    Reads the project's auto-memory ``feedback_*.md`` rules and writes a
-    paraphrased, in-repo policy document at ``<project_root>/<output_file>``.
-    Path references to ``~/.claude/`` / ``.claude/`` are scrubbed so the
-    rendered file is safe to commit.
-
-    Idempotent: rerun with no newer feedback files returns ``noop``. Use
-    ``force=True`` to rewrite anyway. ``dry_run=True`` returns the rendered
-    Markdown without touching disk.
-    """
-    log_tool("export_policies", project_root=project_root, dry_run=dry_run, force=force)
-    from .policy_export import export_policies as _ep
-    result = _ep(
-        project_root=project_root,
-        output_file=output_file,
-        dry_run=dry_run,
-        force=force,
-    )
-    status = result.get("status", "unknown")
-    if status == "dry_run":
-        files = result.get("feedback_files_considered", [])
-        rendered = result.get("rendered", "")
-        return (
-            f"DRY RUN — {len(rendered)} chars rendered from {len(files)} feedback files.\n"
-            f"--- POLICY.md preview ---\n{rendered}"
-        )
-    if status == "written":
-        return (
-            f"Wrote: {result.get('wrote')}\n"
-            f"Backup: {result.get('backup') or '(none — first write)'}\n"
-            f"Delta: {result.get('delta_chars'):+d} chars\n"
-            f"Feedback files folded in: {len(result.get('feedback_files_considered', []))}"
-        )
-    if status == "empty":
-        return (
-            f"Wrote placeholder POLICY.md ({result.get('wrote')}). "
-            "No feedback_* memory files found yet."
-        )
-    return f"{status}: {result.get('reason', '')}"
 
 
 @mcp.tool()
@@ -1506,166 +1418,6 @@ def set_task_options(task_id: int, options: str = "") -> str:
     new_opts = _store.get_task_options(task_id)
     _refresh_active_marker_options(task_id, task, new_opts)
     return f"Task #{task_id} options updated: {json.dumps(new_opts)}"
-
-
-# ──────────────────────── M1 — task claims layer ─────────────────────────────
-#
-# Pure-SQLite ownership transitions so multiple Claude Code sessions can
-# coordinate work-item ownership without an LLM round-trip. Existing
-# single-session task flow is unaffected when ``claimed_by`` stays NULL.
-
-
-@mcp.tool()
-@requires_capability("none")
-def claim_task(
-    task_id: int,
-    agent_id: str,
-    stealable_after_sec: int = 0,
-) -> str:
-    """Claim an unclaimed open task for ``agent_id``.
-
-    Args:
-        task_id:              The task to claim.
-        agent_id:             Stable identifier for the claiming session /
-                              agent. Required.
-        stealable_after_sec:  When > 0, allow ``steal_task`` to seize the
-                              claim once this many seconds have elapsed.
-                              Use 0 to keep the claim non-stealable.
-
-    Returns the claim_token on success, or a "rejected" message when the
-    task is already claimed / closed / missing.
-    """
-    log_tool("claim_task", task_id=task_id, agent_id=agent_id,
-             stealable_after_sec=stealable_after_sec)
-    if not agent_id:
-        return "claim rejected: agent_id required."
-    task = _store.get_task(task_id)
-    if task is None:
-        return f"Task #{task_id} not found."
-    after = stealable_after_sec if stealable_after_sec > 0 else None
-    token = _store.claim_task(task_id, agent_id, stealable_after_sec=after)
-    if token is None:
-        claim = _store.get_task_claim(task_id) or {}
-        holder = claim.get("claimed_by")
-        if holder:
-            return (
-                f"Task #{task_id} already claimed by {holder} "
-                f"(since {claim.get('claimed_at')})."
-            )
-        return f"Task #{task_id} cannot be claimed (closed or missing)."
-    return f"Task #{task_id} claimed by {agent_id} (token={token[:8]})."
-
-
-@mcp.tool()
-@requires_capability("none")
-def handoff_task(
-    task_id: int,
-    to_agent: str,
-    from_agent: str = "",
-    stealable_after_sec: int = 0,
-) -> str:
-    """Hand off a claimed task from its current owner to ``to_agent``.
-
-    Args:
-        task_id:              The task being handed off.
-        to_agent:             New owner agent_id. Required.
-        from_agent:           When set, the handoff only succeeds if it
-                              matches the current owner. Empty string skips
-                              the check (admin/hub paths).
-        stealable_after_sec:  Reset the stealable window for the new owner.
-    """
-    log_tool("handoff_task", task_id=task_id, to_agent=to_agent,
-             from_agent=from_agent)
-    if not to_agent:
-        return "handoff rejected: to_agent required."
-    task = _store.get_task(task_id)
-    if task is None:
-        return f"Task #{task_id} not found."
-    after = stealable_after_sec if stealable_after_sec > 0 else None
-    token = _store.handoff_task(
-        task_id, to_agent,
-        from_agent=from_agent or None,
-        stealable_after_sec=after,
-    )
-    if token is None:
-        claim = _store.get_task_claim(task_id) or {}
-        holder = claim.get("claimed_by")
-        if holder is None:
-            return f"Task #{task_id} is unclaimed — call claim_task instead."
-        if from_agent and holder != from_agent:
-            return (
-                f"Task #{task_id} handoff rejected: held by {holder!r}, "
-                f"not {from_agent!r}."
-            )
-        return f"Task #{task_id} handoff rejected."
-    return (
-        f"Task #{task_id} handed off to {to_agent} (token={token[:8]})."
-    )
-
-
-@mcp.tool()
-@requires_capability("none")
-def steal_task(
-    task_id: int,
-    new_agent_id: str,
-    stealable_after_sec: int = 0,
-) -> str:
-    """Steal a stale claim whose ``stealable_at`` has elapsed.
-
-    Fails if the task is unclaimed, still inside the stealable window, or
-    was claimed without a stealable_at expiry.
-    """
-    log_tool("steal_task", task_id=task_id, new_agent_id=new_agent_id)
-    if not new_agent_id:
-        return "steal rejected: new_agent_id required."
-    task = _store.get_task(task_id)
-    if task is None:
-        return f"Task #{task_id} not found."
-    after = stealable_after_sec if stealable_after_sec > 0 else None
-    token = _store.steal_task(
-        task_id, new_agent_id, stealable_after_sec=after,
-    )
-    if token is None:
-        claim = _store.get_task_claim(task_id) or {}
-        if claim.get("claimed_by") is None:
-            return f"Task #{task_id} is unclaimed — call claim_task instead."
-        if not claim.get("stealable_at"):
-            return (
-                f"Task #{task_id} steal rejected: claim is non-stealable. "
-                f"Owner must release_task or handoff_task."
-            )
-        return (
-            f"Task #{task_id} steal rejected: not yet stealable "
-            f"(stealable_at={claim.get('stealable_at')})."
-        )
-    return f"Task #{task_id} stolen by {new_agent_id} (token={token[:8]})."
-
-
-@mcp.tool()
-@requires_capability("none")
-def release_task(task_id: int, agent_id: str = "") -> str:
-    """Release the claim on a task (clears ``claimed_by``).
-
-    When ``agent_id`` is set, the release only fires if it matches the
-    current owner. Empty string allows admin-style force-release.
-    """
-    log_tool("release_task", task_id=task_id, agent_id=agent_id)
-    task = _store.get_task(task_id)
-    if task is None:
-        return f"Task #{task_id} not found."
-    ok = _store.release_task(task_id, agent_id=agent_id or None)
-    if not ok:
-        claim = _store.get_task_claim(task_id) or {}
-        holder = claim.get("claimed_by")
-        if holder is None:
-            return f"Task #{task_id} was already unclaimed."
-        if agent_id and holder != agent_id:
-            return (
-                f"Task #{task_id} release rejected: held by {holder!r}, "
-                f"not {agent_id!r}."
-            )
-        return f"Task #{task_id} release rejected."
-    return f"Task #{task_id} released."
 
 
 @mcp.tool()
@@ -1838,46 +1590,6 @@ def list_tasks(status: str = "open", repo: str = "",
         out_lines.append(f"\n## {label} ({len(groups[key])})")
         out_lines.extend(_fmt(r) for r in groups[key])
     return "\n".join(out_lines)
-
-
-@mcp.tool()
-@requires_capability("none")
-def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True) -> str:
-    """Validate a plan YAML file against the plan-executor schema.
-
-    Checks: top-level required fields, step schema, kind enum, non-empty file lists,
-    depends_on references, cycle detection, and (if check_files) existence of
-    protocols_ref / pattern_ref paths on disk.
-
-    Args:
-        plan_path: Path to the plan YAML file (e.g. ~/.claude/plans/foo.yaml).
-        repo_path: Root for resolving protocols_ref / pattern_ref. Defaults to cwd.
-        check_files: Verify referenced context files exist on disk.
-
-    Returns:
-        On success: "OK: <plan_id> — N steps (S smart, M mid)".
-        On failure: multi-line "INVALID:" report with one error per line.
-    """
-    from .plan_executor import PlanValidationError, TIER_MAP, validate_plan_file
-
-    log_tool("validate_plan", plan_path=plan_path)
-    try:
-        plan = validate_plan_file(
-            Path(plan_path).expanduser(),
-            repo_path=(Path(repo_path).expanduser() if repo_path else None),
-            check_files=check_files,
-        )
-    except PlanValidationError as e:
-        lines = ["INVALID:"] + [f"  - {err}" for err in e.errors]
-        return "\n".join(lines)
-
-    steps = plan.get("steps", [])
-    smart = sum(1 for s in steps if TIER_MAP.get(s.get("kind")) == "tier_smart")
-    mid = sum(1 for s in steps if TIER_MAP.get(s.get("kind")) == "tier_mid")
-    return (
-        f"OK: {plan['plan_id']} — {len(steps)} steps "
-        f"({smart} smart, {mid} mid)"
-    )
 
 
 def _resolve_codegraph_repo_root(repo_root: str) -> Path:
@@ -2636,107 +2348,6 @@ def delete_profile(name: str) -> str:
     return "deleted" if _prof.delete_profile(_store, name) else f"no such profile: {name}"
 
 
-# ──────────────────────────────────────────────────────────────────────
-# S4 F-ROUTE — ε-greedy bandit over model tiers
-# ──────────────────────────────────────────────────────────────────────
-
-
-@mcp.tool()
-@requires_capability("none")
-def route_to_model(
-    prompt: str = "",
-    complexity: float = 0.5,
-    domain_hints: str = "",
-) -> str:
-    """Pick a model tier for the given prompt via ε-greedy bandit.
-
-    Args:
-        prompt: user message (used for Tier-1 heuristic classification
-                if ``complexity`` is not explicitly set; ignored otherwise)
-        complexity: override 0.0-1.0 complexity score
-        domain_hints: comma-separated hints (debugging, architecture, testing...)
-
-    Returns a human summary; use ``bandit_stats`` for the full per-tier table.
-    """
-    from .router import bandit as _bandit
-    from .router.heuristics import classify as _h_classify
-
-    # Prefer explicit complexity; fall back to heuristic over the prompt.
-    if not 0.0 <= complexity <= 1.0:
-        return "error: complexity must be in [0.0, 1.0]"
-
-    hints = [h.strip() for h in domain_hints.split(",") if h.strip()]
-    if not hints and prompt:
-        sig = _h_classify(prompt)
-        if complexity == 0.5:  # caller left default → use heuristic
-            complexity = sig.complexity
-        hints = list(sig.domain_hints)
-
-    decision = _bandit.select_tier(_store, complexity, hints)
-    per_tier = decision.stats["per_tier"]
-    lines = [
-        f"→ tier={decision.tier}  model={decision.model or '(not configured)'}",
-        f"   confidence={decision.confidence:.2f}  {decision.reasoning}",
-        f"   bucket: task_class={decision.stats['task_class']}  domain={decision.stats['domain']}",
-        "   per-tier stats:",
-    ]
-    for t, s in per_tier.items():
-        lines.append(
-            f"     - {t}: trials={int(s['trials'])}  successes={s['successes']:.1f}  rate={s['rate']:.2f}"
-        )
-    return "\n".join(lines)
-
-
-@mcp.tool()
-@requires_capability("none")
-def record_model_reward(
-    tier: str,
-    success: float,
-    task_class: str = "",
-    domain: str = "_none",
-    complexity: float = -1.0,
-    domain_hints: str = "",
-) -> str:
-    """Record a reward for a ``(task_class, domain, tier)`` trial.
-
-    Parallel-safe: upsert is a single atomic SQLite statement. Concurrent
-    calls accumulate trials and successes without loss.
-
-    Provide ``task_class`` directly, or leave it empty and pass ``complexity``
-    + ``domain_hints`` so the bandit derives the bucket the same way
-    ``route_to_model`` did.
-    """
-    from .router import bandit as _bandit
-
-    if not task_class:
-        if complexity < 0.0:
-            return "error: provide task_class or complexity (0.0-1.0)"
-        hints = [h.strip() for h in domain_hints.split(",") if h.strip()]
-        task_class, domain = _bandit.bucket(complexity, hints)
-    try:
-        _bandit.record_reward(_store, tier, task_class, domain, success)
-    except ValueError as exc:
-        return f"error: {exc}"
-    return f"ok: reward recorded tier={tier} task_class={task_class} domain={domain} success={success:.2f}"
-
-
-@mcp.tool()
-@requires_capability("none")
-def bandit_stats() -> str:
-    """Dump the full ``model_rewards`` table."""
-    from .router import bandit as _bandit
-
-    rows = _bandit.summary(_store)
-    if not rows:
-        return "No bandit data yet. Call route_to_model + record_model_reward to seed."
-    lines = [
-        f"{r['task_class']:<9} {r['domain']:<14} {r['tier']:<11} "
-        f"trials={r['trials']:<4} successes={r['successes']:<5.1f} rate={r['rate']:.2f}"
-        for r in rows
-    ]
-    return "model_rewards:\n" + "\n".join(lines)
-
-
 @mcp.tool()
 @requires_capability("none")
 def improve_prompt(text: str, rewriters: str = "") -> str:
@@ -3228,23 +2839,6 @@ def status(section: str = "summary") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
-@requires_capability("none")
-def render_dashboard() -> str:
-    """Regenerate the benefit/cost HTML dashboard. Returns a clickable file:// URL."""
-    log_tool("render_dashboard")
-    url = _dashboard.render_interactive(_store)
-    if url:
-        # Also write a static snapshot as a fallback artifact.
-        try:
-            _dashboard.render(_store)
-        except Exception:  # noqa: BLE001
-            pass
-        return f"Interactive dashboard at {url}"
-    path = _dashboard.render(_store)
-    return f"Dashboard written to file://{path}"
-
-
 def _compression_report() -> str:
     """Build the compression-savings section for token_stats (always shown)."""
     try:
@@ -3588,18 +3182,6 @@ _CORE_SCHEDULED_TASKS: dict[str, dict] = {
             "Run index_skills(). Report how many skills were indexed and any errors."
         ),
     },
-    "lint_canary": {
-        "cron": "15 4 * * *",  # Daily 4:15 AM
-        "description": (
-            "Daily lint-canary: rotates through ruff selectors "
-            "(F841/F821/B023/S701/RUF034/RUF006/B026/...) and records findings."
-        ),
-        "enabled_default": False,
-        "prompt": (
-            "Run lint_canary(). Report which selector was checked, how many "
-            "findings were captured, and whether the rotation cursor advanced."
-        ),
-    },
 }
 
 
@@ -3655,150 +3237,6 @@ def disable_core_task(name: str) -> str:
     _store._conn.commit()
     log_tool("disable_core_task", name=name)
     return f"Disabled core:{name}"
-
-
-@mcp.tool()
-@requires_capability("none")
-def lint_canary(target: str = ".", selectors: list[str] | None = None) -> str:
-    """M3 #17 — Run one step of the lint-canary cadence.
-
-    Picks the next ruff selector from the rotation list (F841/F821/B023/...),
-    runs ``ruff check --select <selector> <target>``, advances the cursor, and
-    appends a JSONL record to the witness log under
-    ``~/.claude/mcp-skill-hub/state/witness_log.jsonl``.
-
-    Pass ``selectors`` to override (and persist) the rotation list.
-    """
-    from .lint_canary import run_lint_canary, format_run
-
-    run = run_lint_canary(target=target, selectors=selectors)
-    log_tool(
-        "lint_canary",
-        selector=run.selector,
-        findings=run.findings,
-        cursor=run.cursor_after,
-    )
-    return format_run(run)
-
-
-@mcp.tool()
-@requires_capability("none")
-def record_witness(
-    issue: str,
-    pr: str,
-    sha: str,
-    repo: str,
-    fix_kind: str = "fix",
-    fix_summary: str = "",
-) -> str:
-    """M1 #10 — Append a fix-manifest entry to the witness log.
-
-    Records ``(issue, pr, sha, repo, fix_kind, fix_summary)`` as one JSONL
-    line under ``~/.claude/mcp-skill-hub/state/witness_log.jsonl``. The log is
-    append-only; existing entries are never edited or removed by this tool.
-
-    Use this after merging a fix so the dashboard can show a real fix history
-    (vs. relying on memory files). ``fix_kind`` is the conventional-commit
-    label ("feat" / "fix" / "refactor" / etc.).
-    """
-    from .witness import record_witness as _record
-
-    try:
-        rec = _record(
-            issue=issue,
-            pr=pr,
-            sha=sha,
-            repo=repo,
-            fix_kind=fix_kind,
-            fix_summary=fix_summary,
-        )
-    except ValueError as exc:
-        return f"record_witness failed: {exc}"
-    except OSError as exc:
-        return f"record_witness failed: cannot write log ({exc})"
-    log_tool(
-        "record_witness",
-        repo=rec.repo,
-        issue=rec.issue,
-        pr=rec.pr,
-        sha=rec.sha,
-        fix_kind=rec.fix_kind,
-    )
-    return (
-        f"witness recorded: {rec.repo} {rec.fix_kind} {rec.issue} "
-        f"pr={rec.pr} sha={rec.sha}"
-    )
-
-
-@mcp.tool()
-@requires_capability("none")
-def list_witness(
-    repo: str = "",
-    since: int = 0,
-    limit: int = 0,
-) -> str:
-    """M1 #10 — List recorded fix-manifest entries, newest first.
-
-    Parameters
-    ----------
-    repo:  Optional ``"owner/name"`` filter (exact match). Empty -> all repos.
-    since: Optional minimum epoch-seconds (inclusive). 0 -> all timestamps.
-    limit: Optional max records to return. 0 -> no limit.
-    """
-    from .witness import list_witness as _list, format_witness_list
-
-    records = _list(
-        repo=(repo or None),
-        since=(since or None),
-        limit=(limit or None),
-    )
-    log_tool(
-        "list_witness",
-        repo=repo,
-        since=since,
-        limit=limit,
-        matches=len(records),
-    )
-    return format_witness_list(records)
-
-
-@mcp.tool()
-@requires_capability("none")
-def sync_check(
-    primary: str,
-    followers: list[str],
-    base_ref: str = "HEAD~1",
-    removed_symbols: list[str] | None = None,
-) -> str:
-    """M3 #16 — Cross-repo stale-import detector.
-
-    Greps follower repos for symbols recently removed/renamed in the primary
-    (SSOT) repo. Reports lines like
-    ``stale ref "OldClass" in follower/src/foo.py:42``.
-
-    Pure grep — no LLM. The primary diff is computed via
-    ``git diff <base_ref>``; symbols that still exist anywhere in the primary
-    working tree are filtered out (so renames/moves don't generate false
-    positives). Pass ``removed_symbols`` to bypass the diff step and grep
-    for a caller-supplied list.
-    """
-    from .sync_check import sync_check as _sc, format_report
-
-    report = _sc(
-        primary=primary,
-        followers=followers,
-        base_ref=base_ref,
-        removed_symbols=removed_symbols,
-    )
-    log_tool(
-        "sync_check",
-        primary=primary,
-        base_ref=base_ref,
-        followers=len(followers),
-        removed_symbols=len(report.removed_symbols),
-        findings=len(report.findings),
-    )
-    return format_report(report)
 
 
 @mcp.tool()
@@ -4560,14 +3998,10 @@ def wake_session(session_id: str) -> str:
     Recovery steps
     --------------
     1. Read all events for the session in chronological order.
-    2. Replay ``record_model_reward`` tool_invoke events whose tool_result was
-       never written (i.e. the server was killed during the call).  These are
-       re-applied directly to the ``model_rewards`` table so the bandit state is
-       consistent with what the session had accumulated.
-    3. Invalidate the in-process vector cache so the next search reloads from
+    2. Invalidate the in-process vector cache so the next search reloads from
        the persistent ``embeddings`` table — the table itself is always current;
        only the in-memory cache needs eviction.
-    4. Detect the most-recent in-flight tool_invoke (any tool) with no matching
+    3. Detect the most-recent in-flight tool_invoke (any tool) with no matching
        tool_result and report it in the output so the caller can decide whether
        to re-invoke it.
 
@@ -4606,7 +4040,6 @@ def wake_session(session_id: str) -> str:
     # next invoke of the same tool, but we only track the most-recent unpaired
     # one across the entire session).
     invoke_stack: dict[str, dict] = {}   # tool_name -> last unmatched invoke event
-    replay_targets: list[dict] = []      # record_model_reward invokes with no result
 
     for ev in events:
         kind = ev.get("kind", "")
@@ -4619,47 +4052,8 @@ def wake_session(session_id: str) -> str:
     # Remaining entries in invoke_stack are in-flight (no tool_result).
     in_flight = list(invoke_stack.values())
 
-    # Identify record_model_reward invokes that never got a result — replay them.
-    for ev in in_flight:
-        if ev.get("tool_name") == "record_model_reward":
-            replay_targets.append(ev)
-
     # ------------------------------------------------------------------
-    # Step 3: replay record_model_reward in-flight invokes
-    # ------------------------------------------------------------------
-    import json as _json
-    from .router import bandit as _bandit
-
-    replayed = 0
-    replay_errors: list[str] = []
-    for ev in replay_targets:
-        try:
-            payload = _json.loads(ev.get("payload") or "{}")
-            kw = payload.get("kwargs") or payload.get("args") or {}
-            if isinstance(kw, dict):
-                tier = str(kw.get("tier", ""))
-                task_class = str(kw.get("task_class", ""))
-                domain = str(kw.get("domain", "_none"))
-                success_raw = kw.get("success", "0.5")
-                success = float(success_raw)
-                if tier and task_class:
-                    _bandit.record_reward(_store, tier, task_class, domain, success)
-                    replayed += 1
-                else:
-                    # If task_class was omitted, try to derive it from complexity.
-                    complexity_raw = kw.get("complexity", "-1.0")
-                    complexity = float(complexity_raw)
-                    domain_hints_raw = str(kw.get("domain_hints", ""))
-                    hints = [h.strip() for h in domain_hints_raw.split(",") if h.strip()]
-                    if tier and complexity >= 0.0:
-                        task_class, domain = _bandit.bucket(complexity, hints)
-                        _bandit.record_reward(_store, tier, task_class, domain, success)
-                        replayed += 1
-        except Exception as exc:  # noqa: BLE001
-            replay_errors.append(str(exc)[:80])
-
-    # ------------------------------------------------------------------
-    # Step 4: invalidate in-process caches
+    # Step 3: invalidate in-process caches
     # ------------------------------------------------------------------
     # Vector cache: force reload from embeddings table on next search.
     _store._vec_cache_valid = False
@@ -4674,7 +4068,6 @@ def wake_session(session_id: str) -> str:
         f"wake_session: session={session_id!r}",
         f"  events_replayed={len(events)}  elapsed_ms={elapsed_total_ms}",
         f"  (load_ms={elapsed_load_ms})",
-        f"  bandit_rewards_replayed={replayed}",
         f"  vector_cache_invalidated=true",
     ]
 
@@ -4687,9 +4080,6 @@ def wake_session(session_id: str) -> str:
             lines.append(f"    - tool={tool}  event_id={eid}  ts={ts:.3f}")
     else:
         lines.append("  in_flight_tools=0 (session completed cleanly)")
-
-    if replay_errors:
-        lines.append(f"  replay_errors={len(replay_errors)}: {replay_errors[:3]}")
 
     if elapsed_total_ms > 500:
         lines.append(

@@ -1152,7 +1152,8 @@ class TestMigrateReindexStatus:
 
 
 class TestMigrateCronAndTool:
-    """wiki-reindex-nightly is seeded disabled; wiki_migrate in TIER_REGISTRY."""
+    """wiki_reindex_nightly's disabled cron seed was dropped (dead-code purge),
+    but the handler stays registered and wiki_migrate is in TIER_REGISTRY."""
 
     def test_wiki_migrate_in_tier_registry(self):
         from skill_hub.capabilities import TIER_REGISTRY
@@ -1165,20 +1166,15 @@ class TestMigrateCronAndTool:
         assert spec is not None
         assert BACKEND_DB in spec.hard
 
-    def test_wiki_reindex_nightly_in_default_jobs(self):
+    def test_wiki_reindex_nightly_not_in_default_jobs(self):
         from skill_hub.cron import _DEFAULT_JOBS
         names = [job[0] for job in _DEFAULT_JOBS]
-        assert "wiki-reindex-nightly" in names
+        assert "wiki-reindex-nightly" not in names
 
-    def test_wiki_reindex_nightly_disabled_by_default(self):
-        from skill_hub.cron import _DEFAULT_JOBS
-        for name, schedule, command, enabled in _DEFAULT_JOBS:
-            if name == "wiki-reindex-nightly":
-                assert enabled == 0, "wiki-reindex-nightly must be seeded disabled"
-                assert schedule == "0 5 * * *"
-                assert command == "wiki_reindex_nightly"
-                return
-        assert False, "wiki-reindex-nightly not found in _DEFAULT_JOBS"
+    def test_wiki_reindex_nightly_handler_still_registered(self):
+        from skill_hub.cron import _HANDLERS
+        assert "wiki_reindex_nightly" in _HANDLERS
+        assert callable(_HANDLERS["wiki_reindex_nightly"])
 
 
 class TestMigrateProjectRoots:

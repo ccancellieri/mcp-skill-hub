@@ -9,10 +9,7 @@ that matter for parallel tool use:
   - update_task    — sequential updates on the same task preserve final state
   - close_task     — idempotent: a second close on an already-closed task is
                      a no-op (not an error and not an overwrite)
-  - record_model_reward — repeated reward upserts accumulate, not overwrite
   - get/rebuild_session_memory — pure reads or file writes, always safe
-
-The bandit upsert is also verified to tolerate rapid-fire calls correctly.
 """
 from __future__ import annotations
 
@@ -98,43 +95,6 @@ def test_close_task_idempotent(store):
 
 
 # ---------------------------------------------------------------------------
-# record_model_reward: upsert accumulates
-
-def test_reward_upsert_accumulates(store):
-    """N sequential reward records accumulate trials/successes correctly."""
-    from skill_hub.router import bandit as _bandit
-
-    for _ in range(6):
-        _bandit.record_reward(store, "tier_cheap", "trivial", "_none", 1.0)
-
-    rows = _bandit.summary(store)
-    row = next(
-        (r for r in rows if r["task_class"] == "trivial" and r["tier"] == "tier_cheap"),
-        None,
-    )
-    assert row is not None
-    assert row["trials"] == 6
-    assert row["successes"] >= 5.5  # Laplace-smoothed but close to 6
-
-
-def test_reward_mixed_success_rates(store):
-    """Alternating success/failure tracks partial rewards correctly."""
-    from skill_hub.router import bandit as _bandit
-
-    for i in range(4):
-        _bandit.record_reward(store, "tier_mid", "simple", "testing", float(i % 2))
-
-    rows = _bandit.summary(store)
-    row = next(
-        (r for r in rows if r["task_class"] == "simple" and r["tier"] == "tier_mid"),
-        None,
-    )
-    assert row is not None
-    assert row["trials"] == 4
-    assert 1.0 <= row["successes"] <= 3.0  # 2 successes + Laplace prior
-
-
-# ---------------------------------------------------------------------------
 # session_memory: write then read is safe under repeated calls
 
 def test_session_memory_write_read_stable(tmp_path, monkeypatch):
@@ -162,7 +122,7 @@ def test_server_tools_have_parallel_safety_notes():
     """Spot-check that write-path server tools document their parallel semantics."""
     from skill_hub import server
 
-    for fn_name in ("save_task", "close_task", "update_task", "record_model_reward"):
+    for fn_name in ("save_task", "close_task", "update_task", "rebuild_session_memory"):
         fn = getattr(server, fn_name, None)
         assert fn is not None, f"{fn_name} not found in server module"
         doc = fn.__doc__ or ""

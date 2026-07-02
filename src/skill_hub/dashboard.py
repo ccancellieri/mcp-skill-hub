@@ -618,7 +618,7 @@ def _render(db: dict[str, Any], logm: dict[str, Any],
 {log_note}
 
 <div class="footer">
- To regenerate manually, call the <code>render_dashboard</code> MCP tool.
+ Regenerated automatically on every <code>close_task</code> call.
  Source: <code>src/skill_hub/dashboard.py</code>.
 </div>
 </body></html>

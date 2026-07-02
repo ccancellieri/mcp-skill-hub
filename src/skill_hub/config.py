@@ -408,10 +408,6 @@ _DEFAULTS = {
     # Max seconds for Tier-2 Ollama call (routing must be fast)
     "router_tier2_timeout": 10.0,
 
-    # S4 F-ROUTE — ε-greedy bandit over tier_cheap/tier_mid/tier_smart
-    "router_bandit_enabled": True,
-    "router_bandit_epsilon": 0.1,
-
     # S5 F-PROMPT — pluggable prompt rewriters. When enabled, the UserPromptSubmit
     # hook runs the default_chain and appends the enrichment to the userMessage.
     "router_improve_prompt_enabled": False,
