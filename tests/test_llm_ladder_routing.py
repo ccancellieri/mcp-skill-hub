@@ -19,7 +19,6 @@ _REG = {
     "llm_provider_registry": [
         {
             "name": "gw",
-            "level": "L3",
             "kind": "openai_compatible",
             "api_base": "https://gw/v1",
             "api_key": {"source": "inline", "ref": "sk"},
@@ -29,7 +28,7 @@ _REG = {
         },
         {
             "name": "claude",
-            "level": "personal",
+            "personal": True,
             "kind": "anthropic",
             "api_base": "",
             "api_key": {"source": "inline", "ref": "sk2"},
@@ -167,7 +166,7 @@ def test_op_routing_engages_ladder_and_routes_by_domain(monkeypatch, tmp_path):
     reg = {
         "llm_metering_enabled": False,
         "llm_provider_registry": [{
-            "name": "gw", "level": "L3", "kind": "openai_compatible",
+            "name": "gw", "kind": "openai_compatible",
             "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
             "enabled": True, "order": 30,
             "models": [{"id": "fast-m", "complexity": "light", "tags": ["fast"]},
@@ -221,10 +220,10 @@ def test_unknown_op_with_no_signal_skips_ladder(monkeypatch, tmp_path):
 _REG_LOCAL_PLUS_GW = {
     "llm_metering_enabled": False,
     "llm_provider_registry": [
-        {"name": "local", "level": "L1", "kind": "ollama",
+        {"name": "local", "kind": "ollama",
          "api_base": "", "api_key": {}, "enabled": True, "order": 10,
          "models": [{"id": "qwen-local", "complexity": "light", "tags": ["digest"]}]},
-        {"name": "gw", "level": "L3", "kind": "openai_compatible",
+        {"name": "gw", "kind": "openai_compatible",
          "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
          "enabled": True, "order": 30,
          "models": [{"id": "gw-fast", "complexity": "light", "tags": ["fast"]}]},

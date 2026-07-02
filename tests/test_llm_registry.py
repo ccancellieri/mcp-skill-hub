@@ -16,12 +16,12 @@ def test_load_registry_sorts_by_order_and_skips_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
     cfg.CONFIG_PATH.write_text(json.dumps({
         "llm_provider_registry": [
-            {"name": "b", "level": "L3", "kind": "openai_compatible", "api_base": "",
+            {"name": "b", "kind": "openai_compatible", "api_base": "",
              "api_key": {"source": "env", "ref": "B_API_KEY"}, "enabled": True, "order": 30,
              "models": [{"id": "m1", "complexity": "light"}]},
-            {"name": "a", "level": "L1", "kind": "ollama", "api_base": "", "api_key": {},
+            {"name": "a", "kind": "ollama", "api_base": "", "api_key": {},
              "enabled": True, "order": 10, "models": []},
-            {"name": "off", "level": "L3", "kind": "openai_compatible", "api_base": "",
+            {"name": "off", "kind": "openai_compatible", "api_base": "",
              "api_key": {}, "enabled": False, "order": 5, "models": []},
         ]
     }))
@@ -29,6 +29,24 @@ def test_load_registry_sorts_by_order_and_skips_disabled(tmp_path, monkeypatch):
     provs = registry.load_registry()
     assert [p.name for p in provs] == ["a", "b"]
     assert provs[1].models[0].complexity == "light"
+
+
+def test_legacy_level_personal_maps_to_personal_flag(tmp_path, monkeypatch):
+    """Pre-#132 records carry ``level`` — it must still parse, with
+    ``level: "personal"`` mapping onto the new boolean flag."""
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
+    cfg.CONFIG_PATH.write_text(json.dumps({
+        "llm_provider_registry": [
+            {"name": "gw", "level": "L3", "kind": "openai_compatible",
+             "api_base": "", "api_key": {}, "enabled": True, "order": 30, "models": []},
+            {"name": "claude", "level": "personal", "kind": "anthropic",
+             "api_base": "", "api_key": {}, "enabled": True, "order": 90, "models": []},
+        ]
+    }))
+    from skill_hub.llm import registry
+    provs = {p.name: p for p in registry.load_registry()}
+    assert provs["gw"].personal is False
+    assert provs["claude"].personal is True
 
 
 def test_load_registry_skips_malformed(tmp_path, monkeypatch):

@@ -62,7 +62,6 @@ _REMOTE_OLLAMA_REG = {
     "llm_provider_registry": [
         {
             "name": "remote-ollama",
-            "level": "L2",
             "kind": "ollama",
             "api_base": "http://ollama.example.internal:11434",
             "api_key": {},
@@ -114,7 +113,6 @@ def test_remote_ollama_env_source_api_base(monkeypatch, tmp_path):
         "llm_provider_registry": [
             {
                 "name": "remote-ollama-env",
-                "level": "L2",
                 "kind": "ollama",
                 "api_base": "http://ollama.example.internal:11434",
                 "api_key": {},  # no source — api_base field is used directly
@@ -149,7 +147,6 @@ def test_escalation_select_returns_remote_api_base(monkeypatch):
     # Inject a fake registry directly — no disk I/O needed.
     remote = Provider(
         name="remote-ollama",
-        level="L2",
         kind="ollama",
         api_base="http://ollama.example.internal:11434",
         api_key={},

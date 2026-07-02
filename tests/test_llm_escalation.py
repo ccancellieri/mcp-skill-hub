@@ -9,7 +9,6 @@ _REG = {
     "llm_provider_registry": [
         {
             "name": "gw",
-            "level": "L3",
             "kind": "openai_compatible",
             "api_base": "https://gw/v1",
             "api_key": {"source": "inline", "ref": "sk"},
@@ -22,7 +21,7 @@ _REG = {
         },
         {
             "name": "claude",
-            "level": "personal",
+            "personal": True,
             "kind": "anthropic",
             "api_base": "",
             "api_key": {"source": "inline", "ref": "sk2"},
@@ -63,7 +62,7 @@ def test_cooldown_rotates_to_next_provider(monkeypatch, tmp_path):
     escalation.mark_cooldown("heavy-a")
     sel = escalation.select(0.1)
     assert sel is not None
-    assert sel.provider == "claude" and sel.level == "personal"
+    assert sel.provider == "claude" and sel.personal is True
 
 
 def test_missing_key_skips_provider(monkeypatch, tmp_path):
@@ -71,7 +70,6 @@ def test_missing_key_skips_provider(monkeypatch, tmp_path):
         "llm_provider_registry": [
             {
                 "name": "gw",
-                "level": "L3",
                 "kind": "openai_compatible",
                 "api_base": "https://gw/v1",
                 "api_key": {"source": "env", "ref": "ABSENT_KEY"},
@@ -81,7 +79,7 @@ def test_missing_key_skips_provider(monkeypatch, tmp_path):
             },
             {
                 "name": "claude",
-                "level": "personal",
+                "personal": True,
                 "kind": "anthropic",
                 "api_base": "",
                 "api_key": {"source": "inline", "ref": "sk2"},

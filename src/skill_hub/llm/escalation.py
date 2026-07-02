@@ -26,8 +26,8 @@ class Selection:
     api_base: str | None
     api_key: str | None
     provider: str
-    level: str
     kind: str = ""
+    personal: bool = False
 
 
 def reset_cooldowns() -> None:
@@ -167,7 +167,7 @@ def _walk(wanted: str, exclude: set[str], domain: str | None) -> Selection | Non
         if m is None:
             continue
         return Selection(model=m.id, api_base=api_base, api_key=api_key,
-                         provider=p.name, level=p.level, kind=p.kind)
+                         provider=p.name, kind=p.kind, personal=p.personal)
     return None
 
 

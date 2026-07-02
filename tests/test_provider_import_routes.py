@@ -125,7 +125,7 @@ def test_apply_classify_opt_out(client, monkeypatch):
 def test_apply_preserves_existing_tags(client, monkeypatch):
     # Seed an existing record with a tuned model, then sync from opencode.
     _config.set("llm_provider_registry", [{
-        "name": "work-gateway", "level": "L3", "kind": "openai_compatible",
+        "name": "work-gateway", "kind": "openai_compatible",
         "api_base": "", "api_key": {"source": "opencode", "ref": "agent-platform"},
         "enabled": True, "order": 30,
         "models": [{"id": "m1", "complexity": "heavy", "tags": ["git"]}],

@@ -38,8 +38,8 @@ def _build_provider_view(raw_list: list) -> list[dict]:
         api_key = rec.get("api_key") or {}
         views.append({
             "name": rec.get("name", ""),
-            "level": rec.get("level", ""),
             "kind": rec.get("kind", ""),
+            "personal": bool(rec.get("personal")) or rec.get("level") == "personal",
             "api_base": rec.get("api_base", ""),
             "cred_label": _credential_label(api_key),
             "enabled": bool(rec.get("enabled", True)),
@@ -55,6 +55,8 @@ def _build_provider_view(raw_list: list) -> list[dict]:
                 if isinstance(m, dict)
             ],
         })
+    # The ladder IS the order — render the table as the actual chain.
+    views.sort(key=lambda v: v["order"])
     return views
 
 

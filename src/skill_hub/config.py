@@ -579,7 +579,7 @@ _DEFAULTS = {
     # the /providers page). Any endpoint reachable over HTTP works:
     #
     #   Remote Ollama (kind: "ollama"):
-    #     {"name": "my-remote-ollama", "level": "L2", "kind": "ollama",
+    #     {"name": "my-remote-ollama", "kind": "ollama",
     #      "api_base": "http://ollama.example.internal:11434",
     #      "api_key": {},
     #      "enabled": true, "order": 20,
@@ -601,7 +601,7 @@ _DEFAULTS = {
     #   {"name": "remote", "url": "http://ollama.example.internal:11434",
     #    "priority": 2, "enabled": true}
     "llm_provider_registry": [
-        {"name": "local-ollama", "level": "L1", "kind": "ollama",
+        {"name": "local-ollama", "kind": "ollama",
          "api_base": "", "api_key": {}, "enabled": True, "order": 10,
          "models": [{"id": "ollama/qwen2.5-coder:3b", "complexity": "light",
                      "tags": ["fast", "digest", "programming"]}]},
@@ -609,10 +609,12 @@ _DEFAULTS = {
         # default); configure base/key/models per-user via the /providers page
         # or by pointing api_key.ref at an opencode provider id. Per-model
         # "tags" drive specialisation routing (e.g. ["python"], ["web", "ui-ux"]).
-        {"name": "work-gateway", "level": "L3", "kind": "openai_compatible",
+        {"name": "work-gateway", "kind": "openai_compatible",
          "api_base": "", "api_key": {"source": "opencode", "ref": ""},
          "enabled": False, "order": 30, "models": []},
-        {"name": "personal-claude", "level": "personal", "kind": "anthropic",
+        # ``personal: true`` marks the user's own account — the ladder skips it
+        # once the month's estimated spend passes the configured cap.
+        {"name": "personal-claude", "kind": "anthropic", "personal": True,
          "api_base": "", "api_key": {"source": "env", "ref": "ANTHROPIC_API_KEY"},
          "enabled": True, "order": 90,
          "models": [{"id": "anthropic/claude-haiku-4-5", "complexity": "light",

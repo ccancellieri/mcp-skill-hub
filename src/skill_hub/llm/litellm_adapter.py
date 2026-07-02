@@ -486,7 +486,7 @@ class LitellmProvider:
             sel = escalation.select(complexity, domain=domain, exclude=exclude)
             if sel is None:
                 break
-            if over_cap and sel.level == "personal":
+            if over_cap and sel.personal:
                 exclude.add(sel.model)
                 continue
             try:
@@ -496,7 +496,7 @@ class LitellmProvider:
                     api_key=sel.api_key, max_tokens=max_tokens,
                     temperature=temperature, timeout=timeout, cache=cache,
                     extra=extra, op=op, cache_ttl=cache_ttl,
-                    tier=f"ladder:{sel.level}",
+                    tier=f"ladder:{sel.provider}",
                 )
             except LLMError as exc:
                 last_exc = exc

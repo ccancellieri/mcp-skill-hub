@@ -37,7 +37,7 @@ def _write(path, data):
 def test_providers_page_lists_registry_without_secrets(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": [
-        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+        {"name": "gw", "kind": "openai_compatible", "api_base": "https://gw/v1",
          "api_key": {"source": "inline", "ref": "sk-SECRET"}, "enabled": True, "order": 30,
          "models": [{"id": "m1", "complexity": "light"}]}]})
     r = c.get("/providers")
@@ -49,7 +49,7 @@ def test_post_persists_registry(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": []})
     new = {"registry": [
-        {"name": "a", "level": "L1", "kind": "ollama", "api_base": "", "api_key": {},
+        {"name": "a", "kind": "ollama", "api_base": "", "api_key": {},
          "enabled": True, "order": 10, "models": []}]}
     r = c.post("/providers", json=new)
     assert r.status_code == 200 and r.json()["ok"] is True
@@ -59,7 +59,7 @@ def test_post_persists_registry(client):
 def test_post_rejects_malformed(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": []})
-    r = c.post("/providers", json={"registry": [{"name": "x", "level": "BAD", "kind": "ollama"}]})
+    r = c.post("/providers", json={"registry": [{"name": "x", "kind": "BAD"}]})
     assert r.json()["ok"] is False
 
 
@@ -68,7 +68,7 @@ def test_post_error_does_not_leak_inline_secret(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": []})
     r = c.post("/providers", json={"registry": [
-        {"name": "x", "level": "BAD", "kind": "openai_compatible",
+        {"name": "x", "kind": "BAD",
          "api_key": {"source": "inline", "ref": "sk-LEAK-ME"}}]})
     body = r.json()
     assert body["ok"] is False
@@ -80,7 +80,7 @@ def test_usage_panel_folds_metering_onto_provider(client, monkeypatch):
     its ``openai/`` route prefix folds onto the registry provider that owns it."""
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": [
-        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+        {"name": "gw", "kind": "openai_compatible", "api_base": "https://gw/v1",
          "api_key": {"source": "inline", "ref": "sk"}, "enabled": True, "order": 30,
          "models": [{"id": "zai-org/glm-4.7-maas", "complexity": "light"}]}]})
 
@@ -108,7 +108,7 @@ def test_post_strips_usage_view_field(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": []})
     view = {"registry": [
-        {"name": "a", "level": "L1", "kind": "ollama", "api_base": "", "api_key": {},
+        {"name": "a", "kind": "ollama", "api_base": "", "api_key": {},
          "enabled": True, "order": 10, "models": [],
          "usage": {"calls": 9, "ok": 9, "errors": 0, "tokens": 50}}]}
     r = c.post("/providers", json=view)
@@ -120,12 +120,12 @@ def test_post_from_view_preserves_stored_credential(client):
     """Saving the secret-free page view (no api_key) must not wipe the stored cred."""
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": [
-        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+        {"name": "gw", "kind": "openai_compatible", "api_base": "https://gw/v1",
          "api_key": {"source": "inline", "ref": "sk-KEEP"}, "enabled": True, "order": 30,
          "models": [{"id": "m1", "complexity": "light"}]}]})
     # Post the view shape: cred_label instead of api_key, enabled toggled off.
     view = {"registry": [
-        {"name": "gw", "level": "L3", "kind": "openai_compatible", "api_base": "https://gw/v1",
+        {"name": "gw", "kind": "openai_compatible", "api_base": "https://gw/v1",
          "cred_label": "inline", "enabled": False, "order": 30,
          "models": [{"id": "m1", "complexity": "light"}]}]}
     r = c.post("/providers", json=view)

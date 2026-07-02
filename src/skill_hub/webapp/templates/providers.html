@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-header">
   <h1>Auxiliary LLM Providers</h1>
-  <p class="subtitle">Registry of auxiliary LLM providers used by the escalation ladder.</p>
+  <p class="subtitle">The escalation ladder — providers tried top to bottom (by <code>order</code>) until one answers.</p>
 </div>
 
 <div id="providers-status" style="margin-bottom:1rem;"></div>
@@ -13,7 +13,6 @@
   <thead>
     <tr>
       <th>Name</th>
-      <th>Level</th>
       <th>Kind</th>
       <th>API Base</th>
       <th>Credential Source</th>
@@ -27,8 +26,7 @@
   <tbody>
     {% for p in providers %}
     <tr>
-      <td><strong>{{ p.name }}</strong></td>
-      <td><code>{{ p.level }}</code></td>
+      <td><strong>{{ p.name }}</strong>{% if p.personal %} <span class="badge" title="your own account — skipped when over the monthly budget cap">personal</span>{% endif %}</td>
       <td>{{ p.kind }}</td>
       <td><code>{{ p.api_base }}</code></td>
       <td><code>{{ p.cred_label }}</code></td>

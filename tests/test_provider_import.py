@@ -92,7 +92,7 @@ def test_merge_into_existing_preserves_tags_and_complexity():
     assert len(merged) == 1                        # matched by ref, not duplicated
     rec = merged[0]
     assert rec["name"] == "work-gateway"           # display name preserved
-    assert rec["level"] == "L3" and rec["order"] == 30
+    assert rec["level"] == "L3" and rec["order"] == 30  # extra/legacy keys survive a merge
     by_id = {m["id"]: m for m in rec["models"]}
     # surviving id keeps its tuned complexity + tags
     assert by_id["zai-org/glm-5-maas"]["complexity"] == "heavy"
@@ -110,10 +110,10 @@ def test_merge_into_existing_preserves_tags_and_complexity():
     assert "removed/old-model" in d["models_removed"]
 
 
-def test_merge_new_provider_appended_with_default_level():
+def test_merge_new_provider_appended():
     merged, diffs = imp.merge_registry([], imp.normalize("opencode", OPENCODE))
     assert len(merged) == 1
-    assert merged[0]["level"] == "L3"
+    assert "level" not in merged[0]   # retired taxonomy — new records don't get one
     assert diffs[0]["status"] == "new"
     assert set(diffs[0]["models_added"]) == set(merged[0]["models"][i]["id"]
                                                 for i in range(len(merged[0]["models"])))

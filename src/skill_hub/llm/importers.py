@@ -22,7 +22,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 SUPPORTED_FORMATS = ("opencode", "openai", "litellm")
-_DEFAULT_LEVEL = "L3"
 
 
 @dataclass
@@ -257,13 +256,13 @@ def _merge_one(existing: dict | None, inc: NormalizedProvider,
     if existing is None:
         models = [{"id": mid, "complexity": "light", "tags": []} for mid in inc_ids]
         rec = {
-            "name": inc.name, "level": _DEFAULT_LEVEL, "kind": inc.kind,
+            "name": inc.name, "kind": inc.kind,
             "api_base": inc.api_base, "api_key": dict(inc.api_key),
             "enabled": True, "order": order_hint, "models": models,
         }
         diff = {
             "provider": inc.name, "status": "new", "matched_name": None,
-            "level": _DEFAULT_LEVEL, "kind": inc.kind, "api_base": inc.api_base,
+            "kind": inc.kind, "api_base": inc.api_base,
             "cred_label": _cred_label(inc.api_key),
             "models_added": inc_ids, "models_removed": [], "models_kept": [],
         }
@@ -287,7 +286,7 @@ def _merge_one(existing: dict | None, inc: NormalizedProvider,
             added.append(mid)
     removed = [mid for mid in existing_models if mid not in set(inc_ids)]
 
-    rec = dict(existing)  # keep name/level/order/enabled and any extra keys
+    rec = dict(existing)  # keep name/order/enabled/personal and any extra keys
     rec["kind"] = existing.get("kind") or inc.kind
     # Opencode incoming carries api_base="" (resolved live) — keep existing then.
     rec["api_base"] = inc.api_base or existing.get("api_base", "")
@@ -303,7 +302,7 @@ def _merge_one(existing: dict | None, inc: NormalizedProvider,
     diff = {
         "provider": existing.get("name") or inc.name, "status": "update",
         "matched_name": existing.get("name"),
-        "level": existing.get("level"), "kind": rec["kind"],
+        "kind": rec["kind"],
         "api_base": rec["api_base"], "cred_label": _cred_label(rec["api_key"]),
         "models_added": added, "models_removed": removed, "models_kept": kept,
     }

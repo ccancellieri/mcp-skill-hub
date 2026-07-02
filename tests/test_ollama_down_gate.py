@@ -33,7 +33,6 @@ _REG_GATEWAY_ONLY = {
     "llm_provider_registry": [
         {
             "name": "gw",
-            "level": "L3",
             "kind": "openai_compatible",
             "api_base": "https://gw/v1",
             "api_key": {"source": "inline", "ref": "sk"},
@@ -49,7 +48,6 @@ _REG_LOCAL_PLUS_GW = {
     "llm_provider_registry": [
         {
             "name": "local",
-            "level": "L1",
             "kind": "ollama",
             "api_base": "",
             "api_key": {},
@@ -59,7 +57,6 @@ _REG_LOCAL_PLUS_GW = {
         },
         {
             "name": "gw",
-            "level": "L3",
             "kind": "openai_compatible",
             "api_base": "https://gw/v1",
             "api_key": {"source": "inline", "ref": "sk"},

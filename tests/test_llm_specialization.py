@@ -8,12 +8,12 @@ from skill_hub.llm import escalation, registry
 _REG = {
     "llm_provider_registry": [
         # L1 cheap generalist: light, tagged for fast/digest only.
-        {"name": "local", "level": "L1", "kind": "ollama",
+        {"name": "local", "kind": "ollama",
          "api_base": "", "api_key": {}, "enabled": True, "order": 10,
          "models": [{"id": "qwen", "complexity": "light",
                      "tags": ["fast", "digest"]}]},
         # L3 gateway specialists.
-        {"name": "gw", "level": "L3", "kind": "openai_compatible",
+        {"name": "gw", "kind": "openai_compatible",
          "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
          "enabled": True, "order": 30,
          "models": [{"id": "glm-light", "complexity": "light",
@@ -23,7 +23,7 @@ _REG = {
                     {"id": "deepseek", "complexity": "heavy",
                      "tags": ["python", "reasoning"]}]},
         # Personal fallback specialist.
-        {"name": "claude", "level": "personal", "kind": "anthropic",
+        {"name": "claude", "personal": True, "kind": "anthropic",
          "api_base": "", "api_key": {"source": "inline", "ref": "sk2"},
          "enabled": True, "order": 90,
          "models": [{"id": "sonnet", "complexity": "heavy",
@@ -43,7 +43,7 @@ def _write(monkeypatch, tmp_path, data):
 def test_registry_parses_and_normalizes_tags(monkeypatch, tmp_path):
     _write(monkeypatch, tmp_path, {
         "llm_provider_registry": [
-            {"name": "gw", "level": "L3", "kind": "openai_compatible",
+            {"name": "gw", "kind": "openai_compatible",
              "api_base": "x", "api_key": {"source": "inline", "ref": "sk"},
              "enabled": True, "order": 1,
              "models": [{"id": "m", "tags": ["Python", " Git ", "", 123]}]},

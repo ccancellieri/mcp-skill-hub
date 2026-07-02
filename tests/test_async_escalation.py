@@ -34,7 +34,7 @@ def store(tmp_path, monkeypatch):
 
 _REG_GATEWAY = [
     {
-        "name": "gw", "level": "L3", "kind": "openai_compatible",
+        "name": "gw", "kind": "openai_compatible",
         "api_base": "https://gw/v1", "api_key": {"source": "inline", "ref": "sk"},
         "enabled": True,
         "models": [{"id": "gw/big", "complexity": "heavy"}],
@@ -42,7 +42,7 @@ _REG_GATEWAY = [
 ]
 _REG_OLLAMA_ONLY = [
     {
-        "name": "local", "level": "L0", "kind": "ollama",
+        "name": "local", "kind": "ollama",
         "api_base": "http://localhost:11434", "enabled": True,
         "models": [{"id": "qwen2.5:3b", "complexity": "light"}],
     },
