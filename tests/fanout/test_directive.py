@@ -33,7 +33,7 @@ def test_render_directive_shapes_agent_calls():
     assert "isolation: \"worktree\"" in out
     assert "task #1" in out and "task #2" in out
     # Quoted prompt content should be JSON-escaped (no naked unescaped quote).
-    assert '"quotes \\" ok"' in out
+    assert 'quotes \\" ok' in out
 
 
 def test_render_directive_uses_specialized_implementer_by_default():
@@ -62,6 +62,36 @@ def test_render_directive_includes_rollup_pointer():
     assert "fanout_status" in out
     assert "fanout_close" in out
     assert "ABCD" in out
+
+
+def test_shape_call_adds_standing_preamble_when_missing(tmp_path: Path):
+    """DispatchSpec.prompt built outside prompt_synth (e.g. an error-fallback
+    string) should still get the standing tooling directive, keyed off the
+    worktree path."""
+    spec = DispatchSpec(description="d", prompt="plain title + body only",
+                        worktree_path=str(tmp_path), branch="cc/x", task_id=1)
+    out = render_directive([spec], "G")
+    assert "STANDING DIRECTIVE:" in out
+    assert "This repo IS NOT codegraph-indexed" in out
+
+
+def test_shape_call_detects_codegraph_indexed_worktree(tmp_path: Path):
+    (tmp_path / ".codegraph").mkdir()
+    spec = DispatchSpec(description="d", prompt="plain prompt",
+                        worktree_path=str(tmp_path), branch="cc/x", task_id=1)
+    out = render_directive([spec], "G")
+    assert "This repo IS codegraph-indexed" in out
+    assert "codegraph_search" in out
+
+
+def test_shape_call_does_not_duplicate_existing_preamble(tmp_path: Path):
+    """A prompt already carrying the marker (built by prompt_synth) must not
+    get a second preamble stacked on top."""
+    prompt = "STANDING DIRECTIVE:\n- already here\n\nActual issue instructions."
+    spec = DispatchSpec(description="d", prompt=prompt,
+                        worktree_path=str(tmp_path), branch="cc/x", task_id=1)
+    out = render_directive([spec], "G")
+    assert out.count("STANDING DIRECTIVE:") == 1
 
 
 def test_directive_contains_no_ai_tooling_paths():

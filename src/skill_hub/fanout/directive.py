@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .prompt_synth import PREAMBLE_MARKER, build_standing_preamble
+
 # The specialized build role from the /team orchestration layer (sonnet).
 # Replaces the historical hardcoded "general-purpose" subagent so fan-out work
 # inherits the right-model-for-the-task routing instead of defaulting to opus.
@@ -34,10 +36,18 @@ class DispatchSpec:
 
 
 def _shape_call(spec: DispatchSpec, subagent_type: str) -> str:
+    # Safety net: prompt_synth already prepends the standing tooling directive
+    # for prompts it builds, but a caller can hand DispatchSpec a raw prompt
+    # (e.g. coordinator's error-fallback path) that skips prompt_synth
+    # entirely. Add it here, keyed off the actual worktree, unless it's
+    # already present.
+    prompt = spec.prompt
+    if PREAMBLE_MARKER not in prompt:
+        prompt = build_standing_preamble(spec.worktree_path) + "\n" + prompt
     return (
         "Agent({\n"
         f"  description: {json.dumps(spec.description)},\n"
-        f"  prompt: {json.dumps(spec.prompt)},\n"
+        f"  prompt: {json.dumps(prompt)},\n"
         f"  subagent_type: {json.dumps(subagent_type)},\n"
         '  isolation: "worktree",\n'
         "})"

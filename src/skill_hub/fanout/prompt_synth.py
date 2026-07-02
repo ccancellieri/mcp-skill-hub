@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -23,6 +24,44 @@ from .sources import Issue
 _TEMPLATE_BUDGET = 2_000
 _SEED_BUDGET = 1_500
 _BODY_BUDGET = 4_000
+
+# Marker prefix identifying a prompt that already carries the standing
+# tooling directive (see build_standing_preamble) — lets other call sites
+# (e.g. directive.py) avoid stacking a second copy on top.
+PREAMBLE_MARKER = "STANDING DIRECTIVE:"
+
+
+def _is_codegraph_indexed(repo_path: str | Path) -> bool:
+    """True if `repo_path` has a `.codegraph/` index directory."""
+    return os.path.isdir(Path(repo_path) / ".codegraph")
+
+
+def build_standing_preamble(repo_path: str | Path) -> str:
+    """Few-line tooling directive prepended to every generated agent prompt.
+
+    States explicitly whether the target repo is codegraph-indexed (checked
+    at prompt-build time) so the dispatched agent doesn't default to grep,
+    and nudges it toward compressed fetch/search tools for web pages and
+    large payloads.
+    """
+    if _is_codegraph_indexed(repo_path):
+        codegraph_line = (
+            "This repo IS codegraph-indexed (.codegraph/ found) — prefer "
+            "codegraph_search / codegraph_callers / codegraph_callees / "
+            "codegraph_impact over grep for symbol lookups and change impact."
+        )
+    else:
+        codegraph_line = (
+            "This repo IS NOT codegraph-indexed (no .codegraph/) — grep/glob "
+            "are the right tool for code search here."
+        )
+    return (
+        f"{PREAMBLE_MARKER}\n"
+        f"- {codegraph_line}\n"
+        "- Prefer fetch_compressed / compressed search over raw fetches for web "
+        "pages and large payloads; skip compression only when exact bytes matter "
+        "(code layout, JSON structure checks).\n"
+    )
 
 
 def _safe_read(path: Path, budget: int) -> str:
@@ -77,8 +116,8 @@ CONSTRAINTS:
 """
 
 
-def _fallback_prompt(issue: Issue) -> str:
-    return _FALLBACK_TEMPLATE.format(
+def _fallback_prompt(issue: Issue, repo_path: str | Path) -> str:
+    return build_standing_preamble(repo_path) + "\n" + _FALLBACK_TEMPLATE.format(
         title=issue.title or "(no title)",
         body=(issue.body or "(no body)")[:_BODY_BUDGET],
         labels=", ".join(issue.labels) or "(none)",
@@ -86,10 +125,14 @@ def _fallback_prompt(issue: Issue) -> str:
     )
 
 
-def _llm_prompt(issue: Issue, repo_ctx: dict[str, str]) -> str:
+def _llm_prompt(issue: Issue, repo_ctx: dict[str, str], repo_path: str | Path) -> str:
+    indexed = _is_codegraph_indexed(repo_path)
     parts = [
         "You are drafting an instruction prompt for a separate Claude Code agent that will work on ONE GitHub issue in an isolated git worktree.",
         "Your output is the prompt itself — no preamble, no JSON, no code fences. Plain text only.",
+        "",
+        f"This repo {'IS' if indexed else 'IS NOT'} codegraph-indexed "
+        f"(.codegraph/ {'found' if indexed else 'not found'}).",
         "",
         "Issue title:",
         issue.title or "(no title)",
@@ -116,7 +159,11 @@ def _llm_prompt(issue: Issue, repo_ctx: dict[str, str]) -> str:
         "1. Scope: 1-2 sentences naming the bounded change.",
         "2. Acceptance criteria: 3-5 bullets, testable.",
         "3. Files of interest: best-guess paths the agent should grep/read first.",
-        "4. Constraints: what NOT to touch; only-this-worktree reminder.",
+        "4. Constraints: what NOT to touch; only-this-worktree reminder; if the repo "
+        "is codegraph-indexed (stated above) prefer codegraph_search/callers/callees/"
+        "impact over grep, else use grep/glob; prefer fetch_compressed/compressed "
+        "search over raw fetches for web pages and large payloads unless exact bytes "
+        "matter.",
         "5. Done-when: how the agent should report completion.",
         "Keep the prompt under 400 words. Address the agent directly in imperative voice.",
     ]
@@ -188,7 +235,7 @@ def draft_prompt(
 
     repo_ctx = gather_repo_context(repo_path)
     quality = "fallback"
-    text = _fallback_prompt(issue)
+    text = _fallback_prompt(issue, repo_path)
 
     if use_llm:
         try:
@@ -200,14 +247,16 @@ def draft_prompt(
             kwargs: dict = {"max_tokens": 800, "temperature": 0.2, "timeout": timeout}
             if model:
                 kwargs["model"] = model
-            raw = get_provider().complete(_llm_prompt(issue, repo_ctx), **kwargs)
+            raw = get_provider().complete(_llm_prompt(issue, repo_ctx, repo_path), **kwargs)
             raw = (raw or "").strip()
             # Strip any accidental <think>...</think> block.
             if "<think>" in raw:
                 import re as _re
                 raw = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
             if raw and len(raw) > 60:
-                text = raw
+                # Prepend deterministically — don't rely on the LLM having
+                # followed the standing-tooling instruction in _llm_prompt.
+                text = build_standing_preamble(repo_path) + "\n" + raw
                 quality = "llm"
         except (ImportError, RuntimeError, ValueError):
             pass
@@ -219,4 +268,4 @@ def draft_prompt(
     return text, quality
 
 
-__all__ = ["draft_prompt", "gather_repo_context"]
+__all__ = ["draft_prompt", "gather_repo_context", "build_standing_preamble", "PREAMBLE_MARKER"]
