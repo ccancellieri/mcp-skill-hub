@@ -12,10 +12,35 @@ skill_hub.server.
 """
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Isolate the data directory BEFORE any skill_hub module is imported.
+# ---------------------------------------------------------------------------
+#
+# ``store.DB_PATH`` and ``config.CONFIG_PATH`` are computed from ``Path.home()``
+# at import time, so with the developer's real ``$HOME`` the whole suite reads
+# and writes the live ``~/.claude/mcp-skill-hub`` database. Under xdist that
+# shared, mutable DB (9000+ rows, concurrent writers) makes hermetic tests fail
+# non-deterministically — e.g. an envelope's ``events_emitted`` picking up event
+# rows another worker inserted mid-call.
+#
+# Point ``$HOME`` at a private temp directory per pytest process (the xdist
+# controller and each worker import this conftest independently, so each gets
+# its own tree and its own empty DB). Tests that pass an explicit ``db_path``
+# are unaffected; those using the default store now get a clean, isolated DB.
+# Opt out with ``SKILL_HUB_TEST_REAL_HOME=1`` to run against the real home.
+if os.environ.get("SKILL_HUB_TEST_REAL_HOME") != "1":
+    _ISOLATED_HOME = tempfile.mkdtemp(prefix="skill-hub-test-home-")
+    os.environ["HOME"] = _ISOLATED_HOME
+    atexit.register(shutil.rmtree, _ISOLATED_HOME, ignore_errors=True)
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:

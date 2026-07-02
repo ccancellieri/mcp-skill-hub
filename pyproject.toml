@@ -70,3 +70,25 @@ packages = ["src/skill_hub"]
 [tool.hatch.envs.default]
 type = "virtual"
 path = ".venv"
+
+[tool.pytest.ini_options]
+# Repo-local config so the suite is reproducible without the developer's
+# parent-directory pytest.ini. Runs serially by default for determinism; the
+# shared ~/.claude DB is isolated per-process by tests/conftest.py, so add
+# `-n auto` locally for speed if you want it.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short --import-mode=prepend -p no:cacheprovider"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 180
+timeout_method = "signal"
+markers = [
+    "local_only: Tests that should only run on a developer machine (skipped in CI).",
+]
+filterwarnings = [
+    "ignore:module 'sre_parse' is deprecated:DeprecationWarning",
+    "ignore:module 'sre_constants' is deprecated:DeprecationWarning",
+]

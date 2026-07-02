@@ -1822,10 +1822,16 @@ class TestDashboardWikiCard:
             encoding="utf-8")
         return wiki_root
 
-    def test_db_metrics_includes_wiki(self, store, tmp_path):
+    def test_db_metrics_includes_wiki(self, store, tmp_path, monkeypatch):
+        from skill_hub import config as _cfg
         from skill_hub import dashboard as dash
         from skill_hub import wiki as _wiki
         wiki_root = self._setup_vault(tmp_path)
+        # _db_metrics reads config.get("wiki_root") (frozen at import), not HOME,
+        # so point it at the seeded vault to keep the test hermetic.
+        _real_get = _cfg.get
+        monkeypatch.setattr(_cfg, "get",
+                            lambda k, d=None: str(wiki_root) if k == "wiki_root" else _real_get(k, d))
         _wiki.scan_and_enqueue(store, wiki_root)
         m = dash._db_metrics(store)
         assert m["wiki"] is not None

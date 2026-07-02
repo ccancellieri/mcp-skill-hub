@@ -23,12 +23,20 @@ MIN_RECALL_AT_5 = 0.95
 
 @pytest.fixture(scope="module")
 def store() -> SkillStore:
+    import sqlite3
+
     s = SkillStore()
     if s._vec_engine != "sqlite-vec":
         pytest.skip("sqlite-vec extension unavailable")
-    if s._conn.execute(
-        "SELECT count(*) FROM skills_vec_bin"
-    ).fetchone()[0] < 100:
+    try:
+        populated = s._conn.execute(
+            "SELECT count(*) FROM skills_vec_bin"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        # Fresh/isolated DB — the vec table is only built once skills are
+        # indexed; treat "no table" the same as "corpus too small".
+        populated = 0
+    if populated < 100:
         pytest.skip("skill corpus too small to measure recall parity")
     return s
 

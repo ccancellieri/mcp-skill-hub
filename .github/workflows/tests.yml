@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # tests/conftest.py isolates $HOME to a per-process temp dir, so the suite
+      # never touches a real ~/.claude database. No Ollama / gateway is present
+      # in CI: LLM-backed tests self-skip or fall back to deterministic paths,
+      # and `-m "not local_only"` drops developer-machine-only tests.
+      - name: Run test suite
+        run: >
+          uv run --with pytest --with pytest-asyncio --with pytest-timeout
+          python -m pytest -m "not local_only"

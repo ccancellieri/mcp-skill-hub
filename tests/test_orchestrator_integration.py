@@ -26,6 +26,24 @@ from skill_hub.orchestrator import (
 from skill_hub.orchestrator import engine as _engine
 
 
+@pytest.fixture(autouse=True)
+def _no_live_llm(monkeypatch):
+    """Keep route() hermetic — force Tier-1 heuristic classification.
+
+    These tests assert the tooling directive, not the classifier. On a
+    developer machine a reachable local Ollama or the remote gateway silently
+    satisfied the escalation ladder inside ``ollama_client.classify`` /
+    ``haiku_client.classify``, so the tests were making live LLM calls. With an
+    isolated home (no provider config) the ladder is exhausted; stub both
+    classifiers to ``None`` so route() falls back to deterministic heuristics
+    and never touches a live model.
+    """
+    monkeypatch.setattr("skill_hub.router.ollama_client.classify",
+                        lambda *a, **k: None)
+    monkeypatch.setattr("skill_hub.router.haiku_client.classify",
+                        lambda *a, **k: None)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

@@ -28,11 +28,12 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 
-# Guard: never import server.py — it opens the live DB on import.
-def test_server_not_imported():
-    assert "skill_hub.server" not in sys.modules, (
-        "skill_hub.server must not be imported — it opens the live DB on import"
-    )
+# Guard: never import server.py — it opens the live DB on import. Check the
+# collection-time snapshot (via the shared fixture) rather than live sys.modules,
+# so a *different* test file that legitimately imports the server later in the
+# same process/worker can't make this guard flip.
+def test_server_not_imported(assert_server_not_imported):
+    pass
 
 
 # ---------------------------------------------------------------------------
