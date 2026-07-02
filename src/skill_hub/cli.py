@@ -1750,6 +1750,13 @@ def _dynamic_context_stage(
         if hint:
             parts.append(hint)
 
+    # Agent I/O guidance — only when the prompt signals a sub-agent dispatch
+    if _cfg.get("agent_io_guidance_enabled"):
+        from .compression import agent_io_guidance
+        io_hint = agent_io_guidance(message)
+        if io_hint:
+            parts.append(io_hint)
+
     header = (
         f"[Skill Hub -- dynamic context | msg #{msg_count + 1} | "
         f"complexity={complexity} | "
@@ -1986,6 +1993,13 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
         hint = _MODEL_HINTS.get(complexity, "")
         if hint:
             parts.append(hint)
+
+    # Agent I/O guidance — only when the prompt signals a sub-agent dispatch
+    if _cfg.get("agent_io_guidance_enabled"):
+        from .compression import agent_io_guidance
+        io_hint = agent_io_guidance(message)
+        if io_hint:
+            parts.append(io_hint)
 
     header = (
         f"[Skill Hub — auto-injected context | "

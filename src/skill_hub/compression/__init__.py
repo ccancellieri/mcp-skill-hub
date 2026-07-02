@@ -600,6 +600,34 @@ def truncate_at_word(text: str, limit: int, *, marker: str = " … (truncated)")
     return text[:cut].rstrip() + marker
 
 
+_DISPATCH_SIGNAL_RE = re.compile(
+    r"\b(sub[- ]?agents?|agents?|fan[- ]?out|dispatch(?:es|ing|ed)?|"
+    r"parallel|explore|delegat(?:e|es|ing|ed)|orchestrat(?:e|es|ing|ed))\b",
+    re.IGNORECASE,
+)
+
+_AGENT_IO_GUIDANCE = (
+    "[Skill Hub — agent I/O] When dispatching sub-agents, instruct each to "
+    "return compressed findings (conclusions + file:line refs, not raw file "
+    "dumps), dedupe across sources, and keep only what changes the next "
+    "decision — so their output stays cheap to fold back in."
+)
+
+
+def agent_io_guidance(message: str) -> str | None:
+    """One-line guidance for the orchestrator to compress its sub-agents' I/O.
+
+    skill-hub has no hook into sub-agent dispatch prompts, so this surfaces in
+    the *main loop's* injected context and only when the prompt signals a
+    dispatch (mentions agents / fan-out / parallel / explore / delegate).
+    Deterministic (no embedding, no LLM) so it works with the local model down.
+    Returns the guidance line, or None when the message shows no dispatch intent.
+    """
+    if not message or not _DISPATCH_SIGNAL_RE.search(message):
+        return None
+    return _AGENT_IO_GUIDANCE
+
+
 def retrieve_original(hash_key: str) -> str | None:
     """Return the original content stashed behind a ``<<ccr:HASH>>`` marker, or None."""
     try:

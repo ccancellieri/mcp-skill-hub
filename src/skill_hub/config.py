@@ -270,6 +270,7 @@ _DEFAULTS = {
     # Model/effort recommendation — inject hints based on task complexity
     "model_recommendation_enabled": True,       # inject model/effort hints in systemMessage
     "always_forward_to_claude": True,           # NEVER block — always forward to Claude
+    "agent_io_guidance_enabled": True,          # remind orchestrator to compress sub-agent I/O
 
     # Resource-aware LLM gating — skip expensive local LLM ops under pressure
     # Pressure levels: idle(0), low(1), moderate(2), high(3)
