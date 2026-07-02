@@ -3487,6 +3487,18 @@ type: {mem_type}
             with memory_index.open("a", encoding="utf-8") as f:
                 f.write(f"\n{index_line}\n")
 
+    # Outdate any older entry this new decision supersedes (#136, async, safe).
+    if _cfg.get("memory_supersede_enabled"):
+        try:
+            from .memory_index import USER_MEMORY_NAMESPACE
+            from .memory_supersede import supersede_async
+            supersede_async(
+                new_doc_id=str(mem_file), new_name=filename,
+                new_text=content_text, namespace=USER_MEMORY_NAMESPACE,
+            )
+        except Exception:
+            pass
+
     return (f"Memory saved (local LLM, quality={quality:.2f}): {mem_file}\n"
             f"  Name: {name}\n"
             f"  Type: {mem_type}\n"

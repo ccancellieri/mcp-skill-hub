@@ -31,6 +31,10 @@ _OP_ROUTING: dict[str, tuple[float, str]] = {
     "wiki_file_answer": (0.5, "reasoning"),
     "wiki_ingest": (0.4, "writing"),
     "exhaustion_save": (0.4, "writing"),
+    # Judge which existing memory a new decision supersedes (#136) and draft an
+    # improved skill version from feedback (#137).
+    "memory_supersede": (0.4, "reasoning"),
+    "evolve_skill": (0.6, "writing"),
     # Prompt optimisation runs on a cheap auxiliary model via the ladder so the
     # main coding loop never pays for it (G4: prompt-opt via gateway).
     "improve_prompt": (0.2, "fast"),

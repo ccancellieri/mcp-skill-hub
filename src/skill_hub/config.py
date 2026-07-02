@@ -535,6 +535,12 @@ _DEFAULTS = {
     "reindex_sweep_interval_minutes": 1440,   # daily
     "reindex_on_task_close": True,
 
+    # Memory outdating (#136) — after a memory write, ask the ladder which near
+    # neighbors the new decision supersedes and stamp them (non-destructive).
+    "memory_supersede_enabled": True,
+    "memory_supersede_min_sim": 0.72,   # raw-cosine floor before a ladder judge
+    "memory_supersede_top_k": 6,        # max neighbors judged per write
+
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,
 
