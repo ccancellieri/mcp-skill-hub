@@ -231,7 +231,7 @@ def _find_match(current: list[dict], inc: NormalizedProvider) -> int | None:
     """Index of the existing record that *inc* should merge into, or None.
 
     Opencode providers match on the credential ref (stable even when the
-    display name was customised, e.g. ref ``agent-platform`` -> ``work-gateway``).
+    display name was customised, e.g. ref ``agent-platform`` -> ``remote-models``).
     Others match on name, then on a non-empty api_base.
     """
     for i, rec in enumerate(current):
