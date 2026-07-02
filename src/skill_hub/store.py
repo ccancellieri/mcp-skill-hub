@@ -981,6 +981,24 @@ class SkillStore:
             )
             self._conn.commit()
 
+        # Issue #127 — session<->task link was one-way (tasks.session_id only);
+        # a resumed session had no way to look up its task. Additive column +
+        # one-time backfill from the existing tasks.session_id match.
+        if "task_id" not in ctx_cols:
+            self._conn.execute(
+                "ALTER TABLE session_context ADD COLUMN task_id INTEGER"
+            )
+            self._conn.commit()
+            self._conn.execute(
+                "UPDATE session_context SET task_id = ("
+                "  SELECT id FROM tasks"
+                "  WHERE tasks.session_id = session_context.session_id"
+                "  AND tasks.status = 'open'"
+                "  ORDER BY tasks.created_at DESC LIMIT 1"
+                ") WHERE task_id IS NULL"
+            )
+            self._conn.commit()
+
         # Per-task auto-approve toggle (permissive override).
         task_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(tasks)")}
         if "auto_approve" not in task_cols:
@@ -3036,14 +3054,63 @@ class SkillStore:
         return None
 
     def bind_task_to_session(self, task_id: int, session_id: str) -> None:
-        """Rebind an existing open task to a new session; bump updated_at + last_activity_at."""
+        """Rebind an existing open task to a new session; bump updated_at + last_activity_at.
+
+        Writes both sides of the session<->task link: ``tasks.session_id``
+        and, when a ``session_context`` row already exists for
+        ``session_id``, ``session_context.task_id`` (see #127).
+        """
         self._conn.execute(
             "UPDATE tasks SET session_id = ?, "
             "updated_at = datetime('now'), last_activity_at = datetime('now') "
             "WHERE id = ?",
             (session_id, task_id),
         )
+        self._conn.execute(
+            "UPDATE session_context SET task_id = ? WHERE session_id = ?",
+            (task_id, session_id),
+        )
         self._conn.commit()
+
+    # Title shape produced by the pre-#127 auto-create bug in
+    # session_start_enforcer._ensure_open_tasks: a bare filename slug
+    # (lowercase/digits joined by underscores) used verbatim as the task
+    # title instead of the memory file's human-readable description.
+    _JUNK_MEMORY_TITLE_RE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)+$")
+
+    def find_junk_memory_tasks(self) -> list[sqlite3.Row]:
+        """Return ``src:memory`` tasks with no session that look auto-created
+        with a raw filename slug as their title (see #127).
+
+        ``project_memory_task`` always writes ``session_id=""`` (never SQL
+        NULL) via ``save_task``'s default, so both representations are
+        matched defensively.
+        """
+        rows = self._conn.execute(
+            "SELECT id, title, tags, session_id FROM tasks "
+            "WHERE (session_id IS NULL OR session_id = '') "
+            "AND (tags = 'src:memory' OR tags LIKE 'src:memory,%' "
+            "OR tags LIKE '%,src:memory' OR tags LIKE '%,src:memory,%')"
+        ).fetchall()
+        return [
+            r for r in rows
+            if self._JUNK_MEMORY_TITLE_RE.match((r["title"] or "").strip())
+        ]
+
+    def cleanup_junk_memory_tasks(self, *, dry_run: bool = True) -> dict:
+        """Idempotently remove junk auto-created memory tasks (see #127).
+
+        Safe to run repeatedly: once the matching rows are gone this is a
+        no-op. Returns ``{"dry_run", "removed": [{"id", "title"}], "count"}``.
+        """
+        junk = self.find_junk_memory_tasks()
+        removed = [{"id": int(r["id"]), "title": r["title"]} for r in junk]
+        if not dry_run and junk:
+            self._conn.executemany(
+                "DELETE FROM tasks WHERE id = ?", [(r["id"],) for r in junk]
+            )
+            self._conn.commit()
+        return {"dry_run": dry_run, "removed": removed, "count": len(removed)}
 
     # ─────────────────────── M1 claims layer ─────────────────────────────
     #
@@ -4007,6 +4074,7 @@ class SkillStore:
                 "message_count": 0,
                 "recent_messages": [],
                 "transcript_offset": 0,
+                "task_id": None,
             }
         import json as _json
         return {
@@ -4016,6 +4084,7 @@ class SkillStore:
             "message_count": row["message_count"],
             "recent_messages": _json.loads(row["recent_messages"]),
             "transcript_offset": row["transcript_offset"] if "transcript_offset" in row.keys() else 0,
+            "task_id": row["task_id"] if "task_id" in row.keys() else None,
         }
 
     def save_session_context(self, session_id: str, loaded_skills: list[str],
@@ -4029,11 +4098,19 @@ class SkillStore:
         """
         import json as _json
         msgs_json = _json.dumps(recent_messages or [])
+        # task_id is self-healed from tasks.session_id on first insert (the
+        # row may not exist yet when bind_task_to_session runs on the very
+        # first prompt — see #127) and left untouched on conflict so it
+        # never regresses an already-bound value.
         self._conn.execute("""
             INSERT INTO session_context
                 (session_id, loaded_skills, context_summary, message_count,
-                 recent_messages, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
+                 recent_messages, updated_at, task_id)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), (
+                SELECT id FROM tasks WHERE tasks.session_id = ?
+                AND tasks.status = 'open'
+                ORDER BY tasks.created_at DESC LIMIT 1
+            ))
             ON CONFLICT(session_id) DO UPDATE SET
                 loaded_skills = excluded.loaded_skills,
                 context_summary = excluded.context_summary,
@@ -4041,7 +4118,7 @@ class SkillStore:
                 recent_messages = excluded.recent_messages,
                 updated_at = excluded.updated_at
         """, (session_id, _json.dumps(loaded_skills), context_summary,
-              message_count, msgs_json))
+              message_count, msgs_json, session_id))
         self._conn.commit()
 
         # Write context file for local LLM consumption

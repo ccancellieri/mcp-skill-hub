@@ -194,8 +194,12 @@ only cares about a subset of tools, narrow it with the `if` field
 
 `if` accepts the same permission-rule syntax as `permissions.allow` /
 `permissions.deny` — `Bash(git *)`, `Edit(*.py)`, etc. Skill-hub's
-`auto-approve.sh` and `post-tool-observer.sh` ship with `Bash(*)` so
-non-Bash tool calls cost nothing.
+`auto-approve.sh` (PreToolUse) ships with `Bash(*)` so non-Bash tool calls
+cost nothing there. `post-tool-observer.sh` only carries the filter on
+`PostToolUseFailure` (verdict-cache negative reinforcement, Bash-only); on
+`PostToolUse` it is unfiltered because the same script also projects
+TodoWrite/TaskCreate/TaskUpdate/TaskComplete/TaskStop calls into skill-hub
+tasks and logs every tool call to the activity log.
 
 ---
 

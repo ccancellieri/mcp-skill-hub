@@ -7225,6 +7225,26 @@ def main() -> None:
         print(f"Closed {closed} task(s) for branch {branch!r}"
               + (f" in repo {repo_tag!r}" if repo_tag else "") + ".")
 
+    elif cmd == "cleanup_junk_memory_tasks":
+        # Idempotent cleanup for the auto-create title bug (#127): removes
+        # src:memory tasks with NULL session_id whose title is a raw
+        # filename slug. Dry-run by default; pass --apply to delete.
+        apply = "--apply" in args
+        store = SkillStore()
+        report = store.cleanup_junk_memory_tasks(dry_run=not apply)
+        store.close()
+        if not report["removed"]:
+            print("No junk memory tasks found.")
+        elif report["dry_run"]:
+            print(f"Would remove {report['count']} junk memory task(s):")
+            for r in report["removed"]:
+                print(f"  #{r['id']} {r['title']!r}")
+            print("Re-run with --apply to delete.")
+        else:
+            print(f"Removed {report['count']} junk memory task(s):")
+            for r in report["removed"]:
+                print(f"  #{r['id']} {r['title']!r}")
+
     elif cmd == "search_context":
         query = " ".join(args)
         result = _execute_intent({"intent": "search_context", "summary": query}, query)

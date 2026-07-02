@@ -109,7 +109,11 @@ _HOOKS: tuple[dict[str, Any], ...] = (
      "statusMessage": "Checking for plan continuation..."},
     {"event": "PreToolUse", "script": "auto-approve.sh", "if": "Bash(*)", "timeout": 5,
      "statusMessage": "Checking allow-list..."},
-    {"event": "PostToolUse", "script": "post-tool-observer.sh", "if": "Bash(*)", "timeout": 5,
+    # No ``if`` filter: this hook also projects TodoWrite/TaskCreate/TaskUpdate/
+    # TaskComplete/TaskStop calls into skill-hub tasks and logs every tool call
+    # to the activity log, not just Bash (see PostToolUseFailure below, which
+    # stays Bash-only — it only feeds the verdict cache).
+    {"event": "PostToolUse", "script": "post-tool-observer.sh", "timeout": 5,
      "statusMessage": "Recording approved command..."},
     {"event": "PostToolUseFailure", "script": "post-tool-observer.sh", "if": "Bash(*)", "timeout": 5,
      "statusMessage": "Recording failed command..."},

@@ -454,13 +454,14 @@ def step_install_hooks(step: int, total: int):
         ],
         "PostToolUse": [
             {
-                # Observe successful Bash runs; record as "user_approved"
-                # verdicts so future identical/similar commands auto-approve
-                # from cache. ``if`` filter avoids per-call subprocess on
-                # non-Bash tools (Read/Edit/Grep/...).
+                # Observes every tool call: Bash runs feed the verdict cache
+                # ("user_approved"); TodoWrite/TaskCreate/TaskUpdate/TaskComplete/
+                # TaskStop project into skill-hub tasks (claude_tasks); all tool
+                # calls feed the activity log + codegraph-usage hints. No ``if``
+                # filter — a prior Bash(*) filter here silently starved the
+                # /tasks projection of the tool calls it needs to see (#127).
                 "type": "command",
                 "command": _hook_command("post-tool-observer.sh"),
-                "if": "Bash(*)",
                 "timeout": 5,
                 "statusMessage": "Recording approved command...",
             },

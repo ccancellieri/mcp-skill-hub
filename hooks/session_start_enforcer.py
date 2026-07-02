@@ -216,11 +216,27 @@ def _ensure_open_tasks() -> str:
         store = SkillStore()
         created: list[str] = []
         try:
-            for link_text, link_target, desc in candidates:
+            # Dedupe against titles already open, in addition to the
+            # store's own stable-key dedup (per memory file).
+            existing_titles = {
+                (row["title"] or "").strip().lower()
+                for row in store.list_tasks(status="open")
+            }
+            for _link_text, link_target, desc in candidates:
                 mem_path = memory_dir / link_target
                 fm = _read_memory_frontmatter(mem_path)
-                title = (fm.get("name") or link_text).strip()
                 full_desc = (fm.get("description") or "").strip()
+                if not full_desc:
+                    # No usable description on the linked memory file — skip
+                    # rather than fall back to its raw filename slug (the
+                    # frontmatter `name` key is itself slug-shaped by
+                    # convention, e.g. "project_search_harmonization_1777").
+                    continue
+                title = full_desc[:120].strip()
+                if len(full_desc) > 120:
+                    title = title.rstrip() + "…"
+                if title.lower() in existing_titles:
+                    continue
                 classify_text = f"{full_desc}\n{desc}"
 
                 # Derive tags from description keywords
@@ -247,6 +263,7 @@ def _ensure_open_tasks() -> str:
                 )
                 if result["action"] == "created":
                     created.append(title)
+                    existing_titles.add(title.lower())
         finally:
             store.close()
 
