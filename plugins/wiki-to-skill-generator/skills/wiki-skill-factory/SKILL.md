@@ -1,63 +1,64 @@
 ---
 name: wiki-skill-factory
-description: Meta-skill for generating actionable skills from wiki knowledge pages. Use when you need to understand how wiki-to-skill generation works or want to manually trigger skill generation.
+description: Meta-skill for generating project-specialized skills from the memory of work done. Use when you need to understand how memory-to-skill generation works or want to manually trigger it.
 triggers:
-  - "generate skill from wiki"
+  - "generate skills from memory"
   - "wiki skill factory"
-  - "extract patterns from wiki"
+  - "specialized skills from lessons learned"
 ---
 
-# Wiki Skill Factory
+# Skill Factory — memory of work done → specialized skills
 
-This skill documents how the `wiki-to-skill-generator` plugin transforms wiki knowledge into actionable skills.
+This skill documents how the `wiki-to-skill-generator` plugin turns the
+**memory of work done** into **project-specialized** skills. The source is the
+`memory:user-project` store — the per-project auto-memory (lessons, decisions,
+patterns) under `~/.claude/projects/<project>/memory/*.md` — so skills come out
+specialized per project, not generic.
 
-## How It Works
+## What makes a *proper, specialized* skill
 
-1. **Discovery**: Finds wiki entity/concept pages with high `access_count` (>=3 by default)
-2. **Extraction**: LLM analyzes page content for actionable patterns
-3. **Generation**: Creates a `SKILL.md` file with structured triggers and procedures
-4. **Registration**: Records mapping in `plugin_wiki_skills` table
-5. **Suggestion**: `on_session_start` hook suggests relevant skills to active sessions
+The authoring bar (enforced at the L3 stage below):
 
-## Configuration
+- **Specialized, not generic.** Encode the concrete lesson — the real names,
+  paths, decisions, and gotchas of *this* project. Never flatten into vague
+  advice that would apply to any codebase.
+- **Trigger-optimized `description`.** One line that names the project/domain so
+  the skill triggers accurately.
+- **Actionable body.** Overview / When to use / Procedure / Gotchas, with the
+  specifics kept intact.
 
-Plugin config in `plugin.json`:
+## The pipeline (L1/L2/L3 escalation ladder)
 
-- `min_access_count`: Minimum wiki page access count to consider (default: 3)
-- `exclude_types`: Wiki page types to skip (default: ["source", "overview"])
-- `llm_tier`: LLM tier for pattern extraction (default: "tier_mid")
-- `skill_output_dir`: Where to write generated skills (default: "skills/generated/")
+| Stage | Tier | Job |
+|-------|------|-----|
+| 0 — Rearrange upfront | — | Read memory files, group by project, dedup in RAM. Never mutates stored memory (unless `--reindex`). |
+| 1 — Triage & cluster | **L1** cheap | Cluster a project's lessons into themes; keep only skill-worthy ones. |
+| 2 — Draft | **L2** mid | Draft a project-specialized skill per surviving cluster. |
+| 3 — Author | **L3** smart | Polish into a proper `SKILL.md` following *this* guidance. Only skill-worthy clusters reach L3 (cost control). |
 
-## Manual Generation
+## Manual generation
 
-Run the scheduled task:
-
-```
-enable_plugin_task("wiki-to-skill-generator", "generate-skills")
-```
-
-Or call the script directly:
+Dry run (L1 triage only — cheap, writes nothing):
 
 ```bash
 python scripts/generate_skills.py --dry-run
 ```
 
-## Generated Skill Structure
+Target one project, or refresh embeddings first:
 
-Generated skills follow this template:
+```bash
+python scripts/generate_skills.py --project dynastore
+python scripts/generate_skills.py --reindex        # slow: reloads embed model
+```
 
-- `name`: Derived from wiki page title
-- `description`: LLM-extracted summary
-- `triggers`: Pattern-matched phrases from content
-- `procedure`: Step-by-step guidance extracted from wiki
-- `examples`: Concrete use cases
-- `gotchas`: Common pitfalls or edge cases
+Or via the scheduled task / dashboard button (`/wiki-skill-generator/`).
 
-## Maintenance
+## Output
 
-- Generated skills are stored in `skills/generated/`
-- Re-running generation overwrites existing skills for the same wiki page
-- Use `index_skills()` to refresh the skill index after generation
+- Per project: `skills/generated/<project-slug>/<skill-name>/SKILL.md`
+- Frontmatter: `name`, `description`, `triggers`, `source: memory-generated`, `project`
+- Mapping recorded in the `plugin_wiki_skills` table; `on_session_start` suggests
+  relevant skills to active sessions.
 
 ---
 *Source: wiki-to-skill-generator plugin*

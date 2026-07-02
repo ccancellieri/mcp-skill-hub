@@ -17,7 +17,7 @@
   ],
   "storage": {
     "schema": "storage/schema.sql",
-    "namespace": "wiki_skills"
+    "namespace": "wiki"
   },
   "config": {
     "min_access_count": 3,

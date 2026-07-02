@@ -42,7 +42,7 @@ _log = logging.getLogger(__name__)
 def _get_registered_skills(store: Any, limit: int = 10) -> list[dict]:
     """Fetch wiki-derived skills from plugin_wiki_skills table."""
     try:
-        db = store.plugin_db("wiki_skills")
+        db = store.plugin_db("wiki")
         rows = db.fetch_all(
             """
             SELECT wiki_slug, wiki_title, wiki_type, skill_path, skill_id, 
@@ -62,7 +62,7 @@ def _get_registered_skills(store: Any, limit: int = 10) -> list[dict]:
 def _update_use_count(store: Any, wiki_slug: str) -> None:
     """Increment use_count for a skill."""
     try:
-        db = store.plugin_db("wiki_skills")
+        db = store.plugin_db("wiki")
         db.execute(
             """
             UPDATE plugin_wiki_skills
