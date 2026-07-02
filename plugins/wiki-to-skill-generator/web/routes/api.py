@@ -157,11 +157,32 @@ def list_candidates(limit: int = Query(20, ge=1, le=100)):
     return JSONResponse({"candidates": candidates})
 
 
+def _load_generate_main():
+    """Load generate_skills.main by file path.
+
+    The web app runs inside the MCP server process, where the plugin's own
+    directory is not on sys.path and ``scripts`` is not an importable package,
+    so ``from scripts.generate_skills import main`` fails. Load it by absolute
+    path from the plugin root instead.
+    """
+    import importlib.util
+
+    script_path = _PLUGIN_ROOT / "scripts" / "generate_skills.py"
+    spec = importlib.util.spec_from_file_location(
+        "wiki_to_skill_generator.generate_skills", script_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.main
+
+
 @router.post("/api/generate")
 def generate_skills(dry_run: bool = Query(False)):
     """Trigger skill generation, return results."""
     try:
-        from scripts.generate_skills import main as generate_main
+        generate_main = _load_generate_main()
         result = generate_main(dry_run=dry_run)
         return JSONResponse({"status": "completed", "output": result})
     except Exception as exc:

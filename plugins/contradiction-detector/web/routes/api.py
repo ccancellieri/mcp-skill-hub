@@ -72,10 +72,32 @@ async def resolve_finding(
     })
 
 
+def _load_detect_contradictions():
+    """Load detect_contradictions by file path.
+
+    The web app runs inside the MCP server process, where the plugin's own
+    directory is not on sys.path and ``scripts`` is not an importable package,
+    so ``from scripts.detect_contradictions import ...`` fails. Load it by
+    absolute path from the plugin root instead.
+    """
+    import importlib.util
+
+    plugin_root = Path(__file__).resolve().parent.parent.parent
+    script_path = plugin_root / "scripts" / "detect_contradictions.py"
+    spec = importlib.util.spec_from_file_location(
+        "contradiction_detector.detect_contradictions", script_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.detect_contradictions
+
+
 @router.post("/run-detection")
 async def run_detection(request: Request, dry_run: bool = False):
     try:
-        from scripts.detect_contradictions import detect_contradictions
+        detect_contradictions = _load_detect_contradictions()
         with _get_conn() as conn:
             result = detect_contradictions(conn, dry_run=dry_run)
         return JSONResponse(result)
