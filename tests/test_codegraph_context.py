@@ -37,6 +37,12 @@ def store(tmp_path, monkeypatch):
 def server_mod(store, monkeypatch, tmp_path):
     """Wire the global server module to an isolated store."""
     from skill_hub import server
+    from skill_hub import config as _cfgmod
+    # HOME alone does not isolate config.CONFIG_PATH -- it is a module-level
+    # constant bound at import time. Without this, tests that fall through
+    # to _cfg.load_config() (e.g. for codegraph_reindex_roots) would read the
+    # real ~/.claude/mcp-skill-hub/config.json.
+    monkeypatch.setattr(_cfgmod, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(server, "_store", store)
     monkeypatch.setattr(server, "SETTINGS_PATH", tmp_path / "settings.json")
     server._last_search_state["query"] = ""
@@ -369,3 +375,92 @@ class TestSearchContextIntegration:
 
         out = server_mod.search_context("default flag test", top_k=3)
         assert "CodeGraph Symbols" not in out
+
+
+# ---------------------------------------------------------------------------
+# #122 — repo_root resolution order for a daemon whose own cwd is meaningless.
+# ---------------------------------------------------------------------------
+
+class TestResolveCodegraphRepoRoot:
+    """explicit repo_root arg -> first indexed codegraph_reindex_roots entry ->
+    Path.cwd() as a last resort. get_context_block is mocked throughout so
+    these are pure resolution-order tests, independent of the CLI adapter."""
+
+    def test_explicit_repo_root_wins(self, server_mod, fake_index, tmp_path, monkeypatch):
+        from skill_hub import config as _cfg, codegraph_context
+        codegraph_context._clear_cache()
+
+        other_cwd = tmp_path / "daemon-cwd"
+        other_cwd.mkdir()
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: other_cwd))
+
+        monkeypatch.setattr(
+            _cfg, "get",
+            lambda key: True if key == "search_context_use_codegraph"
+            else (["/nonexistent-root"] if key == "codegraph_reindex_roots"
+                  else _cfg.load_config().get(key)),
+        )
+        monkeypatch.setattr(server_mod, "_cfg", _cfg)
+
+        captured: list[Path] = []
+        monkeypatch.setattr(
+            codegraph_context, "get_context_block",
+            lambda query, repo_root: (captured.append(repo_root), "## CodeGraph Symbols\n\nstub")[1],
+        )
+
+        server_mod.search_context("anything", top_k=3, repo_root=str(fake_index))
+        assert captured == [fake_index]
+
+    def test_falls_back_to_first_indexed_reindex_root(self, server_mod, fake_index, tmp_path, monkeypatch):
+        from skill_hub import config as _cfg, codegraph_context
+        codegraph_context._clear_cache()
+
+        unindexed_root = tmp_path / "unindexed"
+        unindexed_root.mkdir()
+        daemon_cwd = tmp_path / "daemon-cwd"
+        daemon_cwd.mkdir()
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: daemon_cwd))
+
+        # First configured root has no index, second (fake_index) does -- must
+        # skip the first and pick the first one that actually has an index.
+        roots = [str(unindexed_root), str(fake_index)]
+        monkeypatch.setattr(
+            _cfg, "get",
+            lambda key: True if key == "search_context_use_codegraph"
+            else (roots if key == "codegraph_reindex_roots"
+                  else _cfg.load_config().get(key)),
+        )
+        monkeypatch.setattr(server_mod, "_cfg", _cfg)
+
+        captured: list[Path] = []
+        monkeypatch.setattr(
+            codegraph_context, "get_context_block",
+            lambda query, repo_root: (captured.append(repo_root), "## CodeGraph Symbols\n\nstub")[1],
+        )
+
+        # No repo_root passed -> resolution falls through to config roots.
+        server_mod.search_context("anything", top_k=3)
+        assert captured == [fake_index]
+
+    def test_falls_back_to_cwd_when_no_root_resolves(self, server_mod, fake_index, tmp_path, monkeypatch):
+        from skill_hub import config as _cfg, codegraph_context
+        codegraph_context._clear_cache()
+
+        # Daemon's own cwd happens to be indexed (fake_index); config roots
+        # are empty (the default) and no explicit repo_root is passed.
+        monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: fake_index))
+        monkeypatch.setattr(
+            _cfg, "get",
+            lambda key: True if key == "search_context_use_codegraph"
+            else _cfg.load_config().get(key),
+        )
+        monkeypatch.setattr(server_mod, "_cfg", _cfg)
+
+        captured: list[Path] = []
+        monkeypatch.setattr(
+            codegraph_context, "get_context_block",
+            lambda query, repo_root: (captured.append(repo_root), "## CodeGraph Symbols\n\nstub")[1],
+        )
+
+        server_mod.search_context("anything", top_k=3)
+        assert captured == [fake_index]

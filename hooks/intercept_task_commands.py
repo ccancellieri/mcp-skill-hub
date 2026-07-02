@@ -114,6 +114,7 @@ def main():
     # Normalize whitespace for CLI arg safety
     message = message.replace("\n", " ").replace("\r", "").replace("\t", " ")
     session_id = data.get("session_id", "")
+    cwd = data.get("cwd", os.getcwd())
 
     # Preview: first 80 chars of user message for log readability
     preview = message_raw[:80].replace("\n", " ")
@@ -137,6 +138,8 @@ def main():
     cmd = [str(CLI), "classify"]
     if session_id:
         cmd.extend(["--session-id", session_id])
+    if cwd:
+        cmd.extend(["--cwd", cwd])
     cmd.append(message)
 
     t_cli = time.monotonic()

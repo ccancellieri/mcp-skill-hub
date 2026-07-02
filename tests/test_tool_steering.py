@@ -58,3 +58,32 @@ def test_silent_when_flag_disabled(indexed_repo, monkeypatch):
         lambda key: False if key == "tool_steering_enabled" else real_get(key),
     )
     assert cli._tool_steering_hint("where is the store?", cwd=indexed_repo) is None
+
+
+def test_hook_classify_and_execute_forwards_session_cwd(tmp_path, monkeypatch):
+    """Production entry point: hook_classify_and_execute() must forward its
+    own ``cwd`` argument (the session cwd carried by the hook payload) to
+    _tool_steering_hint -- NOT os.getcwd(), which is meaningless when this
+    code runs detached from the session's working directory.
+    """
+    from skill_hub import cli, config as cfg
+
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(cli, "_local_mode", False)
+
+    captured: dict = {}
+
+    def _spy(message, cwd=None):
+        captured["cwd"] = cwd
+        return None
+
+    monkeypatch.setattr(cli, "_tool_steering_hint", _spy)
+    # Stub out the LLM-backed context stage so this stays deterministic and
+    # never touches Ollama or the real skill store.
+    monkeypatch.setattr(cli, "_dynamic_context_stage", lambda *a, **k: None)
+
+    session_cwd = str(tmp_path / "project")
+    cli.hook_classify_and_execute("hi", session_id="s1", cwd=session_cwd)
+
+    assert "cwd" in captured, "_tool_steering_hint was never called"
+    assert captured["cwd"] == session_cwd

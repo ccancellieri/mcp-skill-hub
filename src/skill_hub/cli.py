@@ -4356,7 +4356,7 @@ def _execute_single_command(sub_cmd: str, session_id: str, _cfg,
     return None
 
 
-def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
+def hook_classify_and_execute(message: str, session_id: str = "", cwd: str = "") -> dict:
     """
     Main entry point for the UserPromptSubmit hook.
 
@@ -4366,6 +4366,11 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
     3. LLM triage → local LLM decides: answer locally, redirect to /hub-*
        command, enrich with hints for Claude, or pass through
     4. Context enrichment → RAG injection + pre-compact + digest + triage hints
+
+    ``cwd`` is the session's working directory (forwarded from the hook
+    payload's ``cwd`` field by the calling hook script) — the process
+    executing this function is not guaranteed to have that directory as its
+    own cwd, so callers must pass it explicitly. See ``_tool_steering_hint``.
 
     Returns:
       - {"decision": "block", "reason": "..."} if handled locally
@@ -4824,8 +4829,10 @@ def hook_classify_and_execute(message: str, session_id: str = "") -> dict:
         system_parts.append(precompact)
 
     # G2: proactive tool steering (codegraph-first + compact output) when the
-    # prompt shows search intent in a codegraph-indexed repo.
-    steering = _tool_steering_hint(message)
+    # prompt shows search intent in a codegraph-indexed repo. Uses the session
+    # cwd forwarded from the hook payload -- os.getcwd() would resolve to
+    # wherever this process happens to run, not the project being worked on.
+    steering = _tool_steering_hint(message, cwd=cwd or None)
     if steering:
         system_parts.append(steering)
 
@@ -7118,19 +7125,23 @@ def main() -> None:
     args = sys.argv[2:]
 
     if cmd == "classify":
-        # Extract --session-id if present
+        # Extract --session-id / --cwd if present
         session_id = ""
+        cwd = ""
         filtered_args = []
         i = 0
         while i < len(args):
             if args[i] == "--session-id" and i + 1 < len(args):
                 session_id = args[i + 1]
                 i += 2
+            elif args[i] == "--cwd" and i + 1 < len(args):
+                cwd = args[i + 1]
+                i += 2
             else:
                 filtered_args.append(args[i])
                 i += 1
         message = " ".join(filtered_args) if filtered_args else sys.stdin.read()
-        result = hook_classify_and_execute(message.strip(), session_id=session_id)
+        result = hook_classify_and_execute(message.strip(), session_id=session_id, cwd=cwd)
         print(json.dumps(result))
 
     elif cmd == "status":

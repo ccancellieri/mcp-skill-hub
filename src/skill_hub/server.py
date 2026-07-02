@@ -1880,6 +1880,33 @@ def validate_plan(plan_path: str, repo_path: str = "", check_files: bool = True)
     )
 
 
+def _resolve_codegraph_repo_root(repo_root: str) -> Path:
+    """Resolve which repo CodeGraph should query for search_context (#122).
+
+    The MCP server runs as a daemon, so ``Path.cwd()`` resolves to wherever
+    the server process happens to live -- not the caller's project -- and is
+    meaningless as a default. Resolution order:
+
+    1. Explicit ``repo_root`` argument.
+    2. First entry in the ``codegraph_reindex_roots`` config list that
+       already has a CodeGraph index.
+    3. ``Path.cwd()`` as a last resort.
+    """
+    from .codegraph_context import has_codegraph_index
+
+    if repo_root:
+        return Path(repo_root).expanduser()
+
+    roots = _cfg.get("codegraph_reindex_roots") or []
+    if isinstance(roots, list):
+        for raw in roots:
+            candidate = Path(str(raw)).expanduser()
+            if has_codegraph_index(candidate):
+                return candidate
+
+    return Path.cwd()
+
+
 @mcp.tool()
 @requires_capability("embedding")
 def search_context(
@@ -1887,12 +1914,19 @@ def search_context(
     top_k: int = 5,
     categories: str = "all",
     include_plugin_memory: bool = True,
+    repo_root: str = "",
 ) -> str:
     """Unified search. categories: all (default), tasks, skills, closed, plugins (comma-separated).
 
     ``include_plugin_memory`` (A4): when True, merges results from plugin-
     declared ``memory.reads`` globs (indexed under ``memory:<plugin>`` vector
     namespaces) into the output.
+
+    ``repo_root`` (#122): repo to query for CodeGraph symbols (section 8).
+    The server runs as a daemon so it cannot trust its own cwd -- pass the
+    caller's project directory explicitly. When omitted, falls back to the
+    first ``codegraph_reindex_roots`` config entry that has an index, then
+    to the server's cwd as a last resort.
     """
     log_tool("search_context", query=query, top_k=top_k, categories=categories)
 
@@ -2140,8 +2174,7 @@ def search_context(
     if _cfg.get("search_context_use_codegraph"):
         try:
             from .codegraph_context import get_context_block, has_codegraph_index
-            from pathlib import Path as _Path
-            _repo_root = _Path.cwd()
+            _repo_root = _resolve_codegraph_repo_root(repo_root)
             if has_codegraph_index(_repo_root):
                 cg_block = get_context_block(query, _repo_root)
                 if cg_block:
