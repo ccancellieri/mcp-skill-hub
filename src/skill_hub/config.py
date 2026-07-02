@@ -541,6 +541,13 @@ _DEFAULTS = {
     "memory_supersede_min_sim": 0.72,   # raw-cosine floor before a ladder judge
     "memory_supersede_top_k": 6,        # max neighbors judged per write
 
+    # L1/L2 autonomous plugin curation — the cheap ladder tiers decide whether a
+    # stale enabled plugin should be disabled, before the main LLM is involved.
+    "plugin_curation_enabled": True,        # run the L1/L2 disable decision (probe)
+    "plugin_curation_auto": False,          # APPLY: flip settings.json server-side
+    "plugin_curation_stale_days": 14,       # no session_log activity => candidate
+    "plugin_curation_max_per_session": 5,   # max plugins judged per curation pass
+
     # Cron scheduler — background jobs driven by cron_jobs table
     "cron_jobs_enabled": True,
 

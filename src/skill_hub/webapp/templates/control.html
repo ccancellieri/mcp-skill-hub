@@ -12,22 +12,16 @@
     <div class="monitor-bar placeholder">Loading resource monitor…</div>
   </div>
 
-  <div class="tabs-sub" x-data="{ tab: 'services' }">
+  <div class="tabs-sub" x-data="{ tab: 'overview', subtab: '' }">
     <div class="tab-row">
-      <button class="tab-btn" :class="{active: tab==='services'}" @click="tab='services'">Services</button>
-      <button class="tab-btn" :class="{active: tab==='plugins'}" @click="tab='plugins'">Plugins</button>
-      <button class="tab-btn" :class="{active: tab==='models'}" @click="tab='models'">Models</button>
-      <button class="tab-btn" :class="{active: tab==='pipeline'}" @click="tab='pipeline'; loadPipelinePanel()">Pipeline &amp; Backend</button>
-      <button class="tab-btn" :class="{active: tab==='backend-health'}" @click="tab='backend-health'; loadBackendHealth(false)">Backend Health</button>
-      <button class="tab-btn" :class="{active: tab==='tier-config'}" @click="tab='tier-config'; loadTierConfig(false)">Tier Config</button>
-      <button class="tab-btn" :class="{active: tab==='telemetry'}" @click="tab='telemetry'; loadTelemetry(false)">Telemetry</button>
-      <button class="tab-btn" :class="{active: tab==='graphcode'}" @click="tab='graphcode'">Code Graph</button>
-      <button class="tab-btn" :class="{active: tab==='chrome'}" @click="tab='chrome'">Chrome</button>
-      <button class="tab-btn" :class="{active: tab==='activity'}" @click="tab='activity'">Activity Sync</button>
-      <button class="tab-btn" :class="{active: tab==='hooks'}" @click="tab='hooks'">Hooks</button>
+      <button class="tab-btn" :class="{active: tab==='overview'}" @click="tab='overview'; subtab=''">Overview</button>
+      <button class="tab-btn" :class="{active: tab==='config'}" @click="tab='config'; subtab='plugins'">Configuration</button>
+      <button class="tab-btn" :class="{active: tab==='operations'}" @click="tab='operations'; subtab='pipeline'">Operations</button>
+      <button class="tab-btn" :class="{active: tab==='integrations'}" @click="tab='integrations'; subtab='graphcode'">Integrations</button>
     </div>
 
-    <div x-show="tab==='services'" class="tab-panel">
+    <!-- Overview Tab -->
+    <div x-show="tab==='overview'" class="tab-panel">
       <div class="service-grid">
         {% for svc in services %}
         <div id="card-wrap-{{ svc.name }}"
@@ -46,122 +40,157 @@
       </div>
     </div>
 
-    <div x-show="tab==='plugins'" class="tab-panel"
-         hx-get="/control/plugins"
-         hx-trigger="revealed once"
-         hx-swap="innerHTML">
-      <p class="muted">Loading plugins…</p>
-    </div>
-
-    <div x-show="tab==='models'" class="tab-panel"
-         hx-get="/control/llm/card"
-         hx-trigger="revealed once"
-         hx-swap="innerHTML">
-      <p class="muted">Loading models…</p>
-    </div>
-
-    <div x-show="tab==='pipeline'" class="tab-panel" id="pipeline-panel">
-      <p class="muted" id="pipeline-loading">Loading pipeline &amp; backend info…</p>
-    </div>
-
-    <!-- Backend Health tab -->
-    <div x-show="tab==='backend-health'" class="tab-panel" id="tab-backend-health">
-      <div class="card">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          <h3 style="margin:0">Backend Health</h3>
-          <button onclick="loadBackendHealth(true)" class="btn sm">Refresh</button>
-          <span id="bh-checked-at" style="font-size:11px;color:var(--color-muted);margin-left:auto"></span>
-        </div>
-        <div id="backend-health-grid" class="backend-grid">
-          <p class="muted" id="bh-loading">Loading…</p>
-        </div>
+    <!-- Configuration Tab -->
+    <div x-show="tab==='config'" class="tab-panel">
+      <div class="sub-tab-row">
+        <button class="sub-tab-btn" :class="{active: subtab==='plugins'}" @click="subtab='plugins'">Plugins</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='models'}" @click="subtab='models'">Models</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='tier-config'}" @click="subtab='tier-config'; loadTierConfig(false)">Tier Config</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='telemetry'}" @click="subtab='telemetry'; loadTelemetry(false)">Telemetry</button>
       </div>
-    </div>
+      
+      <div x-show="subtab==='plugins'" class="sub-tab-panel"
+           hx-get="/control/plugins"
+           hx-trigger="revealed once"
+           hx-swap="innerHTML">
+        <p class="muted">Loading plugins…</p>
+      </div>
 
-    <!-- Tier Config tab -->
-    <div x-show="tab==='tier-config'" class="tab-panel" id="tab-tier-config">
-      <div class="card">
-        <div style="margin-bottom:12px">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <h3 style="margin:0">Pipeline Tier Config</h3>
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-              <input type="checkbox" id="pipeline-enabled-toggle">
-              Enable pre-conversation pipeline
-            </label>
+      <div x-show="subtab==='models'" class="sub-tab-panel"
+           hx-get="/control/llm/card"
+           hx-trigger="revealed once"
+           hx-swap="innerHTML">
+        <p class="muted">Loading models…</p>
+      </div>
+
+      <div x-show="subtab==='tier-config'" class="sub-tab-panel" id="tab-tier-config">
+        <div class="card">
+          <div style="margin-bottom:12px">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <h3 style="margin:0">Pipeline Tier Config</h3>
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input type="checkbox" id="pipeline-enabled-toggle">
+                Enable pre-conversation pipeline
+              </label>
+            </div>
+          </div>
+          <div id="tier-config-body">
+            <p class="muted" id="tc-loading">Loading…</p>
+          </div>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+            <button onclick="saveTierConfig()" class="btn btn-primary" id="tier-save-btn">Save</button>
+            <span id="tier-save-status" style="font-size:12px;color:var(--color-muted)"></span>
           </div>
         </div>
-        <div id="tier-config-body">
-          <p class="muted" id="tc-loading">Loading…</p>
-        </div>
-        <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
-          <button onclick="saveTierConfig()" class="btn btn-primary" id="tier-save-btn">Save</button>
-          <span id="tier-save-status" style="font-size:12px;color:var(--color-muted)"></span>
+      </div>
+
+      <div x-show="subtab==='telemetry'" class="sub-tab-panel" id="tab-telemetry">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+            <h3 style="margin:0">Pipeline Telemetry</h3>
+            <button onclick="loadTelemetry(true)" class="btn sm">Refresh</button>
+          </div>
+          <div id="telemetry-summary" style="margin-bottom:12px;font-size:13px"></div>
+          <div id="telemetry-table-wrap">
+            <p class="muted" id="tel-loading">Loading…</p>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Code Graph tab -->
-    <div x-show="tab==='graphcode'" class="tab-panel"
-         hx-get="/control/graphcode"
-         hx-trigger="revealed once"
-         hx-swap="innerHTML">
-      <p class="muted">Loading Code Graph…</p>
-    </div>
+    <!-- Operations Tab -->
+    <div x-show="tab==='operations'" class="tab-panel">
+      <div class="sub-tab-row">
+        <button class="sub-tab-btn" :class="{active: subtab==='pipeline'}" @click="subtab='pipeline'; loadPipelinePanel()">Pipeline</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='backend-health'}" @click="subtab='backend-health'; loadBackendHealth(false)">Backend Health</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='activity'}" @click="subtab='activity'">Activity Sync</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='hooks'}" @click="subtab='hooks'">Hooks</button>
+      </div>
+      
+      <div x-show="subtab==='pipeline'" class="sub-tab-panel" id="pipeline-panel">
+        <p class="muted" id="pipeline-loading">Loading pipeline &amp; backend info…</p>
+      </div>
 
-    <!-- Chrome tab -->
-    <div x-show="tab==='chrome'" class="tab-panel"
-         hx-get="/control/chrome"
-         hx-trigger="revealed once"
-         hx-swap="innerHTML">
-      <p class="muted">Loading Chrome…</p>
-    </div>
-
-    <!-- Activity Sync tab -->
-    <div x-show="tab==='activity'" class="tab-panel"
-         hx-get="/control/activity"
-         hx-trigger="revealed once, every 30s"
-         hx-swap="innerHTML">
-      <p class="muted">Loading Activity Sync…</p>
-    </div>
-
-    <!-- Hooks tab -->
-    <div x-show="tab==='hooks'" class="tab-panel"
-         hx-get="/control/hooks/status"
-         hx-trigger="revealed once"
-         hx-swap="innerHTML">
-      <p class="muted">Loading hook status…</p>
-    </div>
-
-    <!-- Telemetry tab -->
-    <div x-show="tab==='telemetry'" class="tab-panel" id="tab-telemetry">
-      <div class="card">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          <h3 style="margin:0">Pipeline Telemetry</h3>
-          <button onclick="loadTelemetry(true)" class="btn sm">Refresh</button>
+      <div x-show="subtab==='backend-health'" class="sub-tab-panel" id="tab-backend-health">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+            <h3 style="margin:0">Backend Health</h3>
+            <button onclick="loadBackendHealth(true)" class="btn sm">Refresh</button>
+            <span id="bh-checked-at" style="font-size:11px;color:var(--color-muted);margin-left:auto"></span>
+          </div>
+          <div id="backend-health-grid" class="backend-grid">
+            <p class="muted" id="bh-loading">Loading…</p>
+          </div>
         </div>
-        <div id="telemetry-summary" style="margin-bottom:12px;font-size:13px"></div>
-        <div id="telemetry-table-wrap">
-          <p class="muted" id="tel-loading">Loading…</p>
-        </div>
+      </div>
+
+      <div x-show="subtab==='activity'" class="sub-tab-panel"
+           hx-get="/control/activity"
+           hx-trigger="revealed once, every 30s"
+           hx-swap="innerHTML">
+        <p class="muted">Loading Activity Sync…</p>
+      </div>
+
+      <div x-show="subtab==='hooks'" class="sub-tab-panel"
+           hx-get="/control/hooks/status"
+           hx-trigger="revealed once"
+           hx-swap="innerHTML">
+        <p class="muted">Loading hook status…</p>
+      </div>
+    </div>
+
+    <!-- Integrations Tab -->
+    <div x-show="tab==='integrations'" class="tab-panel">
+      <div class="sub-tab-row">
+        <button class="sub-tab-btn" :class="{active: subtab==='graphcode'}" @click="subtab='graphcode'">Code Graph</button>
+        <button class="sub-tab-btn" :class="{active: subtab==='chrome'}" @click="subtab='chrome'">Chrome</button>
+      </div>
+      
+      <div x-show="subtab==='graphcode'" class="sub-tab-panel"
+           hx-get="/control/graphcode"
+           hx-trigger="revealed once"
+           hx-swap="innerHTML">
+        <p class="muted">Loading Code Graph…</p>
+      </div>
+
+      <div x-show="subtab==='chrome'" class="sub-tab-panel"
+           hx-get="/control/chrome"
+           hx-trigger="revealed once"
+           hx-swap="innerHTML">
+        <p class="muted">Loading Chrome…</p>
       </div>
     </div>
   </div>
 </section>
 
 <style>
-.backend-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; padding:4px 0; }
-.backend-card { border:1px solid var(--color-border,#e5e7eb); border-radius:8px; padding:14px 12px; text-align:center; }
-.bc-name { font-weight:600; font-size:13px; margin-bottom:6px; }
-.bc-status { font-size:12px; font-weight:600; }
-.bc-ok, .bc-configured, .bc-available { color:#22c55e; }
-.bc-unconfigured { color:#f59e0b; }
-.bc-unreachable, .bc-error { color:#ef4444; }
-.bc-not_installed { color:#94a3b8; }
-.bc-latency { font-size:11px; color:var(--color-muted); margin-top:4px; }
-</style>
+  .sub-tab-row {
+    display: flex; gap: 6px; margin-bottom: 16px;
+    border-bottom: 1px solid var(--color-border); padding-bottom: 8px;
+  }
+  .sub-tab-btn {
+    padding: 5px 12px; background: transparent; border: 1px solid var(--color-border);
+    border-radius: 4px; color: var(--color-muted); cursor: pointer;
+    font-size: 12px; transition: all 0.2s;
+  }
+  .sub-tab-btn:hover { background: rgba(58,160,255,0.08); border-color: rgba(58,160,255,0.3); }
+  .sub-tab-btn.active {
+    background: rgba(58,160,255,0.15); border-color: var(--color-accent);
+    color: var(--color-fg); font-weight: 500;
+  }
+  .sub-tab-panel { margin-top: 12px; }
+  .backend-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px; padding:4px 0; }
+  .backend-card { border:1px solid var(--color-border,#e5e7eb); border-radius:8px; padding:14px 12px; text-align:center; }
+  .bc-name { font-weight:600; font-size:13px; margin-bottom:6px; }
+  .bc-status { font-size:12px; font-weight:600; }
+  .bc-ok, .bc-configured, .bc-available { color:#22c55e; }
+  .bc-unconfigured { color:#f59e0b; }
+  .bc-unreachable, .bc-error { color:#ef4444; }
+  .bc-not_installed { color:#94a3b8; }
+  .bc-latency { font-size:11px; color:var(--color-muted); margin-top:4px; }
+  </style>
 
 <script>
-(function () {
   var _loaded = false;
   var _bhLoaded = false;
   var _tcLoaded = false;

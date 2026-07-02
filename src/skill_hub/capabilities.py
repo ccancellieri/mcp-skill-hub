@@ -263,6 +263,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=()),
     ToolSpec("auto_curate_plugins", "Suggest stale plugins to disable",
              hard=(BACKEND_DB,)),
+    ToolSpec("curate_plugins", "L1/L2 decide (and optionally apply) plugin disables",
+             hard=(BACKEND_DB,), soft=(BACKEND_REASON_LLM,)),
     # --- Router (prompt rewriting) ---
     ToolSpec("improve_prompt", "Run a prompt rewriter pipeline",
              hard=(), soft=(BACKEND_REASON_LLM,)),

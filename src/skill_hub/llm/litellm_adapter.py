@@ -35,6 +35,9 @@ _OP_ROUTING: dict[str, tuple[float, str]] = {
     # improved skill version from feedback (#137).
     "memory_supersede": (0.4, "reasoning"),
     "evolve_skill": (0.6, "writing"),
+    # Keep/disable decision for a dormant plugin — cheap, so it stays on the
+    # local/gateway tiers and never reaches the main frontier model.
+    "plugin_curation": (0.3, "fast"),
     # Prompt optimisation runs on a cheap auxiliary model via the ladder so the
     # main coding loop never pays for it (G4: prompt-opt via gateway).
     "improve_prompt": (0.2, "fast"),

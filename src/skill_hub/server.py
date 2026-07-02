@@ -2498,6 +2498,33 @@ def auto_curate_plugins(stale_days: int = 14) -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def curate_plugins(apply: bool = False, limit: int = 5) -> str:
+    """Have the cheap L1/L2 ladder decide which dormant plugins to disable.
+
+    Unlike ``auto_curate_plugins`` (which only lists stale candidates), this
+    asks the local/gateway tiers for a keep/disable decision per candidate. With
+    ``apply=True`` the disable decisions are written to ~/.claude/settings.json
+    server-side (restart to apply) — no main-LLM toggle_plugin call needed.
+    Without it, the recommendations are returned for review. The background cron
+    job ``plugin-curation`` runs this automatically when enabled.
+    """
+    from . import plugin_curation
+
+    results = plugin_curation.run_curation(_store, apply=apply, limit=limit)
+    if not results:
+        return "No dormant-plugin decisions (nothing stale, or curation disabled)."
+    header = "Plugin curation decisions" + (" (applied)" if apply else " (dry-run)") + ":"
+    lines = [header]
+    for r in results:
+        mark = " [disabled]" if r["applied"] else ""
+        lines.append(f"  - {r['plugin_id']}: {r['action']}{mark} — {r['reason']}")
+    if not apply and any(r["action"] == "disable" for r in results):
+        lines.append("Re-run with apply=True (or set plugin_curation_auto) to write these.")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@requires_capability("none")
 def session_stats() -> str:
     """Show most-used plugins from session history (passive learning data)."""
     rows = _store.get_session_stats()

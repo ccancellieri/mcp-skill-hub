@@ -36,6 +36,9 @@ _DEFAULT_JOBS = [
     ("codegraph-sync",          "*/30 * * * *", "codegraph_sync",             1),
     # Disabled by default — enable explicitly via the cron UI or config.
     ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
+    # L1/L2 plugin curation — decides which dormant plugins to disable. Only
+    # writes settings.json when plugin_curation_auto is also set. Off by default.
+    ("plugin-curation",            "0 5 * * *",   "plugin_curation",             0),
 ]
 
 
@@ -133,6 +136,29 @@ def _feedback_to_teachings_handler() -> None:
         len(feedback_files),
         teaching_count,
     )
+
+
+def _plugin_curation_handler() -> None:
+    """Cron handler: L1/L2 decide which dormant plugins to disable.
+
+    Gated by ``plugin_curation_enabled``; only writes ``~/.claude/settings.json``
+    when ``plugin_curation_auto`` is also set (otherwise it logs recommendations
+    for a human/the main LLM to apply). Disabled by default in ``_DEFAULT_JOBS``.
+    """
+    from . import plugin_curation
+    from .store import get_store
+
+    results = plugin_curation.run_curation(get_store())
+    if not results:
+        _log.info("plugin_curation: no dormant-plugin decisions this pass")
+        return
+    for r in results:
+        _log.info(
+            "plugin_curation: %s -> %s%s (%s)",
+            r["plugin_id"], r["action"],
+            " [applied]" if r["applied"] else "",
+            r["reason"],
+        )
 
 
 def _optimize_memory_dry_run_handler() -> None:
@@ -404,6 +430,7 @@ _HANDLERS["memexp_snapshot_create"] = _memexp_snapshot_create_handler
 _HANDLERS["check_embedding_backends"] = _check_embedding_backends_handler
 _HANDLERS["codegraph_sync"] = _codegraph_sync_handler
 _HANDLERS["discussions_sync_nightly"] = _discussions_sync_nightly_handler
+_HANDLERS["plugin_curation"] = _plugin_curation_handler
 
 
 def human_schedule(schedule: str) -> str:
