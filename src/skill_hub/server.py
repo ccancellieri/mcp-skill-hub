@@ -519,6 +519,34 @@ def record_feedback(
 
 
 @mcp.tool()
+@requires_capability("none")
+def evolve_skill(skill_id: str, reason: str = "") -> str:
+    """Draft an improved version of a skill from its feedback and record it as a
+    proposal in skill_versions (via the escalation ladder). The on-disk skill is
+    never overwritten — review proposals before adopting. Call with no skill_id
+    to list current evolution candidates."""
+    log_tool("evolve_skill", skill_id=skill_id)
+    from .skill_evolution import candidates, propose_evolution
+
+    if not skill_id:
+        cands = candidates(_store, limit=10)
+        if not cands:
+            return "No evolution candidates (need injected-but-unhelpful skills)."
+        lines = [f"- {c['id']} (inj={c.get('injections')}, "
+                 f"unhelpful={c.get('unhelpful')}, score={round(c.get('feedback_score', 1.0), 2)})"
+                 for c in cands]
+        return "Evolution candidates:\n" + "\n".join(lines)
+
+    proposal = propose_evolution(_store, skill_id, reason=reason)
+    if not proposal:
+        return (f"No proposal for '{skill_id}' — unknown skill, no content, or the "
+                f"ladder returned no improvement.")
+    return (f"Drafted v{proposal['version']} proposal for '{skill_id}'. "
+            f"Reason: {proposal['change_reason']}\n"
+            f"Review with get_evolved_skills_summary; the disk file is untouched.")
+
+
+@mcp.tool()
 @requires_capability("embedding")
 def teach(rule: str, suggest: str, cwd: str = "", override_pii: bool = False) -> str:
     """Add a persistent rule mapping task patterns to plugins or skills.

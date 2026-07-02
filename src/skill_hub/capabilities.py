@@ -200,6 +200,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     # --- Feedback / signals ---
     ToolSpec("record_feedback", "Record helpful/unhelpful on a skill",
              hard=(BACKEND_DB,)),
+    ToolSpec("evolve_skill", "Draft a skill-version proposal from feedback",
+             hard=(BACKEND_DB,), soft=(BACKEND_REASON_LLM,)),
     ToolSpec("log_session", "Record a plugin/tool invocation",
              hard=(BACKEND_DB,)),
     ToolSpec("session_stats", "Most-used plugins from history",
