@@ -539,6 +539,19 @@ def kompress_prose(text: str, *, context: str = "", site: str = "kompress") -> s
 
 
 _WHITESPACE_RE = re.compile(r"\s")
+_WS_RUN_RE = re.compile(r"[ \t]{2,}")
+_NL_RUN_RE = re.compile(r"\n{3,}")
+
+
+def squeeze_whitespace(text: str) -> str:
+    """Deterministic whitespace normalization for prompt-injected previews:
+    collapse runs of spaces/tabs to one space, strip trailing whitespace per
+    line, and cap blank-line runs at one empty line. Markdown table alignment
+    and indentation are NOT preserved — do not use on code payloads the agent
+    must execute; use only where the text is a human/LLM-readable excerpt.
+    """
+    lines = [_WS_RUN_RE.sub(" ", ln).rstrip() for ln in text.split("\n")]
+    return _NL_RUN_RE.sub("\n\n", "\n".join(lines)).strip()
 
 
 def truncate_at_word(text: str, limit: int, *, marker: str = " … (truncated)") -> str:

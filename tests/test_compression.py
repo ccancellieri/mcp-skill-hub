@@ -245,3 +245,20 @@ def test_compression_report_no_flag_when_headroom_present(monkeypatch, tmp_path)
 
     assert "not installed" not in report
     assert "ml/Kompress=on" in report
+
+
+# ---------------------------------------------------------------------------
+# squeeze_whitespace — deterministic prose normalization for prompt injection
+# ---------------------------------------------------------------------------
+
+def test_squeeze_whitespace_collapses_runs_and_blank_lines():
+    from skill_hub.compression import squeeze_whitespace
+    raw = "col a    col b\t\tcol c   \n\n\n\n- item   one  \n   spaced    out\n"
+    out = squeeze_whitespace(raw)
+    assert out == "col a col b col c\n\n- item one\n spaced out"
+
+
+def test_squeeze_whitespace_preserves_single_spacing():
+    from skill_hub.compression import squeeze_whitespace
+    text = "plain prose line\n\nsecond paragraph"
+    assert squeeze_whitespace(text) == text
