@@ -351,6 +351,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     # --- Compression & tooling orchestration ---
     ToolSpec("retrieve_compressed", "Rehydrate content behind a reversible-compression marker",
              hard=()),
+    ToolSpec("fetch_compressed", "Fetch a URL and return compact, agent-facing text",
+             hard=()),
     ToolSpec("ensure_tooling", "Probe and provision dev tooling (e.g. code index) for a path",
              hard=()),
     # --- LLM Wiki knowledge layer ---

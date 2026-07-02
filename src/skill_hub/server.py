@@ -633,6 +633,34 @@ def retrieve_compressed(hash: str) -> str:
 
 @mcp.tool()
 @requires_capability("none")
+def fetch_compressed(url: str, mode: str = "auto") -> str:
+    """Fetch a web page and return compact, agent-facing text -- not raw HTML.
+
+    Policy: use this instead of plain WebFetch by default. It strips HTML
+    boilerplate down to markdown-ish text, then compresses it through the
+    same cascade search_web uses for search results -- prose is compressed
+    lossily toward ``compression_ml_target_ratio`` (Kompress), while fenced
+    code blocks and JSON bodies are compressed lossless-only so their
+    structure is never mangled. A trailing ``<<ccr:HASH>>`` marker is added
+    whenever the returned text differs from the raw fetch; call
+    retrieve_compressed(hash) on it to get the exact original back. Reach
+    for that only when the task genuinely needs byte-for-byte fidelity
+    (layout evaluation, code review) -- not for ordinary reading.
+
+    Args:
+        url: The http(s) page to fetch.
+        mode: "auto" (default) strips HTML and compresses. "raw" strips HTML
+            boilerplate but skips compression, returning the full stripped
+            text (still recoverable via the marker when it was transformed).
+    """
+    log_tool("fetch_compressed", url=url[:200], mode=mode)
+    from . import webfetch
+
+    return webfetch.run(url, mode=mode)
+
+
+@mcp.tool()
+@requires_capability("none")
 def ensure_tooling(path: str, init: bool = False, refresh: bool = True) -> str:
     """Probe and optionally provision dev-tooling readiness for a directory path.
 
