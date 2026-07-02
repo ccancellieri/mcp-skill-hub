@@ -667,63 +667,17 @@ def exhaustion_save(content: str,
     }
 
 
-def smart_memory_write(
+def _memory_write_attempt(
+    prompt: str,
+    chosen_model: str | None,
     content: str,
     existing_index: str,
-    model: str = RERANK_MODEL,
 ) -> dict:
-    """Local LLM generates memory, then self-evaluates quality.
+    """One generate → parse → self-evaluate pass for :func:`smart_memory_write`.
 
-    Returns:
-        {
-            "result": dict,          # the memory entry (filename, name, etc.)
-            "quality": float,        # 0.0-1.0 self-assessed quality score
-            "escalate": bool,        # True if Claude should handle this instead
-            "reason": str,           # why escalation is needed (or "ok")
-        }
+    ``chosen_model=None`` routes through the escalation ladder. Returns the
+    same shape as ``smart_memory_write`` minus the ``directive`` field.
     """
-    # Local-first: prefer a local model when the daemon is up. When no local
-    # model is reachable, fall through to the escalation ladder (``model=None``
-    # + the ``smart_memory_write`` op routes to a remote "writing" specialist)
-    # rather than giving up — a down local daemon must not disable memory.
-    chosen_model: str | None = model
-    if not ollama_available(chosen_model):
-        chosen_model = None
-        for fallback in ("qwen2.5-coder:3b", "deepseek-r1:1.5b"):
-            if ollama_available(fallback):
-                chosen_model = fallback
-                break
-
-    prompt = f"""You are a memory-management assistant for an AI coding tool.
-
-## Task
-Generate a memory file from the session context below. Focus on:
-- Decisions made and WHY
-- User preferences discovered
-- Project knowledge not in the code
-- Patterns to repeat or avoid
-
-Do NOT save: code patterns (read the code), git history (use git log),
-anything already in existing memory files.
-
-## Session context
-{content[:4000]}
-
-## Existing memory (avoid duplicates)
-{existing_index[:2000]}
-
-## Output
-Respond with ONLY this JSON:
-{{
-  "filename": "<descriptive-kebab-case.md>",
-  "name": "<short title>",
-  "description": "<one-line description for the memory index>",
-  "type": "<user|feedback|project|reference>",
-  "content": "<the memory content, 2-6 sentences>",
-  "key_entities": ["<list>", "<of>", "<important>", "<names/terms>", "<from the context>"],
-  "detail_score": <0.0-1.0 how much important detail you preserved>
-}}"""
-
     try:
         with llm_timer() as _t:
             raw = _generate(
@@ -793,24 +747,106 @@ Respond with ONLY this JSON:
         else:
             reason = f"low_quality:{quality:.2f}"
 
-    # demoted to DEBUG — quality already shown in the STOP "memory saved" line
-    get_logger().debug("   smart_memory_quality: quality=%s escalate=%s reason=%s",
-                       f"{quality:.2f}", escalate, reason)
-
-    out = {
+    return {
         "result": entry,
         "quality": quality,
         "escalate": escalate,
         "reason": reason,
     }
-    if escalate:
+
+
+def smart_memory_write(
+    content: str,
+    existing_index: str,
+    model: str = RERANK_MODEL,
+) -> dict:
+    """Local LLM generates memory, then self-evaluates quality.
+
+    A weak or failed *local* attempt retries once through the escalation
+    ladder (remote rungs) before asking Claude to write the memory by hand —
+    see issue #133. On the hook hot path the retry is skipped (latency).
+
+    Returns:
+        {
+            "result": dict,          # the memory entry (filename, name, etc.)
+            "quality": float,        # 0.0-1.0 self-assessed quality score
+            "escalate": bool,        # True if Claude should handle this instead
+            "reason": str,           # why escalation is needed (or "ok")
+        }
+    """
+    # Local-first: prefer a local model when the daemon is up. When no local
+    # model is reachable, fall through to the escalation ladder (``model=None``
+    # + the ``smart_memory_write`` op routes to a remote "writing" specialist)
+    # rather than giving up — a down local daemon must not disable memory.
+    chosen_model: str | None = model
+    if not ollama_available(chosen_model):
+        chosen_model = None
+        for fallback in ("qwen2.5-coder:3b", "deepseek-r1:1.5b"):
+            if ollama_available(fallback):
+                chosen_model = fallback
+                break
+
+    prompt = f"""You are a memory-management assistant for an AI coding tool.
+
+## Task
+Generate a memory file from the session context below. Focus on:
+- Decisions made and WHY
+- User preferences discovered
+- Project knowledge not in the code
+- Patterns to repeat or avoid
+
+Do NOT save: code patterns (read the code), git history (use git log),
+anything already in existing memory files.
+
+## Session context
+{content[:4000]}
+
+## Existing memory (avoid duplicates)
+{existing_index[:2000]}
+
+## Output
+Respond with ONLY this JSON:
+{{
+  "filename": "<descriptive-kebab-case.md>",
+  "name": "<short title>",
+  "description": "<one-line description for the memory index>",
+  "type": "<user|feedback|project|reference>",
+  "content": "<the memory content, 2-6 sentences>",
+  "key_entities": ["<list>", "<of>", "<important>", "<names/terms>", "<from the context>"],
+  "detail_score": <0.0-1.0 how much important detail you preserved>
+}}"""
+
+    out = _memory_write_attempt(prompt, chosen_model, content, existing_index)
+
+    # A weak/failed LOCAL attempt escalates to the remote ladder before asking
+    # Claude (#133). Skipped on the hook hot path (remote round-trip blows the
+    # latency budget) and when the first attempt already went via the ladder.
+    if out["escalate"] and chosen_model is not None and not _hot_path():
+        try:
+            from .llm.escalation import cool_ollama, has_remote_provider
+            if has_remote_provider():
+                # In-process cooldown only: the retry's ladder walk must skip
+                # the local rung that just produced the weak result.
+                cool_ollama(seconds=60)
+                retry = _memory_write_attempt(prompt, None, content, existing_index)
+                if retry["quality"] > out["quality"]:
+                    out = retry
+        except Exception:  # noqa: BLE001 - retry is best-effort
+            pass
+
+    # demoted to DEBUG — quality already shown in the STOP "memory saved" line
+    get_logger().debug("   smart_memory_quality: quality=%s escalate=%s reason=%s",
+                       f"{out['quality']:.2f}", out["escalate"], out["reason"])
+
+    if out["escalate"]:
         # In-session directive: tell the active Claude Code agent to dispatch a
         # Haiku subagent for the summary instead of synthesising it itself.
         # This keeps the main context lean while still producing a good memory
         # entry — no ANTHROPIC_API_KEY is called server-side.
         out["directive"] = (
             "Memory summary quality was low ("
-            f"{reason}, q={quality:.2f}). Prefer dispatching a Haiku subagent "
+            f"{out['reason']}, q={out['quality']:.2f}). Prefer dispatching a "
+            "Haiku subagent "
             "via Agent(subagent_type='general-purpose', model='claude-haiku-4-5') "
             "with a compact prompt summarising the session context, then save "
             "the result via hub-save-memory. Fall back to writing the memory "

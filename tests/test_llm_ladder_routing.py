@@ -409,6 +409,86 @@ def test_smart_memory_write_routes_to_ladder_when_no_local(monkeypatch):
     assert out["escalate"] is False                  # ladder produced a usable entry → no Claude escalation
 
 
+_GOOD_MEMORY_JSON = (
+    '{"filename":"x.md","name":"X","description":"d","type":"project",'
+    '"content":"a sufficiently long memory entry describing the work done",'
+    '"key_entities":["work"],"detail_score":0.9}'
+)
+
+
+def test_smart_memory_write_retries_ladder_on_weak_local(monkeypatch):
+    """A low-quality LOCAL result retries once through the ladder (model=None)
+    instead of immediately asking Claude to write the memory (#133)."""
+    import skill_hub.embeddings as emb
+    import skill_hub.llm.escalation as escalation
+
+    monkeypatch.setattr(emb, "ollama_available", lambda *a, **k: True)
+    monkeypatch.setattr(emb, "_hot_path", lambda: False)
+    monkeypatch.setattr(escalation, "has_remote_provider", lambda: True)
+    cooled: list[int] = []
+    monkeypatch.setattr(escalation, "cool_ollama",
+                        lambda *, seconds=30: cooled.append(seconds))
+
+    models_called: list = []
+
+    def fake_generate(prompt, *, model, timeout, temperature=0.2, num_predict=512, op=""):
+        models_called.append(model)
+        if model is not None:      # local attempt → garbage
+            return '{"filename":"x.md","content":"tiny","key_entities":[],"detail_score":0.1}'
+        return _GOOD_MEMORY_JSON   # ladder attempt → good entry
+
+    monkeypatch.setattr(emb, "_generate", fake_generate)
+    out = emb.smart_memory_write("session content here " * 20, "")
+
+    assert models_called[0] is not None and models_called[1] is None
+    assert cooled, "local rung must be cooled so the retry walk skips it"
+    assert out["escalate"] is False
+    assert "directive" not in out
+
+
+def test_smart_memory_write_no_ladder_retry_on_hot_path(monkeypatch):
+    """On the hook hot path a weak local result must NOT trigger a remote
+    round-trip — the escalate directive is returned immediately."""
+    import skill_hub.embeddings as emb
+
+    monkeypatch.setattr(emb, "ollama_available", lambda *a, **k: True)
+    monkeypatch.setattr(emb, "_hot_path", lambda: True)
+
+    models_called: list = []
+
+    def fake_generate(prompt, *, model, timeout, temperature=0.2, num_predict=512, op=""):
+        models_called.append(model)
+        return '{"filename":"x.md","content":"tiny","key_entities":[],"detail_score":0.1}'
+
+    monkeypatch.setattr(emb, "_generate", fake_generate)
+    out = emb.smart_memory_write("session content here " * 20, "")
+
+    assert len(models_called) == 1          # no second (ladder) attempt
+    assert out["escalate"] is True
+    assert "directive" in out
+
+
+def test_smart_memory_write_keeps_best_when_retry_also_weak(monkeypatch):
+    """If the ladder retry is no better, the original outcome (and the Claude
+    escalation directive) is preserved."""
+    import skill_hub.embeddings as emb
+    import skill_hub.llm.escalation as escalation
+
+    monkeypatch.setattr(emb, "ollama_available", lambda *a, **k: True)
+    monkeypatch.setattr(emb, "_hot_path", lambda: False)
+    monkeypatch.setattr(escalation, "has_remote_provider", lambda: True)
+    monkeypatch.setattr(escalation, "cool_ollama", lambda *, seconds=30: None)
+
+    def fake_generate(prompt, *, model, timeout, temperature=0.2, num_predict=512, op=""):
+        return '{"filename":"x.md","content":"tiny","key_entities":[],"detail_score":0.1}'
+
+    monkeypatch.setattr(emb, "_generate", fake_generate)
+    out = emb.smart_memory_write("session content here " * 20, "")
+
+    assert out["escalate"] is True
+    assert "directive" in out
+
+
 # --- gateway dispatch correctness ------------------------------------------
 
 def test_litellm_model_prefixes_openai_compatible_only():
