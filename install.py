@@ -567,6 +567,25 @@ def step_install_hooks(step: int, total: int):
     added = 0
     updated = 0
 
+    # Stale-key retirement: (event, command basename, key, old value) tuples
+    # we shipped in a past release and have since removed from the definitions
+    # above. The shallow merge below only ADDS missing keys, so without this
+    # pass an existing install keeps the retired key forever. Only the exact
+    # shipped value is removed — a user-customized value is left alone.
+    retired_keys = [
+        # PostToolUse observer lost its Bash(*) filter (#127): the filter
+        # starved the /tasks projection of the TodoWrite/Task* calls it needs.
+        ("PostToolUse", "post-tool-observer.sh", "if", "Bash(*)"),
+    ]
+    for event_name, basename, key, old_value in retired_keys:
+        for entry in hooks.get(event_name, []):
+            for h in entry.get("hooks", []):
+                if (Path(h.get("command", "")).name == basename
+                        and h.get(key) == old_value):
+                    del h[key]
+                    changed = True
+                    print(f"  - {event_name}: {basename} (removed stale {key})")
+
     # Upgrade strategy: shallow-merge ONLY missing keys. We never overwrite a
     # field the user has manually customized (e.g. ``statusMessage``,
     # ``timeout``); we only add new keys we ship in this release (e.g. the

@@ -133,3 +133,67 @@ def test_subagent_observer_handles_both_events(monkeypatch, settings_path):
         cmds = [h["command"] for entry in data["hooks"][event] for h in entry["hooks"]]
         assert any("subagent-observer" in c or "subagent_observer" in c for c in cmds), \
             f"{event} missing subagent observer hook: {cmds}"
+
+
+def test_re_run_retires_stale_bash_filter_on_post_tool_use(monkeypatch, settings_path):
+    """A pre-#127 install carries `if: Bash(*)` on the PostToolUse observer.
+
+    The shipped definition no longer has that filter (it starved the /tasks
+    projection), and since the shallow merge only adds missing keys, the
+    stale-key retirement pass must delete it. A user-customized `if` value
+    must survive, as must the Bash(*) filter on PostToolUseFailure.
+    """
+    mod = _load_install_module(monkeypatch, settings_path)
+    observer_cmd = mod._hook_command("post-tool-observer.sh")
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "PostToolUse": [{"hooks": [{
+                "type": "command",
+                "command": observer_cmd,
+                "timeout": 5,
+                "if": "Bash(*)",  # shipped pre-#127 value → must be removed
+            }]}],
+            "PostToolUseFailure": [{"hooks": [{
+                "type": "command",
+                "command": observer_cmd,
+                "timeout": 5,
+                "if": "Bash(*)",  # still shipped for failures → must survive
+            }]}],
+        }
+    }))
+
+    mod.step_install_hooks(1, 1)
+
+    data = _read(settings_path)
+    post = [h for entry in data["hooks"]["PostToolUse"] for h in entry["hooks"]
+            if h["command"] == observer_cmd]
+    assert len(post) == 1
+    assert "if" not in post[0], "stale Bash(*) filter was not retired"
+    failure = [h for entry in data["hooks"]["PostToolUseFailure"]
+               for h in entry["hooks"] if h["command"] == observer_cmd]
+    assert failure and failure[0].get("if") == "Bash(*)", \
+        "PostToolUseFailure's intentional Bash(*) filter must be preserved"
+
+
+def test_retirement_leaves_user_customized_if_alone(monkeypatch, settings_path):
+    """Only the exact shipped value Bash(*) is retired — a custom `if` stays."""
+    mod = _load_install_module(monkeypatch, settings_path)
+    observer_cmd = mod._hook_command("post-tool-observer.sh")
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "PostToolUse": [{"hooks": [{
+                "type": "command",
+                "command": observer_cmd,
+                "timeout": 5,
+                "if": "Bash(git *)",  # user customization
+            }]}],
+        }
+    }))
+
+    mod.step_install_hooks(1, 1)
+
+    data = _read(settings_path)
+    post = [h for entry in data["hooks"]["PostToolUse"] for h in entry["hooks"]
+            if h["command"] == observer_cmd]
+    assert post[0].get("if") == "Bash(git *)", \
+        "user-customized `if` value must not be retired"
