@@ -22,6 +22,7 @@ _log = logging.getLogger(__name__)
 # against per-model ``tags`` in the provider registry.
 _OP_ROUTING: dict[str, tuple[float, str]] = {
     "conversation_digest": (0.3, "digest"),
+    "context_digest": (0.3, "digest"),
     "compact": (0.3, "digest"),
     "compact_master_state": (0.4, "writing"),
     "smart_memory_write": (0.4, "writing"),

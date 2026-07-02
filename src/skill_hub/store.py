@@ -648,6 +648,18 @@ class SkillStore:
             CREATE INDEX IF NOT EXISTS idx_vectors_namespace
                 ON vectors (namespace);
 
+            -- #135 — ladder-synthesized context digests keyed by source id.
+            -- ``digest = ''`` marks a pending row: the raw source is kept in
+            -- ``content`` until a background pass digests it, then cleared.
+            CREATE TABLE IF NOT EXISTS context_digests (
+                key           TEXT PRIMARY KEY,     -- "<kind>:<ident>", e.g. "wiki:<slug>"
+                content_hash  TEXT NOT NULL,
+                digest        TEXT NOT NULL DEFAULT '',
+                content       TEXT NOT NULL DEFAULT '',
+                provider      TEXT,
+                updated_at    TEXT DEFAULT (datetime('now'))
+            );
+
             -- Plugin extension-point: A5 — scheduled task enablement state.
             CREATE TABLE IF NOT EXISTS plugin_task_state (
                 plugin      TEXT NOT NULL,

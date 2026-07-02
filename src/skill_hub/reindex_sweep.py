@@ -86,11 +86,22 @@ def run_refresh(store, *, wiki: bool | None = None,
     last recorded run; ``True`` forces it; ``False`` skips it. Returns counts.
     Never raises — callers run this from daemon threads.
     """
+    result: dict = {}
+    # Context digests (#135) need the chat ladder, not embeddings — build them
+    # even when no embed backend is up.
+    try:
+        from .compression.digest import refresh_pending
+        built = refresh_pending(store, limit=20)
+        if built:
+            result["digests_built"] = built
+    except Exception as exc:  # noqa: BLE001
+        log.debug("reindex_sweep: digest refresh failed: %s", exc)
+
     from .embeddings import embed_available
     if not embed_available():
-        return {"skipped": "no embedding backend available"}
+        result["skipped"] = "no embedding backend available"
+        return result
 
-    result: dict = {}
     with _refresh_lock:
         last_run = _read_last_run(state_file)
         do_wiki = wiki if wiki is not None else wiki_stale_since(last_run)

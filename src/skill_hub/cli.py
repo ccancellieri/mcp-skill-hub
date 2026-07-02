@@ -1405,6 +1405,15 @@ def _run_async_enrich(session_id: str, message: str) -> None:
     except Exception as exc:  # noqa: BLE001 — best-effort background worker
         log_detail(f"async-enrich failed: {str(exc)[:120]}")
     finally:
+        # Off the hot path with the full ladder available: fill any context
+        # digests the hooks queued (#135), whatever the lifecycle work did.
+        try:
+            from .compression.digest import refresh_pending
+            built = refresh_pending(store, limit=10)
+            if built:
+                log_step(f"async-enrich: built {built} context digests via ladder")
+        except Exception:  # noqa: BLE001
+            pass
         store.close()
 
 
@@ -1631,12 +1640,22 @@ def _dynamic_context_stage(
             content = maybe_compress(content, context=message, site="dynamic_context_skill")
             content = squeeze_whitespace(content)
 
-            # Per-skill truncation: fit within per-skill and total budgets
+            # Per-skill truncation: fit within per-skill and total budgets.
+            # A skill that would be cut off prefers a cached ladder digest
+            # over a mid-file truncation; a miss queues it for background
+            # digestion (#135) and truncates this turn.
             content_limit = min(max_skill_chars, budget - 100)
+            digest_label = ""
             if len(content) > content_limit:
-                content = content[:content_limit] + "\n... (truncated)"
+                from .compression.digest import digest_or_squeezed
+                d, _is_digest = digest_or_squeezed(store, f"skill:{sid}", content)
+                if _is_digest and len(d) <= content_limit:
+                    content = d
+                    digest_label = " (digest)"
+                else:
+                    content = content[:content_limit] + "\n... (truncated)"
 
-            snippet = f"--- Skill [{sid}] ---\n{desc}\n\n{content}\n--- /Skill ---"
+            snippet = f"--- Skill [{sid}]{digest_label} ---\n{desc}\n\n{content}\n--- /Skill ---"
         else:
             snippet = f"--- Skill [{sid}] ---\n{desc}\n--- /Skill ---"
 
@@ -1737,7 +1756,8 @@ def _dynamic_context_stage(
         f"skills {lifecycle_str}]\n\n"
     )
 
-    result = header + "\n\n".join(parts)
+    from .compression import dedupe_snippets
+    result = header + "\n\n".join(dedupe_snippets(parts))
 
     # Proactive pattern consolidation — suggest wildcards every 5 messages
     if msg_count > 0 and msg_count % 5 == 0:
@@ -1905,18 +1925,28 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
                 scored.sort(key=lambda x: x[0], reverse=True)
 
-                for sim, filepath, name, desc in scored[:2]:
-                    if budget <= 0:
-                        break
-                    mem_file = memory_dir / filepath
-                    if mem_file.exists():
-                        content = mem_file.read_text(encoding="utf-8", errors="replace")
-                        content = squeeze_whitespace(maybe_compress(
-                            content, context=message, site="context_memory_file"
-                        ))[:500]
-                        snippet = f"Memory [{name}] (sim={sim:.2f}): {content}"
-                        parts.append(snippet)
-                        budget -= len(snippet)
+                from .compression.digest import digest_or_squeezed
+                # The main store handle is already closed by this stage; the
+                # digest cache needs a live one for the top-2 memory files.
+                _dstore = SkillStore()
+                try:
+                    for sim, filepath, name, desc in scored[:2]:
+                        if budget <= 0:
+                            break
+                        mem_file = memory_dir / filepath
+                        if mem_file.exists():
+                            content = mem_file.read_text(encoding="utf-8", errors="replace")
+                            content, _is_digest = digest_or_squeezed(
+                                _dstore, f"memory:{mem_file}", content,
+                                context=message, site="context_memory_file",
+                            )
+                            content = content[:500]
+                            label = " (digest)" if _is_digest else ""
+                            snippet = f"Memory [{name}]{label} (sim={sim:.2f}): {content}"
+                            parts.append(snippet)
+                            budget -= len(snippet)
+                finally:
+                    _dstore.close()
 
     except Exception as exc:
         log_step(f"context: ERROR {str(exc)[:80]}")
@@ -1962,7 +1992,8 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
         f"complexity={complexity} | "
         f"skills {skill_summary}]\n\n"
     )
-    return header + "\n\n".join(parts)
+    from .compression import dedupe_snippets
+    return header + "\n\n".join(dedupe_snippets(parts))
 
 
 _KEYWORD_STOPWORDS = frozenset({
@@ -2008,7 +2039,7 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
         from pathlib import Path as _Path
 
         from . import wiki as _wiki
-        from .compression import maybe_compress, squeeze_whitespace
+        from .compression.digest import digest_or_squeezed
 
         wiki_root = _Path(cfg.get("wiki_root") or "")
         if not wiki_root.is_dir():
@@ -2026,9 +2057,12 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
             slug = h.get("slug", "")
             title = (h.get("title") or slug or "").strip()
             raw_body = (h.get("body") or "").strip()
-            compact_body = maybe_compress(raw_body, context=query_text, site="wiki_context")
-            body = squeeze_whitespace(compact_body)[:max_body].rstrip()
-            line = f"Wiki [[{slug}]] {title}"
+            body, is_digest = digest_or_squeezed(
+                store, f"wiki:{slug}", raw_body,
+                context=query_text, site="wiki_context",
+            )
+            body = body[:max_body].rstrip()
+            line = f"Wiki [[{slug}]] {title}" + (" (digest)" if is_digest else "")
             if body:
                 line += f": {body}"
             out.append(line)
@@ -2134,7 +2168,8 @@ def _build_keyword_context_injection(message: str) -> str | None:
         "[Skill Hub — auto-injected context | keyword fallback "
         "(embeddings unavailable)]\n\n"
     )
-    return header + "\n\n".join(parts)
+    from .compression import dedupe_snippets
+    return header + "\n\n".join(dedupe_snippets(parts))
 
 
 _SEARCH_INTENT_RE = __import__("re").compile(

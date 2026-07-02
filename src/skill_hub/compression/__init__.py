@@ -554,6 +554,37 @@ def squeeze_whitespace(text: str) -> str:
     return _NL_RUN_RE.sub("\n\n", "\n".join(lines)).strip()
 
 
+_NORM_RE = re.compile(r"\W+")
+_DEDUPE_MIN_CHARS = 40
+
+
+def dedupe_snippets(parts: list[str]) -> list[str]:
+    """Cross-snippet redundancy removal for context injections (#135).
+
+    When one injection assembles several sources (skill + wiki + memory), the
+    same load-bearing sentence often appears in more than one of them. Drops
+    lines whose normalized form (case/punctuation-insensitive) already
+    appeared in an earlier part; short lines (< 40 significant chars) are kept
+    unconditionally so headers and list markers survive. Parts emptied by the
+    dedupe are removed.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        kept: list[str] = []
+        for line in part.split("\n"):
+            norm = _NORM_RE.sub(" ", line).strip().lower()
+            if len(norm) >= _DEDUPE_MIN_CHARS:
+                if norm in seen:
+                    continue
+                seen.add(norm)
+            kept.append(line)
+        cleaned = "\n".join(kept).strip()
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
 def truncate_at_word(text: str, limit: int, *, marker: str = " … (truncated)") -> str:
     """Truncate ``text`` to at most ``limit`` characters without cutting a word
     in half. Cuts at the last whitespace at or before ``limit`` and appends
