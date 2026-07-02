@@ -317,7 +317,7 @@ def route(
         if _orch_result.directive:
             existing = output.get("systemMessage", "")
             output["systemMessage"] = (
-                (existing + "\n" + _orch_result.directive) if existing else _orch_result.directive
+                (existing + "\n\n" + _orch_result.directive) if existing else _orch_result.directive
             )
         _orch_dispatch(_orch_result.provision_actions)
         if _orch_result.decisions:

@@ -84,6 +84,52 @@ def test_compress_payload_uses_builtin_when_router_absent(monkeypatch):
     assert out.changed and not out.lossy
 
 
+# --- hot-path gate: no lossy ML compression on the per-prompt hook path ------
+
+def _incompressible_prose(n: int = 60) -> str:
+    # No JSON, no repeated lines -> the deterministic passes find nothing,
+    # so compress_payload must fall through to the lossy branch (or skip it).
+    return " ".join(f"word{i} carries unique context" for i in range(n))
+
+
+def test_hot_path_skips_lossy_kompress(monkeypatch):
+    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
+    monkeypatch.setattr(compression, "_lossy_flags", lambda: (True, False))
+    calls: list[str] = []
+
+    def fake_kompress_direct(text, context):
+        calls.append(text)
+        return compression.CompressedPayload(
+            compressed="X", content_type="KOMPRESS", ratio=0.01,
+            bytes_before=len(text), bytes_after=1, lossy=True,
+        )
+
+    monkeypatch.setattr(compression, "_kompress_direct", fake_kompress_direct)
+    text = _incompressible_prose()
+
+    monkeypatch.setenv("SKILL_HUB_LOCAL_ONLY", "1")
+    out = compression.compress_payload(text, min_tokens=10, allow_lossy=True)
+    assert calls == [], "Kompress must never be called on the hot path"
+    assert out.content_type == "PASSTHROUGH"
+    assert out.compressed == text
+
+    monkeypatch.delenv("SKILL_HUB_LOCAL_ONLY", raising=False)
+    out2 = compression.compress_payload(text, min_tokens=10, allow_lossy=True)
+    assert calls == [text], "off the hot path, the lossy fallback must still run"
+    assert out2.content_type == "KOMPRESS"
+
+
+def test_hot_path_flag_leaves_deterministic_pass_unaffected(monkeypatch):
+    # The lossless deterministic cascade is local/fast and must still fire
+    # on the hot path -- only the lossy ML branch is gated.
+    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
+    monkeypatch.setenv("SKILL_HUB_LOCAL_ONLY", "1")
+    pretty = json.dumps([{"k": i, "v": "x" * 5} for i in range(120)], indent=2)
+    out = compression.compress_payload(pretty, min_tokens=50, allow_lossy=True)
+    assert out.content_type == "JSON_MIN"
+    assert not out.lossy
+
+
 # --- behaviour that DOES require headroom -----------------------------------
 
 def test_json_array_compresses_and_keeps_errors():
@@ -118,6 +164,31 @@ def test_malformed_input_never_raises():
     # Always returns a usable payload; compressed is at worst the original.
     assert isinstance(payload.compressed, str)
     assert payload.bytes_before == len(garbage)
+
+
+# --- truncate_at_word ---------------------------------------------------
+
+def test_truncate_at_word_fits_unchanged():
+    assert compression.truncate_at_word("short text", 100) == "short text"
+
+
+def test_truncate_at_word_cuts_at_last_whitespace():
+    text = "one two three four five"
+    out = compression.truncate_at_word(text, 13)
+    assert out == "one two … (truncated)"
+    assert "threef" not in out.replace(" ", "")  # no mid-word cut
+
+
+def test_truncate_at_word_no_whitespace_hard_cuts():
+    text = "x" * 50
+    out = compression.truncate_at_word(text, 10)
+    assert out == "x" * 10 + " … (truncated)"
+
+
+def test_truncate_at_word_custom_marker():
+    out = compression.truncate_at_word("alpha beta gamma", 10, marker="...")
+    assert out.endswith("...")
+    assert len(out) < len("alpha beta gamma")
 
 
 # --- _compression_report observability when headroom-ai is absent -----------

@@ -20,6 +20,13 @@ fall back to the heavier ML paths:
   ``compression_code_aware_enabled`` (default OFF — the eval showed headroom routes
   code to Kompress first, so this path never fires on real tool output).
 
+Both lossy paths are additionally skipped on the per-prompt hook hot path
+(``SKILL_HUB_LOCAL_ONLY=1``, set by ``hooks/prompt-router.sh``): the models are
+loaded lazily per-process — hook invocations are fresh subprocesses with no warm
+cache — and may pay a first-run HuggingFace download, which a 20s/45s hook
+budget cannot absorb. ``maybe_compress()`` on the hot path therefore only ever
+runs the lossless deterministic cascade.
+
 The single-shot encoder pass is fast and light (no autoregressive generation, no
 Ollama). ``kompress_prose()`` exposes it directly for sites that want a light
 extractive digest *instead of* a heavy local-LLM summarize (e.g. the searxng web
@@ -301,7 +308,12 @@ def compress_payload(
     # 2. Lossy fallback — only when opted in and a flag is on. Try the tree-sitter
     #    code-aware path first (it passes through non-code), then the Kompress prose
     #    model. Both are lossy; reached only when the deterministic pass found nothing.
-    if allow_lossy:
+    # Skipped entirely on the per-prompt hook hot path (``SKILL_HUB_LOCAL_ONLY=1``):
+    # both models are loaded lazily per-process (hooks are fresh subprocesses, no
+    # warm cache) and may need a first-run HuggingFace download, which the hook's
+    # 20s/45s budget cannot absorb. The lossless deterministic pass above is
+    # unaffected — it is local and fast.
+    if allow_lossy and not _hot_path_active():
         ml, code = _lossy_flags()
         if code:
             code_router = _get_router(ml=False, code=True)
@@ -376,6 +388,18 @@ def _builtin_deterministic(text: str) -> "CompressedPayload | None":
         bytes_after=bytes_after,
         lossy=False,
     )
+
+
+def _hot_path_active() -> bool:
+    """True inside a per-prompt hook subprocess (mirrors ``embeddings._hot_path``).
+
+    Set by the hook wrappers (e.g. ``hooks/prompt-router.sh``) via
+    ``SKILL_HUB_LOCAL_ONLY=1``. Long-lived processes (the MCP server, cron
+    jobs) never set it, so they keep the full lossy cascade.
+    """
+    import os
+
+    return os.environ.get("SKILL_HUB_LOCAL_ONLY") == "1"
 
 
 def _lossy_flags() -> tuple[bool, bool]:
@@ -512,6 +536,24 @@ def kompress_prose(text: str, *, context: str = "", site: str = "kompress") -> s
         return text
     _emit_compression_event(payload, site)
     return payload.compressed
+
+
+_WHITESPACE_RE = re.compile(r"\s")
+
+
+def truncate_at_word(text: str, limit: int, *, marker: str = " … (truncated)") -> str:
+    """Truncate ``text`` to at most ``limit`` characters without cutting a word
+    in half. Cuts at the last whitespace at or before ``limit`` and appends
+    ``marker``; falls back to a hard cut at ``limit`` when no whitespace is
+    found (e.g. one long unbroken token). Returns ``text`` unchanged when it
+    already fits.
+    """
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    matches = list(_WHITESPACE_RE.finditer(window))
+    cut = matches[-1].start() if matches else limit
+    return text[:cut].rstrip() + marker
 
 
 def retrieve_original(hash_key: str) -> str | None:

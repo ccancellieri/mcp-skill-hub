@@ -1593,6 +1593,8 @@ def _dynamic_context_stage(
             _maybe_spawn_async_enrich(session_id, message)
 
     # 4. Build systemMessage with selected skills (full content)
+    from .compression import maybe_compress
+
     max_skill_chars = int(_cfg.get("hook_context_max_skill_chars") or 8000)
     budget = max_chars
     parts: list[str] = []
@@ -1622,6 +1624,11 @@ def _dynamic_context_stage(
                         content = disk_content
                 except Exception:
                     pass  # fall back to DB content
+
+            # Compress before truncating so a naive char cut loses less content
+            # (agent-facing, so lossy Kompress is allowed for prose; JSON/code
+            # stays lossless via the deterministic-first cascade).
+            content = maybe_compress(content, context=message, site="dynamic_context_skill")
 
             # Per-skill truncation: fit within per-skill and total budgets
             content_limit = min(max_skill_chars, budget - 100)
@@ -1767,6 +1774,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
     import re
 
     from .activity_log import LOG_FILE
+    from .compression import maybe_compress
 
     # Classify complexity for adaptive budget + model hint
     complexity = _classify_complexity(msg_vector)
@@ -1900,8 +1908,9 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
                         break
                     mem_file = memory_dir / filepath
                     if mem_file.exists():
-                        content = mem_file.read_text(
-                            encoding="utf-8", errors="replace"
+                        content = mem_file.read_text(encoding="utf-8", errors="replace")
+                        content = maybe_compress(
+                            content, context=message, site="context_memory_file"
                         )[:500]
                         snippet = f"Memory [{name}] (sim={sim:.2f}): {content}"
                         parts.append(snippet)
@@ -1997,6 +2006,7 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
         from pathlib import Path as _Path
 
         from . import wiki as _wiki
+        from .compression import maybe_compress
 
         wiki_root = _Path(cfg.get("wiki_root") or "")
         if not wiki_root.is_dir():
@@ -2013,7 +2023,9 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
         for h in (result.get("results") or []):
             slug = h.get("slug", "")
             title = (h.get("title") or slug or "").strip()
-            body = (h.get("body") or "").strip()[:max_body].rstrip()
+            raw_body = (h.get("body") or "").strip()
+            compact_body = maybe_compress(raw_body, context=query_text, site="wiki_context")
+            body = compact_body[:max_body].rstrip()
             line = f"Wiki [[{slug}]] {title}"
             if body:
                 line += f": {body}"
@@ -2034,6 +2046,7 @@ def _build_keyword_context_injection(message: str) -> str | None:
     back to FTS5. Zero ML deps; returns None when nothing matches.
     """
     from . import config as _cfg
+    from .compression import maybe_compress
 
     terms = _keyword_terms(message)
     if not terms:
@@ -2078,7 +2091,10 @@ def _build_keyword_context_injection(message: str) -> str | None:
                 desc = (s.get("description") or "")[:150]
                 content_preview = ""
                 if i == 0 and s.get("content"):
-                    content_preview = "\n  " + s["content"][:300].replace("\n", "\n  ")
+                    compact_content = maybe_compress(
+                        s["content"], context=message, site="keyword_context_skill"
+                    )
+                    content_preview = "\n  " + compact_content[:300].replace("\n", "\n  ")
                 snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
                 parts.append(snippet)
                 budget -= len(snippet)
@@ -3488,6 +3504,7 @@ def _cmd_session_end(session_id: str, last_message: str,
     """
     from pathlib import Path
     from . import config as _cfg_mod
+    from .compression import truncate_at_word
 
     log_event("STOP", f"session_end session={session_id[:12]}")
     result: dict = {"decision": "allow"}
@@ -3590,7 +3607,7 @@ def _cmd_session_end(session_id: str, last_message: str,
             f"reason={reason}). If this session involved non-trivial work, "
             f"please write a memory entry.\n"
             + (f"Hint: {directive}\n" if directive else "")
-            + f"Context summary: {context[:500]}"
+            + f"Context summary: {truncate_at_word(context, 500)}"
         )
     else:
         # Local LLM quality is good — write the memory

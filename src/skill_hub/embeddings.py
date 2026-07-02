@@ -342,11 +342,29 @@ def compact_master_state(
     recent_pivots, assumptions. On any failure, returns a minimal fallback
     so callers always have a renderable shape.
     """
+    from .compression import maybe_compress
     from .llm.prompts import load_prompt
     from .llm.request import request as _llm_request
 
     log_llm("compact_master_state", model=model or tier,
             input_chars=len(existing_snapshot) + len(task_summaries) + len(memory_entries))
+
+    # Compress (lossless-only — this text feeds an LLM prompt, which cannot
+    # rehydrate lossy Kompress output) before the naive char-slice truncation,
+    # so a large snapshot/history loses less content to the hard cutoffs below.
+    existing_snapshot = maybe_compress(
+        existing_snapshot, site="compact_master_state_snapshot", allow_lossy=False
+    )
+    task_summaries = maybe_compress(
+        task_summaries, site="compact_master_state_tasks", allow_lossy=False
+    )
+    memory_entries = maybe_compress(
+        memory_entries, site="compact_master_state_memory", allow_lossy=False
+    )
+    always_keep = maybe_compress(
+        always_keep, site="compact_master_state_always_keep", allow_lossy=False
+    )
+
     prompt = load_prompt("master_state").format(
         existing_snapshot=existing_snapshot[:12000] or "(none — first snapshot)",
         task_summaries=task_summaries[:6000] or "(no recent tasks in window)",
