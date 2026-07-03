@@ -1,0 +1,451 @@
+{# Command palette (Cmd+K / Ctrl+K) — self-contained partial.
+   Commands are built server-side from request.app.state.core_nav (grouped)
+   and request.app.state.plugin_nav (flat) so the list can never drift from
+   the real topbar. Guards mirror base.html: everything degrades to an
+   empty command list when `request` (or its app.state) is absent, so this
+   include can never crash a page render. #}
+{% set _core_nav = request.app.state.core_nav if request else [] %}
+{% set _plugin_nav = request.app.state.plugin_nav if request else [] %}
+{% set _commands = [] %}
+{% for group in (_core_nav or []) %}
+  {% for item in (group.tabs or []) %}
+    {% set _ = _commands.append({
+      "key": item.key,
+      "label": item.label,
+      "href": item.href,
+      "category": group.group,
+    }) %}
+  {% endfor %}
+{% endfor %}
+{% for item in (_plugin_nav or []) %}
+  {% set _ = _commands.append({
+    "key": item.key,
+    "label": item.label,
+    "href": item.href,
+    "category": "Plugins",
+  }) %}
+{% endfor %}
+
+<div class="cmdk-root" x-data="skillHubCommandPalette({{ _commands|tojson }})">
+
+  <button
+    type="button"
+    class="cmdk-trigger"
+    @click="openPalette()"
+    title="Command palette — ⌘K / Ctrl+K"
+    aria-label="Open command palette"
+  >
+    <span class="cmdk-trigger-kbd">⌘K</span>
+  </button>
+
+  <div
+    class="cmdk-overlay"
+    x-show="open"
+    x-cloak
+    x-transition:enter="cmdk-fade-enter"
+    x-transition:enter-start="cmdk-fade-enter-start"
+    x-transition:enter-end="cmdk-fade-enter-end"
+    x-transition:leave="cmdk-fade-leave"
+    x-transition:leave-start="cmdk-fade-leave-start"
+    x-transition:leave-end="cmdk-fade-leave-end"
+    @click.self="closePalette()"
+  >
+    <div
+      class="cmdk-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+      x-ref="dialog"
+      x-transition:enter="cmdk-dialog-enter"
+      x-transition:enter-start="cmdk-dialog-enter-start"
+      x-transition:enter-end="cmdk-dialog-enter-end"
+      @keydown.tab="trapFocus($event)"
+    >
+      <div class="cmdk-input-row">
+        <span class="cmdk-input-icon" aria-hidden="true">⌘</span>
+        <input
+          type="text"
+          class="cmdk-input"
+          x-ref="input"
+          x-model="query"
+          @input="activeIndex = 0"
+          @keydown.arrow-down.prevent="move(1)"
+          @keydown.arrow-up.prevent="move(-1)"
+          @keydown.enter.prevent="activate(results[activeIndex])"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="cmdk-listbox"
+          :aria-activedescendant="results.length ? 'cmdk-option-' + activeIndex : ''"
+          aria-autocomplete="list"
+          aria-label="Search commands and tasks"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Jump to a page, search open tasks…"
+          data-focusable
+        >
+        <button
+          type="button"
+          class="cmdk-close"
+          @click="closePalette()"
+          aria-label="Close command palette"
+          data-focusable
+        >&times;</button>
+      </div>
+
+      <div class="cmdk-body">
+        <ul class="cmdk-list" id="cmdk-listbox" role="listbox" aria-label="Command palette results">
+          <template x-for="(item, idx) in results" :key="item._key">
+            <li
+              role="option"
+              :id="'cmdk-option-' + idx"
+              :aria-selected="idx === activeIndex"
+              class="cmdk-item"
+              :class="{ 'cmdk-item-active': idx === activeIndex }"
+              :x-ref="'opt-' + idx"
+              @click="activate(item)"
+              @mousemove="activeIndex = idx"
+            >
+              <span class="cmdk-item-category" x-text="item.category"></span>
+              <span class="cmdk-item-label" x-text="item.label"></span>
+              <span class="cmdk-item-meta" x-show="item.meta" x-text="item.meta"></span>
+              <span class="cmdk-item-go" aria-hidden="true">↵</span>
+            </li>
+          </template>
+        </ul>
+
+        <p class="cmdk-empty" x-show="query.trim() && results.length === 0">
+          No matches for &ldquo;<span x-text="query"></span>&rdquo;.
+        </p>
+        <p class="cmdk-status" x-show="liveLoading" aria-live="polite">Searching tasks…</p>
+        <p class="cmdk-status cmdk-status-error" x-show="liveError" x-text="liveError" aria-live="polite"></p>
+      </div>
+
+      <div class="cmdk-footer">
+        <span><kbd class="cmdk-kbd">&uarr;</kbd><kbd class="cmdk-kbd">&darr;</kbd> navigate</span>
+        <span><kbd class="cmdk-kbd">&crarr;</kbd> open</span>
+        <span><kbd class="cmdk-kbd">esc</kbd> close</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .cmdk-root [x-cloak] { display: none !important; }
+
+  .cmdk-trigger {
+    position: fixed;
+    right: var(--space-5);
+    bottom: var(--space-5);
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    color: var(--color-muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+  .cmdk-trigger:hover { color: var(--color-fg); border-color: var(--color-accent); }
+  .cmdk-trigger:focus-visible,
+  .cmdk-close:focus-visible,
+  .cmdk-input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .cmdk-trigger-kbd { letter-spacing: 0.02em; }
+
+  .cmdk-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 12vh;
+    background: rgba(6, 9, 13, 0.65);
+  }
+
+  .cmdk-dialog {
+    width: min(92vw, 560px);
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+  }
+
+  .cmdk-input-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .cmdk-input-icon { color: var(--color-muted); font-size: 13px; flex-shrink: 0; }
+  .cmdk-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--color-fg);
+    font-size: 14px;
+    font-family: inherit;
+    padding: var(--space-1) 0;
+  }
+  .cmdk-input::placeholder { color: var(--color-muted); }
+  .cmdk-close {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .cmdk-close:hover { color: var(--color-fg); border-color: var(--color-accent); }
+
+  .cmdk-body { overflow-y: auto; padding: var(--space-2); }
+
+  .cmdk-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .cmdk-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--color-fg);
+  }
+  .cmdk-item-active { background: var(--color-accent); color: #fff; }
+  .cmdk-item-active .cmdk-item-category,
+  .cmdk-item-active .cmdk-item-meta { color: rgba(255, 255, 255, 0.8); }
+  .cmdk-item-category {
+    flex-shrink: 0;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+    width: 64px;
+  }
+  .cmdk-item-label { flex: 1; font-size: 13px; }
+  .cmdk-item-meta { flex-shrink: 0; font-size: 11px; font-family: var(--font-mono); color: var(--color-muted); }
+  .cmdk-item-go { flex-shrink: 0; font-size: 12px; opacity: 0; color: rgba(255, 255, 255, 0.8); }
+  .cmdk-item-active .cmdk-item-go { opacity: 1; }
+
+  .cmdk-empty, .cmdk-status {
+    margin: 0;
+    padding: var(--space-4) var(--space-3);
+    text-align: center;
+    font-size: 12px;
+    color: var(--color-muted);
+  }
+  .cmdk-status-error { color: var(--color-warn); }
+
+  .cmdk-footer {
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    border-top: 1px solid var(--color-border);
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .cmdk-kbd {
+    display: inline-block;
+    min-width: 16px;
+    padding: 1px 4px;
+    margin-right: 2px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
+  }
+
+  .cmdk-fade-enter { transition: opacity 120ms ease-out; }
+  .cmdk-fade-enter-start { opacity: 0; }
+  .cmdk-fade-enter-end { opacity: 1; }
+  .cmdk-fade-leave { transition: opacity 90ms ease-in; }
+  .cmdk-fade-leave-start { opacity: 1; }
+  .cmdk-fade-leave-end { opacity: 0; }
+
+  .cmdk-dialog-enter { transition: opacity 120ms ease-out, transform 120ms ease-out; }
+  .cmdk-dialog-enter-start { opacity: 0; transform: translateY(-6px); }
+  .cmdk-dialog-enter-end { opacity: 1; transform: translateY(0); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cmdk-fade-enter, .cmdk-fade-leave, .cmdk-dialog-enter {
+      transition-duration: 0.001ms !important;
+      transform: none !important;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .cmdk-overlay { padding-top: 6vh; }
+    .cmdk-item-category { display: none; }
+  }
+</style>
+
+<script>
+  function skillHubCommandPalette(commands) {
+    return {
+      open: false,
+      query: '',
+      activeIndex: 0,
+      commands: commands || [],
+      liveTasks: [],
+      liveLoading: false,
+      liveError: '',
+
+      init() {
+        // Global Cmd+K / Ctrl+K trigger. Registered once per palette
+        // instance (the include renders exactly once per page).
+        document.addEventListener('keydown', (e) => {
+          const key = (e.key || '').toLowerCase();
+          if (key === 'k' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            this.open ? this.closePalette() : this.openPalette();
+            return;
+          }
+          if (e.key === 'Escape' && this.open) {
+            e.preventDefault();
+            this.closePalette();
+          }
+        });
+      },
+
+      openPalette() {
+        this.open = true;
+        this.query = '';
+        this.activeIndex = 0;
+        this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
+        this.loadLiveTasks();
+      },
+
+      closePalette() {
+        this.open = false;
+      },
+
+      move(delta) {
+        const n = this.results.length;
+        if (!n) return;
+        this.activeIndex = (this.activeIndex + delta + n) % n;
+        this.$nextTick(() => {
+          const el = this.$refs['opt-' + this.activeIndex];
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+        });
+      },
+
+      trapFocus(e) {
+        const focusables = Array.from(
+          this.$refs.dialog.querySelectorAll('[data-focusable]')
+        );
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      },
+
+      // Live task search rides on the existing /api/tasks/list JSON
+      // endpoint (already polled elsewhere in the dashboard) — no new
+      // backend route was added for this.
+      async loadLiveTasks() {
+        if (this.liveLoading) return;
+        this.liveLoading = true;
+        this.liveError = '';
+        try {
+          const res = await fetch('/api/tasks/list', { headers: { Accept: 'application/json' } });
+          if (!res.ok) throw new Error('status ' + res.status);
+          const data = await res.json();
+          const open = Array.isArray(data.open) ? data.open : [];
+          const closed = Array.isArray(data.closed) ? data.closed : [];
+          this.liveTasks = open.concat(closed).map((t) => ({
+            id: t.id,
+            title: t.title || '(untitled)',
+            status: t.status || '',
+            tags: t.tags || '',
+          }));
+        } catch (err) {
+          this.liveError = 'Live task search unavailable';
+        } finally {
+          this.liveLoading = false;
+        }
+      },
+
+      // Substring matches rank highest; an in-order subsequence match
+      // (classic fuzzy find) is accepted as a lower-ranked fallback.
+      // Returns -1 when there is no match at all.
+      _score(haystack, q) {
+        const h = haystack.toLowerCase();
+        const idx = h.indexOf(q);
+        if (idx === 0) return 100;
+        if (idx > 0) return 60 - Math.min(idx, 40);
+        let hi = 0;
+        for (let qi = 0; qi < q.length; qi++) {
+          hi = h.indexOf(q[qi], hi);
+          if (hi === -1) return -1;
+          hi++;
+        }
+        return 10;
+      },
+
+      get filteredCommands() {
+        const q = this.query.trim().toLowerCase();
+        if (!q) {
+          return this.commands.map((c) => ({ ...c, _key: 'nav-' + c.key, type: 'nav', meta: '' }));
+        }
+        return this.commands
+          .map((c) => ({ score: this._score(c.category + ' ' + c.label, q), c }))
+          .filter((r) => r.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .map((r) => ({ ...r.c, _key: 'nav-' + r.c.key, type: 'nav', meta: '' }));
+      },
+
+      get filteredTasks() {
+        const q = this.query.trim().toLowerCase();
+        if (!q || !this.liveTasks.length) return [];
+        return this.liveTasks
+          .map((t) => ({ score: this._score(t.title + ' ' + t.tags, q), t }))
+          .filter((r) => r.score >= 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 8)
+          .map((r) => ({
+            _key: 'task-' + r.t.id,
+            type: 'task',
+            category: 'Tasks',
+            label: r.t.title,
+            meta: '#' + r.t.id + (r.t.status ? ' · ' + r.t.status : ''),
+            href: '/tasks?id=' + r.t.id,
+          }));
+      },
+
+      get results() {
+        return [...this.filteredCommands, ...this.filteredTasks];
+      },
+
+      activate(item) {
+        if (!item || !item.href) return;
+        window.location.href = item.href;
+      },
+    };
+  }
+</script>
