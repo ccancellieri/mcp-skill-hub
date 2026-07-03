@@ -7,11 +7,21 @@
   --color-surface:   #161c24;
   --color-border:    #232b36;
   --color-fg:        #d7dde5;
-  --color-muted:     #7d8896;
+  /* 6.02:1 on --color-bg, 5.57:1 on --color-surface at 11px — clears the
+     4.5:1 WCAG AA floor for small text on both surfaces with margin. */
+  --color-muted:     #8a94a1;
   --color-accent:    #3aa0ff;
   --color-good:      #4ad36b;
   --color-bad:       #e05555;
   --color-warn:      #e8a64b;
+
+  /* Model-tier triad — canonicalizes the colors already used ad hoc in
+     report.html / router.html (.mb-sonnet, .mb-opus, .mb-haiku, .model-badge.*)
+     so the routing identity (haiku/sonnet/opus) can be reused as a design
+     accent, not just a status color. */
+  --color-haiku:  #5fcf7b;
+  --color-sonnet: #6bbeff;
+  --color-opus:   #e06060;
 
   /* Spacing scale */
   --space-1: 4px;
@@ -31,74 +41,109 @@
   --font-size-lg: 18px;
   --font-size-xl: 22px;
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Zero-asset numeric stack for KPI values / wordmark — no network fonts. */
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
 
-  /* Legacy aliases — kept so existing selectors don't break. */
-  --bg:     var(--color-bg);
-  --panel:  var(--color-surface);
-  --line:   var(--color-border);
-  --fg:     var(--color-fg);
-  --muted:  var(--color-muted);
-  --accent: var(--color-accent);
-  --good:   var(--color-good);
-  --bad:    var(--color-bad);
-  --warn:   var(--color-warn);
+  /* Legacy alias — templates/tasks.html still references var(--muted)
+     directly (it's out of scope for this pass); every other legacy alias
+     (--bg/--panel/--line/--fg/--accent/--good/--bad/--warn) has been fully
+     migrated to the canonical --color-* names below and removed. */
+  --muted: var(--color-muted);
 }
 * { box-sizing: border-box; }
 body {
-  margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--bg); color: var(--fg); font-size: 14px;
+  margin: 0; font-family: var(--font-family);
+  background: var(--color-bg); color: var(--color-fg); font-size: 14px;
 }
 .topbar {
-  display: flex; align-items: center; gap: 24px;
-  padding: 10px 18px; border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  display: flex; align-items: center; gap: 20px;
+  padding: 10px 18px; border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  flex-wrap: wrap;
 }
-.brand { font-weight: 600; letter-spacing: .03em; }
+.brand {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-weight: 700; font-size: 15px;
+  letter-spacing: -0.02em; color: var(--color-fg); flex-shrink: 0;
+}
+/* Triad mark — a quiet nod to the haiku/sonnet/opus routing identity
+   instead of decorating the wordmark itself. */
+.brand::after {
+  content: '';
+  display: inline-block; width: 22px; height: 4px; border-radius: 2px;
+  background: linear-gradient(90deg,
+    var(--color-haiku) 0 33%, var(--color-sonnet) 33% 66%, var(--color-opus) 66% 100%);
+}
+
+/* ── Grouped navigation ──────────────────────────────────────────────
+   core_nav (main.py::_CORE_NAV) is a list of {group, tabs[]}; plugin_nav
+   is rendered as its own trailing group. Each .nav-group is a labeled
+   cluster so 20+ tabs read as a designed hierarchy instead of a flat wrap. */
+.nav-groups { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; row-gap: 10px; }
+.nav-group { display: flex; align-items: center; gap: 8px; }
+.nav-group:not(:first-child) {
+  border-left: 1px solid var(--color-border); padding-left: 18px;
+}
+.nav-group-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--color-muted); white-space: nowrap;
+}
+.nav-group-tabs { display: flex; gap: 2px; flex-wrap: wrap; }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 .tab {
-  padding: 6px 12px; border-radius: 6px; color: var(--muted);
+  padding: 6px 12px; border-radius: 6px; color: var(--color-muted);
   text-decoration: none; font-size: 13px;
 }
-.tab.active { background: var(--accent); color: #fff; }
+.tab.active { background: var(--color-accent); color: #fff; }
 .tab.disabled { opacity: .45; cursor: not-allowed; }
-.tab:hover:not(.disabled):not(.active) { background: var(--line); color: var(--fg); }
+.tab:hover:not(.disabled):not(.active) { background: var(--color-border); color: var(--color-fg); }
 .content { padding: 20px; max-width: 1400px; margin: 0 auto; }
 .kpi-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px; margin-bottom: 20px;
 }
 .kpi {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px;
   padding: 14px 16px;
 }
 .kpi-label {
-  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  font-size: 11px; color: var(--color-muted); text-transform: uppercase;
   letter-spacing: .05em;
 }
-.kpi-value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-.kpi-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+/* Numeric identity: KPI values are the thing this dashboard is *for*, so
+   they get the deliberate treatment — tabular mono, tight tracking, a
+   heavier weight than body copy. `.db-kpi-value` (dashboard.html) only
+   picks up font-family here — it already sets its own size/weight/
+   letter-spacing/tabular-nums in an inline <style> block, so any rule that
+   overlaps on that selector loses to dashboard.html's later cascade order. */
+.kpi-value, .db-kpi-value { font-family: var(--font-mono); }
+.kpi-value {
+  font-size: 24px; font-weight: 700; margin-top: 4px;
+  letter-spacing: -0.01em; font-variant-numeric: tabular-nums;
+}
+.kpi-sub { font-size: 11px; color: var(--color-muted); margin-top: 4px; }
 .row {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 14px; margin-bottom: 18px;
 }
 .card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px;
   padding: 14px 16px;
 }
 .card h2 {
   font-size: 12px; margin: 0 0 10px; text-transform: uppercase;
-  letter-spacing: .05em; color: var(--muted);
+  letter-spacing: .05em; color: var(--color-muted);
 }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--color-border); }
 th {
-  font-weight: 500; color: var(--muted); font-size: 11px;
+  font-weight: 500; color: var(--color-muted); font-size: 11px;
   text-transform: uppercase; letter-spacing: .04em;
 }
 tr:last-child td { border-bottom: none; }
 td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
-.warn { color: var(--warn); font-size: 12px; }
-.muted { color: var(--muted); font-size: 12px; }
+.warn { color: var(--color-warn); font-size: 12px; }
+.muted { color: var(--color-muted); font-size: 12px; }
 .page-h { font-size: 18px; margin: 0 0 14px; font-weight: 600; }
 
 /* ── Tooltips ── */
@@ -399,25 +444,25 @@ td:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* buttons */
 .btn {
-  background: var(--line); color: var(--fg); border: 1px solid var(--line);
+  background: var(--color-border); color: var(--color-fg); border: 1px solid var(--color-border);
   padding: 5px 12px; border-radius: 5px; font-size: 12px; cursor: pointer;
 }
-.btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.btn:hover:not(:disabled) { background: var(--color-accent); color: #fff; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn.sm { padding: 3px 8px; font-size: 11px; }
-.btn.danger:hover { background: var(--bad); }
-.btn.on { background: var(--good); color: #fff; border-color: var(--good); }
-.btn.off { background: var(--bad); color: #fff; border-color: var(--bad); }
+.btn.sm { padding: 3px 10px; font-size: 11px; }
+.btn.danger:hover { background: var(--color-bad); }
+.btn.on { background: var(--color-good); color: #fff; border-color: var(--color-good); }
+.btn.off { background: var(--color-bad); color: #fff; border-color: var(--color-bad); }
 .btn.htmx-request, .btn.htmx-request:hover { opacity: .5; pointer-events: none; cursor: wait; }
 
 /* forms */
 input[type=text], input[type=number], textarea, select {
-  background: #0b1016; color: var(--fg); border: 1px solid var(--line);
+  background: #0b1016; color: var(--color-fg); border: 1px solid var(--color-border);
   border-radius: 4px; padding: 5px 8px; font: inherit;
 }
-input[type=checkbox] { accent-color: var(--accent); }
-label { display: block; margin: 6px 0; font-size: 12px; color: var(--muted); }
-label input, label textarea { display: block; width: 100%; margin-top: 3px; color: var(--fg); }
+input[type=checkbox] { accent-color: var(--color-accent); }
+label { display: block; margin: 6px 0; font-size: 12px; color: var(--color-muted); }
+label input, label textarea { display: block; width: 100%; margin-top: 3px; color: var(--color-fg); }
 
 /* settings */
 .settings-form { display: flex; flex-direction: column; gap: 14px; }
@@ -427,10 +472,10 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
 .field.sub { grid-template-columns: 180px 1fr; padding-left: 16px; }
 .field label { margin: 0; font-family: ui-monospace, monospace; font-size: 11px; }
 .field input[type=text], .field input[type=number] { width: 100%; }
-.nested { display: grid; gap: 4px; border-left: 2px solid var(--line); padding-left: 6px; }
-.save-bar { position: sticky; bottom: 0; padding: 10px 0; background: var(--bg); display: flex; gap: 12px; align-items: center; }
-.status.ok { color: var(--good); }
-.status.err { color: var(--bad); }
+.nested { display: grid; gap: 4px; border-left: 2px solid var(--color-border); padding-left: 6px; }
+.save-bar { position: sticky; bottom: 0; padding: 10px 0; background: var(--color-bg); display: flex; gap: 12px; align-items: center; }
+.status.ok { color: var(--color-good); }
+.status.err { color: var(--color-bad); }
 
 /* verdicts */
 .filter-bar, .search-bar, .bulk-bar {
@@ -439,7 +484,7 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
 .filter-bar input, .filter-bar select { font-size: 12px; }
 .vtable, .ttable { width: 100%; border-collapse: collapse; font-size: 12px; }
 .vtable td, .vtable th, .ttable td, .ttable th {
-  padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left;
+  padding: 5px 8px; border-bottom: 1px solid var(--color-border); text-align: left;
   vertical-align: middle;
 }
 .vtable td { font-family: ui-monospace, monospace; }
@@ -447,8 +492,8 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
   display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 10px;
   text-transform: uppercase; letter-spacing: .04em;
 }
-.tag.allow, .tag.open { background: var(--good); color: #fff; }
-.tag.deny, .tag.closed { background: var(--bad); color: #fff; }
+.tag.allow, .tag.open { background: var(--color-good); color: #fff; }
+.tag.deny, .tag.closed { background: var(--color-bad); color: #fff; }
 
 /* activity state pills */
 .status-pill {
@@ -477,7 +522,7 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
 @media (max-width: 900px) { .task-panels { grid-template-columns: 1fr; } }
 .ttable td:nth-child(n+2) { text-align: left; }
 .title-in { width: 100%; background: transparent; border: 1px solid transparent; }
-.title-in:focus { border-color: var(--accent); background: #0b1016; }
+.title-in:focus { border-color: var(--color-accent); background: #0b1016; }
 
 /* tasks split layout — resizable panels */
 .tasks-layout {
@@ -669,7 +714,7 @@ label input, label textarea { display: block; width: 100%; margin-top: 3px; colo
 
 /* dialog */
 dialog {
-  background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  background: var(--color-surface); color: var(--color-fg); border: 1px solid var(--color-border);
   border-radius: 8px; padding: 18px; min-width: 380px; max-width: 600px;
 }
 dialog::backdrop { background: rgba(0, 0, 0, .6); }
@@ -679,34 +724,34 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 /* skills */
 .bar-wrap {
   position: relative; display: inline-block; width: 110px; height: 14px;
-  background: #0b1016; border: 1px solid var(--line); border-radius: 3px;
+  background: #0b1016; border: 1px solid var(--color-border); border-radius: 3px;
   overflow: hidden; vertical-align: middle;
 }
-.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--good); }
+.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--color-good); }
 .bar-text {
   position: relative; font-size: 10px; line-height: 14px; padding-left: 6px;
-  color: var(--fg); mix-blend-mode: difference;
+  color: var(--color-fg); mix-blend-mode: difference;
 }
 .skill-detail-drawer h3 { margin: 0 0 6px; font-size: 14px; }
-.skill-detail-drawer h4 { margin: 12px 0 6px; font-size: 12px; color: var(--muted);
+.skill-detail-drawer h4 { margin: 12px 0 6px; font-size: 12px; color: var(--color-muted);
   text-transform: uppercase; letter-spacing: .04em; }
 .skill-detail-drawer pre { max-height: 300px; overflow: auto; }
 
 /* logs */
 .log-view {
-  background: #0b1016; border: 1px solid var(--line); border-radius: 6px;
+  background: #0b1016; border: 1px solid var(--color-border); border-radius: 6px;
   padding: 10px; font-family: ui-monospace, monospace; font-size: 12px;
   line-height: 1.45; height: 62vh; overflow-y: auto; white-space: pre-wrap;
   word-break: break-all; margin: 0;
 }
 .log-view span { display: block; }
-.level-error { color: var(--bad); }
-.level-warn  { color: var(--warn); }
+.level-error { color: var(--color-bad); }
+.level-warn  { color: var(--color-warn); }
 .level-hook  { color: #c08cff; }
 .level-router { color: #4cd0c7; }
 .level-intercept { color: #e8a64b; }
-.level-stop  { color: var(--muted); }
-.level-info  { color: var(--fg); }
+.level-stop  { color: var(--color-muted); }
+.level-info  { color: var(--color-fg); }
 
 
 /* ── Plugin extension-point: A11 — shared macro styles ─────────────── */
@@ -749,14 +794,24 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 }
 .toast-close:hover { color: var(--color-fg); }
 
-/* ── Control Panel ───────────────────────────────────────────────────── */
-.banner-warning {
+/* ── Status banners ──────────────────────────────────────────────────
+   base.html renders at most one .banner-stack: a single coherent bar that
+   holds one .banner-row per active condition (disabled services, no-LLM
+   mode, …) instead of stacking independent full-width strips. */
+.banner-stack {
   background: color-mix(in srgb, var(--color-warn) 18%, var(--color-surface));
   border-bottom: 1px solid var(--color-warn);
-  color: var(--color-fg);
-  padding: 6px 14px; font-size: 12px;
 }
-.banner-warning a { color: var(--color-warn); margin-left: 12px; }
+.banner-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap; padding: 6px 14px; font-size: 12px; color: var(--color-fg);
+}
+.banner-row + .banner-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-warn) 35%, transparent);
+}
+.banner-row a { color: var(--color-warn); flex-shrink: 0; }
+
+/* ── Control Panel ───────────────────────────────────────────────────── */
 
 .monitor-bar {
   display: flex; gap: 24px; flex-wrap: wrap;
@@ -867,4 +922,30 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .update-error { background: rgba(239,68,68,.12);  color: var(--color-error, #ef4444); }
 .htmx-indicator { opacity: 0; transition: opacity .15s; }
 .htmx-request .htmx-indicator, .htmx-indicator.htmx-request { opacity: 1; }
-.btn.sm { padding: 3px 10px; font-size: 11px; }
+
+/* ── Keyboard-operable expandable pattern ───────────────────────────────
+   Contract for page owners: any div-based "click to expand" widget (e.g.
+   .db-card.expandable, .db-kpi) must, in the template, add:
+     role="button" tabindex="0" :aria-expanded="<alpine bool>.toString()"
+   and wire keyboard activation alongside the existing @click, e.g.:
+     @click="expanded = !expanded"
+     @keydown.enter="expanded = !expanded"
+     @keydown.space.prevent="expanded = !expanded"
+   No new CSS class is required — every element with role="button" gets a
+   pointer cursor and a visible :focus-visible ring below. */
+[role="button"] { cursor: pointer; }
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

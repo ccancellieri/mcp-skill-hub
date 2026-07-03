@@ -49,29 +49,52 @@ SHARED_MACROS_DIR = TEMPLATES_DIR / "_macros"
 
 _log = logging.getLogger(__name__)
 
-# Core (built-in) nav entries. Plugin web-mounts append to this via
+# Core (built-in) nav entries, grouped into labeled clusters so the topbar
+# reads as a designed hierarchy rather than a flat wrap of 20 tabs. Each
+# entry is {"group": <label>, "tabs": [{"key", "label", "href"}, ...]}.
+# Plugin web-mounts append their own trailing group via
 # ``app.state.plugin_nav`` — see base.html.
 _CORE_NAV: list[dict[str, Any]] = [
-    {"key": "dashboard", "label": "Dashboard", "href": "/"},
-    {"key": "control", "label": "Control", "href": "/control"},
-    {"key": "health", "label": "Health", "href": "/health"},
-    {"key": "settings", "label": "Settings", "href": "/settings"},
-    {"key": "providers", "label": "Providers", "href": "/providers"},
-    {"key": "logs", "label": "Logs", "href": "/logs"},
-    {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
-    {"key": "tasks", "label": "Tasks", "href": "/tasks"},
-    {"key": "skills", "label": "Skills", "href": "/skills"},
-    {"key": "teachings", "label": "Teachings", "href": "/teachings"},
-    {"key": "report", "label": "Report", "href": "/report"},
-    {"key": "router", "label": "Router", "href": "/router"},
-    {"key": "vector", "label": "Vector", "href": "/vector"},
-    {"key": "intents", "label": "Intents", "href": "/intents"},
-    {"key": "questions", "label": "Questions", "href": "/questions"},
-    {"key": "cron", "label": "Cron", "href": "/cron"},
-    {"key": "memory", "label": "Memory", "href": "/memory"},
-    {"key": "wiki", "label": "Wiki", "href": "/wiki"},
-    {"key": "experiments", "label": "Experiments", "href": "/experiments"},
-    {"key": "capabilities", "label": "Capabilities", "href": "/status/capabilities"},
+    {
+        "group": "Observe",
+        "tabs": [
+            {"key": "dashboard", "label": "Dashboard", "href": "/"},
+            {"key": "health", "label": "Health", "href": "/health"},
+            {"key": "logs", "label": "Logs", "href": "/logs"},
+            {"key": "router", "label": "Router", "href": "/router"},
+            {"key": "report", "label": "Report", "href": "/report"},
+        ],
+    },
+    {
+        "group": "Govern",
+        "tabs": [
+            {"key": "control", "label": "Control", "href": "/control"},
+            {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
+            {"key": "providers", "label": "Providers", "href": "/providers"},
+            {"key": "settings", "label": "Settings", "href": "/settings"},
+            {"key": "cron", "label": "Cron", "href": "/cron"},
+        ],
+    },
+    {
+        "group": "Knowledge",
+        "tabs": [
+            {"key": "skills", "label": "Skills", "href": "/skills"},
+            {"key": "teachings", "label": "Teachings", "href": "/teachings"},
+            {"key": "memory", "label": "Memory", "href": "/memory"},
+            {"key": "wiki", "label": "Wiki", "href": "/wiki"},
+            {"key": "vector", "label": "Vector", "href": "/vector"},
+        ],
+    },
+    {
+        "group": "Queues",
+        "tabs": [
+            {"key": "tasks", "label": "Tasks", "href": "/tasks"},
+            {"key": "intents", "label": "Intents", "href": "/intents"},
+            {"key": "questions", "label": "Questions", "href": "/questions"},
+            {"key": "experiments", "label": "Experiments", "href": "/experiments"},
+            {"key": "capabilities", "label": "Capabilities", "href": "/status/capabilities"},
+        ],
+    },
 ]
 
 

@@ -12,36 +12,62 @@
 <body>
   <header class="topbar">
     <div class="brand">skill-hub</div>
-    <nav class="tabs">
+    <nav class="nav-groups">
       {# Plugin extension-point: A1 — core_nav + plugin_nav are populated in
-         webapp/main.py::create_app(). Plugins declare web_mount in plugin.json. #}
+         webapp/main.py::create_app(). Plugins declare web_mount in plugin.json.
+         core_nav is a list of {group, tabs[]} clusters (Observe / Govern /
+         Knowledge / Queues) — the key is "tabs", not "items", because
+         Jinja's attribute lookup on a plain dict falls through to
+         dict.items() (the bound method) before it falls through to a
+         "items" key, silently breaking iteration. plugin_nav is rendered
+         as its own trailing "Plugins" group so the topbar stays a single
+         labeled hierarchy. #}
       {% set core_nav = request.app.state.core_nav if request else [] %}
       {% set plugin_nav = request.app.state.plugin_nav if request else [] %}
-      {% for item in core_nav %}
-        <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+      {% for group in core_nav %}
+        <div class="nav-group">
+          <span class="nav-group-label">{{ group.group }}</span>
+          <div class="nav-group-tabs">
+            {% for item in group.tabs %}
+              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+            {% endfor %}
+          </div>
+        </div>
       {% endfor %}
-      {% for item in plugin_nav %}
-        <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
-      {% endfor %}
+      {% if plugin_nav %}
+        <div class="nav-group">
+          <span class="nav-group-label">Plugins</span>
+          <div class="nav-group-tabs">
+            {% for item in plugin_nav %}
+              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
     </nav>
   </header>
   {% set _disabled = (request.state.disabled_services if request and request.state else []) %}
-  {% if _disabled %}
-  <div class="banner-warning">
-    ⚠ Disabled: {{ _disabled|join(", ") }}
-    <a href="/control">→ control panel</a>
-  </div>
-  {% endif %}
   {% set _no_llm = (request.state.no_llm_mode if request and request.state else False) %}
-  {% if _no_llm %}
-  <div class="banner-warning" data-testid="no-llm-banner">
-    ⚠ No-LLM mode is ON
-    ({{ request.state.no_llm_available }}/{{ request.state.no_llm_total }} tools available)
-    <a href="/status/capabilities">→ see which tools work</a>
+  {% if _disabled or _no_llm %}
+  <div class="banner-stack">
+    {% if _disabled %}
+    <div class="banner-row">
+      ⚠ Disabled: {{ _disabled|join(", ") }}
+      <a href="/control">control panel →</a>
+    </div>
+    {% endif %}
+    {% if _no_llm %}
+    <div class="banner-row" data-testid="no-llm-banner">
+      ⚠ No-LLM mode is ON
+      ({{ request.state.no_llm_available }}/{{ request.state.no_llm_total }} tools available)
+      <a href="/status/capabilities">see which tools work →</a>
+    </div>
+    {% endif %}
   </div>
   {% endif %}
   <main class="content">
     {% block content %}{% endblock %}
   </main>
+  {% include "_command_palette.html" ignore missing %}
 </body>
 </html>
