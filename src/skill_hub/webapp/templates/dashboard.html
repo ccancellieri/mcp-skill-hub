@@ -23,6 +23,7 @@
     font-weight: 600;
   }
   .db-kpi-value {
+    font-family: var(--font-mono);
     font-size: 22px;
     font-weight: 700;
     color: var(--color-fg);
@@ -39,6 +40,57 @@
   .db-kpi.bad  .db-kpi-value { color: var(--color-bad); }
   .db-kpi.warn .db-kpi-value { color: var(--color-warn); }
   .db-kpi.accent .db-kpi-value { color: var(--color-accent); }
+
+  /* .db-card.expandable already gets cursor + hover border-color from
+     app.css; .db-kpi needs its own copy since app.css only styles the
+     .expanded end-state for KPI tiles, not the hover affordance. */
+  .db-kpi.expandable {
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+  }
+  .db-kpi.expandable:hover {
+    border-color: rgba(58, 160, 255, 0.3);
+  }
+
+  /* ── needs-attention strip ── */
+  .db-attn { margin-bottom: 16px; }
+  .db-attn-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--color-muted);
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+  .db-attn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .db-attn-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-left: 3px solid var(--color-accent);
+    border-radius: var(--radius-md);
+    padding: 8px 14px;
+    text-decoration: none;
+    font-size: 12.5px;
+    color: var(--color-fg);
+    transition: border-color 0.2s ease, transform 0.15s ease;
+  }
+  .db-attn-item:hover { border-color: var(--color-accent); transform: translateY(-1px); }
+  .db-attn-item.warn { border-left-color: var(--color-warn); }
+  .db-attn-item.bad  { border-left-color: var(--color-bad); }
+  .db-attn-count {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--color-accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .db-attn-item.warn .db-attn-count { color: var(--color-warn); }
+  .db-attn-item.bad  .db-attn-count { color: var(--color-bad); }
+  .db-attn-label { color: var(--color-muted); }
+  .db-attn-item:hover .db-attn-label { color: var(--color-fg); }
 
   /* ── grid cards ── */
   .db-grid {
@@ -147,9 +199,46 @@
 
 <div class="page-h" style="margin-bottom:14px">Dashboard</div>
 
+{# ── Needs attention (renders nothing when the queue is empty) ── #}
+{% set _attn_disabled = (request.state.disabled_services if request and request.state else []) %}
+{% if m.intents_pending > 0 or m.questions_open > 0 or _attn_disabled or m.intercept_errors > 0 %}
+<div class="db-attn">
+  <div class="db-attn-title">Needs attention</div>
+  <div class="db-attn-row">
+    {% if m.intents_pending > 0 %}
+      <a class="db-attn-item" href="/intents">
+        <span class="db-attn-count">{{ "{:,}".format(m.intents_pending) }}</span>
+        <span class="db-attn-label">intent{{ "s" if m.intents_pending != 1 }} pending</span>
+      </a>
+    {% endif %}
+    {% if m.questions_open > 0 %}
+      <a class="db-attn-item" href="/questions">
+        <span class="db-attn-count">{{ "{:,}".format(m.questions_open) }}</span>
+        <span class="db-attn-label">question{{ "s" if m.questions_open != 1 }} open</span>
+      </a>
+    {% endif %}
+    {% if _attn_disabled %}
+      <a class="db-attn-item warn" href="/control">
+        <span class="db-attn-count">{{ _attn_disabled|length }}</span>
+        <span class="db-attn-label">service{{ "s" if _attn_disabled|length != 1 }} disabled</span>
+      </a>
+    {% endif %}
+    {% if m.intercept_errors > 0 %}
+      <a class="db-attn-item bad" href="/logs">
+        <span class="db-attn-count">{{ "{:,}".format(m.intercept_errors) }}</span>
+        <span class="db-attn-label">intercept error{{ "s" if m.intercept_errors != 1 }}</span>
+      </a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {# ── KPI strip ── #}
 <div class="db-kpi-row">
-  <div class="db-kpi {% if m.tokens_saved > 0 %}good{% endif %}" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
+  <div class="db-kpi expandable {% if m.tokens_saved > 0 %}good{% endif %}"
+       x-data="{expanded:false}" :class="{expanded}"
+       role="button" tabindex="0" :aria-expanded="expanded.toString()"
+       @click="expanded=!expanded" @keydown.enter="expanded=!expanded" @keydown.space.prevent="expanded=!expanded">
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
         <span>Cloud savings</span>
@@ -274,7 +363,10 @@
   </div>
 
   {# Verdict cache #}
-  <div class="db-card" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
+  <div class="db-card expandable"
+       x-data="{expanded:false}" :class="{expanded}"
+       role="button" tabindex="0" :aria-expanded="expanded.toString()"
+       @click="expanded=!expanded" @keydown.enter="expanded=!expanded" @keydown.space.prevent="expanded=!expanded">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Verdict cache</span>
@@ -353,13 +445,16 @@
 
   {# Router mini stats #}
   {% if router_stats and router_stats.total %}
-  <div class="db-card" style="cursor:pointer;transition:border-color 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
+  <div class="db-card expandable"
+       x-data="{expanded:false}" :class="{expanded}"
+       role="button" tabindex="0" :aria-expanded="expanded.toString()"
+       @click="expanded=!expanded" @keydown.enter="expanded=!expanded" @keydown.space.prevent="expanded=!expanded">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
         <span>Router</span>
         <a class="tooltip-help" href="#" data-tooltip="Model routing statistics: which LLM tier (haiku/sonnet/opus) handled each prompt, enrichment rate, plan mode activations, confidence scores." data-help-page="routing-distributions" tabindex="0">?</a>
       </span>
-      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px" onclick="event.stopPropagation()">view all →</a>
+      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px" @click.stop>view all →</a>
     </h3>
     <table class="db-table" style="margin-bottom:10px">
       <tr><td>prompts (window)</td><td>{{ router_stats.total }}</td></tr>
