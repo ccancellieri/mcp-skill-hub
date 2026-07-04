@@ -338,6 +338,35 @@ def test_keyword_context_injection_keeps_same_name_different_content(tmp_path, m
     assert "discordium" in out and "telegramium" in out
 
 
+def test_keyword_context_injection_requires_multi_term_corroboration(tmp_path, monkeypatch):
+    """A skill that coincidentally shares exactly one generic word with the
+    query must not surface just because the strict AND-query missed and the
+    per-term union fallback kicked in — that union has no relevance floor of
+    its own unless it requires >=2 matched terms when the query offers that
+    many. A skill genuinely overlapping on several terms must still surface."""
+    from skill_hub.store import SkillStore, Skill
+    monkeypatch.setenv("HOME", str(tmp_path))
+    st = SkillStore(db_path=tmp_path / "kw_corrob.db")
+    st.upsert_skill(Skill(
+        id="local:relevant-fix", name="relevant-fix", target="claude",
+        description="debug flaky network timeout retries",
+        content="steps to debug a flaky network timeout", file_path="", plugin="",
+    ))
+    st.upsert_skill(Skill(
+        id="local:noise-only", name="noise-only", target="claude",
+        description="unrelated gardening tips for beginners",
+        content="occasionally an issue arises when watering plants",
+        file_path="", plugin="",
+    ))
+    import skill_hub.cli as cli
+    monkeypatch.setattr(cli, "SkillStore", lambda *a, **k: st)
+
+    out = cli._build_keyword_context_injection("debug the flaky network timeout issue")
+    assert out is not None
+    assert "local:relevant-fix" in out
+    assert "local:noise-only" not in out
+
+
 def test_keyword_context_injection_returns_none_on_no_match(tmp_path, monkeypatch):
     from skill_hub.store import SkillStore
     monkeypatch.setenv("HOME", str(tmp_path))

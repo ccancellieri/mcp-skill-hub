@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .. import config as _cfg
+from ..compression import truncate_at_word
 
 
 @dataclass
@@ -139,7 +140,7 @@ def _rw_add_recent_tasks(prompt: str, store: Any, cfg: dict[str, Any]) -> Rewrit
             summary_raw.splitlines()[0] if summary_raw else ""
         )
         if title and summary:
-            parts.append(f"{title} — {summary[:120]}")
+            parts.append(f"{title} — {truncate_at_word(summary, 120)}")
         elif title:
             parts.append(title)
     # Drop any entries that sanitized down to empty.

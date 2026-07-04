@@ -1529,10 +1529,14 @@ def _dynamic_context_stage(
             model=dynamic_model,
         )
 
-        keep_ids = set(lifecycle.get("keep", []))
-        add_ids = set(lifecycle.get("add", []))
-        drop_ids = set(lifecycle.get("drop", []))
-        new_summary = lifecycle.get("context_summary", context_summary)
+        # ``.get(key, default)`` only falls back when the key is ABSENT — the
+        # local LLM's JSON regularly includes these keys with an explicit
+        # ``null`` (e.g. "nothing changed"), which `.get` passes through as
+        # None and used to crash `len(new_summary)` below on every such turn.
+        keep_ids = set(lifecycle.get("keep") or [])
+        add_ids = set(lifecycle.get("add") or [])
+        drop_ids = set(lifecycle.get("drop") or [])
+        new_summary = lifecycle.get("context_summary") or context_summary
 
         # Clamp rolling summary to prevent unbounded growth across a long session
         if len(new_summary) > max_summary_chars:
@@ -2053,6 +2057,7 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
         from pathlib import Path as _Path
 
         from . import wiki as _wiki
+        from .compression import truncate_at_word
         from .compression.digest import digest_or_squeezed
 
         wiki_root = _Path(cfg.get("wiki_root") or "")
@@ -2075,7 +2080,7 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
                 store, f"wiki:{slug}", raw_body,
                 context=query_text, site="wiki_context",
             )
-            body = body[:max_body].rstrip()
+            body = truncate_at_word(body, max_body)
             line = f"Wiki [[{slug}]] {title}" + (" (digest)" if is_digest else "")
             if body:
                 line += f": {body}"
@@ -2096,7 +2101,7 @@ def _build_keyword_context_injection(message: str) -> str | None:
     back to FTS5. Zero ML deps; returns None when nothing matches.
     """
     from . import config as _cfg
-    from .compression import maybe_compress, squeeze_whitespace
+    from .compression import maybe_compress, squeeze_whitespace, truncate_at_word
 
     terms = _keyword_terms(message)
     if not terms:
@@ -2113,11 +2118,22 @@ def _build_keyword_context_injection(message: str) -> str | None:
             # per-term union (FTS5 strips boolean OR, so union the singles).
             skills = store.search_skills_text(and_query, top_k=top_k_skills, target="claude")
             if not skills:
+                # Union of single-term hits has no relevance floor on its own —
+                # any skill mentioning even one generic salient word (e.g.
+                # "work", "often") anywhere in its body would otherwise qualify.
+                # Require corroboration from >=2 distinct terms when the query
+                # offered that many, so a single incidental word match can't
+                # surface a topically-unrelated skill.
                 merged: dict[str, dict] = {}
+                match_counts: dict[str, int] = {}
                 for t in terms[:5]:
                     for s in store.search_skills_text(t, top_k=top_k_skills, target="claude"):
                         merged.setdefault(s["id"], s)
-                skills = list(merged.values())[:top_k_skills]
+                        match_counts[s["id"]] = match_counts.get(s["id"], 0) + 1
+                min_matches = 2 if len(terms) >= 2 else 1
+                qualified = [s for s in merged.values() if match_counts[s["id"]] >= min_matches]
+                qualified.sort(key=lambda s: match_counts[s["id"]], reverse=True)
+                skills = qualified[:top_k_skills]
 
             # Collapse duplicate rows of the same skill. The index can carry
             # byte-identical copies under version/source-prefixed ids (e.g.
@@ -2138,13 +2154,13 @@ def _build_keyword_context_injection(message: str) -> str | None:
             for i, s in enumerate(skills):
                 if budget <= 200:
                     break
-                desc = (s.get("description") or "")[:150]
+                desc = truncate_at_word(s.get("description") or "", 150)
                 content_preview = ""
                 if i == 0 and s.get("content"):
                     compact_content = squeeze_whitespace(maybe_compress(
                         s["content"], context=message, site="keyword_context_skill"
                     ))
-                    content_preview = "\n  " + compact_content[:300].replace("\n", "\n  ")
+                    content_preview = "\n  " + truncate_at_word(compact_content, 300).replace("\n", "\n  ")
                 snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
                 parts.append(snippet)
                 budget -= len(snippet)
