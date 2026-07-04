@@ -1448,7 +1448,11 @@ def _dynamic_context_stage(
     else:
         ctx = {"loaded_skills": [], "context_summary": "", "message_count": 0}
     prev_loaded_ids: list[str] = ctx["loaded_skills"]
-    context_summary: str = ctx["context_summary"]
+    # A session row can have a NULL context_summary column if an earlier turn
+    # ever persisted None here (see the guarded save below) — without this
+    # guard that None propagates forward and reproduces the exact same
+    # "NoneType has no len()" crash on every subsequent turn for that session.
+    context_summary: str = ctx["context_summary"] or ""
     msg_count: int = ctx["message_count"]
 
     # 2. Fetch candidates via RAG. Prefer semantic (embedding) search, but the
@@ -1536,7 +1540,7 @@ def _dynamic_context_stage(
         keep_ids = set(lifecycle.get("keep") or [])
         add_ids = set(lifecycle.get("add") or [])
         drop_ids = set(lifecycle.get("drop") or [])
-        new_summary = lifecycle.get("context_summary") or context_summary
+        new_summary = lifecycle.get("context_summary") or context_summary or ""
 
         # Clamp rolling summary to prevent unbounded growth across a long session
         if len(new_summary) > max_summary_chars:
@@ -1591,7 +1595,7 @@ def _dynamic_context_stage(
     else:
         # Fallback: use top candidates from RAG (no LLM)
         final_skill_ids = [s["id"] for s in all_candidates[:top_k_skills]]
-        new_summary = context_summary
+        new_summary = context_summary or ""
         optimized_prompt = message
         reason = "no_model" if not dynamic_model else "pressure_gated"
         if not (loaded_skills or candidate_skills):
@@ -1707,7 +1711,7 @@ def _dynamic_context_stage(
             s2.save_session_context(
                 session_id=session_id,
                 loaded_skills=loaded_names,
-                context_summary=new_summary,
+                context_summary=new_summary or "",
                 message_count=msg_count + 1,
                 recent_messages=recent,
             )
@@ -1961,6 +1965,8 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
 
     except Exception as exc:
         log_step(f"context: ERROR {str(exc)[:80]}")
+        import traceback as _tb
+        log_detail("context: ERROR traceback:\n" + _tb.format_exc())
 
     # Stage 4.1: SearXNG web RAG fallback — only when skill search returned nothing
     if not parts:
@@ -2177,7 +2183,7 @@ def _build_keyword_context_injection(message: str) -> str | None:
                 if budget <= 0:
                     break
                 snippet = (f"Past work #{row.get('id')}: {row.get('title_or_rule', '')} "
-                           f"— {(row.get('summary_or_why') or '')[:150]}")
+                           f"— {truncate_at_word(row.get('summary_or_why') or '', 150)}")
                 parts.append(snippet)
                 budget -= len(snippet)
 
@@ -4941,6 +4947,11 @@ def hook_classify_and_execute(message: str, session_id: str = "", cwd: str = "")
                     system_parts.append(context)
         except Exception as exc:
             log_step(f"context: ERROR {str(exc)[:100]}")
+            # The message alone doesn't say which line in _dynamic_context_stage
+            # (or a helper it calls) raised — log the full traceback at DEBUG so
+            # a recurrence is diagnosable from hook-debug.log without guessing.
+            import traceback as _tb
+            log_detail("context: ERROR traceback:\n" + _tb.format_exc())
             # Fallback to static RAG. Prefer the semantic path when embeddings
             # are reachable; otherwise (local Ollama down, gateway can't embed)
             # degrade to FTS5 keyword enrichment instead of passing through.
