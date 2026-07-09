@@ -74,9 +74,7 @@ def patched_store(isolated_store, monkeypatch):
 
 def test_json_array_compresses_deterministically():
     """A sufficiently large JSON array must be compressed by a deterministic strategy
-    (SmartCrusher or similar), must NOT be lossy, and must actually shrink."""
-    pytest.importorskip("headroom")
-
+    (the builtin JSON minifier), must NOT be lossy, and must actually shrink."""
     from skill_hub.compression import compress_payload
 
     rows = [
@@ -100,24 +98,10 @@ def test_json_array_compresses_deterministically():
 # (b) Prose with lossy flags OFF returns PASSTHROUGH
 # ---------------------------------------------------------------------------
 
-def test_prose_passthrough_when_lossy_off(monkeypatch, tmp_path):
-    """Prose must pass through unchanged when lossy compression is not requested.
-
-    This works even without headroom installed: the absence of a router causes
-    an early passthrough return.  With headroom, the prose path is a no-op for
-    the deterministic compressors.
-
-    CONFIG_PATH is redirected to a tmp file so ``cfg.set`` never writes the real
-    ~/.claude/mcp-skill-hub/config.json (which would leak state into other tests).
-    """
-    from skill_hub import config as cfg
+def test_prose_passthrough_when_lossy_off():
+    """Prose must pass through unchanged: it has no JSON/duplicate-line pattern
+    for the deterministic pass to catch, and allow_lossy=False keeps it that way."""
     from skill_hub.compression import compress_payload
-
-    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
-    # allow_lossy=False already bypasses the lossy flags; set them off explicitly
-    # too, now that the write lands in the isolated tmp config.
-    cfg.set("compression_ml_enabled", False)
-    cfg.set("compression_code_aware_enabled", False)
 
     prose = (
         "The transformation of software architecture over the past decade has been "
@@ -141,17 +125,13 @@ def test_prose_passthrough_when_lossy_off(monkeypatch, tmp_path):
 def test_maybe_compress_emits_compression_event(patched_store, monkeypatch):
     """maybe_compress must append a 'compression' event to the store when the
     payload is large enough to reach the compressor (even on passthrough)."""
-    pytest.importorskip("headroom")
-
     from skill_hub import config as cfg
 
-    # Enable the compression master switch and ensure lossy flags are off.
+    # Enable the compression master switch.
     monkeypatch.setattr(cfg, "get", lambda k, default=None: {
         "compression_enabled": True,
         "compression_context_aware": False,
         "compression_min_tokens": 50,    # lower threshold so our payload qualifies
-        "compression_ml_enabled": False,
-        "compression_code_aware_enabled": False,
     }.get(k, cfg._DEFAULTS.get(k, default)))
 
     from skill_hub.compression import maybe_compress

@@ -43,15 +43,10 @@ dependencies = [
 sentence_transformers = ["sentence-transformers>=2.7.0"]
 docs = ["markitdown[docx,pdf,pptx,xlsx]>=0.0.1"]
 voyage = ["voyageai>=0.3.0"]
-# Deterministic, structure-aware content compression (SmartCrusher/log/search/diff).
-# Core wheel only — no torch/tree-sitter; structured payloads (JSON, logs, search
-# results) compress, but prose/code route to the disabled "Kompress" path and pass
-# through unchanged. Install `compression_full` to enable prose/code compression.
+# Deterministic content compression backend (JSON minify + duplicate-line
+# collapse is dependency-free; this extra additionally enables the optional
+# headroom-ai-backed CCR compression store used by fetch_compressed/retrieve_compressed).
 compression = ["headroom-ai>=0.27,<1.0"]
-# Installs the ML "Kompress" (ModernBERT) and tree-sitter code backends so prose/code
-# compression CAN be enabled. They stay OFF until you set compression_ml_enabled /
-# compression_code_enabled (the ML path is lossy). Pulls torch + transformers + tree-sitter.
-compression_full = ["headroom-ai[ml,code]>=0.27,<1.0"]
 all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0", "headroom-ai[ml,code]>=0.27,<1.0", "markitdown[docx,pdf,pptx,xlsx]>=0.0.1"]
 
 [project.urls]

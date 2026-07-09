@@ -70,8 +70,6 @@ def _compression_context() -> dict:
         "compression_stats": stats,
         "compression_cfg": {
             "enabled": bool(cfg.get("compression_enabled")),
-            "ml_enabled": bool(cfg.get("compression_ml_enabled")),
-            "code_aware_enabled": bool(cfg.get("compression_code_aware_enabled")),
         },
         "llm_stats": llm_stats,
         "llm_metering_enabled": bool(cfg.get("llm_metering_enabled")),

@@ -131,10 +131,10 @@ _DEFAULTS = {
     # Compaction
     "compact_max_input_chars": 4000,
 
-    # Deterministic compression (optional `headroom-ai` dependency) — structure-aware
-    # reduction of tool outputs / logs / JSON / search results as a free, fast,
-    # offline alternative to the local-LLM compaction tax and to blunt char-truncation.
-    # Auto-no-ops when `headroom-ai` is not installed. Prose/code are left for the LLM.
+    # Deterministic compression — structure-aware reduction of tool outputs /
+    # logs / JSON / search results (JSON minify + duplicate-line collapse) as a
+    # free, fast, offline alternative to the local-LLM compaction tax and to
+    # blunt char-truncation. Prose/code pass through unchanged.
     "compression_enabled": True,        # master switch for the compression pre-stage
     "compression_min_tokens": 200,      # skip payloads below ~this token count
     "compression_context_aware": True,  # pass the user query as relevance context
@@ -144,21 +144,6 @@ _DEFAULTS = {
     # configured value.  OFF by default: behaviour is byte-identical to the previous
     # release until the user opts in.
     "compression_headroom_aware": False,
-    # Lossy ML path — Kompress (ModernBERT) extractive prose compression. ON by
-    # default after eval (scripts/compression_eval.py): avg ratio 0.60, avg
-    # embedding-fidelity 0.87. It deletes low-salience tokens — LOSSY and (for prose)
-    # irreversible. Requires the `compression_full` extra (headroom-ai[ml]); auto-
-    # no-ops silently without it. To install: `uv pip install mcp-skill-hub[compression_full]`
-    # or `pip install headroom-ai[ml]`. token_stats() will report "no-op" when the
-    # extra is missing even though this flag is True.
-    # NOTE: search-result/memory-like text compresses at ~0.79 fidelity (marginal);
-    # raise compression_ml_target_ratio toward 1.0 for higher fidelity / less saving,
-    # or set compression_ml_enabled=False to revert to lossless-only.
-    "compression_ml_enabled": True,         # Kompress (ModernBERT) prose compression
-    # code-aware (tree-sitter AST) stays OFF: the eval showed it never fires on real
-    # tool output (headroom routes code to Kompress first), so it adds no value here.
-    "compression_code_aware_enabled": False,  # tree-sitter AST code compression
-    "compression_ml_target_ratio": 0.6,     # Kompress target size (compressed/original)
 
     # Local LLM metering — record latency + token throughput for every Ollama call.
     # Surfaces in token_stats() and the System Health dashboard card.

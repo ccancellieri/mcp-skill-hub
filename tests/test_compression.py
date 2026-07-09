@@ -1,19 +1,15 @@
 """Tests for the deterministic compression adapter (``skill_hub.compression``).
 
-The adapter wraps the optional ``headroom-ai`` dependency. Tests that need real
-compression are guarded with ``importorskip`` so the base test run (without the
-``compression`` extra) skips them; the passthrough/gating tests run unconditionally.
+``compress_payload`` is deterministic-only (#119): JSON minify + duplicate-line
+collapse, no optional dependency required. ``kompress_prose``/``retrieve_original``
+still wrap the optional ``headroom-ai`` dependency and auto-no-op without it.
 """
 from __future__ import annotations
 
 import json
 
-import pytest
-
 from skill_hub import compression
 
-
-# --- behaviour that does NOT require headroom installed ---------------------
 
 def test_empty_input_passthrough():
     out = compression.compress_payload("")
@@ -23,7 +19,7 @@ def test_empty_input_passthrough():
 
 
 def test_small_input_passthrough():
-    # Below the token threshold -> returned verbatim, no router involved.
+    # Below the token threshold -> returned verbatim, compressor never reached.
     text = "short bit of text"
     out = compression.compress_payload(text, min_tokens=200)
     assert out.compressed == text
@@ -42,10 +38,6 @@ def test_maybe_compress_disabled_returns_original(monkeypatch):
 def test_retrieve_original_missing_hash_is_none():
     # Unknown hash (or headroom absent) must not raise.
     assert compression.retrieve_original("deadbeefdeadbeefdeadbeef") is None
-
-
-def test_is_available_returns_bool():
-    assert isinstance(compression.is_available(), bool)
 
 
 # --- dependency-free built-in deterministic fallback (no headroom needed) ----
@@ -75,81 +67,15 @@ def test_builtin_returns_none_on_incompressible_prose():
     assert compression._builtin_deterministic("a unique sentence with no repeats at all") is None
 
 
-def test_compress_payload_uses_builtin_when_router_absent(monkeypatch):
-    # Force the headroom router to be unavailable; the built-in must still shrink JSON.
-    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
+def test_compress_payload_uses_builtin_deterministic():
     pretty = json.dumps([{"k": i, "v": "x" * 5} for i in range(120)], indent=2)
     out = compression.compress_payload(pretty, min_tokens=50)
     assert out.content_type == "JSON_MIN"
     assert out.changed and not out.lossy
 
 
-# --- hot-path gate: no lossy ML compression on the per-prompt hook path ------
-
-def _incompressible_prose(n: int = 60) -> str:
-    # No JSON, no repeated lines -> the deterministic passes find nothing,
-    # so compress_payload must fall through to the lossy branch (or skip it).
-    return " ".join(f"word{i} carries unique context" for i in range(n))
-
-
-def test_hot_path_skips_lossy_kompress(monkeypatch):
-    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
-    monkeypatch.setattr(compression, "_lossy_flags", lambda: (True, False))
-    calls: list[str] = []
-
-    def fake_kompress_direct(text, context):
-        calls.append(text)
-        return compression.CompressedPayload(
-            compressed="X", content_type="KOMPRESS", ratio=0.01,
-            bytes_before=len(text), bytes_after=1, lossy=True,
-        )
-
-    monkeypatch.setattr(compression, "_kompress_direct", fake_kompress_direct)
-    text = _incompressible_prose()
-
-    monkeypatch.setenv("SKILL_HUB_LOCAL_ONLY", "1")
-    out = compression.compress_payload(text, min_tokens=10, allow_lossy=True)
-    assert calls == [], "Kompress must never be called on the hot path"
-    assert out.content_type == "PASSTHROUGH"
-    assert out.compressed == text
-
-    monkeypatch.delenv("SKILL_HUB_LOCAL_ONLY", raising=False)
-    out2 = compression.compress_payload(text, min_tokens=10, allow_lossy=True)
-    assert calls == [text], "off the hot path, the lossy fallback must still run"
-    assert out2.content_type == "KOMPRESS"
-
-
-def test_hot_path_flag_leaves_deterministic_pass_unaffected(monkeypatch):
-    # The lossless deterministic cascade is local/fast and must still fire
-    # on the hot path -- only the lossy ML branch is gated.
-    monkeypatch.setattr(compression, "_get_router", lambda ml=False, code=False: None)
-    monkeypatch.setenv("SKILL_HUB_LOCAL_ONLY", "1")
-    pretty = json.dumps([{"k": i, "v": "x" * 5} for i in range(120)], indent=2)
-    out = compression.compress_payload(pretty, min_tokens=50, allow_lossy=True)
-    assert out.content_type == "JSON_MIN"
-    assert not out.lossy
-
-
-# --- behaviour that DOES require headroom -----------------------------------
-
-def test_json_array_compresses_and_keeps_errors():
-    pytest.importorskip("headroom")
-    rows = [
-        {"id": i, "level": "INFO", "msg": f"row {i} ok", "ts": 1000 + i}
-        for i in range(60)
-    ]
-    rows[42] = {"id": 42, "level": "ERROR", "msg": "boom: NullPointer at svc.py:42", "ts": 1042}
-    payload = compression.compress_payload(json.dumps(rows))
-    assert payload.ratio < 1.0
-    assert payload.changed
-    assert payload.content_type != "PASSTHROUGH"
-    # The error row must survive the crush.
-    assert "NullPointer" in payload.compressed
-
-
 def test_prose_passes_through_unchanged():
-    pytest.importorskip("headroom")
-    # Prose routes to the disabled Kompress path -> safe passthrough.
+    # No JSON, no repeated lines -> nothing for the deterministic pass to catch.
     prose = ("The quick brown fox jumps over the lazy dog. " * 100)
     payload = compression.compress_payload(prose)
     assert payload.content_type == "PASSTHROUGH"
@@ -158,7 +84,6 @@ def test_prose_passes_through_unchanged():
 
 
 def test_malformed_input_never_raises():
-    pytest.importorskip("headroom")
     garbage = "{not json [ <<>> \x00 broken" * 50
     payload = compression.compress_payload(garbage)
     # Always returns a usable payload; compressed is at worst the original.
@@ -191,7 +116,7 @@ def test_truncate_at_word_custom_marker():
     assert len(out) < len("alpha beta gamma")
 
 
-# --- _compression_report observability when headroom-ai is absent -----------
+# --- _compression_report observability (#119: deterministic-only) -----------
 
 def _fake_compression_stats() -> dict:
     return {
@@ -201,50 +126,21 @@ def _fake_compression_stats() -> dict:
     }
 
 
-def test_compression_report_flags_missing_headroom(monkeypatch, tmp_path):
-    """When compression_ml_enabled=True but headroom-ai is not installed,
-    _compression_report() must include an explicit 'no-op' or 'not installed'
-    annotation so token_stats() doesn't silently lie about runtime state."""
+def test_compression_report_has_no_dormant_capability_messaging(monkeypatch, tmp_path):
+    """_compression_report() no longer explains a missing-extra/ml/code-aware
+    capability that doesn't exist -- compression is deterministic-only."""
     from skill_hub import config
     import skill_hub.server as _server
 
-    # Isolate config to a temp file.
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "cfg.json")
     config.set("compression_enabled", True)
-    config.set("compression_ml_enabled", True)
-    config.set("compression_code_aware_enabled", False)
-
-    # Simulate headroom-ai absent by patching is_available to return False.
-    monkeypatch.setattr(compression, "is_available", lambda: False)
     monkeypatch.setattr(_server._store, "get_compression_stats", _fake_compression_stats)
 
     report = _server._compression_report()
 
-    # The report must flag that headroom-ai is missing, NOT silently show ml=on.
-    assert "not installed" in report or "no-op" in report or "missing" in report, (
-        f"Expected 'not installed'/'no-op'/'missing' in report when headroom absent, got:\n{report}"
-    )
-    # The ml flag must still show the config intent (ml/Kompress=on ...).
-    assert "ml/Kompress=on" in report
-
-
-def test_compression_report_no_flag_when_headroom_present(monkeypatch, tmp_path):
-    """When headroom-ai IS available, the report must NOT mention 'not installed'."""
-    from skill_hub import config
-    import skill_hub.server as _server
-
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "cfg2.json")
-    config.set("compression_enabled", True)
-    config.set("compression_ml_enabled", True)
-    config.set("compression_code_aware_enabled", False)
-
-    monkeypatch.setattr(compression, "is_available", lambda: True)
-    monkeypatch.setattr(_server._store, "get_compression_stats", _fake_compression_stats)
-
-    report = _server._compression_report()
-
-    assert "not installed" not in report
-    assert "ml/Kompress=on" in report
+    assert "master=on" in report
+    for stale in ("headroom", "Kompress", "ml/", "code-aware", "not installed", "no-op"):
+        assert stale not in report, f"stale dormant-capability text {stale!r} found in report:\n{report}"
 
 
 # ---------------------------------------------------------------------------

@@ -154,7 +154,7 @@ def step_install_package(step: int, total: int):
         run([sys.executable, "-m", "venv", str(VENV_DIR)])
     # Include the deterministic content-compression backend (headroom-ai core
     # wheel — no torch/tree-sitter). Shrinks JSON/log/search tool output to spare
-    # context tokens. For the lossy ML path, install '.[compression_full]'.
+    # context tokens.
     run([str(PIP), "install", "-e", ".[compression]", "-q"], cwd=str(SCRIPT_DIR))
 
 

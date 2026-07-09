@@ -6,7 +6,7 @@ module fetches the page, strips HTML boilerplate to markdown-ish text, then
 compresses it through the *same* deterministic-first cascade searxng's
 ``_summarize_results`` already uses for web search results (see
 ``compression.kompress_prose`` / ``compression.maybe_compress``): prose is
-compressed lossily toward ``compression_ml_target_ratio`` via Kompress, while
+compressed lossily toward a fixed target ratio via Kompress, while
 fenced code blocks and JSON bodies are compressed lossless-only so their
 structure survives intact.
 
@@ -159,7 +159,7 @@ def _split_segments(text: str) -> list[tuple[bool, str]]:
 
 
 def _compress_prose(text: str, context: str) -> str:
-    """Lossy prose compression toward ``compression_ml_target_ratio`` -- the
+    """Lossy prose compression toward a fixed target ratio -- the
     same kompress_prose -> maybe_compress fallback searxng's
     ``_summarize_results`` uses for web search results."""
     from .compression import kompress_prose, maybe_compress

@@ -234,13 +234,6 @@
         {% endif %}
       </div>
     </div>
-    {# flags row #}
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">
-      <span class="muted">ML (Kompress):</span>
-      {% if ccfg.ml_enabled %}<span class="tag status-ok">on</span>{% else %}<span class="tag status-stopped">off</span>{% endif %}
-      <span class="muted" style="margin-left:6px">Code-aware:</span>
-      {% if ccfg.code_aware_enabled %}<span class="tag status-ok">on</span>{% else %}<span class="tag status-stopped">off</span>{% endif %}
-    </div>
     {% if cs.calls == 0 %}
     <p class="muted" style="margin:6px 0">No compression activity yet.</p>
     {% else %}
