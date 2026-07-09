@@ -19,6 +19,15 @@
     </section>
   {% endif %}
 
+  {% if notes %}
+    <section class="source-alert source-alert-warn" role="status">
+      <strong>Notes</strong>
+      <ul>
+        {% for note in notes %}<li>{{ note }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   {% if index_errors %}
     <section class="source-alert source-alert-warn" role="alert">
       <strong>Reindex notes</strong>
@@ -34,7 +43,10 @@
         <strong>Configured sources</strong>
         <div class="source-workflow-label">Every action saves these rows first.</div>
       </div>
-      <span class="source-count">{{ configured_count }} active row{{ '' if configured_count == 1 else 's' }}</span>
+      <span class="source-count">
+        {{ configured_count }} source row{{ '' if configured_count == 1 else 's' }}
+        · {{ configured_skill_count }} SKILL.md
+      </span>
     </div>
     <div class="source-table-wrap">
       <table class="source-table">
@@ -83,7 +95,11 @@
   <section class="source-panel">
     <div class="source-strip">
       <strong>Live indexed roots</strong>
-      <span class="source-count">{{ live_count }} root{{ '' if live_count == 1 else 's' }}</span>
+      <span class="source-count">
+        {{ live_count }} root{{ '' if live_count == 1 else 's' }}
+        · {{ live_skill_count }} SKILL.md
+        {% if indexed_count is not none %}· {{ indexed_count }} indexed skill{{ '' if indexed_count == 1 else 's' }}{% endif %}
+      </span>
     </div>
     {% if live_sources %}
       <div class="source-live-list">

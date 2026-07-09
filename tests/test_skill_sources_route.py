@@ -95,6 +95,8 @@ def test_skill_sources_page_renders_configured_sources(tmp_path, monkeypatch):
     assert "Skill Sources" in response.text
     assert "custom" in response.text
     assert str(source_dir) in response.text
+    assert "source row" in response.text
+    assert "SKILL.md" in response.text
     assert 'for="source-path-0"' in response.text
     assert 'for="source-label-0"' in response.text
     assert "Live indexed roots" in response.text
@@ -221,7 +223,7 @@ def test_skill_sources_import_promotes_enabled_sources_and_reindexes(
     response = client.post("/skill-sources/import")
 
     assert response.status_code == 200
-    assert "Imported 1 source(s); indexed 3 item(s)." in response.text
+    assert "Imported 1 source(s); indexed 3 changed item(s)." in response.text
     assert calls == [None]
     data = json.loads((tmp_path / "config.json").read_text())
     assert data["extra_skill_dirs"] == [
@@ -251,7 +253,7 @@ def test_skill_sources_import_endpoint_saves_form_before_reindex(tmp_path, monke
     )
 
     assert response.status_code == 200
-    assert "Imported 1 source(s); indexed 2 item(s)." in response.text
+    assert "Imported 1 source(s); indexed 2 changed item(s)." in response.text
     assert calls == [None]
     data = json.loads((tmp_path / "config.json").read_text())
     assert data["skill_import_sources"] == [
@@ -348,7 +350,7 @@ def test_skill_sources_apply_import_saves_rows_before_reindex(tmp_path, monkeypa
     )
 
     assert response.status_code == 200
-    assert "Imported 1 source(s); indexed 2 item(s)." in response.text
+    assert "Imported 1 source(s); indexed 2 changed item(s)." in response.text
     assert calls == [None]
     data = json.loads((tmp_path / "config.json").read_text())
     assert data["skill_import_sources"] == [
@@ -386,7 +388,7 @@ def test_skill_sources_apply_fix_repairs_loose_markdown_then_imports(
     )
 
     assert response.status_code == 200
-    assert "Fixed 1 skill(s); imported 1 source(s); indexed 4 item(s)." in response.text
+    assert "Fixed 1 skill(s); imported 1 source(s); indexed 4 changed item(s)." in response.text
     assert "normalize" in response.text
     assert (source_dir / "normalize" / "SKILL.md").exists()
     assert calls == [None]
@@ -397,6 +399,52 @@ def test_skill_sources_apply_fix_repairs_loose_markdown_then_imports(
     assert {"path": str(source_dir), "source": "fresh", "enabled": True} in data[
         "extra_skill_dirs"
     ]
+
+
+def test_skill_sources_apply_fix_ignores_existing_extra_skill_dirs(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "fresh"
+    source_dir.mkdir()
+    _write_skill(source_dir)
+    live_docs = tmp_path / "live-docs"
+    live_docs.mkdir()
+    (live_docs / "README.md").write_text(
+        "# Live Docs\n\nThis page is documentation for an already-live root.",
+        encoding="utf-8",
+    )
+    calls = []
+
+    import skill_hub.webapp.routes.skill_sources as route_mod
+
+    monkeypatch.setattr(route_mod, "index_all", lambda store: calls.append(store) or (0, []))
+    client = _client(
+        tmp_path,
+        monkeypatch,
+        {
+            "skill_import_sources": [
+                {"path": str(source_dir), "source": "fresh", "enabled": True}
+            ],
+            "extra_skill_dirs": [
+                {"path": str(live_docs), "source": "docs", "enabled": True}
+            ],
+        },
+    )
+
+    response = client.post(
+        "/skill-sources/apply",
+        data={
+            "action": "fix",
+            "path": [str(source_dir)],
+            "source": ["fresh"],
+            "enabled": ["0"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Fixed 0 skill(s); imported 1 source(s)" in response.text
+    assert not (live_docs / "live-docs" / "SKILL.md").exists()
+    assert not (live_docs / "README" / "SKILL.md").exists()
 
 
 def test_skill_sources_import_disables_previously_managed_source(tmp_path, monkeypatch):

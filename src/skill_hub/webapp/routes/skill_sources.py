@@ -41,12 +41,16 @@ def _render_page(
     *,
     message: str = "",
     problems: list[str] | None = None,
+    notes: list[str] | None = None,
     audit: Any | None = None,
     index_errors: list[str] | None = None,
 ) -> Any:
     sources = _configured_sources()
     rows = sources + [{"path": "", "source": "", "enabled": True}]
     live_sources = _live_skill_dirs()
+    indexed_count = _indexed_skill_count(request)
+    configured_skill_count = _skill_file_count(sources)
+    live_skill_count = _skill_file_count(live_sources)
     return request.app.state.templates.TemplateResponse(
         request,
         "skill_sources.html",
@@ -54,10 +58,14 @@ def _render_page(
             "active_tab": "skill_sources",
             "sources": rows,
             "configured_count": len(sources),
+            "configured_skill_count": configured_skill_count,
             "live_sources": live_sources,
             "live_count": len(live_sources),
+            "live_skill_count": live_skill_count,
+            "indexed_count": indexed_count,
             "message": message,
             "problems": problems or [],
+            "notes": notes or [],
             "audit": audit,
             "index_errors": index_errors or [],
         },
@@ -146,6 +154,34 @@ def _live_skill_dirs() -> list[dict[str, Any]]:
     return out
 
 
+def _skill_file_count(entries: list[dict[str, Any]]) -> int:
+    total = 0
+    seen: set[str] = set()
+    for entry in entries:
+        if not entry.get("enabled", True):
+            continue
+        raw_path = str(entry.get("path") or "").strip()
+        if not raw_path:
+            continue
+        base = Path(raw_path).expanduser()
+        key = _path_key(str(base))
+        if key in seen or not base.exists():
+            continue
+        seen.add(key)
+        total += sum(1 for _ in base.rglob("SKILL.md"))
+    return total
+
+
+def _indexed_skill_count(request: Request) -> int | None:
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        return None
+    try:
+        return len(store.list_skills())
+    except Exception:  # noqa: BLE001 - status counter must not break the page
+        return None
+
+
 def _merge_live_skill_dirs(cfg: dict[str, Any], report: Any) -> tuple[int, list[str]]:
     live = cfg.get("extra_skill_dirs") or []
     if not isinstance(live, list):
@@ -227,10 +263,10 @@ def _form_has_sources(form: Any) -> bool:
     return "path" in form
 
 
-def _audit_from_config(cfg: dict[str, Any]) -> Any:
+def _audit_from_config(cfg: dict[str, Any], *, include_live: bool = False) -> Any:
     paths = default_source_paths(
         skill_import_sources=cfg.get("skill_import_sources") or [],
-        extra_skill_dirs=cfg.get("extra_skill_dirs") or [],
+        extra_skill_dirs=(cfg.get("extra_skill_dirs") or []) if include_live else [],
     )
     return audit_paths(paths)
 
@@ -281,6 +317,13 @@ def _reindex(request: Request) -> tuple[int, list[str]]:
         return index_all(request.app.state.store)
     except Exception as exc:  # noqa: BLE001 - render recoverable UI state
         return 0, [f"reindex failed: {exc}"]
+
+
+def _import_message(request: Request, prefix: str, indexed: int) -> str:
+    total = _indexed_skill_count(request)
+    if total is None:
+        return f"{prefix}; indexed {indexed} changed item(s)."
+    return f"{prefix}; indexed {indexed} changed item(s), {total} total skill(s)."
 
 
 async def _config_from_optional_form(request: Request) -> tuple[dict[str, Any], bool]:
@@ -338,11 +381,11 @@ async def skill_sources_import(request: Request) -> Any:
     imported, notes = _merge_live_skill_dirs(cfg, report)
     _cfg.save_config(cfg)
     indexed, errors = _reindex(request)
-    message = f"Imported {imported} source(s); indexed {indexed} item(s)."
+    message = _import_message(request, f"Imported {imported} source(s)", indexed)
     return _render_page(
         request,
         message=message,
-        problems=notes,
+        notes=notes,
         audit=_audit_from_config(cfg),
         index_errors=errors,
     )
@@ -374,11 +417,11 @@ async def skill_sources_apply(request: Request) -> Any:
         imported, notes = _merge_live_skill_dirs(cfg, report)
         _cfg.save_config(cfg)
         indexed, errors = _reindex(request)
-        message = f"Imported {imported} source(s); indexed {indexed} item(s)."
+        message = _import_message(request, f"Imported {imported} source(s)", indexed)
         return _render_page(
             request,
             message=message,
-            problems=notes + _audit_notes(report),
+            notes=notes + _audit_notes(report),
             audit=_audit_from_config(cfg),
             index_errors=errors,
         )
@@ -397,14 +440,15 @@ async def skill_sources_apply(request: Request) -> Any:
         imported, notes = _merge_live_skill_dirs(cfg, repaired_report)
         _cfg.save_config(cfg)
         indexed, errors = _reindex(request)
-        message = (
-            f"Fixed {len(repair.created)} skill(s); imported {imported} source(s); "
-            f"indexed {indexed} item(s)."
+        message = _import_message(
+            request,
+            f"Fixed {len(repair.created)} skill(s); imported {imported} source(s)",
+            indexed,
         )
         return _render_page(
             request,
             message=message,
-            problems=_repair_notes(repair) + notes,
+            notes=_repair_notes(repair) + notes,
             audit=repaired_report,
             index_errors=errors,
         )
