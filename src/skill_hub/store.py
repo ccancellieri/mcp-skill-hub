@@ -746,17 +746,6 @@ class SkillStore:
                 updated_at   TEXT DEFAULT (datetime('now'))
             );
 
-            -- S4 F-ROUTE: ε-greedy bandit over model tiers
-            CREATE TABLE IF NOT EXISTS model_rewards (
-                task_class   TEXT NOT NULL,      -- trivial|simple|moderate|complex
-                domain       TEXT NOT NULL,      -- primary domain hint or "_none"
-                tier         TEXT NOT NULL,      -- tier_cheap|tier_mid|tier_smart
-                trials       INTEGER NOT NULL DEFAULT 0,
-                successes    REAL    NOT NULL DEFAULT 0.0,   -- EMA-compatible (partial rewards allowed)
-                updated_at   TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (task_class, domain, tier)
-            );
-
             -- Async background job queue (memory optimisation, classify, rerank)
             CREATE TABLE IF NOT EXISTS background_jobs (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1146,32 +1135,6 @@ class SkillStore:
         try:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_repo ON tasks(repo)"
-            )
-            self._conn.commit()
-        except Exception:
-            pass
-
-        # M1 — claims layer: lets multiple Claude Code sessions / swarm
-        # subprocesses coordinate ownership of a task without an LLM.
-        # ``claimed_by`` holds the current owner's agent_id (NULL = free);
-        # ``claim_token`` is an opaque per-claim ID used to invalidate stale
-        # release calls; ``claimed_at`` is the moment of the most recent
-        # claim/handoff/steal; ``stealable_at`` is the wall-clock time after
-        # which steal_task() may transfer ownership without consent.
-        for col in ("claimed_by", "claim_token", "claimed_at", "stealable_at"):
-            if col not in task_cols:
-                try:
-                    self._conn.execute(
-                        f"ALTER TABLE tasks ADD COLUMN {col} TEXT"
-                    )
-                    self._conn.commit()
-                    task_cols = task_cols | {col}
-                except Exception:
-                    pass
-        try:
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_tasks_claimed_by "
-                "ON tasks(claimed_by)"
             )
             self._conn.commit()
         except Exception:
