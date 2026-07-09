@@ -99,6 +99,10 @@ _DEFAULTS = {
     "hook_context_max_skill_chars": 8000,  # max chars per skill (truncated if larger)
     "hook_context_top_k_skills": 5,     # max skills to load with full content per message
     "hook_context_min_skills": 3,      # min skills to load (auto-fill from RAG if LLM picks fewer)
+    # Skip candidates with a proven-ineffective record (only-negative feedback,
+    # or repeatedly injected without a single skill.used event). Any positive
+    # signal clears a skill again.
+    "hook_context_effectiveness_filter": True,
     "hook_precompact_threshold": 1500,  # messages longer than this get pre-compacted
     # Pre-compact a long input deterministically (extractive Kompress, no local LLM)
     # by default — the condensed view is consumed by the cloud model, which tolerates

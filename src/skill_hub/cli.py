@@ -1435,6 +1435,32 @@ def _log_auto_skill_injections(
             pass
 
 
+def _drop_ineffective_skills(
+    store: "SkillStore", candidates: list[dict], _cfg: object,
+) -> list[dict]:
+    """Filter out candidates with a proven-ineffective usage record.
+
+    Uses injection/used/feedback data (see
+    ``SkillStore.get_ineffective_skill_ids``) so skills that keep getting
+    loaded into context without ever being used or rated helpful stop
+    consuming prompt budget. Disabled via
+    ``hook_context_effectiveness_filter: false``; never raises.
+    """
+    if _cfg.get("hook_context_effectiveness_filter") is False:
+        return candidates
+    try:
+        ineffective = store.get_ineffective_skill_ids()
+    except Exception:  # noqa: BLE001 — gating must never break injection
+        return candidates
+    if not ineffective:
+        return candidates
+    kept = [s for s in candidates if s["id"] not in ineffective]
+    dropped = len(candidates) - len(kept)
+    if dropped:
+        log_detail(f"effectiveness filter: dropped {dropped} ineffective skill(s)")
+    return kept
+
+
 def _dynamic_context_stage(
     message: str,
     session_id: str,
@@ -1498,6 +1524,7 @@ def _dynamic_context_stage(
         all_candidates = store.search_fts(
             message, top_k=top_k_skills * 3, target="claude",
         )
+    all_candidates = _drop_ineffective_skills(store, all_candidates, _cfg)
     _session_complexity_counts[complexity] = _session_complexity_counts.get(complexity, 0) + 1
     max_chars = _BUDGET_BY_COMPLEXITY.get(complexity, default_max)
 
@@ -1853,6 +1880,7 @@ def _build_context_injection(message: str, msg_vector: list[float]) -> str | Non
         # Fetch top_k_skills * 2 candidates so we can report what was skipped.
         skill_candidates = store.search(msg_vector, top_k=top_k_skills * 2,
                                         similarity_threshold=0.4, target="claude")
+        skill_candidates = _drop_ineffective_skills(store, skill_candidates, _cfg)
         skills_found = [s["id"] for s in skill_candidates]
 
         for s in skill_candidates[:top_k_skills]:
@@ -2175,7 +2203,7 @@ def _build_keyword_context_injection(message: str) -> str | None:
                     continue
                 _seen_keys.add(key)
                 _deduped.append(s)
-            skills = _deduped[:top_k_skills]
+            skills = _drop_ineffective_skills(store, _deduped, _cfg)[:top_k_skills]
 
             loaded_skill_ids: list[str] = []
             for i, s in enumerate(skills):

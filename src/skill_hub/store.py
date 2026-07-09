@@ -2014,6 +2014,7 @@ class SkillStore:
         skill_id: str,
         session_id: str,
         injection_id: int | None = None,
+        tool_name: str = "search_skills",
     ) -> int | None:
         """Emit a ``skill.used`` event tied to the most-recent injection.
 
@@ -2049,8 +2050,71 @@ class SkillStore:
             session_id,
             "skill.used",
             payload,
-            tool_name="search_skills",
+            tool_name=tool_name,
         )
+
+    def get_ineffective_skill_ids(self, min_injections: int = 8,
+                                  min_unhelpful: int = 2) -> set[str]:
+        """Skill ids with a proven-ineffective record, for load gating.
+
+        Two independent criteria, both requiring zero positive signal:
+
+        - never-helpful: feedback rows exist, none helpful, at least
+          ``min_unhelpful`` unhelpful
+        - injected-but-unused: at least ``min_injections`` injection rows
+          and zero ``skill.used`` events
+
+        A single helpful feedback row or ``skill.used`` event clears a
+        skill from both sets, so a gated skill recovers as soon as it
+        proves useful again (e.g. via explicit search_skills).
+        """
+        # Positive signals: any skill.used event or helpful feedback
+        used_ids: set[str] = set()
+        try:
+            for row in self._conn.execute(
+                "SELECT payload FROM events WHERE kind = 'skill.used'"
+            ).fetchall():
+                try:
+                    sid = json.loads(row["payload"]).get("skill_id", "")
+                    if sid:
+                        used_ids.add(sid)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_ineffective_skill_ids: events query failed: %s", exc)
+
+        ineffective: set[str] = set()
+        try:
+            for row in self._conn.execute(
+                "SELECT skill_id, SUM(helpful) AS helpful, COUNT(*) AS n "
+                "FROM feedback GROUP BY skill_id "
+                "HAVING SUM(helpful) = 0 AND COUNT(*) >= ?",
+                (min_unhelpful,),
+            ).fetchall():
+                if row["skill_id"] not in used_ids:
+                    ineffective.add(row["skill_id"])
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_ineffective_skill_ids: feedback query failed: %s", exc)
+
+        try:
+            helpful_ids = {
+                row["skill_id"] for row in self._conn.execute(
+                    "SELECT skill_id FROM feedback "
+                    "GROUP BY skill_id HAVING SUM(helpful) > 0"
+                ).fetchall()
+            }
+            for row in self._conn.execute(
+                "SELECT skill_id, COUNT(*) AS n FROM skill_injections "
+                "GROUP BY skill_id HAVING COUNT(*) >= ?",
+                (min_injections,),
+            ).fetchall():
+                sid = row["skill_id"]
+                if sid not in used_ids and sid not in helpful_ids:
+                    ineffective.add(sid)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("get_ineffective_skill_ids: injection query failed: %s", exc)
+
+        return ineffective
 
     def record_feedback(self, skill_id: str, query: str,
                         query_vector: list[float], helpful: bool) -> None:
@@ -2083,6 +2147,28 @@ class SkillStore:
             "FROM skills WHERE id = ?", (skill_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def resolve_skill_id(self, ref: str) -> str | None:
+        """Resolve a skill reference to an indexed skill id.
+
+        ``ref`` is how the Skill tool names a skill — either the full
+        ``plugin:name`` id or a bare name (user-level skills). Tries an
+        exact id match first, then a unique name / ``*:name`` match.
+        """
+        if not ref:
+            return None
+        row = self._conn.execute(
+            "SELECT id FROM skills WHERE id = ?", (ref,)
+        ).fetchone()
+        if row:
+            return row["id"]
+        rows = self._conn.execute(
+            "SELECT id FROM skills WHERE name = ? OR id LIKE ? LIMIT 2",
+            (ref, f"%:{ref}"),
+        ).fetchall()
+        # Ambiguous bare names (several plugins shipping the same skill)
+        # resolve to nothing rather than crediting the wrong skill.
+        return rows[0]["id"] if len(rows) == 1 else None
 
     def list_skills(self, target: str | None = None) -> list[sqlite3.Row]:
         if target:

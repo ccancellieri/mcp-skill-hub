@@ -143,16 +143,44 @@ _LOADED_RE = _re.compile(r"<!-- LOADED \(\d+\):\s*(.*?)-->")
 
 
 def _maybe_emit_skill_used(
-    tool_name: str, tool_response: object, session_id: str
+    tool_name: str, tool_response: object, session_id: str,
+    tool_input: dict | None = None,
 ) -> None:
-    """Emit ``skill.used`` events when search_skills returns skill content.
+    """Emit ``skill.used`` events when a skill is actually consumed.
 
-    Fires on PostToolUse for the search_skills MCP tool.  Parses the
-    ``LOADED (N): id1, id2`` header from the response text to identify
-    which skills were served, then calls ``store.record_skill_used`` for
-    each one (matched to the most-recent injection row for that
-    skill+session).  Never raises.
+    Fires on PostToolUse for two tools:
+
+    - the search_skills MCP tool — parses the ``LOADED (N): id1, id2``
+      header from the response text to identify which skills were served
+    - the built-in ``Skill`` tool — resolves the invoked skill name to an
+      indexed skill id, so hook-injected skills that Claude then invokes
+      count as used (without this, automatic injections can never earn a
+      non-zero used-rate)
+
+    Each id goes through ``store.record_skill_used`` (matched to the
+    most-recent injection row for that skill+session).  Never raises.
     """
+    if tool_name == "Skill":
+        ref = str((tool_input or {}).get("skill") or "").strip()
+        if not ref:
+            return
+        try:
+            from pathlib import Path as _Path
+            import sys as _sys
+            _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "src"))
+            from skill_hub.store import SkillStore
+            store = SkillStore()
+            try:
+                sid = store.resolve_skill_id(ref)
+                if sid:
+                    store.record_skill_used(sid, session_id, tool_name="Skill")
+                    log(f"skill.used  skill_id={sid}  via=Skill  session={session_id[:12]}")
+            finally:
+                store.close()
+        except Exception as exc:  # noqa: BLE001
+            log(f"skill.used  error={exc}")
+        return
+
     if tool_name != _SEARCH_SKILLS_TOOL:
         return
 
@@ -432,7 +460,8 @@ def main() -> int:
     if event == "PostToolUse":
         _maybe_auto_teach_from_feedback(tool_name, tool_input)
         _maybe_observe_claude_task(data)
-        _maybe_emit_skill_used(tool_name, data.get("tool_response"), session_id)
+        _maybe_emit_skill_used(tool_name, data.get("tool_response"), session_id,
+                               tool_input)
 
     if tool_name != "Bash":
         return 0
