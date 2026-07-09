@@ -58,6 +58,13 @@ from .store import SkillStore, get_store
 from .compression import maybe_compress
 from . import dashboard as _dashboard
 from .capabilities import requires_capability
+from .skill_import_audit import (
+    audit_paths as _audit_skill_paths,
+    default_source_paths as _default_skill_import_paths,
+    parse_path_list as _parse_skill_import_paths,
+    render_json as _render_skill_audit_json,
+    render_markdown as _render_skill_audit_markdown,
+)
 
 
 def _get_cpu_info() -> int:
@@ -2109,6 +2116,34 @@ def index_plugins() -> str:
     if errors:
         result += f"\n\nErrors: " + "; ".join(errors[:5])
     return result
+
+
+@mcp.tool()
+@requires_capability("none")
+def audit_skill_imports(paths: str = "", output: str = "markdown") -> str:
+    """Read-only audit of local skill folders before import/review.
+
+    ``paths`` accepts a JSON list, newline-separated paths, or comma-separated
+    paths. Empty paths scan configured ``skill_import_sources`` plus enabled
+    ``extra_skill_dirs``. ``output`` is ``markdown`` or ``json``.
+    """
+    log_tool("audit_skill_imports", paths=paths, output=output)
+    try:
+        selected_paths = (
+            _parse_skill_import_paths(paths)
+            if paths.strip()
+            else _default_skill_import_paths(
+                skill_import_sources=_cfg.get("skill_import_sources") or [],
+                extra_skill_dirs=_cfg.get("extra_skill_dirs") or [],
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"Invalid paths: {exc}"
+
+    report = _audit_skill_paths(selected_paths)
+    if output.strip().lower() == "json":
+        return _render_skill_audit_json(report)
+    return _render_skill_audit_markdown(report)
 
 
 MARKETPLACES_DIR = Path.home() / ".claude" / "plugins" / "marketplaces"

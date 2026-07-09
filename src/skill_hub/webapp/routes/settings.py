@@ -223,6 +223,7 @@ _FIELD_HINTS = {
     # Profiles
     "profiles": "Named plugin sets per work context (minimal, backend, frontend, mcp-dev, data, full)",
     # Extra dirs
+    "skill_import_sources": "Skill folders scanned by audit_skill_imports before normalization/import",
     "extra_skill_dirs": "Extra skill directories to index alongside plugin cache",
     "extra_plugin_dirs": "Extra plugin directories with plugin.json or README.md manifests",
 }
@@ -284,6 +285,7 @@ _BUCKET_OVERRIDES: dict[str, str] = {
     # profiles
     "profile_auto_switch_enabled": "profiles",
     "profile_auto_switch_window": "profiles",
+    "skill_import_sources": "profiles",
     "extra_skill_dirs": "profiles",
     "extra_plugin_dirs": "profiles",
 }

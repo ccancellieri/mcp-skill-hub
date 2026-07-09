@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Skill Hub control dashboard for skills, routing, providers, queues, and local services.">
   <title>skill-hub — {% block title %}control{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/vendor/htmx.min.js" defer></script>
@@ -29,7 +30,7 @@
           <span class="nav-group-label">{{ group.group }}</span>
           <div class="nav-group-tabs">
             {% for item in group.tabs %}
-              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}"{% if active_tab == item.key %} aria-current="page"{% endif %}>{{ item.label }}</a>
             {% endfor %}
           </div>
         </div>
@@ -39,7 +40,7 @@
           <span class="nav-group-label">Plugins</span>
           <div class="nav-group-tabs">
             {% for item in plugin_nav %}
-              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}">{{ item.label }}</a>
+              <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}"{% if active_tab == item.key %} aria-current="page"{% endif %}>{{ item.label }}</a>
             {% endfor %}
           </div>
         </div>

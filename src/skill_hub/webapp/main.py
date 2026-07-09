@@ -30,6 +30,7 @@ from .routes import logs as logs_routes
 from .routes import questions as questions_routes
 from .routes import orchestrator_settings as orchestrator_settings_routes
 from .routes import settings as settings_routes
+from .routes import skill_sources as skill_sources_routes
 from .routes import skills as skills_routes
 from .routes import task_logs as task_logs_routes
 from .routes import tasks as tasks_routes
@@ -79,6 +80,7 @@ _CORE_NAV: list[dict[str, Any]] = [
         "group": "Knowledge",
         "tabs": [
             {"key": "skills", "label": "Skills", "href": "/skills"},
+            {"key": "skill_sources", "label": "Skill Sources", "href": "/skill-sources"},
             {"key": "teachings", "label": "Teachings", "href": "/teachings"},
             {"key": "memory", "label": "Memory", "href": "/memory"},
             {"key": "wiki", "label": "Wiki", "href": "/wiki"},
@@ -246,6 +248,7 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(tasks_routes.router)
     app.include_router(task_logs_routes.router)
     app.include_router(skills_routes.router)
+    app.include_router(skill_sources_routes.router)
     app.include_router(teachings_routes.router)
     app.include_router(logs_routes.router)
     app.include_router(report_routes.router)

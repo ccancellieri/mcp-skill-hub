@@ -33,7 +33,7 @@
     class="cmdk-trigger"
     @click="openPalette()"
     title="Command palette — ⌘K / Ctrl+K"
-    aria-label="Open command palette"
+    aria-label="Open command palette ⌘K"
   >
     <span class="cmdk-trigger-kbd">⌘K</span>
   </button>
@@ -64,6 +64,8 @@
       <div class="cmdk-input-row">
         <span class="cmdk-input-icon" aria-hidden="true">⌘</span>
         <input
+          id="cmdk-input"
+          name="cmdk_query"
           type="text"
           class="cmdk-input"
           x-ref="input"

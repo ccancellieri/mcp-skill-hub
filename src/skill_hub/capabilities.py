@@ -195,6 +195,8 @@ TOOLS: tuple[ToolSpec, ...] = (
              hard=(BACKEND_DB,), soft=(BACKEND_EMBED,)),
     ToolSpec("index_plugins", "Rebuild the plugin suggestion index",
              hard=(BACKEND_DB, BACKEND_EMBED)),
+    ToolSpec("audit_skill_imports", "Read-only audit of local skill import sources",
+             hard=()),
     ToolSpec("update_marketplace", "Sync the upstream skill marketplace",
              hard=(BACKEND_GIT,), soft=(BACKEND_EMBED,)),
     # --- Feedback / signals ---

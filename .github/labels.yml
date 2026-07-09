@@ -11,9 +11,6 @@
 - name: m3-worktree-policy
   color: "5319e7"
   description: "M3: Worktree + multi-repo policy enforcement"
-- name: m4-ruflo-absorb
-  color: "b60205"
-  description: "M4: Absorb ruflo (claude-flow) features natively, no runtime dep"
 
 # Areas
 - name: "area:tools"
@@ -64,6 +61,3 @@
 - name: degrades-gracefully
   color: "0e8a16"
   description: Designed to work even when LLM / embedding backends are unavailable
-- name: no-ruflo-dep
-  color: "b60205"
-  description: Hard constraint — implementation MUST NOT runtime-depend on ruflo/claude-flow

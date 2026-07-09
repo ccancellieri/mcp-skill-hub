@@ -52,9 +52,8 @@ body:
         - M1 No-LLM
         - M2 Managed Agents
         - M3 Worktree Policy
-        - M4 Ruflo Absorption
         - Unscheduled
-      default: 4
+      default: 3
     validations:
       required: true
   - type: dropdown

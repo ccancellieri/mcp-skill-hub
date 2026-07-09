@@ -75,19 +75,6 @@ Move maintainer feedback rules from memory into callable skill-hub primitives.
 - [x] #18 — memory-rule export: feedback files → per-repo `POLICY.md` (`export_policies` MCP tool)
 - [x] #19 — cross-project task federation: per-repo filter on every task tool
 
-### M4 — Absorb ruflo (claude-flow) features natively, zero runtime dep
-
-Reimplement the ruflo capabilities the maintainer values as native skill-hub primitives, so ruflo can be uninstalled. All six issues shipped (2026-05-17); the orchestration pieces were then superseded — see the note below and [comparison-ruflo.md](comparison-ruflo.md).
-
-- [x] ~~#20 — swarm-lite: launch N Claude subprocesses, each on a distinct worktree+claim~~ — shipped, then **retired (PR #52)**; superseded by native subagents + the Workflow tool, orchestrated by `/team`.
-- [x] ~~#21 — autopilot-lite: pick-next-stealable loop~~ — shipped, then **retired (PR #52)**; superseded by native `/loop` + the Workflow tool.
-- [x] #22 — federation-lite: WAL-mode + node_id for multi-host shared state (`federation_view` — kept)
-- [x] #23 — importer: ruflo skills → skill-hub native skill manifests (`scripts/import_ruflo_skills.py` — kept)
-- [x] #24 — importer: ruflo agents → Claude Code subagent definitions (`scripts/import_ruflo_agents.py` — kept)
-- [x] #25 — doc: reframe `comparison-ruflo.md` — absorbed from ruflo, then superseded by the native `/team` layer
-
-> **Convergence note (PR #52).** The home-grown in-process engines (swarm, autopilot, the `author_plan`/`run_plan`/`execute_plan_step` stepper, and the W5 sandbox) were retired. skill-hub no longer runs its own agent loop: it is the *intelligence layer* — role definitions, model·effort policy (`team_plan`), and prompt refactoring (`improve_prompt`) — over Claude Code's native subagents, agent teams, and Workflow tool, driven by `/team`. The ruflo importers and federation-lite remain.
-
 ### Other
 
 - [ ] **OpenSearch backend** — for scaling beyond local use

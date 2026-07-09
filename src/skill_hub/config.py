@@ -684,6 +684,34 @@ _DEFAULTS = {
         }
     ],
 
+    # Skill import audit sources — scanned by audit_skill_imports() before a
+    # source is normalized/imported/enabled. This is deliberately separate from
+    # extra_skill_dirs: audit sources are review candidates, not live index roots.
+    # Each entry: {"path": "/abs/path", "source": "label", "enabled": true}
+    "skill_import_sources": [
+        {
+            "path": str(Path.home() / ".agents" / "skills"),
+            "source": "agents",
+            "enabled": True,
+        },
+        {
+            "path": str(Path.home() / ".claude" / "skills"),
+            "source": "claude-user",
+            "enabled": True,
+        },
+        {
+            "path": str(Path.home() / ".claude" / "local-skills"),
+            "source": "local-json",
+            "enabled": True,
+        },
+    ],
+    # Paths promoted from skill_import_sources into live indexing by the web UI.
+    # Used to reconcile deletes/disables without touching unrelated manual
+    # extra_skill_dirs entries.
+    "skill_import_managed_paths": [],
+    # Local JSON skill directory last controlled by the Skill Sources UI.
+    "skill_import_managed_local_json_dir": None,
+
     # Extra plugin directories — each directory is indexed as a plugin source.
     # The directory may contain subdirs with plugin.json or README.md manifests.
     # Each entry: {"path": "/abs/path", "source": "label", "description": "...", "enabled": true}
@@ -814,7 +842,7 @@ _FANOUT_DEFAULTS = {
 _DEFAULTS["fanout"] = _FANOUT_DEFAULTS
 
 
-# M4-3 federation-lite — schema convention for multi-host shared state.
+# Federation-lite — schema convention for multi-host shared state.
 # ``node_id`` tags every event/task with the authoring host so a synced DB
 # replica (Syncthing / rsync / git-annex) can be filtered cross-host. Empty
 # string → store.py falls back to $SKILL_HUB_NODE_ID then socket.gethostname().

@@ -43,7 +43,7 @@ def _resolve_node_id() -> str:
     → ``socket.gethostname()`` → ``"local"``. Sanitized to a safe identifier so
     it can be used in attached-DB aliases and cross-host queries.
 
-    Federation-lite (M4-3) treats this as an opaque tag: SQLite stores it on
+    Federation-lite treats this as an opaque tag: SQLite stores it on
     every row of ``events`` and ``tasks`` so that, when two databases live on
     the same disk (via Syncthing / rsync / git-annex), rows can be filtered or
     grouped by originating host without any coordination protocol.
@@ -229,7 +229,7 @@ class SkillStore:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         # WAL is idempotent — re-running on an already-WAL DB is a no-op and
-        # returns ``"wal"`` again. Federation-lite (M4-3) needs WAL so a
+        # returns ``"wal"`` again. Federation-lite needs WAL so a
         # sibling Syncthing/rsync replica can be read concurrently without
         # blocking the local writer.
         result = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
@@ -699,7 +699,7 @@ class SkillStore:
                 reason     TEXT
             );
 
-            -- M2 W1 / M4-3 federation-lite — durable event log.
+            -- M2 W1 / federation-lite — durable event log.
             -- Append-only record of tool invocations + config changes that
             -- can be replayed on wake_session (M2 W2) and joined across hosts
             -- (Federation-lite) by ``node_id``. Schema matches the design in
@@ -1091,7 +1091,7 @@ class SkillStore:
             except Exception:
                 pass
 
-        # M4-3 federation-lite — tag every task with the node that authored it.
+        # Federation-lite — tag every task with the node that authored it.
         # Cross-host queries (via ``federation_view``) filter on this column to
         # answer "which tasks belong to me vs. the synced replica?" without a
         # protocol — pure schema convention over a shared/synced file system.

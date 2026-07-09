@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}skill sources{% endblock %}
+{% block content %}
+<form class="sources-shell" method="post" action="/skill-sources/apply">
+  <div class="sources-head">
+    <div>
+      <h1 class="page-h">Skill Sources</h1>
+      <div class="sources-sub">Review candidate skill folders before they become live indexed roots.</div>
+    </div>
+    {% if message %}<span class="source-message" role="status" aria-live="polite">{{ message }}</span>{% endif %}
+  </div>
+
+  {% if problems %}
+    <section class="source-alert" role="alert">
+      <strong>Review needed</strong>
+      <ul>
+        {% for problem in problems %}<li>{{ problem }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if index_errors %}
+    <section class="source-alert source-alert-warn" role="alert">
+      <strong>Reindex notes</strong>
+      <ul>
+        {% for err in index_errors %}<li>{{ err }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section class="source-panel">
+    <div class="source-workflow">
+      <div>
+        <strong>Configured sources</strong>
+        <div class="source-workflow-label">Every action saves these rows first.</div>
+      </div>
+      <span class="source-count">{{ configured_count }} active row{{ '' if configured_count == 1 else 's' }}</span>
+    </div>
+    <div class="source-table-wrap">
+      <table class="source-table">
+        <thead>
+          <tr>
+            <th style="width:52%">Path</th>
+            <th>Source label</th>
+            <th style="width:110px">Enabled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for src in sources %}
+          <tr>
+            <td>
+              <label class="sr-only" for="source-path-{{ loop.index0 }}">Skill source path {{ loop.index }}</label>
+              <input id="source-path-{{ loop.index0 }}" type="text" name="path" value="{{ src.path }}" placeholder="/Users/.../skills" autocomplete="off">
+            </td>
+            <td>
+              <label class="sr-only" for="source-label-{{ loop.index0 }}">Skill source label {{ loop.index }}</label>
+              <input id="source-label-{{ loop.index0 }}" class="source-label" type="text" name="source" value="{{ src.source }}" placeholder="label" autocomplete="off">
+            </td>
+            <td>
+              <label class="source-toggle">
+                <input type="checkbox" name="enabled" value="{{ loop.index0 }}" {% if src.enabled %}checked{% endif %}>
+                <span>Enabled <span class="sr-only">source {{ src.source or src.path or loop.index }}</span></span>
+              </label>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="source-strip" style="border-bottom:0">
+      <span class="sources-sub">Import makes enabled sources live for indexing; it does not normalize loose Markdown.</span>
+    </div>
+  </section>
+
+  <div class="source-actions source-actions-footer">
+    <button class="btn" type="submit" name="action" value="save">Save changes</button>
+    <button class="btn" type="submit" name="action" value="audit">Save and refresh audit</button>
+    <button class="btn" type="submit" name="action" value="reindex">Save and reindex live roots</button>
+    <button class="btn btn-primary" type="submit" name="action" value="import">Save, import enabled sources, and reindex</button>
+  </div>
+
+  <section class="source-panel">
+    <div class="source-strip">
+      <strong>Live indexed roots</strong>
+      <span class="source-count">{{ live_count }} root{{ '' if live_count == 1 else 's' }}</span>
+    </div>
+    {% if live_sources %}
+      <div class="source-live-list">
+        {% for src in live_sources %}
+          <div class="source-live-row">
+            <span class="chip {{ 'chip-import' if src.enabled else 'chip-reference' }}">{{ 'enabled' if src.enabled else 'disabled' }}</span>
+            <strong>{{ src.source }}</strong>
+            <span class="audit-path">{{ src.path }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="audit-empty">No imported skill roots are currently live.</div>
+    {% endif %}
+  </section>
+
+  <section class="source-panel">
+    <div class="source-strip">
+      <strong>Audit results</strong>
+      {% if audit %}
+        <span class="source-count">{{ audit.candidates|length }} candidate{{ '' if audit.candidates|length == 1 else 's' }}</span>
+      {% else %}
+        <span class="source-count">not run</span>
+      {% endif %}
+    </div>
+    {% if audit and audit.errors %}
+      <div class="audit-empty">
+        {% for err in audit.errors %}<div>{{ err }}</div>{% endfor %}
+      </div>
+    {% endif %}
+    {% if audit and audit.candidates %}
+      <div class="source-table-wrap">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Recommendation</th>
+              <th>LLM / Harness</th>
+              <th>Issues</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in audit.candidates %}
+            <tr>
+              <td>
+                <div><strong>{{ c.name }}</strong></div>
+                <div class="audit-path">{{ c.path }}</div>
+                <span class="chip chip-reference">{{ c.format }}</span>
+              </td>
+              <td>
+                {% set rec_cls = 'chip-import' if c.recommendation == 'import' else ('chip-normalize' if c.recommendation == 'normalize' else 'chip-reference') %}
+                <span class="chip {{ rec_cls }}">{{ c.recommendation }}</span>
+              </td>
+              <td>
+                {% for t in c.llm_targets %}<span class="chip">{{ t }}</span>{% endfor %}
+                <br>
+                {% for h in c.harnesses %}<span class="chip chip-reference">{{ h }}</span>{% endfor %}
+              </td>
+              <td>
+                {% if c.issues %}
+                  <ul class="audit-issues">
+                    {% for issue in c.issues %}<li>{{ issue }}</li>{% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="sources-sub">No issues</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="audit-empty">Run an audit to inspect candidate skills from the enabled sources.</div>
+    {% endif %}
+  </section>
+</form>
+{% endblock %}

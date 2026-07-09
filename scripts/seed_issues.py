@@ -35,7 +35,6 @@ MILESTONES = [
     ("M1: No-LLM", "Useful Without LLM — visibility + pure-stdlib tools"),
     ("M2: Managed Agents", "Managed-Agents architectural refactor (design phase)"),
     ("M3: Worktree Policy", "Worktree + multi-repo policy enforcement"),
-    ("M4: Ruflo Absorption", "Absorb ruflo (claude-flow) features natively; ZERO runtime dep"),
 ]
 
 
@@ -143,8 +142,7 @@ M1_ISSUES: list[Issue] = [
         body=_body(
             "## Motivation",
             "Tasks today are single-session bookmarks. A claims layer lets multiple Claude Code "
-            "sessions / future swarm subprocesses coordinate work-item ownership without an LLM. "
-            "Prerequisite for M4-1 (swarm-lite) and M4-2 (autopilot-lite).",
+            "sessions coordinate work-item ownership without an LLM.",
             "## Proposal",
             "- Schema: add `claimed_by`, `claim_token`, `stealable_at` to `tasks`.\n"
             "- Tools: `claim_task(id, agent_id)`, `handoff_task(id, to)`, "
@@ -163,8 +161,8 @@ M1_ISSUES: list[Issue] = [
         body=_body(
             "## Motivation",
             "Capturing 'what fix shipped where' as structured data lets the dashboard show a "
-            "real fix log instead of relying on memory files. Append-only mirrors the witness "
-            "pattern from ruflo but stays simple — no cryptographic signing yet.",
+            "real fix log instead of relying on memory files. Append-only keeps the first "
+            "implementation simple — no cryptographic signing yet.",
             "## Proposal",
             "- New core_task `witness`. Records `(issue, pr, sha, repo, kind, fix_summary)` "
             "tuples to `~/.skill_hub/witness.jsonl`. Append-only, never edited.\n"
@@ -362,133 +360,7 @@ M3_ISSUES: list[Issue] = [
     ),
 ]
 
-# ----- M4 issues (6) -----
-
-M4 = "M4: Ruflo Absorption"
-M4_ISSUES: list[Issue] = [
-    Issue(
-        title="[m4] swarm-lite: launch N Claude subprocesses, each on a distinct worktree+claim",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "no-ruflo-dep", "kind:feat", "effort:L", "area:tools"],
-        body=_body(
-            "## Motivation",
-            "Provides the swarm capability the maintainer values from ruflo, without "
-            "depending on ruflo at runtime.",
-            "## Proposal",
-            "New tool `swarm_launch(claim_ids=[...])`. For each claim from the claims board "
-            "(#m1-4), spawn a `claude` CLI subprocess with `cwd=<worktree-path>` (#m1-6) and "
-            "an initial prompt that includes the claim's task summary. Tracks each subprocess "
-            "by PID, captures stdout/stderr to per-claim logs in `~/.skill_hub/swarm/`. Reaper "
-            "updates claim status on subprocess exit. Pure `subprocess.Popen`.",
-            "## Constraint",
-            "**No-ruflo-dep**: zero `import claude_flow` / `import ruflo`, zero "
-            "`pyproject.toml` reference to claude-flow.",
-            "## Acceptance",
-            "- [ ] 2-claim swarm with dummy `claude` binary works.\n"
-            "- [ ] Log capture + reap verified.\n"
-            "- [ ] Claim status transitions correct.",
-        ),
-    ),
-    Issue(
-        title="[m4] autopilot-lite: pick-next-stealable loop, runs continuously",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "no-ruflo-dep", "kind:feat", "effort:M", "area:tools"],
-        body=_body(
-            "## Motivation",
-            "Provides the overnight-autopilot capability from ruflo, natively.",
-            "## Proposal",
-            "Foreground command `autopilot_run`. Loop: poll claims board for "
-            "`stealable_at <= now()` and `claimed_by IS NULL`; pick top by priority; call "
-            "`swarm_launch([claim_id])`; mark task progressed on subprocess exit; sleep; repeat. "
-            "Stoppable via SIGINT / `autopilot_stop`. Pure SQLite + subprocess.",
-            "## Acceptance",
-            "- [ ] Synthetic claims queue drains.\n"
-            "- [ ] SIGINT clean exit.\n"
-            "- [ ] No-ruflo-dep verified by CI grep.",
-        ),
-    ),
-    Issue(
-        title="[m4] federation-lite: WAL-mode + node_id for multi-host shared state",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "no-ruflo-dep", "kind:feat", "effort:M", "area:db"],
-        body=_body(
-            "## Motivation",
-            "Multi-host claim coordination via *standardized schema* + user's choice of sync "
-            "tool (Syncthing / rsync / git-annex). No protocol or service — just SQLite "
-            "primitives that work with any file sync.",
-            "## Proposal",
-            "- Migrate SQLite to WAL mode (concurrent reads, single-writer).\n"
-            "- Add `node_id TEXT` column to `events` (from M2 design) and `tasks`.\n"
-            "- New tool `federation_view(remote_db_path)` opens a read-only attach to "
-            "another host's DB.",
-            "## Acceptance",
-            "- [ ] Two-DB attach + cross-host queries correct.\n"
-            "- [ ] WAL migration idempotent.",
-        ),
-    ),
-    Issue(
-        title="[m4] importer: ruflo skills → skill-hub native skill manifests",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "no-ruflo-dep", "kind:feat", "effort:M", "area:tools"],
-        body=_body(
-            "## Motivation",
-            "One-shot migration step. Lets a user keep ruflo's skill catalog without keeping "
-            "ruflo installed.",
-            "## Proposal",
-            "CLI `skill_hub import-ruflo-skills [--ruflo-root <path>]`. Crawls a local ruflo "
-            "install (default `~/.claude-flow/` or auto-detected) and reads skill manifests, "
-            "converting each to skill-hub's native format under "
-            "`~/.skill_hub/skills/imported_ruflo/`. Idempotent.",
-            "## Constraint",
-            "Read-only filesystem access; no runtime import of ruflo code. Lives under "
-            "`scripts/` so it is **not** loaded by the MCP server.",
-            "## Acceptance",
-            "- [ ] Fixture-based test with snapshot ruflo layout in `tests/fixtures/ruflo-fake/`.\n"
-            "- [ ] Re-run is idempotent.\n"
-            "- [ ] No runtime ruflo import.",
-        ),
-    ),
-    Issue(
-        title="[m4] importer: ruflo agents → Claude Code subagent definitions",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "no-ruflo-dep", "kind:feat", "effort:M", "area:tools"],
-        body=_body(
-            "## Motivation",
-            "Lets a user keep ruflo's agent personas (`ruflo-core:coder`, etc.) usable in any "
-            "Claude Code session — without ruflo installed.",
-            "## Proposal",
-            "CLI `skill_hub import-ruflo-agents`. Reads ruflo agent definitions from disk and "
-            "emits Claude Code subagent definitions under `~/.skill_hub/agents/<name>.yml` "
-            "matching the `~/.claude/agents/` schema.",
-            "## Constraint",
-            "No runtime import of ruflo. `scripts/import_ruflo_agents.py` only.",
-            "## Acceptance",
-            "- [ ] Fixture-based test verifying subagent YAML schema validity.\n"
-            "- [ ] All known ruflo agent IDs handled (ruflo-core:*, ruflo-swarm:*, "
-            "ruflo-autopilot:*, ruflo-federation:*).",
-        ),
-    ),
-    Issue(
-        title="[m4] doc: flip comparison-ruflo.md to absorption-complete framing",
-        milestone=M4,
-        labels=["m4-ruflo-absorb", "kind:docs", "effort:S", "area:docs"],
-        body=_body(
-            "## Motivation",
-            "After M4-1..M4-5 ship, the comparison doc's framing changes: skill-hub is the "
-            "consolidated tool, ruflo is reference material only.",
-            "## Proposal",
-            "Rewrite `docs/comparison-ruflo.md` once M4-1..M4-5 are merged. New framing: "
-            "'skill-hub now provides X, Y, Z natively; ruflo is no longer needed alongside.' "
-            "Keep the parity matrix. Document the uninstall path.",
-            "## Acceptance",
-            "- [ ] No broken links.\n"
-            "- [ ] CI grep gate: `! grep -Eqi 'claude-flow|ruflo' pyproject.toml`.\n"
-            "- [ ] CI grep gate: `! grep -rE 'import claude_flow|from claude_flow' src/`.",
-        ),
-    ),
-]
-
-ALL_ISSUES = M1_ISSUES + M2_ISSUES + M3_ISSUES + M4_ISSUES
+ALL_ISSUES = M1_ISSUES + M2_ISSUES + M3_ISSUES
 
 
 # --- Issue creation ---------------------------------------------------------

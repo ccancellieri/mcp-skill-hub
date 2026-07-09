@@ -56,7 +56,7 @@ CREATE TABLE events (
   kind        TEXT NOT NULL,        -- "tool_invoke" | "tool_result" | "config_change" | "session_start" | "session_end"
   tool_name   TEXT,                 -- nullable; only set on tool_invoke/result
   payload     TEXT NOT NULL,        -- JSON
-  source      TEXT NOT NULL DEFAULT 'local'  -- node_id for federation (M4-3)
+  source      TEXT NOT NULL DEFAULT 'local'  -- node_id for federation-lite
 );
 CREATE INDEX events_by_session ON events (session_id, ts);
 CREATE INDEX events_by_kind ON events (kind, ts);
