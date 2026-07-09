@@ -2,6 +2,16 @@
 
 **Date:** 2026-06-22
 **Status:** Approved — depend on `headroom-ai` (do not port)
+
+> **Accuracy note (2026-07-10, issue #119):** the ML/code-aware router this spec designs
+> around (`compression_ml_enabled` / `compression_code_aware_enabled` /
+> `compression_ml_target_ratio`, the `compression_full` extra, SmartCrusher/code-aware
+> strategy routing inside `compress_payload`) was retired after a usage audit —
+> `headroom-ai` was never installed in practice and the deterministic builtin delivered
+> ~99% of the measured savings. `compress_payload` now always runs the dependency-free
+> builtin pass. The headroom-backed pieces that survive are `kompress_prose` /
+> `retrieve_original` (webfetch/search lane) and the CCR store they use. The decision log
+> and adapter design below are kept as history.
 **Goal:** Reduce structured payloads (JSON, logs, search results, diffs) *before* they reach an
 LLM or get injected into Claude's context — a cheap, fast, offline-safe alternative to the
 local-Ollama "compaction tax", and a structure-aware replacement for blunt char-truncation.

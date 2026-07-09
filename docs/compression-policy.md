@@ -2,20 +2,22 @@
 
 Skill Hub reduces context two ways. This is the rule for which to use.
 
-## Use deterministic compression (the `compression` extra, `headroom-ai`)
+## Use deterministic compression (builtin, dependency-free)
 
 For **structured payloads** where structure carries the signal:
 
 - command / shell output, build & test logs (keep errors, tracebacks, summary)
 - search / grep output (keep first+last + top-scored matches per file)
-- JSON arrays of records (SmartCrusher: anchors + error rows + outliers + dedup)
+- JSON arrays of records (minify + duplicate-line collapse)
 - git diffs, CSV/TSV/markdown tables
 
 These run through `skill_hub.compression.compress_payload` / `maybe_compress`. They are
-**free, microsecond-fast, deterministic, and offline** — no model, no tokens, no network.
-The ML "Kompress" path is deliberately disabled, so the install stays light and prose/code
-are never AST-mangled. Large lossy reductions leave a reversible `<<ccr:HASH>>` marker; call
-the `retrieve_compressed` tool to rehydrate the original.
+**free, microsecond-fast, deterministic, and offline** — no model, no tokens, no network,
+no optional packages. The lossy ML "Kompress" / code-aware paths were retired (issue
+#119), so prose/code are never summarised or AST-mangled by this layer. (The optional
+`headroom-ai`-backed `kompress_prose` helper survives only in the webfetch/search lane;
+its reductions leave a reversible `<<ccr:HASH>>` marker — call the `retrieve_compressed`
+tool to rehydrate.)
 
 ## Keep the LLM (Ollama / Anthropic)
 
@@ -25,9 +27,9 @@ For **prose synthesis** where the value is in rewriting, not selecting:
 - `optimize_prompt` / query rewriting — paraphrase
 - narrative task summaries and conversation digests where coherence matters
 
-Prose and source code route to the disabled Kompress strategy and **pass through unchanged**,
-so feeding prose to `compress_payload` is a safe no-op — it simply returns the original and the
-LLM still does the synthesis.
+Prose and source code **pass through `compress_payload` unchanged** by design, so feeding
+prose to it is a safe no-op — it simply returns the original and the LLM still does the
+synthesis.
 
 ## The rule of thumb
 
@@ -48,8 +50,9 @@ cheap; high-stakes cold-start synthesis pays for the smart model.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `compression_enabled` | `True` | Master switch. Auto-no-ops if `headroom-ai` is absent. |
+| `compression_enabled` | `True` | Master switch for the deterministic pass. |
 | `compression_min_tokens` | `200` | Skip payloads below ~this token count. |
 | `compression_context_aware` | `True` | Pass the user query as relevance context. |
 
-Install: `pip install "mcp-skill-hub[compression]"`.
+No extra install is needed — the deterministic pass is dependency-free. The `compression`
+extra (`headroom-ai`) only adds the optional webfetch/search `kompress_prose` helper.

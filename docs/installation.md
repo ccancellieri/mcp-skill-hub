@@ -75,9 +75,6 @@ matching extras into the **same** venv:
 # deterministic compression of structured tool output (JSON, logs, diffs, search)
 .venv/bin/pip install -e ".[compression]"
 
-# ALSO compress prose + source code (adds torch + transformers + tree-sitter — large)
-.venv/bin/pip install -e ".[compression_full]"
-
 # everything above
 .venv/bin/pip install -e ".[all]"
 ```
@@ -87,7 +84,6 @@ matching extras into the **same** venv:
 | `sentence_transformers` | Local embeddings with **no Ollama daemon** | in-process (CPU/MPS); first run downloads the model |
 | `voyage` | Cloud embeddings | needs `VOYAGE_API_KEY` |
 | `compression` | Structure-aware compression of **structured** payloads (JSON, logs, diffs, search results) | deterministic, local, no torch |
-| `compression_full` | Installs the ML/code backends so prose + source-code compression *can* be turned on (off by default — see below) | pulls **torch + transformers + tree-sitter** — hundreds of MB |
 
 ### Embedding backend order
 
@@ -102,25 +98,14 @@ index_skills()   # rebuild vectors
 
 ### Compression: what actually compresses
 
-**Structured** output (JSON, logs, diffs, search results) compresses with just the
-`compression` extra — often 95 %+, losslessly, no torch.
-
-**Prose and source code** are different: they route to the ML "Kompress" / tree-sitter
-paths, which are **off by default** even with `compression_full` installed, because the ML
-path is *lossy* (it summarises — the original can't be recovered) and AST rewriting can
-mangle code the model needs verbatim. To turn them on after installing `compression_full`:
-
-```python
-configure(key="compression_ml_enabled", value=True)    # lossy prose "Kompress"
-configure(key="compression_code_enabled", value=True)  # tree-sitter code compression
-```
-
-Evaluate output quality before relying on these (tracked by issue #57). Quick check that
-the deterministic path works at all:
+**Structured** output (JSON, logs, diffs, search results) compresses with a builtin
+deterministic pass — often 95 %+, losslessly, no torch. Prose and source code pass
+through untouched: the lossy ML/code-aware paths were retired (issue #119) because
+summarisation can't recover the original and AST rewriting can mangle code the model
+needs verbatim. Quick check that the deterministic path works:
 
 ```python
 from skill_hub import compression as c
-c.is_available()                                   # True once headroom-ai is installed
 len(c.maybe_compress(open("data.json").read()))    # structured → much smaller, lossless
 ```
 
