@@ -2143,7 +2143,7 @@ class SkillStore:
     def get_skill(self, skill_id: str) -> dict | None:
         """Get a single skill by its ID."""
         row = self._conn.execute(
-            "SELECT id, name, description, content, plugin, target "
+            "SELECT id, name, description, content, file_path, plugin, target "
             "FROM skills WHERE id = ?", (skill_id,)
         ).fetchone()
         return dict(row) if row else None
@@ -3871,7 +3871,7 @@ class SkillStore:
         Helpful/unhelpful counts and last_used come from the feedback table.
         """
         rows = self._conn.execute("""
-            SELECT s.id, s.name, s.plugin, s.target,
+            SELECT s.id, s.name, s.plugin, s.target, s.file_path,
                    COALESCE(s.feedback_score, 1.0) as feedback_score,
                    COALESCE(inj.injections, 0) as injections,
                    COALESCE(fb.helpful, 0) as helpful,

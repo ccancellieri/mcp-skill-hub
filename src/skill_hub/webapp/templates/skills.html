@@ -107,6 +107,34 @@
 
   /* row actions */
   .sk-actions { display: flex; gap: 4px; }
+  .sk-claude {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 96px;
+  }
+  .sk-claude-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: ui-monospace, monospace;
+    white-space: nowrap;
+    background: rgba(125,136,150,0.12);
+    color: var(--color-muted);
+  }
+  .sk-claude-badge.ready {
+    background: rgba(74,211,107,0.12);
+    color: var(--color-good);
+  }
+  .sk-claude-badge.missing {
+    background: rgba(240,173,78,0.13);
+    color: var(--color-warn, #f0ad4e);
+  }
+  .sk-claude-badge.local {
+    background: rgba(58,160,255,0.10);
+    color: var(--color-accent);
+  }
 
   /* detail drawer */
   .sk-detail-card {
@@ -157,6 +185,10 @@
         <span class="sk-stat-label">Plugins</span>
         <span class="sk-stat-value" style="font-size:15px">{{ plugins|length }}</span>
       </div>
+      <div class="sk-stat">
+        <span class="sk-stat-label" title="Skills visible to Claude through ~/.claude/skills or installed plugins">Claude visible</span>
+        <span class="sk-stat-value" style="font-size:15px">{{ rows|selectattr('claude.kind', 'equalto', 'ready')|list|length }}</span>
+      </div>
     </div>
   </div>
 
@@ -176,6 +208,10 @@
       <option value="name">sort: name</option>
       <option value="last">sort: last used</option>
     </select>
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--color-muted)">
+      <input type="checkbox" x-model="missingClaude">
+      needs Claude install
+    </label>
   </div>
 
   <div class="sk-table-wrap">
@@ -189,6 +225,7 @@
           <th @click="sortBy='feedback'">Score</th>
           <th @click="sortBy='last'">Last used</th>
           <th>Tasks</th>
+          <th title="Whether Claude Code can discover this as a native skill">Claude</th>
           <th>Plugin / Target</th>
           <th></th>
         </tr>
@@ -213,12 +250,13 @@
 <script>
 function skillsPage() {
   return {
-    q: '', target: '', plugin: '', sortBy: 'injections',
+    q: '', target: '', plugin: '', sortBy: 'injections', missingClaude: false,
     init() {
       this.$watch('q',      () => this.apply());
       this.$watch('target', () => this.apply());
       this.$watch('plugin', () => this.apply());
       this.$watch('sortBy', () => this.apply());
+      this.$watch('missingClaude', () => this.apply());
       // auto-open detail drawer when ?focus=<skill_id> is in the URL
       var params = new URLSearchParams(window.location.search);
       var focusId = params.get('focus');
@@ -239,8 +277,9 @@ function skillsPage() {
         var show = !q || txt.includes(q);
         if (show && tgt) show = (tr.dataset.target || '') === tgt;
         if (show && plg) show = (tr.dataset.plugin || '') === plg;
+        if (show && this.missingClaude) show = (tr.dataset.claudeKind || '') === 'missing';
         tr.style.display = show ? '' : 'none';
-      });
+      }, this);
       // sort
       var key = this.sortBy;
       var pinned = rows.filter(function (r) { return r.querySelector('.btn.on'); });

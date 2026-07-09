@@ -82,6 +82,15 @@
 .sd-fb-query { color: var(--color-muted); font-size: 10.5px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sd-vote-up   { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(74,211,107,0.15); color: var(--color-good); }
 .sd-vote-down { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(224,85,85,0.15); color: var(--color-bad); }
+.sd-claude-note {
+  font-size: 11px;
+  color: var(--color-muted);
+  line-height: 1.55;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.02);
+}
 </style>
 
 <div class="sd-wrap">
@@ -100,8 +109,20 @@
   <div class="sd-meta">
     {% if s.plugin %}<span class="sd-meta-chip">{{ s.plugin }}</span>{% endif %}
     {% if s.target %}<span class="sd-meta-chip accent">{{ s.target }}</span>{% endif %}
+    {% if claude %}<span class="sd-meta-chip">{{ claude.label }}</span>{% endif %}
     {% if norm is not none %}<span class="sd-meta-chip">‖v‖ {{ '%.3f'|format(norm) }}</span>{% endif %}
   </div>
+
+  {% if claude %}
+  <div class="sd-claude-note">
+    <strong>Claude:</strong> {{ claude.hint }}
+    {% if claude.kind == "ready" %}
+      Invoke it by naming the skill, for example <code>${{ s.name }}</code>. If Claude Code was already open, restart it after linking or removing skills.
+    {% elif claude.installable %}
+      Use <strong>link</strong> in the row to create a managed symlink at <code>{{ claude.install_path }}</code>.
+    {% endif %}
+  </div>
+  {% endif %}
 
   {% if s.description %}
   <div class="sd-description">{{ s.description }}</div>

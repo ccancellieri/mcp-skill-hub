@@ -2,7 +2,8 @@
 {% set score = r.feedback_score or 1.0 %}
 <tr id="sk-{{ r.id|replace(':','_')|replace('.','_')|replace('/','_') }}"
     data-target="{{ r.target or '' }}"
-    data-plugin="{{ r.plugin or '' }}">
+    data-plugin="{{ r.plugin or '' }}"
+    data-claude-kind="{{ (r.claude or {}).kind or '' }}">
   <td>
     <button class="btn sm {% if r.pinned %}on{% endif %}"
             hx-post="/skills/{{ r.id }}/pin"
@@ -33,6 +34,25 @@
   <td><span class="sk-last">{{ r.last_used or '—' }}</span></td>
   <td>
     <span class="sk-inj" title="tasks using this skill">{{ r.task_count or 0 }}</span>
+  </td>
+  <td>
+    {% set claude = r.claude or {} %}
+    <div class="sk-claude">
+      <span class="sk-claude-badge {{ claude.kind or '' }}" title="{{ claude.hint or '' }}">{{ claude.label or 'Unknown' }}</span>
+      {% if claude.installable %}
+      <button class="btn sm"
+              hx-post="/skills/{{ r.id }}/link-claude"
+              hx-target="#sk-{{ r.id|replace(':','_')|replace('.','_')|replace('/','_') }}"
+              hx-swap="outerHTML"
+              title="Create a managed symlink in ~/.claude/skills">link</button>
+      {% elif claude.removable %}
+      <button class="btn sm"
+              hx-post="/skills/{{ r.id }}/unlink-claude"
+              hx-target="#sk-{{ r.id|replace(':','_')|replace('.','_')|replace('/','_') }}"
+              hx-swap="outerHTML"
+              title="Remove the managed symlink from ~/.claude/skills">remove</button>
+      {% endif %}
+    </div>
   </td>
   <td>
     {% if r.plugin %}<span class="sk-plugin">{{ r.plugin }}</span>{% endif %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,9 @@ from fastapi.responses import HTMLResponse
 router = APIRouter()
 
 PIN_FILE = Path.home() / ".claude" / "mcp-skill-hub" / "state" / "pinned_skills.json"
+CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
+CLAUDE_PLUGIN_CACHE_DIR = Path.home() / ".claude" / "plugins" / "cache"
+MANAGED_LINK_MARKER = ".skill-hub-link"
 
 
 def _load_pinned() -> set[str]:
@@ -66,12 +70,99 @@ def _get_skill_task_counts(store) -> dict[str, int]:
     return dict(skill_task_count)
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.expanduser().resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _slug(text: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", text.strip()).strip(".-")
+    return slug or "skill"
+
+
+def _claude_install_dir(skill: dict[str, Any]) -> Path:
+    name = str(skill.get("name") or "").strip()
+    fallback = str(skill.get("id") or "skill").split(":")[-1]
+    return CLAUDE_SKILLS_DIR / _slug(name or fallback)
+
+
+def _claude_visibility(skill: dict[str, Any]) -> dict[str, Any]:
+    file_path = str(skill.get("file_path") or "")
+    target = str(skill.get("target") or "")
+    source = Path(file_path).expanduser() if file_path else None
+    dest = _claude_install_dir(skill)
+    has_source_skill = bool(source and source.name == "SKILL.md" and source.exists())
+
+    if source and _is_relative_to(source, CLAUDE_SKILLS_DIR):
+        return {
+            "label": "Claude user",
+            "kind": "ready",
+            "installable": False,
+            "removable": False,
+            "install_path": str(source.parent),
+            "hint": "Available to Claude from ~/.claude/skills.",
+        }
+    if source and _is_relative_to(source, CLAUDE_PLUGIN_CACHE_DIR):
+        return {
+            "label": "Plugin",
+            "kind": "ready",
+            "installable": False,
+            "removable": False,
+            "install_path": str(source.parent),
+            "hint": "Available to Claude through an installed plugin.",
+        }
+    if dest.is_symlink() and dest.joinpath("SKILL.md").exists():
+        return {
+            "label": "Claude link",
+            "kind": "ready",
+            "installable": False,
+            "removable": True,
+            "install_path": str(dest),
+            "hint": "Linked into ~/.claude/skills. Restart Claude Code if it was already open.",
+        }
+    if dest.joinpath("SKILL.md").exists():
+        return {
+            "label": "Claude copy",
+            "kind": "ready",
+            "installable": False,
+            "removable": dest.joinpath(MANAGED_LINK_MARKER).exists(),
+            "install_path": str(dest),
+            "hint": "Available from ~/.claude/skills. Restart Claude Code if it was already open.",
+        }
+    if target == "local":
+        return {
+            "label": "Local only",
+            "kind": "local",
+            "installable": False,
+            "removable": False,
+            "install_path": "",
+            "hint": "Local JSON skills are used by Skill Hub, not Claude native skill discovery.",
+        }
+    return {
+        "label": "Skill Hub only",
+        "kind": "missing",
+        "installable": has_source_skill,
+        "removable": False,
+        "install_path": str(dest),
+        "hint": "Indexed by Skill Hub; link it into ~/.claude/skills for Claude native discovery.",
+    }
+
+
+def _attach_claude_visibility(row: dict[str, Any]) -> dict[str, Any]:
+    row["claude"] = _claude_visibility(row)
+    return row
+
+
 def _enrich(stats: list[dict], pinned: set[str], task_counts: dict[str, int]) -> list[dict]:
     out = []
     for s in stats:
         d = dict(s)
         d["pinned"] = d["id"] in pinned
         d["task_count"] = task_counts.get(d["id"], 0)
+        _attach_claude_visibility(d)
         out.append(d)
     # pinned first, preserve stat ordering within each group
     out.sort(key=lambda d: (not d["pinned"],))
@@ -113,8 +204,71 @@ def skill_pin(skill_id: str, request: Request) -> Any:
     if not row:
         return HTMLResponse("", status_code=404)
     row["pinned"] = skill_id in pinned
+    row["task_count"] = _get_skill_task_counts(store).get(skill_id, 0)
+    _attach_claude_visibility(row)
     templates = request.app.state.templates
     return templates.TemplateResponse(request, "_skill_row.html", {"r": row})
+
+
+def _render_skill_row(request: Request, skill_id: str, fallback: dict[str, Any] | None = None) -> Any:
+    store = request.app.state.store
+    stats = store.get_skill_usage_stats()
+    pinned = _load_pinned()
+    task_counts = _get_skill_task_counts(store)
+    row = next((dict(r) for r in stats if r["id"] == skill_id), fallback or {})
+    row["pinned"] = skill_id in pinned
+    row["task_count"] = task_counts.get(skill_id, 0)
+    _attach_claude_visibility(row)
+    templates = request.app.state.templates
+    return templates.TemplateResponse(request, "_skill_row.html", {"r": row})
+
+
+@router.post("/skills/{skill_id}/link-claude", response_class=HTMLResponse)
+def skill_link_claude(skill_id: str, request: Request) -> Any:
+    store = request.app.state.store
+    skill = store.get_skill(skill_id)
+    if not skill:
+        return HTMLResponse("<div class='muted'>Not found</div>", status_code=404)
+
+    status = _claude_visibility(dict(skill))
+    if status["kind"] != "ready":
+        source_file = Path(str(skill.get("file_path") or "")).expanduser()
+        if not source_file.exists() or source_file.name != "SKILL.md":
+            return HTMLResponse(
+                "<div class='muted'>This skill has no SKILL.md source folder to link.</div>",
+                status_code=400,
+            )
+        dest = _claude_install_dir(dict(skill))
+        if dest.exists() or dest.is_symlink():
+            return HTMLResponse(
+                "<div class='muted'>A Claude skill folder already exists at that path.</div>",
+                status_code=409,
+            )
+        CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(source_file.parent, target_is_directory=True)
+
+    return _render_skill_row(request, skill_id, dict(skill))
+
+
+@router.post("/skills/{skill_id}/unlink-claude", response_class=HTMLResponse)
+def skill_unlink_claude(skill_id: str, request: Request) -> Any:
+    store = request.app.state.store
+    skill = store.get_skill(skill_id)
+    if not skill:
+        return HTMLResponse("<div class='muted'>Not found</div>", status_code=404)
+    dest = _claude_install_dir(dict(skill))
+    if dest.is_symlink():
+        dest.unlink()
+    elif dest.joinpath(MANAGED_LINK_MARKER).exists():
+        dest.joinpath(MANAGED_LINK_MARKER).unlink(missing_ok=True)
+        try:
+            dest.rmdir()
+        except OSError:
+            return HTMLResponse(
+                "<div class='muted'>Managed marker removed, but the folder is not empty.</div>",
+                status_code=409,
+            )
+    return _render_skill_row(request, skill_id, dict(skill))
 
 
 @router.get("/skills/{skill_id}/detail", response_class=HTMLResponse)
@@ -152,7 +306,12 @@ def skill_detail(skill_id: str, request: Request) -> Any:
     return templates.TemplateResponse(
         request,
         "_skill_detail.html",
-        {"s": skill, "feedback": feedback, "norm": norm},
+        {
+            "s": skill,
+            "feedback": feedback,
+            "norm": norm,
+            "claude": _claude_visibility(dict(skill)),
+        },
     )
 
 
