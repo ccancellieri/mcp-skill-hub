@@ -19,6 +19,39 @@ _COOLDOWN: dict[str, float] = {}   # model id → epoch when it may be retried
 
 _QUOTA_RE = re.compile(r"\b429\b|rate.?limit|quota|insufficient_quota|overloaded", re.I)
 
+# --- pass-level circuit breaker (#139) --------------------------------------
+# A single caller retrying every provider on every call can hot-loop the whole
+# registry when nothing is reachable (seen during the 2026-07 WAL-starvation
+# incident: ~185 error events in 10 minutes). When one full pass over the
+# ladder ends with every attempted provider erroring, trip the breaker so the
+# next calls fail fast instead of re-walking a registry that just proved dead.
+_BREAKER_COOLDOWN_SECONDS = 600   # 10 min
+_breaker_until: float = 0.0
+
+
+def breaker_tripped(*, now: float | None = None) -> bool:
+    """True while the circuit breaker is open (calls should fail fast)."""
+    return (now if now is not None else time.time()) < _breaker_until
+
+
+def record_ladder_pass(success: bool) -> None:
+    """Update the breaker after one full pass over the ladder.
+
+    ``success=True`` (any provider served the call) resets the breaker.
+    ``success=False`` (every attempted provider errored) opens it for
+    ``_BREAKER_COOLDOWN_SECONDS``.
+    """
+    global _breaker_until
+    if success:
+        _breaker_until = 0.0
+    else:
+        _breaker_until = time.time() + _BREAKER_COOLDOWN_SECONDS
+
+
+def reset_breaker() -> None:
+    global _breaker_until
+    _breaker_until = 0.0
+
 
 @dataclass
 class Selection:

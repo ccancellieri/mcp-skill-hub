@@ -524,6 +524,95 @@ def test_ladder_success_emits_activity_line(monkeypatch, tmp_path):
     assert any("model-a" in ln and "ladder" in ln for ln in lines)
 
 
+# --- circuit breaker (#139) --------------------------------------------------
+
+def test_breaker_state_machine_trip_and_reset():
+    """Unit-level check of the breaker primitives in isolation."""
+    import skill_hub.llm.escalation as escalation
+
+    escalation.reset_breaker()
+    assert escalation.breaker_tripped() is False
+
+    escalation.record_ladder_pass(False)   # a full pass with zero successes
+    assert escalation.breaker_tripped() is True
+
+    escalation.record_ladder_pass(True)    # a fresh success resets it
+    assert escalation.breaker_tripped() is False
+
+
+def test_breaker_opens_after_full_pass_all_errors_then_fails_fast(monkeypatch, tmp_path):
+    """During the WAL-starvation incident every ladder provider errored on
+    every call, hot-looping the registry (~185 error events / 10 min). One
+    fully-errored pass must open the breaker so the very next call fails fast
+    without touching any provider."""
+    _write_cfg(monkeypatch, tmp_path, _REG)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    escalation.reset_breaker()
+
+    calls: list[str] = []
+
+    class AlwaysFails:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            raise Exception("connection refused")
+
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = AlwaysFails()
+
+    with pytest.raises(provider.LLMError):
+        p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+    assert calls == ["openai/model-a", "anthropic/claude-haiku-4-5"]   # full pass walked
+    assert escalation.breaker_tripped() is True
+
+    calls.clear()
+    with pytest.raises(provider.LLMError, match="circuit open"):
+        p.chat([provider.Message(role="user", content="hi again")], complexity=0.1)
+    assert calls == []   # fail-fast — no provider touched
+
+
+def test_breaker_resets_on_success_after_cooldown_expires(monkeypatch, tmp_path):
+    """Once the cooldown elapses, a call is let through again; a success there
+    fully resets the breaker rather than leaving it half-tripped."""
+    _write_cfg(monkeypatch, tmp_path, _REG)
+    escalation, litellm_adapter, provider = _reload_llm_modules()
+    escalation.reset_cooldowns()
+    escalation.reset_breaker()
+    escalation.record_ladder_pass(False)   # simulate a prior fully-errored pass
+    assert escalation.breaker_tripped() is True
+
+    # Cooldown elapsed — flip the module-level expiry into the past.
+    escalation._breaker_until = 0.0
+
+    calls: list[str] = []
+    p = litellm_adapter.LitellmProvider()
+    p._litellm = _fake_litellm(calls)
+    out = p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+    assert out == "ok"
+    assert calls == ["openai/model-a"]
+    assert escalation.breaker_tripped() is False   # reset by the fresh success
+
+    # Prove the reset is real (not stale state): a fresh all-error pass can
+    # trip the breaker again.
+    calls.clear()
+
+    class AlwaysFails:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            raise Exception("connection refused")
+
+    p._litellm = AlwaysFails()
+    with pytest.raises(provider.LLMError):
+        p.chat([provider.Message(role="user", content="hi")], complexity=0.1)
+    assert escalation.breaker_tripped() is True
+
+
 def test_chat_once_falls_back_to_reasoning_content(monkeypatch, tmp_path):
     """A reasoning model returns ``content: null`` with text in
     ``reasoning_content``; the parse must return that rather than fail/empty."""

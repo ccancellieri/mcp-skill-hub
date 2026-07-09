@@ -487,9 +487,15 @@ class LitellmProvider:
         exclude: set[str] | None = None,
     ) -> str:
         from . import escalation
+        if escalation.breaker_tripped():
+            raise LLMError(
+                "escalation ladder circuit open: the last full pass errored on "
+                "every provider; failing fast until the cooldown expires"
+            )
         exclude = set(exclude) if exclude else set()
         over_cap = self._personal_over_cap()
         last_exc: Exception | None = None
+        attempted = False
         for _ in range(64):
             sel = escalation.select(complexity, domain=domain, exclude=exclude)
             if sel is None:
@@ -497,8 +503,9 @@ class LitellmProvider:
             if over_cap and sel.personal:
                 exclude.add(sel.model)
                 continue
+            attempted = True
             try:
-                return self._chat_once(
+                result = self._chat_once(
                     messages, model=_litellm_model(sel.kind, sel.model),
                     api_base=sel.api_base,
                     api_key=sel.api_key, max_tokens=max_tokens,
@@ -506,12 +513,16 @@ class LitellmProvider:
                     extra=extra, op=op, cache_ttl=cache_ttl,
                     tier=f"ladder:{sel.provider}",
                 )
+                escalation.record_ladder_pass(True)
+                return result
             except LLMError as exc:
                 last_exc = exc
                 if escalation.looks_like_quota_error(exc):
                     escalation.mark_cooldown(sel.model)
                 exclude.add(sel.model)
                 continue
+        if attempted:
+            escalation.record_ladder_pass(False)
         raise LLMError(f"escalation ladder exhausted (complexity={complexity}): {last_exc}")
 
     def embed(
