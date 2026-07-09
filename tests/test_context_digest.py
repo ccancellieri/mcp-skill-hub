@@ -1,8 +1,11 @@
 """Ladder-synthesized context digests (#135): cache, queueing, refresh, dedupe."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from skill_hub import config as cfg_mod
 from skill_hub.compression import dedupe_snippets
 from skill_hub.compression import digest as dg
 from skill_hub.store import SkillStore
@@ -13,6 +16,13 @@ def store(tmp_path):
     s = SkillStore(db_path=tmp_path / "skill_hub.db")
     yield s
     s.close()
+
+
+def _set_digest_config(monkeypatch, tmp_path, **overrides) -> None:
+    """Isolate CONFIG_PATH to a tmp file carrying the given config overrides."""
+    cfg_path = tmp_path / "digest-config.json"
+    cfg_path.write_text(json.dumps(overrides))
+    monkeypatch.setattr(cfg_mod, "CONFIG_PATH", cfg_path)
 
 
 LONG_DOC = ("Decision: the escalation ladder rotates on quota errors. " * 30).strip()
@@ -42,7 +52,8 @@ def test_miss_returns_squeezed_and_queues(store):
     assert rows[0]["content"] == LONG_DOC
 
 
-def test_refresh_pending_builds_then_hit(store, monkeypatch):
+def test_refresh_pending_builds_then_hit(store, monkeypatch, tmp_path):
+    _set_digest_config(monkeypatch, tmp_path, digest_use_llm=True)
     dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
     monkeypatch.setattr(dg, "build_digest", lambda text: "the condensed digest")
 
@@ -56,7 +67,8 @@ def test_refresh_pending_builds_then_hit(store, monkeypatch):
     assert text == "the condensed digest"
 
 
-def test_changed_content_invalidates_digest(store, monkeypatch):
+def test_changed_content_invalidates_digest(store, monkeypatch, tmp_path):
+    _set_digest_config(monkeypatch, tmp_path, digest_use_llm=True)
     dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
     monkeypatch.setattr(dg, "build_digest", lambda text: "digest v1")
     dg.refresh_pending(store)
@@ -69,11 +81,42 @@ def test_changed_content_invalidates_digest(store, monkeypatch):
     assert rows[0]["content"] == changed
 
 
-def test_refresh_pending_skips_failed_builds(store, monkeypatch):
+def test_refresh_pending_skips_failed_builds(store, monkeypatch, tmp_path):
+    _set_digest_config(monkeypatch, tmp_path, digest_use_llm=True)
     dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
     monkeypatch.setattr(dg, "build_digest", lambda text: "")
     assert dg.refresh_pending(store) == 0
     assert _pending_rows(store)[0]["digest"] == ""   # still pending
+
+
+# --- digest_use_llm gating (#139) -------------------------------------------
+
+def test_refresh_pending_noop_when_digest_use_llm_false(store, monkeypatch, tmp_path):
+    """Default posture (digest_use_llm False, eviction_enabled False): the
+    queue is never drained through the escalation ladder — callers keep
+    getting the deterministic squeezed-raw fallback instead."""
+    _set_digest_config(monkeypatch, tmp_path, digest_use_llm=False, eviction_enabled=False)
+    dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
+
+    def _boom(text):
+        raise AssertionError("build_digest must not be called when gated off")
+
+    monkeypatch.setattr(dg, "build_digest", _boom)
+    assert dg.refresh_pending(store) == 0
+    row = _pending_rows(store)[0]
+    assert row["digest"] == ""
+    assert row["content"] == LONG_DOC        # still queued, untouched
+
+
+def test_refresh_pending_runs_when_eviction_enabled(store, monkeypatch, tmp_path):
+    """eviction_enabled alone (digest_use_llm still False) also opens the gate
+    — matches the existing pattern in cli.py's conversation-digest gating."""
+    _set_digest_config(monkeypatch, tmp_path, digest_use_llm=False, eviction_enabled=True)
+    dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
+    monkeypatch.setattr(dg, "build_digest", lambda text: "the condensed digest")
+
+    assert dg.refresh_pending(store) == 1
+    assert _pending_rows(store)[0]["digest"] == "the condensed digest"
 
 
 def test_build_digest_rejects_non_compressing_output(monkeypatch):

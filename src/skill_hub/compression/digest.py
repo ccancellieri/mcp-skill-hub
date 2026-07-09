@@ -127,7 +127,16 @@ def refresh_pending(store: Any, *, limit: int = 10) -> int:
     Runs OFF the hot path (async-enrich worker, reindex sweep). The update is
     guarded on ``content_hash`` so a source that changed while the digest was
     being built stays pending for the next pass.
+
+    Gated on the same switch as the conversation digest (#139): with
+    ``digest_use_llm`` False and ``eviction_enabled`` False (the default),
+    this is a no-op — queued sources stay pending and hooks keep serving the
+    deterministic squeezed-raw fallback (see ``digest_or_squeezed``) instead
+    of hot-looping the escalation ladder.
     """
+    from .. import config as _cfg
+    if not (_cfg.get("digest_use_llm") or _cfg.get("eviction_enabled")):
+        return 0
     try:
         rows = store._conn.execute(
             "SELECT key, content_hash, content FROM context_digests"
