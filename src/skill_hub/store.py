@@ -228,6 +228,10 @@ class SkillStore:
         self.node_id: str = _resolve_node_id()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Contended writers (e.g. a long index_skills pass holding the WAL)
+        # must not fail high-frequency small writers instantly with "database
+        # is locked" — wait up to 30s for the lock instead (#139).
+        self._conn.execute("PRAGMA busy_timeout = 30000")
         # WAL is idempotent — re-running on an already-WAL DB is a no-op and
         # returns ``"wal"`` again. Federation-lite needs WAL so a
         # sibling Syncthing/rsync replica can be read concurrently without
@@ -235,6 +239,20 @@ class SkillStore:
         result = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
         if result and result[0].lower() != "wal":
             _log.warning("WAL mode unavailable (filesystem may not support it); using %s", result[0])
+        # Best-effort startup checkpoint (#139): reclaim WAL growth left over
+        # from a crash or from checkpoint starvation under sustained writes.
+        # TRUNCATE needs no other connection holding a read transaction; when
+        # contended it checkpoints partially (or not at all) rather than
+        # blocking, so this must never fail startup.
+        try:
+            ckpt = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if ckpt:
+                _log.info(
+                    "startup WAL checkpoint: busy=%s log_frames=%s checkpointed=%s",
+                    ckpt[0], ckpt[1], ckpt[2],
+                )
+        except Exception as exc:  # noqa: BLE001 - best-effort, must not block startup
+            _log.warning("startup WAL checkpoint failed (non-fatal): %s", exc)
         # Load sqlite-vec extension if available; falls back to legacy path.
         self._vec_engine: str = "legacy"
         if sqlite_vec is not None:
