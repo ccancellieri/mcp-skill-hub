@@ -59,9 +59,17 @@ class SkillAuditReport:
         }
 
 
+@dataclass(frozen=True)
+class SkillRepairResult:
+    created: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _FIELD_RE = re.compile(r"^(\w+)\s*:\s*(.+?)\s*$", re.MULTILINE)
 _SYSTEM_PROMPT_RE = re.compile(r"\b(system instruction|you are an? )\b", re.IGNORECASE)
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 def audit_paths(paths: Sequence[str | Path]) -> SkillAuditReport:
@@ -172,6 +180,40 @@ def render_json(report: SkillAuditReport) -> str:
     return json.dumps(report.as_dict(), indent=2, sort_keys=True)
 
 
+def repair_importable_skills(report: SkillAuditReport) -> SkillRepairResult:
+    """Create generated SKILL.md wrappers for audit candidates needing repair.
+
+    The repair is intentionally non-destructive: source files are not moved or
+    rewritten. Loose Markdown and reference Markdown become standalone generated
+    skill directories that the existing SKILL.md indexer can import.
+    """
+    created: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+
+    for candidate in report.candidates:
+        if candidate.recommendation not in {"normalize", "keep_reference"}:
+            continue
+        try:
+            source_file = Path(candidate.path).expanduser()
+            source_root = Path(candidate.source_root).expanduser()
+            if not source_file.exists():
+                errors.append(f"source not found: {source_file}")
+                continue
+            dest_dir = _repair_destination(source_root, source_file, candidate)
+            dest_file = dest_dir / "SKILL.md"
+            if dest_file.exists():
+                skipped.append(f"already exists: {dest_file}")
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_file.write_text(_render_repaired_skill(candidate, source_file), encoding="utf-8")
+            created.append(str(dest_file))
+        except Exception as exc:  # noqa: BLE001 - keep repairing other skills
+            errors.append(f"{candidate.path}: {exc}")
+
+    return SkillRepairResult(created=created, skipped=skipped, errors=errors)
+
+
 def _candidate_files(root: Path) -> Iterable[Path]:
     if root.is_file():
         if _is_candidate_file(root):
@@ -265,6 +307,77 @@ def _parse_markdown(path: Path) -> tuple[str, str, str, bool]:
             description = para.group(0)[:200].strip()
 
     return name, description, body, has_frontmatter_description
+
+
+def _repair_destination(
+    source_root: Path,
+    source_file: Path,
+    candidate: SkillAuditCandidate,
+) -> Path:
+    base = _slugify(candidate.name or source_file.stem)
+    if candidate.format == REFERENCE_MARKDOWN:
+        try:
+            rel = source_file.relative_to(source_root)
+        except ValueError:
+            rel = source_file.name
+        parts = [part for part in Path(rel).parts[:-1] if part != "references"]
+        prefix = _slugify("-".join(parts))
+        if prefix:
+            base = f"{prefix}__{base}"
+    return _unique_destination(source_root / base)
+
+
+def _unique_destination(dest_dir: Path) -> Path:
+    if not dest_dir.exists():
+        return dest_dir
+    if (dest_dir / "SKILL.md").exists():
+        return dest_dir
+    suffix = 2
+    while True:
+        candidate = dest_dir.with_name(f"{dest_dir.name}-{suffix}")
+        if not candidate.exists() or (candidate / "SKILL.md").exists():
+            return candidate
+        suffix += 1
+
+
+def _render_repaired_skill(candidate: SkillAuditCandidate, source_file: Path) -> str:
+    raw = source_file.read_text(encoding="utf-8", errors="replace")
+    body = _FRONTMATTER_RE.sub("", raw, count=1).strip()
+    name = _slugify(candidate.name or source_file.stem)
+    if candidate.format == REFERENCE_MARKDOWN:
+        parent = source_file.parent.parent.name if source_file.parent.name == "references" else ""
+        parent_slug = _slugify(parent)
+        if parent_slug:
+            name = f"{parent_slug}__{name}"
+    description = _single_line_description(candidate.description, name)
+    source_note = "_Generated from source Markdown by Skill Hub repair._"
+    sections = [
+        "---",
+        f"name: {name}",
+        f'description: "{description}"',
+        "---",
+        "",
+        f"# {candidate.name or name}",
+        "",
+        source_note,
+        "",
+    ]
+    if body:
+        sections.extend([body, ""])
+    return "\n".join(sections)
+
+
+def _single_line_description(description: str, name: str) -> str:
+    value = " ".join(description.split())
+    if not value:
+        value = f"Use when the user asks for {name.replace('-', ' ')}."
+    value = value.replace('"', "'")
+    return value[:240]
+
+
+def _slugify(value: str) -> str:
+    slug = _SLUG_RE.sub("-", value.lower()).strip("-")
+    return slug or "imported-skill"
 
 
 def _parse_local_json(path: Path) -> tuple[str, str] | None:

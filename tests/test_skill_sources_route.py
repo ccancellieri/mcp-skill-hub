@@ -359,6 +359,46 @@ def test_skill_sources_apply_import_saves_rows_before_reindex(tmp_path, monkeypa
     ]
 
 
+def test_skill_sources_apply_fix_repairs_loose_markdown_then_imports(
+    tmp_path, monkeypatch
+):
+    source_dir = tmp_path / "fresh"
+    source_dir.mkdir()
+    (source_dir / "normalize.md").write_text(
+        "# Normalize\n\nUse when a loose Markdown file should become a skill.",
+        encoding="utf-8",
+    )
+    calls = []
+
+    import skill_hub.webapp.routes.skill_sources as route_mod
+
+    monkeypatch.setattr(route_mod, "index_all", lambda store: calls.append(store) or (4, []))
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/skill-sources/apply",
+        data={
+            "action": "fix",
+            "path": [str(source_dir)],
+            "source": ["fresh"],
+            "enabled": ["0"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Fixed 1 skill(s); imported 1 source(s); indexed 4 item(s)." in response.text
+    assert "normalize" in response.text
+    assert (source_dir / "normalize" / "SKILL.md").exists()
+    assert calls == [None]
+    data = json.loads((tmp_path / "config.json").read_text())
+    assert data["skill_import_sources"] == [
+        {"path": str(source_dir), "source": "fresh", "enabled": True}
+    ]
+    assert {"path": str(source_dir), "source": "fresh", "enabled": True} in data[
+        "extra_skill_dirs"
+    ]
+
+
 def test_skill_sources_import_disables_previously_managed_source(tmp_path, monkeypatch):
     source_dir = tmp_path / "skills"
     source_dir.mkdir()

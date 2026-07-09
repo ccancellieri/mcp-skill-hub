@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from skill_hub.skill_import_audit import audit_paths, default_source_paths, render_markdown
+from skill_hub.skill_import_audit import (
+    audit_paths,
+    default_source_paths,
+    render_markdown,
+    repair_importable_skills,
+)
 
 
 def test_audit_classifies_skill_markdown_for_shared_l3(tmp_path):
@@ -192,3 +197,53 @@ def test_default_source_paths_uses_multiple_configured_sources(tmp_path):
     )
 
     assert [str(p) for p in paths] == [str(first), str(second), str(extra)]
+
+
+def test_repair_importable_skills_normalizes_loose_markdown(tmp_path):
+    loose = tmp_path / "normalize.md"
+    loose.write_text(
+        "# Normalize\n\nUse this workflow when normalization needs a reusable skill.",
+        encoding="utf-8",
+    )
+
+    report = audit_paths([tmp_path])
+    result = repair_importable_skills(report)
+
+    repaired = tmp_path / "normalize" / "SKILL.md"
+    assert result.created == [str(repaired)]
+    assert result.errors == []
+    assert repaired.exists()
+    text = repaired.read_text(encoding="utf-8")
+    assert "name: normalize" in text
+    assert "Generated from" in text
+
+
+def test_repair_importable_skills_promotes_reference_markdown(tmp_path):
+    skill_dir = tmp_path / "agent-routing"
+    ref_dir = skill_dir / "references"
+    ref_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: agent-routing
+description: Use when routing work to specialist agents.
+---
+
+# Agent Routing
+""",
+        encoding="utf-8",
+    )
+    reference = ref_dir / "keep_reference.md"
+    reference.write_text(
+        "# Keep Reference\n\nUse this as a standalone skill when requested.",
+        encoding="utf-8",
+    )
+
+    report = audit_paths([tmp_path])
+    result = repair_importable_skills(report)
+
+    repaired = tmp_path / "agent-routing__keep-reference" / "SKILL.md"
+    assert str(repaired) in result.created
+    assert repaired.exists()
+    text = repaired.read_text(encoding="utf-8")
+    assert "name: agent-routing__keep-reference" in text
+    assert "# Keep Reference" in text

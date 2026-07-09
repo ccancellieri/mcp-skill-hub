@@ -9,7 +9,13 @@ from fastapi.responses import HTMLResponse
 
 from ... import config as _cfg
 from ...indexer import index_all
-from ...skill_import_audit import LOCAL_JSON, SKILL_MD, audit_paths, default_source_paths
+from ...skill_import_audit import (
+    LOCAL_JSON,
+    SKILL_MD,
+    audit_paths,
+    default_source_paths,
+    repair_importable_skills,
+)
 
 router = APIRouter()
 
@@ -260,6 +266,16 @@ def _audit_notes(report: Any) -> list[str]:
     return notes
 
 
+def _repair_notes(result: Any) -> list[str]:
+    notes: list[str] = []
+    if getattr(result, "created", None):
+        notes.append(f"Created {len(result.created)} repaired skill wrapper(s).")
+    if getattr(result, "skipped", None):
+        notes.append(f"Skipped {len(result.skipped)} already repaired skill(s).")
+    notes.extend(getattr(result, "errors", []) or [])
+    return notes
+
+
 def _reindex(request: Request) -> tuple[int, list[str]]:
     try:
         return index_all(request.app.state.store)
@@ -364,6 +380,32 @@ async def skill_sources_apply(request: Request) -> Any:
             message=message,
             problems=notes + _audit_notes(report),
             audit=_audit_from_config(cfg),
+            index_errors=errors,
+        )
+
+    if action == "fix":
+        report = _audit_from_config(cfg)
+        repair = repair_importable_skills(report)
+        repaired_report = _audit_from_config(cfg)
+        problems.extend(_audit_import_problems(repaired_report, cfg))
+        if problems:
+            return _render_page(
+                request,
+                problems=_repair_notes(repair) + problems,
+                audit=repaired_report,
+            )
+        imported, notes = _merge_live_skill_dirs(cfg, repaired_report)
+        _cfg.save_config(cfg)
+        indexed, errors = _reindex(request)
+        message = (
+            f"Fixed {len(repair.created)} skill(s); imported {imported} source(s); "
+            f"indexed {indexed} item(s)."
+        )
+        return _render_page(
+            request,
+            message=message,
+            problems=_repair_notes(repair) + notes,
+            audit=repaired_report,
             index_errors=errors,
         )
 
