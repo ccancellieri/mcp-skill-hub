@@ -336,6 +336,105 @@ def test_codegraph_sync_noop_when_no_roots(monkeypatch):
     _cron_mod._codegraph_sync_handler()  # must not raise
 
 
+# ---------------------------------------------------------------------------
+# feedback_to_teachings handler — probe vs. real conversion (#114)
+# ---------------------------------------------------------------------------
+
+
+_FEEDBACK_MD = """\
+---
+name: test rule
+description: a test feedback rule
+type: feedback
+---
+Always do the test thing.
+
+**Why:** because tests need it.
+"""
+
+
+def test_feedback_to_teachings_disabled_stays_probe(tmp_path, monkeypatch):
+    """continuous_teaching_enabled=False (default) must not insert any teaching."""
+    import skill_hub.config as _cfg
+    import skill_hub.store as store_mod
+    from skill_hub.store import SkillStore
+
+    monkeypatch.setattr(_cfg, "CONFIG_PATH", tmp_path / "config.json")
+
+    projects_dir = tmp_path / ".claude" / "projects"
+    (projects_dir / "proj" / "memory").mkdir(parents=True)
+    (projects_dir / "proj" / "memory" / "feedback_test.md").write_text(
+        _FEEDBACK_MD, encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    isolated_store = SkillStore(db_path=tmp_path / "skill_hub.db")
+    monkeypatch.setattr(store_mod, "get_store", lambda: isolated_store)
+
+    _cron._feedback_to_teachings_handler()
+
+    assert isolated_store.list_teachings() == []
+    isolated_store.close()
+
+
+def test_feedback_to_teachings_enabled_converts(tmp_path, monkeypatch):
+    """continuous_teaching_enabled=True promotes feedback files into teachings."""
+    import skill_hub.config as _cfg
+    import skill_hub.store as store_mod
+    from skill_hub.store import SkillStore
+
+    monkeypatch.setattr(_cfg, "CONFIG_PATH", tmp_path / "config.json")
+    _cfg.set("continuous_teaching_enabled", True)
+
+    projects_dir = tmp_path / ".claude" / "projects"
+    (projects_dir / "proj" / "memory").mkdir(parents=True)
+    (projects_dir / "proj" / "memory" / "feedback_test.md").write_text(
+        _FEEDBACK_MD, encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    isolated_store = SkillStore(db_path=tmp_path / "skill_hub.db")
+    monkeypatch.setattr(store_mod, "get_store", lambda: isolated_store)
+
+    import skill_hub.feedback_teachings as _ft
+    monkeypatch.setattr(_ft, "embed_available", lambda: False)
+
+    _cron._feedback_to_teachings_handler()
+
+    rows = isolated_store.list_teachings()
+    assert len(rows) == 1
+    assert "test thing" in rows[0]["rule"]
+    isolated_store.close()
+
+
+def test_feedback_to_teachings_enabled_rerun_is_idempotent(tmp_path, monkeypatch):
+    import skill_hub.config as _cfg
+    import skill_hub.store as store_mod
+    from skill_hub.store import SkillStore
+
+    monkeypatch.setattr(_cfg, "CONFIG_PATH", tmp_path / "config.json")
+    _cfg.set("continuous_teaching_enabled", True)
+
+    projects_dir = tmp_path / ".claude" / "projects"
+    (projects_dir / "proj" / "memory").mkdir(parents=True)
+    (projects_dir / "proj" / "memory" / "feedback_test.md").write_text(
+        _FEEDBACK_MD, encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    isolated_store = SkillStore(db_path=tmp_path / "skill_hub.db")
+    monkeypatch.setattr(store_mod, "get_store", lambda: isolated_store)
+
+    import skill_hub.feedback_teachings as _ft
+    monkeypatch.setattr(_ft, "embed_available", lambda: False)
+
+    _cron._feedback_to_teachings_handler()
+    _cron._feedback_to_teachings_handler()
+
+    assert len(isolated_store.list_teachings()) == 1
+    isolated_store.close()
+
+
 def test_codegraph_sync_syncs_indexed_root(monkeypatch):
     import subprocess
     import skill_hub.cron as _cron_mod

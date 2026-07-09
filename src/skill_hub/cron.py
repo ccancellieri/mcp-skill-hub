@@ -110,31 +110,46 @@ def _log_digest_snapshot_handler() -> None:
 
 
 def _feedback_to_teachings_handler() -> None:
-    """Cron handler: scan feedback_*.md memory files and report how many are present.
+    """Cron handler: promote feedback_*.md memory files into persistent teachings.
 
-    The full "promote feedback rules into the teachings table" feature is not yet
-    implemented (``continuous_teaching_enabled`` is False by default and no
-    conversion function exists).  This handler is a safe, read-only probe that
-    logs the count of feedback files and the number of teachings already in the
-    DB — giving operators visibility without modifying any state.  When the full
-    conversion logic is built it should replace the body of this function.
+    Gated by ``continuous_teaching_enabled`` (False by default). While
+    disabled, this stays the original read-only probe — it logs the count of
+    feedback files and existing teachings without modifying any state, so the
+    scheduled slot remains informative and harmless.
+
+    Once enabled, delegates to :func:`feedback_teachings.convert`, which scans
+    the same feedback source, de-duplicates against existing teaching rule
+    text, and inserts new ones via ``store.add_teaching`` — the same
+    embed()/insert flow the ``teach`` MCP tool uses.
     """
     from pathlib import Path
+    from . import config as _cfg
     from .store import get_store
 
     memory_root = Path.home() / ".claude" / "projects"
-    feedback_files: list[Path] = []
-    if memory_root.exists():
-        feedback_files = sorted(memory_root.rglob("feedback_*.md"))
-
     store = get_store()
-    teaching_count = store.count_teachings()
 
+    if not _cfg.get("continuous_teaching_enabled"):
+        feedback_files: list[Path] = []
+        if memory_root.exists():
+            feedback_files = sorted(memory_root.rglob("feedback_*.md"))
+        teaching_count = store.count_teachings()
+        _log.info(
+            "feedback_to_teachings: feedback_files=%d existing_teachings=%d"
+            " (continuous_teaching_enabled=False — read-only probe)",
+            len(feedback_files),
+            teaching_count,
+        )
+        return
+
+    from . import feedback_teachings
+
+    result = feedback_teachings.convert(store, memory_root)
     _log.info(
-        "feedback_to_teachings: feedback_files=%d existing_teachings=%d"
-        " (conversion not yet implemented — read-only probe)",
-        len(feedback_files),
-        teaching_count,
+        "feedback_to_teachings: found=%d converted=%d duplicates=%d"
+        " unparsed=%d errors=%d",
+        result["found"], result["converted"], result["duplicates"],
+        result["unparsed"], result["errors"],
     )
 
 
