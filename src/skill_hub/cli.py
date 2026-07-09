@@ -1417,6 +1417,24 @@ def _run_async_enrich(session_id: str, message: str) -> None:
         store.close()
 
 
+def _log_auto_skill_injections(
+    store: "SkillStore",
+    skill_ids: list[str],
+    query: str,
+    session_id: str = "",
+) -> None:
+    """Record skills that were automatically loaded into hook context."""
+    seen: set[str] = set()
+    for skill_id in skill_ids:
+        if not skill_id or skill_id in seen:
+            continue
+        seen.add(skill_id)
+        try:
+            store.log_skill_injection(skill_id, query, session_id)
+        except Exception:
+            pass
+
+
 def _dynamic_context_stage(
     message: str,
     session_id: str,
@@ -1670,6 +1688,8 @@ def _dynamic_context_stage(
         parts.append(snippet)
         budget -= len(snippet)
         loaded_names.append(sid)
+
+    _log_auto_skill_injections(store, loaded_names, message, session_id)
 
     # Add relevant past tasks (compact, within remaining budget)
     tasks = store.search_tasks(msg_vector, top_k=2, min_sim=0.4)
@@ -2157,6 +2177,7 @@ def _build_keyword_context_injection(message: str) -> str | None:
                 _deduped.append(s)
             skills = _deduped[:top_k_skills]
 
+            loaded_skill_ids: list[str] = []
             for i, s in enumerate(skills):
                 if budget <= 200:
                     break
@@ -2170,6 +2191,9 @@ def _build_keyword_context_injection(message: str) -> str | None:
                 snippet = f"Skill [{s['id']}]: {desc}{content_preview}"
                 parts.append(snippet)
                 budget -= len(snippet)
+                loaded_skill_ids.append(s["id"])
+
+            _log_auto_skill_injections(store, loaded_skill_ids, message, "")
 
             for row in store.search_text(and_query, tables=["teachings"], top_k=3):
                 if budget <= 0:

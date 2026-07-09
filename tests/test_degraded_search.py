@@ -292,6 +292,13 @@ def test_keyword_context_injection_enriches_without_embeddings(tmp_path, monkeyp
     assert out is not None
     assert "local:git-pr" in out
     assert "keyword fallback" in out
+    reopened = SkillStore(db_path=tmp_path / "kw.db")
+    row = reopened._conn.execute(
+        "SELECT COUNT(*) AS n FROM skill_injections WHERE skill_id = ?",
+        ("local:git-pr",),
+    ).fetchone()
+    assert row["n"] == 1
+    reopened.close()
 
 
 def test_keyword_context_injection_dedupes_versioned_duplicates(tmp_path, monkeypatch):

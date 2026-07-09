@@ -150,7 +150,7 @@
         <span class="sk-stat-value" style="font-size:15px">{{ rows|length }}</span>
       </div>
       <div class="sk-stat">
-        <span class="sk-stat-label">Injected</span>
+        <span class="sk-stat-label" title="Skills loaded into context by search or hook enrichment">Used in context</span>
         <span class="sk-stat-value" style="font-size:15px">{{ rows|selectattr('injections')|list|length }}</span>
       </div>
       <div class="sk-stat">
@@ -184,7 +184,7 @@
         <tr>
           <th style="width:34px"></th>
           <th @click="sortBy='name'">Name</th>
-          <th @click="sortBy='injections'">Injections</th>
+          <th @click="sortBy='injections'" title="Times this skill was loaded into context">Context uses</th>
           <th>Helpful</th>
           <th @click="sortBy='feedback'">Score</th>
           <th @click="sortBy='last'">Last used</th>

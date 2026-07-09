@@ -14,7 +14,7 @@
     <div class="sk-name" title="{{ r.id }}">{{ r.name or r.id }}</div>
     <div class="sk-id">{{ r.id }}</div>
   </td>
-  <td><span class="sk-inj">{{ r.injections or 0 }}</span></td>
+  <td><span class="sk-inj" title="times loaded into context">{{ r.injections or 0 }}</span></td>
   <td>
     {% if tot %}
       <div class="hb-wrap">
