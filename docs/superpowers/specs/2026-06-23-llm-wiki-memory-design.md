@@ -13,7 +13,7 @@ Today's memory model is the RAG pattern Karpathy's *LLM Wiki* note contrasts aga
 - **Source of truth = the SQLite `vectors` table** (`store.py`): flat rows of `namespace` + `doc_id` + JSON embedding, tiered L0–L4 with recency decay. Markdown is *input* (chunked → embedded one-way via `memory_index.index_user_memory`/`index_plugin_memory`) or *output* (`master_state.py` renders `.memory/decisions.md`) — never a living artifact.
 - **Retrieval re-derives knowledge every query** (`search_context`, `server.py` ~1827 = vector KNN + level weight + recency). No persistent synthesis, no cross-references followed.
 - **No links between entries** (only a one-way `task_issue_links` table). No graph.
-- **No knowledge-base lint** — nothing checks contradictions, orphans, stale claims, missing cross-refs. (`lint_canary.py` lints *code*; `sync_check.py` is cross-repo grep.)
+- **No knowledge-base lint** — nothing checks contradictions, orphans, stale claims, missing cross-refs. (At the time this was written, `lint_canary.py` linted *code* and `sync_check.py` did cross-repo grep, as the nearest analogues; both were removed in the #130 zero-usage purge, so today there is no code-lint or cross-repo-check analogue either — the point stands regardless: nothing lints the *knowledge base*.)
 - Ingest sources (Discussions #41, Issues, sessions, activity #90) dump raw text + metadata. There is no "page" concept that gets *updated* across many files per source.
 
 The **LLM Wiki pattern**: the LLM incrementally builds and maintains a persistent, interlinked markdown wiki that sits between the user and raw sources. Knowledge is compiled once and kept current, not re-derived per query. Three layers — raw sources (immutable) / wiki (LLM-owned interlinked markdown) / schema (a conventions doc). Operations: **ingest** (a source touches 10–15 pages, updating cross-refs), **query** (cited synthesis, answers filed back as pages), **lint** (find contradictions/orphans/stale). `index.md` = content catalog, `log.md` = append-only chronological journal. Obsidian is the human UI; the wiki is a git repo of markdown.
@@ -259,7 +259,7 @@ The selector proposes; the operator approves; only then does the LLM run. Minima
 - Batch: `wiki_ingest(approve_all=True, limit=N, dry_run=False)` walks `approved` rows up to `limit` (cost ceiling), each atomic. `limit` defaults to a small N (config `wiki_ingest_batch_limit`, default 10) so an accidental run can't rewrite hundreds of pages.
 
 ### 14.3 UI integration — dashboard "Memory Wiki" card
-Extend the existing `render_dashboard` surface (same card idiom as the log-digest / cron cards). The card shows:
+Extend the existing `render_dashboard` surface (same card idiom as the log-digest / cron cards). *(Shipped as designed — the card lives in `src/skill_hub/dashboard.py`. Note: the standalone `render_dashboard` MCP tool wrapper referenced below was itself removed in the #130 zero-usage purge; the renderer it wrapped was kept — `dashboard.py` is still imported by the webapp and auto-triggered from `close_task` / server warm-up — so the card described here is live, just not manually invocable as an MCP tool anymore.)* The card shows:
 - **Status:** pages / edges / orphans / drift / last `log.md` op (from `wiki_status`).
 - **Queue:** pending / approved / done counts + total `est_calls` cost preview (from `wiki_queue`).
 - **Actions:** *Scan* (calls `wiki_scan`, no spend), *Approve* (per-row or all, `wiki_queue_decision`), *Ingest approved* (`wiki_ingest approve_all` within `limit`). Actions map to the MCP tools — the card is a thin view + trigger, not new business logic.
@@ -271,7 +271,7 @@ Read path is stdlib/DB only so the card renders even when LLM/embedding backends
 - **W2.3** `wiki.scan_candidates` + `wiki_queue` DDL + `wiki_scan` tool. *Verify:* seeded undistilled/stale sources surface as candidates; idempotent re-scan; runs with no LLM.
 - **W2.4** Approval-queue tools (`wiki_queue_decision`, batch `approve_all`+`limit`) + `wiki_ingest` tool wired to the queue. *Verify:* approve→ingest applies; un-approved slug refuses non-dry write; batch respects `limit`.
 - **W2.5** `wiki_query` (hybrid) + file-back stub. *Verify:* ranked pages w/ provenance; private excluded for unauthorized scope.
-- **W2.6** Dashboard "Memory Wiki" card in `render_dashboard`. *Verify:* renders status + queue counts; degrades when backends down.
+- **W2.6** Dashboard "Memory Wiki" card in `render_dashboard`. *Verify:* renders status + queue counts; degrades when backends down. *(Shipped — see §14.3 note: lives in `dashboard.py`, the `render_dashboard` MCP tool wrapper it was built against was later removed in #130.)*
 - **W2.7** Rewire `discussions_sync` → `ingest_source`; retire raw `discussions` namespace. *Verify:* `discussions_sync(dry_run=True)` produces page diffs, not raw upserts.
 
 ### 14.5 Cost & safety invariants

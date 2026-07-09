@@ -33,7 +33,7 @@
 - [x] **S1 F-INDEX** — sqlite-vec binary-quant + float32 rerank (7.5× search speedup, 97.3% recall@5) + incremental hash-skip indexer
 - [x] **S2 F-LLM** — `LLMProvider` Protocol + litellm adapter; unified 14+ call sites (embeddings, haiku, searxng, local_agent, ollama_router) behind one surface; `/control/llm` dashboard model picker + tier-aware pull form
 - [x] **S3 F-SELECT** — named plugin profiles (`list_profiles`, `create_profile`, `switch_profile`, `auto_curate_plugins`) with SessionStart drift advisory
-- [x] **S4 F-ROUTE** — ε-greedy bandit over `tier_cheap` / `tier_mid` / `tier_smart` with Laplace smoothing; `route_to_model`, `record_model_reward`, `bandit_stats` MCP tools
+- [x] ~~**S4 F-ROUTE** — ε-greedy bandit over `tier_cheap` / `tier_mid` / `tier_smart` with Laplace smoothing; `route_to_model`, `record_model_reward`, `bandit_stats` MCP tools~~ — **removed in the #130 zero-usage purge** (issue #120 decided REMOVE: zero recorded rewards, nothing ever called `record_model_reward` outside crash-recovery replay). The `model_rewards` table was left behind as dead DDL and dropped offline via the #131 migration script.
 - [x] **S5 F-PROMPT** — pluggable prompt rewriters (`add_skill_context`, `add_recent_tasks`, `normalize_language`); `improve_prompt` + `list_prompt_rewriters` MCP tools; opt-in hook integration
 - [x] **S6 F-MEM** — unified sqlite-vec store for tasks + teachings (same binary-KNN + float32 rerank path as skills); mirror-on-write, delete-clean, startup backfill
 
@@ -48,8 +48,8 @@ Visibility + pure-stdlib tools so skill-hub is obviously useful even with no Oll
 - [x] #6 — `no-llm-mode`: explicit flag with visible status
 - [x] #7 — tool-capability-matrix: every tool declares its dependency tier
 - [x] #8 — degraded-search: FTS5 keyword fallback when embeddings unavailable
-- [x] #9 — claims-board: claim / handoff / steal on tasks (no LLM needed)
-- [x] #10 — witness-log: append-only fix manifest per repo
+- [x] ~~#9 — claims-board: claim / handoff / steal on tasks (no LLM needed)~~ — **removed in the #130 zero-usage purge** (`claim_task` / `handoff_task` / `release_task` / `steal_task` + `src/skill_hub/team/` claims code had zero calls; `team_plan` itself was kept — it is a separate, live tool). Dead `claimed_by` / `claim_token` / `claimed_at` / `stealable_at` columns dropped offline in #131.
+- [x] ~~#10 — witness-log: append-only fix manifest per repo~~ — **removed in the #130 zero-usage purge** (`record_witness` / `list_witness`, zero calls).
 - [x] #11 — worktree-aware tasks: capture branch + worktree path on save
 - [x] #12 — PII gate: regex scan before `save_task` / `teach` on public repos
 - [x] #13 — dashboard: `/status/capabilities` view
@@ -63,16 +63,16 @@ Selectively apply patterns from Anthropic's Managed Agents post — durable even
 - [ ] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
 - [x] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
 - [x] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
-- [x] ~~#31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools~~ — **shipped, then removed (PR #52).** It guarded the in-process plan-execution stepper (`author_plan` / `run_plan` / `execute_plan_step`), which has itself been retired in favour of Claude Code's native Workflow tool and `/team` subagents — those run in their own harness-managed worktrees, so an in-process sandbox no longer has anything to wrap. `validate_plan` (lint-only) is the surviving plan tool.
+- [x] ~~#31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools~~ — **shipped, then removed (PR #52).** It guarded the in-process plan-execution stepper (`author_plan` / `run_plan` / `execute_plan_step`), which has itself been retired in favour of Claude Code's native Workflow tool and `/team` subagents — those run in their own harness-managed worktrees, so an in-process sandbox no longer has anything to wrap. `validate_plan` (lint-only) survived PR #52, but was itself removed in the later #130 zero-usage purge (`plan_executor/validator.py`, zero calls) — no plan-lint tool remains today.
 
 ### M3 — Worktree + multi-repo policy enforcement
 
 Move maintainer feedback rules from memory into callable skill-hub primitives.
 
 - [x] #15 — `worktree_preflight`: collision check tool (3-axis: worktree + branch + open PR)
-- [x] #16 — `sync_check`: cross-repo stale-import detector (git diff + grep, no false positives)
-- [x] #17 — `lint_canary`: rotate through ruff selectors (core_task + MCP tool, witness-log JSONL)
-- [x] #18 — memory-rule export: feedback files → per-repo `POLICY.md` (`export_policies` MCP tool)
+- [x] ~~#16 — `sync_check`: cross-repo stale-import detector (git diff + grep, no false positives)~~ — **removed in the #130 zero-usage purge** (`federation_view` / `sync_check` + `sync_check.py`, zero calls).
+- [x] ~~#17 — `lint_canary`: rotate through ruff selectors (core_task + MCP tool, witness-log JSONL)~~ — **removed in the #130 zero-usage purge** alongside the witness log it logged to.
+- [x] ~~#18 — memory-rule export: feedback files → per-repo `POLICY.md` (`export_policies` MCP tool)~~ — **removed in the #130 zero-usage purge** (`policy_export.py` + `team/policy.py`, zero calls).
 - [x] #19 — cross-project task federation: per-repo filter on every task tool
 
 ### Other
