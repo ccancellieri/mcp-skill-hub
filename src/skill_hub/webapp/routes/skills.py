@@ -172,7 +172,7 @@ def _enrich(stats: list[dict], pinned: set[str], task_counts: dict[str, int]) ->
 @router.get("/skills", response_class=HTMLResponse)
 def skills_page(request: Request) -> Any:
     store = request.app.state.store
-    stats = store.get_skill_usage_stats()
+    stats = store.get_skill_usage_stats(limit=None)
     pinned = _load_pinned()
     task_counts = _get_skill_task_counts(store)
     rows = _enrich(stats, pinned, task_counts)
@@ -199,7 +199,7 @@ def skill_pin(skill_id: str, request: Request) -> Any:
         pinned.add(skill_id)
     _save_pinned(pinned)
     store = request.app.state.store
-    stats = store.get_skill_usage_stats()
+    stats = store.get_skill_usage_stats(limit=None)
     row = next((dict(r) for r in stats if r["id"] == skill_id), None)
     if not row:
         return HTMLResponse("", status_code=404)
@@ -212,7 +212,7 @@ def skill_pin(skill_id: str, request: Request) -> Any:
 
 def _render_skill_row(request: Request, skill_id: str, fallback: dict[str, Any] | None = None) -> Any:
     store = request.app.state.store
-    stats = store.get_skill_usage_stats()
+    stats = store.get_skill_usage_stats(limit=None)
     pinned = _load_pinned()
     task_counts = _get_skill_task_counts(store)
     row = next((dict(r) for r in stats if r["id"] == skill_id), fallback or {})

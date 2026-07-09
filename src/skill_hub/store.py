@@ -3864,13 +3864,15 @@ class SkillStore:
             })
         return results
 
-    def get_skill_usage_stats(self) -> list[dict]:
+    def get_skill_usage_stats(self, limit: int | None = 200) -> list[dict]:
         """Aggregate skill usage.
 
         Injections come from skill_injections (one row per search_skills hit).
         Helpful/unhelpful counts and last_used come from the feedback table.
+        Pass limit=None to get every skill (catalog views); the default keeps
+        consumers that only care about the most-used skills cheap.
         """
-        rows = self._conn.execute("""
+        sql = """
             SELECT s.id, s.name, s.plugin, s.target, s.file_path,
                    COALESCE(s.feedback_score, 1.0) as feedback_score,
                    COALESCE(inj.injections, 0) as injections,
@@ -3894,8 +3896,12 @@ class SkillStore:
                 GROUP BY skill_id
             ) fb ON fb.skill_id = s.id
             ORDER BY injections DESC, feedback_score DESC
-            LIMIT 200
-        """).fetchall()
+        """
+        params: tuple = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        rows = self._conn.execute(sql, params).fetchall()
         out = []
         for r in rows:
             d = dict(r)

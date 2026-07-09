@@ -37,8 +37,9 @@ class _FakeStore:
         self.rows = rows
         self._conn = None
 
-    def get_skill_usage_stats(self) -> list[dict]:
-        return [dict(r) for r in self.rows]
+    def get_skill_usage_stats(self, limit: int | None = 200) -> list[dict]:
+        rows = self.rows if limit is None else self.rows[:limit]
+        return [dict(r) for r in rows]
 
     def get_skill(self, skill_id: str) -> dict | None:
         for row in self.rows:
