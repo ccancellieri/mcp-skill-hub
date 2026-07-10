@@ -504,6 +504,16 @@ class TestRootUnderParents:
 class TestEvaluateModes:
     """End-to-end mode behaviour through evaluate()."""
 
+    @pytest.fixture(autouse=True)
+    def _codegraph_installed(self, monkeypatch):
+        # These tests assert the autonomy policy (what gets queued), not host
+        # tooling — pin the resolver so machines without codegraph in a
+        # trusted dir (CI) behave like a dev machine that has it.
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
+            lambda: "/usr/local/bin/codegraph",
+        )
+
     def _setup(self, monkeypatch, overrides):
         monkeypatch.setattr("skill_hub.config.get", _fake_get(overrides))
         monkeypatch.setattr(
@@ -566,6 +576,14 @@ class TestEvaluateModes:
 
 class TestAutonomyPolicy:
     """Verify the offer-vs-auto-init branching in evaluate()."""
+
+    @pytest.fixture(autouse=True)
+    def _codegraph_installed(self, monkeypatch):
+        # Policy tests must not depend on the host having codegraph installed.
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
+            lambda: "/usr/local/bin/codegraph",
+        )
 
     def _config_get(self, overrides: dict):
         """Build a config.get mock from defaults + overrides."""
@@ -775,6 +793,15 @@ class TestDispatchAsync:
 # ---------------------------------------------------------------------------
 
 class TestEnsureToolingCore:
+    @pytest.fixture(autouse=True)
+    def _codegraph_installed(self, monkeypatch):
+        # Dispatch-behaviour tests must not depend on the host having
+        # codegraph installed (dispatch itself is stubbed where it matters).
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
+            lambda: "/usr/local/bin/codegraph",
+        )
+
     def test_absent_index_no_init_returns_present_false(self, tmp_path):
         _make_code_project(tmp_path)
         result = ensure_tooling_core(str(tmp_path), init=False, refresh=False)

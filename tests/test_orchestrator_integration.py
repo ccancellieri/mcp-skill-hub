@@ -202,6 +202,16 @@ class TestRouteInjectionMissingIndex:
 class TestRouteInjectionPresentIndex:
     """route() steers toward indexed queries and queues a refresh."""
 
+    @pytest.fixture(autouse=True)
+    def _codegraph_installed(self, monkeypatch):
+        # These tests assert what gets queued, not host tooling — pin the
+        # resolver so machines without codegraph in a trusted dir (CI)
+        # behave like a dev machine that has it. Dispatch is stubbed.
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
+            lambda: "/usr/local/bin/codegraph",
+        )
+
     def test_system_message_steers_toward_codegraph(self, tmp_path, monkeypatch):
         _make_code_project(tmp_path, with_codegraph=True)
         _engine._probe_cache.clear()
@@ -391,6 +401,15 @@ class TestNoDirectiveWhenNotApplicable:
 # ---------------------------------------------------------------------------
 
 class TestEnsureToolingCore:
+    @pytest.fixture(autouse=True)
+    def _codegraph_installed(self, monkeypatch):
+        # Dispatch-behaviour tests must not depend on the host having
+        # codegraph installed; Popen is stubbed wherever dispatch fires.
+        monkeypatch.setattr(
+            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
+            lambda: "/usr/local/bin/codegraph",
+        )
+
     def test_nonexistent_path_returns_dict_no_exception(self):
         result = ensure_tooling_core("/nonexistent/path/xyz/abc")
         assert isinstance(result, dict)
