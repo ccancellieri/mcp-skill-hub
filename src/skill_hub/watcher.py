@@ -139,7 +139,11 @@ class _DebounceHandler:
         self._last_changed: str = ""
         self._pending_paths: set[Path] = set()
         self._reindexing: bool = False
-        self._last_reindex_done: float = 0.0  # monotonic time of last completion
+        # Monotonic time of last completion; None until the first reindex
+        # finishes (monotonic() has an arbitrary epoch — on a freshly booted
+        # host it can be below the cooldown interval, so 0.0 is not a safe
+        # "never ran" sentinel).
+        self._last_reindex_done: float | None = None
 
     def dispatch(self, event: object) -> None:
         src = getattr(event, "src_path", "")
@@ -153,7 +157,10 @@ class _DebounceHandler:
             # If a reindex is running, or cooldown hasn't expired, skip
             if self._reindexing:
                 return
-            if (_time.monotonic() - self._last_reindex_done) < _MIN_REINDEX_INTERVAL:
+            if (
+                self._last_reindex_done is not None
+                and (_time.monotonic() - self._last_reindex_done) < _MIN_REINDEX_INTERVAL
+            ):
                 return
             self._last_changed = src
             try:
@@ -233,7 +240,8 @@ class _WikiVaultHandler:
         self._pending_changed: set[Path] = set()
         self._pending_deleted: set[Path] = set()
         self._busy: bool = False
-        self._last_done: float = 0.0
+        # None until the first reindex completes — see _DebounceHandler.
+        self._last_done: float | None = None
 
     def dispatch(self, event: object) -> None:
         src = getattr(event, "src_path", "")
@@ -249,7 +257,10 @@ class _WikiVaultHandler:
             import time as _time
             if self._busy:
                 return
-            if (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL:
+            if (
+                self._last_done is not None
+                and (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL
+            ):
                 return
             event_type: str = getattr(event, "event_type", "")
             try:
@@ -347,7 +358,8 @@ class _PluginPathHandler:
         self._lock = threading.Lock()
         self._last_path: str = ""
         self._busy: bool = False
-        self._last_done: float = 0.0
+        # None until the first index completes — see _DebounceHandler.
+        self._last_done: float | None = None
 
     def dispatch(self, event: object) -> None:
         src = getattr(event, "src_path", "")
@@ -359,7 +371,10 @@ class _PluginPathHandler:
             import time as _time
             if self._busy:
                 return
-            if (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL:
+            if (
+                self._last_done is not None
+                and (_time.monotonic() - self._last_done) < _MIN_REINDEX_INTERVAL
+            ):
                 return
             self._last_path = src
             if self._timer is not None:

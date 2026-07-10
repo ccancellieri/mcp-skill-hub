@@ -76,6 +76,17 @@ def test_dispatch_skips_during_cooldown():
     assert handler._timer is None
 
 
+def test_dispatch_accepts_first_event_on_young_monotonic_clock():
+    """A fresh handler must not look like it is in cooldown just because the
+    monotonic clock is young (e.g. a freshly booted CI runner whose uptime is
+    below _MIN_REINDEX_INTERVAL)."""
+    handler = _WikiVaultHandler(delay=0.05)
+    with patch("time.monotonic", return_value=_MIN_REINDEX_INTERVAL / 2):
+        handler.dispatch(_FakeEvent("/wiki/pages/entity/page.md"))
+    assert handler._timer is not None
+    handler._timer.cancel()
+
+
 def test_dispatch_routes_deleted_event_to_pending_deleted():
     handler = _WikiVaultHandler(delay=0.05)
     handler.dispatch(_FakeEvent("/wiki/pages/entity/gone.md", event_type="deleted"))
