@@ -60,7 +60,7 @@ Selectively apply patterns from Anthropic's Managed Agents post — durable even
 
 - [x] #14 — tracking issue + `docs/design/managed-agents-refactor.md` (Q1/Q4/Q5 resolved)
 - [ ] #27 — W1 event log: `events` table + emit decorator + `get_events` / `events_prune`
-- [ ] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
+- [x] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
 - [x] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
 - [x] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
 - [x] ~~#31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools~~ — **shipped, then removed (PR #52).** It guarded the in-process plan-execution stepper (`author_plan` / `run_plan` / `execute_plan_step`), which has itself been retired in favour of Claude Code's native Workflow tool and `/team` subagents — those run in their own harness-managed worktrees, so an in-process sandbox no longer has anything to wrap. `validate_plan` (lint-only) survived PR #52, but was itself removed in the later #130 zero-usage purge (`plan_executor/validator.py`, zero calls) — no plan-lint tool remains today.
