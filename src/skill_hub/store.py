@@ -4191,8 +4191,11 @@ class SkillStore:
             )
         """, (max_rows,))
         pruned += cur2.rowcount
-        if pruned:
-            self._conn.commit()
+        # Both DELETEs above run unconditionally and open an implicit
+        # transaction even when they match zero rows (#142) — commit must
+        # not be gated on `pruned`, or a no-op prune leaves the connection
+        # sitting in an open transaction indefinitely.
+        self._conn.commit()
         return pruned
 
     def upsert_repo_context(self, repo_path: str, commit_style: str = "",
@@ -4716,8 +4719,12 @@ class SkillStore:
             RETURNING *
             """
         ).fetchone()
-        if row is not None:
-            self._conn.commit()
+        # The UPDATE above runs unconditionally and opens an implicit
+        # transaction even when the WHERE subquery matches nothing (empty
+        # queue) — commit must not be gated on `row`, or an empty-queue
+        # poll leaves the connection sitting in an open transaction
+        # indefinitely (#142).
+        self._conn.commit()
         return row
 
     def complete_job(self, job_id: int, result: dict | None = None, worker: str = "") -> None:
