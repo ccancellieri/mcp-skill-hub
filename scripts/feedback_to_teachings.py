@@ -9,12 +9,16 @@ Default: dry-run mode (prints what would be stored, makes no changes).
 --no-dry-run: actually store teachings to DB.
 --memory-dir PATH: override default memory directory path.
 --db-path PATH: override default DB path.
+
+The actual feedback_*.md parsing (frontmatter, rule, why, how-to-apply) is
+not reimplemented here — it delegates to skill_hub.feedback_teachings, the
+same primitives the continuous-teaching cron job uses, so this CLI and the
+cron path can never drift apart on the file format.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -32,11 +36,14 @@ if str(_SRC_DIR) not in sys.path:
 try:
     from skill_hub.store import SkillStore
     from skill_hub.embeddings import embed, embed_available
+    from skill_hub.feedback_teachings import build_action, parse_feedback_text
     _SKILL_HUB_AVAILABLE = True
 except ImportError:
     SkillStore = None  # type: ignore[assignment,misc]
     embed = None  # type: ignore[assignment]
     embed_available = None  # type: ignore[assignment]
+    parse_feedback_text = None  # type: ignore[assignment]
+    build_action = None  # type: ignore[assignment]
     _SKILL_HUB_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
@@ -51,10 +58,6 @@ _DEFAULT_MEMORY_PATH = (
     / "memory"
 )
 
-_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
-_WHY_RE = re.compile(r"\*\*Why:\*\*\s*(.+?)(?=\n\n|\n\*\*|\Z)", re.DOTALL)
-_HOW_RE = re.compile(r"\*\*How to apply:\*\*\s*(.+?)(?=\n\n|\n\*\*|\Z)", re.DOTALL)
-
 _TARGET_TYPE = "global"
 _TARGET_ID = "global"
 
@@ -64,21 +67,13 @@ _TARGET_ID = "global"
 # ---------------------------------------------------------------------------
 
 
-def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Parse simple YAML-like frontmatter into a dict (string values only)."""
-    result: dict[str, str] = {}
-    for line in text.splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result
-
-
 def _parse_feedback_file(path: Path) -> dict[str, str] | None:
     """Parse a feedback_*.md file and return a dict with keys:
-    rule, why, how_to_apply, description, name.
+    rule, why, how_to_apply, description, name, filename.
 
     Returns None if the file cannot be parsed or yields no usable content.
+    The actual parse is skill_hub.feedback_teachings.parse_feedback_text;
+    this wrapper only adds file I/O and the CLI's WARN reporting.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -86,63 +81,22 @@ def _parse_feedback_file(path: Path) -> dict[str, str] | None:
         print(f"  WARN: cannot read {path.name}: {exc}", file=sys.stderr)
         return None
 
-    text = text.strip()
-    if not text:
+    if not text.strip():
         print(f"  WARN: {path.name} is empty — skipping", file=sys.stderr)
         return None
 
-    fm_match = _FRONTMATTER_RE.match(text)
-    if fm_match:
-        fm_raw = fm_match.group(1)
-        body = fm_match.group(2).strip()
-        fm = _parse_frontmatter(fm_raw)
-    else:
-        fm = {}
-        body = text
-
-    name = fm.get("name") or path.stem
-    description = fm.get("description") or ""
-
-    # Rule = full body content, capped at 500 chars
-    rule = body[:500] if body else description[:500]
-    if not rule:
+    item = parse_feedback_text(text, name_fallback=path.stem)
+    if item is None:
         print(f"  WARN: {path.name} has no usable rule content — skipping", file=sys.stderr)
         return None
 
-    # Why = text after **Why:** section, fallback to frontmatter description
-    why = ""
-    why_match = _WHY_RE.search(body)
-    if why_match:
-        why = why_match.group(1).strip()
-    if not why:
-        why = description
-
-    # How to apply = text after **How to apply:** section
-    how_to_apply = ""
-    how_match = _HOW_RE.search(body)
-    if how_match:
-        how_to_apply = how_match.group(1).strip()[:300]
-
-    return {
-        "name": name,
-        "rule": rule,
-        "why": why[:300],
-        "how_to_apply": how_to_apply,
-        "description": description,
-        "filename": path.name,
-    }
+    item["filename"] = path.name
+    return item
 
 
 def _build_action(item: dict[str, str]) -> str:
     """Build the action/context string from why + how_to_apply fields."""
-    parts = []
-    if item["why"]:
-        parts.append(f"Why: {item['why']}")
-    if item["how_to_apply"]:
-        parts.append(f"How to apply: {item['how_to_apply']}")
-    if parts:
-        return "\n".join(parts)
-    return f"apply rule: {item['name']}"
+    return build_action(item)
 
 
 def _is_duplicate(existing_rules: list[str], candidate_rule: str) -> bool:
