@@ -17,8 +17,6 @@ import os
 import shutil
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -86,40 +84,25 @@ def assert_server_not_imported(modules_at_collection: frozenset[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Reconciler-thread leak guard
+# Reconciler-thread isolation
 # ---------------------------------------------------------------------------
-
-_RECONCILER_THREAD_NAME = "skill-hub-reconciler"
 
 
 @pytest.fixture(autouse=True)
-def _no_leaked_reconciler_thread():
-    """Fail the test that leaks a reconciler thread, not an innocent later one.
+def _stop_reconcilers_after_test():
+    """Stop every reconciler a test (or an import of skill_hub.server) started.
 
-    ``skill_hub.services.registry.start_reconciler()`` spawns a real daemon
-    thread that ticks on an interval and calls into service start/stop code
-    (subprocess calls included). If a test starts one and its stop()/join()
-    doesn't fully land before teardown, the thread keeps ticking in the
-    background — on a CI runner juggling hundreds of tests' own background
-    threads, that thread can survive well past the test that started it and
-    then trip an assertion or a monkeypatched ``subprocess.Popen`` in a
-    completely unrelated later test. Catch it here instead, right after the
-    test that actually caused it, so the failure points at the real culprit.
+    skill_hub.server starts a reconciler daemon thread at import time
+    (auto_reconcile is on by default). It ticks every 2s and calls real service
+    start() / subprocess.Popen. Any test that imports server — directly or
+    transitively — leaks that thread, which is what makes
+    test_no_real_provisioning_ran flake: the thread calls the real Popen outside
+    that test's patch scope in a completely unrelated later test. Draining every
+    reconciler after each test keeps the background thread from bleeding across
+    test boundaries (issue #143). Signalling the stop event is enough to halt the
+    ticking even if the thread is momentarily blocked inside a slow start().
     """
     yield
-    # Give ReconcilerHandle.stop()'s own join() a little extra slack for
-    # scheduling jitter — this only costs time on the test that leaked one.
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        if not any(
-            t.is_alive() and t.name == _RECONCILER_THREAD_NAME
-            for t in threading.enumerate()
-        ):
-            return
-        time.sleep(0.05)
-    leaked = [t for t in threading.enumerate() if t.name == _RECONCILER_THREAD_NAME]
-    assert not leaked, (
-        f"{len(leaked)} {_RECONCILER_THREAD_NAME!r} thread(s) still alive after "
-        "this test — call ReconcilerHandle.stop() and confirm is_alive() is "
-        "False before the test returns (issue #143)"
-    )
+    from skill_hub.services.registry import stop_all_reconcilers
+
+    stop_all_reconcilers()
