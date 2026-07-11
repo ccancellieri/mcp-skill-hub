@@ -81,3 +81,28 @@ def assert_server_not_imported(modules_at_collection: frozenset[str]) -> None:
         "skill_hub.server was already loaded when the test suite was collected "
         "— it must not be imported at module level, because it opens the live DB"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconciler-thread isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _stop_reconcilers_after_test():
+    """Stop every reconciler a test (or an import of skill_hub.server) started.
+
+    skill_hub.server starts a reconciler daemon thread at import time
+    (auto_reconcile is on by default). It ticks every 2s and calls real service
+    start() / subprocess.Popen. Any test that imports server — directly or
+    transitively — leaks that thread, which is what makes
+    test_no_real_provisioning_ran flake: the thread calls the real Popen outside
+    that test's patch scope in a completely unrelated later test. Draining every
+    reconciler after each test keeps the background thread from bleeding across
+    test boundaries (issue #143). Signalling the stop event is enough to halt the
+    ticking even if the thread is momentarily blocked inside a slow start().
+    """
+    yield
+    from skill_hub.services.registry import stop_all_reconcilers
+
+    stop_all_reconcilers()

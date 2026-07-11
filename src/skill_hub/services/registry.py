@@ -237,6 +237,36 @@ class ServiceRegistry:
 # Reconciler daemon thread
 # ---------------------------------------------------------------------------
 
+# Every reconciler thread started in this process, tracked so it can be stopped
+# without holding its handle. server.py starts one at import time (auto_reconcile
+# is on by default); it ticks every 2s and calls real service start() /
+# subprocess.Popen. The test suite drains this between tests so that import-time
+# reconciler can't bleed into an unrelated later test (issue #143).
+_active_reconcilers: list[tuple[threading.Event, threading.Thread]] = []
+_active_reconcilers_lock = threading.Lock()
+
+
+def stop_all_reconcilers(timeout: float = 5.0) -> list[str]:
+    """Signal every reconciler started in this process to stop, then join it.
+
+    Setting each stop event is the load-bearing part: once set, a reconciler
+    exits its loop before the next tick and can no longer start services or
+    spawn subprocesses — even if the join times out because it is momentarily
+    blocked inside a slow start(). Returns the names of any threads still alive
+    after *timeout* (best effort; used by the test suite for isolation).
+    """
+    with _active_reconcilers_lock:
+        entries = list(_active_reconcilers)
+        _active_reconcilers.clear()
+    for stop_event, _thread in entries:
+        stop_event.set()
+    stragglers: list[str] = []
+    for _stop_event, thread in entries:
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            stragglers.append(thread.name)
+    return stragglers
+
 
 class ReconcilerHandle:
     """Stop-handle returned by :func:`start_reconciler`."""
@@ -248,6 +278,20 @@ class ReconcilerHandle:
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=5)
+        with _active_reconcilers_lock:
+            _active_reconcilers[:] = [
+                (e, t) for (e, t) in _active_reconcilers if t is not self._thread
+            ]
+
+    def is_alive(self) -> bool:
+        """True if the daemon thread is still running after stop().
+
+        ``join(timeout=5)`` above is best-effort — it does not raise if the
+        thread hasn't exited yet. Callers that need a hard guarantee (tests
+        spinning up a real reconciler thread, which must never survive past
+        the test that started it) should check this after calling stop().
+        """
+        return self._thread.is_alive()
 
 
 def start_reconciler(
@@ -296,4 +340,6 @@ def start_reconciler(
 
     thread = threading.Thread(target=_loop, name="skill-hub-reconciler", daemon=True)
     thread.start()
+    with _active_reconcilers_lock:
+        _active_reconcilers.append((stop_event, thread))
     return ReconcilerHandle(stop_event, thread)

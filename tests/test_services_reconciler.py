@@ -103,6 +103,10 @@ def test_reconciler_does_not_block_caller_on_slow_startup_align(tmp_path):
         assert slow.starts >= 1, "startup_align never ran in the background thread"
     finally:
         handle.stop()
+        assert not handle.is_alive(), (
+            "reconciler thread did not stop — it would keep ticking in the "
+            "background and could bleed into a later test (issue #143)"
+        )
 
 
 def test_reconciler_picks_up_config_changes(tmp_path):
@@ -152,3 +156,40 @@ def test_reconciler_picks_up_config_changes(tmp_path):
         assert svc.starts >= 1
     finally:
         handle.stop()
+        assert not handle.is_alive(), (
+            "reconciler thread did not stop — it would keep ticking in the "
+            "background and could bleed into a later test (issue #143)"
+        )
+
+
+def test_stop_all_reconcilers_drains_a_leaked_thread(tmp_path):
+    """A reconciler whose handle is dropped without stop() is still stoppable.
+
+    This is the mechanism the autouse conftest fixture relies on to stop the
+    reconciler skill_hub.server starts at import time (whose handle a test never
+    holds) before it can tick real subprocess.Popen calls into an unrelated
+    later test — the root cause of #143.
+    """
+    import threading
+
+    from skill_hub.services.registry import stop_all_reconcilers
+
+    reg = ServiceRegistry([_FakeService("alpha")])
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text("{}")
+
+    # Start a reconciler and drop the handle without stopping it — a leak.
+    start_reconciler(
+        reg,
+        _StubPressure(),
+        config_path=cfg_path,
+        load_config=lambda: {"services": {}},
+        interval_sec=0.05,
+    )
+
+    stragglers = stop_all_reconcilers(timeout=5.0)
+    assert stragglers == [], f"leaked reconciler did not stop: {stragglers}"
+    assert not [
+        t for t in threading.enumerate()
+        if t.name == "skill-hub-reconciler" and t.is_alive()
+    ], "a skill-hub-reconciler thread survived stop_all_reconcilers()"
