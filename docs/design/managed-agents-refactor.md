@@ -1,6 +1,6 @@
 # Design — Managed-Agents architectural refactor
 
-Status: **mostly shipped; W5 retired.** W1 (event log), W3 (tool envelope), and W4 (credential vault) landed. **W5 (the sandbox) shipped under #31, then was removed in PR #52** along with the plan-execution stepper it was designed to guard — see the note below. W2 (stateless recovery) is still open.
+Status: **mostly shipped; W5 retired.** W1 (event log), W3 (tool envelope), and W4 (credential vault) landed. **W5 (the sandbox) shipped under #31, then was removed in PR #52** along with the plan-execution stepper it was designed to guard — see the note below. **W2 (stateless recovery) shipped under #28** — `wake_session` + cache-rebuild discipline fully implemented and tested.
 Tracking issue: see milestone `M2: Managed Agents`.
 
 > **W5 retired (PR #52, 2026-06-09).** The sandbox in W5 existed to isolate the in-process plan-execution tools `run_plan` / `execute_plan_step` / `author_plan`. Those tools have been removed: skill-hub no longer runs its own plan-execution loop. Plan *authoring and execution* are now handled by Claude Code's native Workflow tool and the `/team implement` pipeline, each of which already runs in its own harness-managed worktree — so an in-process sandbox has nothing left to wrap. At the time of PR #52 the surviving plan tool was `validate_plan` (lint-only; no execution, no sandbox needed); `validate_plan` was itself removed in the later #130 zero-usage purge (`plan_executor/validator.py`), so no plan tool remains today. The W5 design below is retained as historical record; references to `run_plan` / `execute_plan_step` / `author_plan` describe tools that no longer exist.
@@ -35,8 +35,8 @@ The above is a paraphrase; refer to the source for the verbatim treatment.
 
 | Principle | Current state | Gap |
 |---|---|---|
-| Session = event log | Per-tool writes to scattered tables | No shared event stream |
-| Harness stateless | In-memory caches (embeddings cache, vector cache, model bandit state) | Crash loses in-flight state |
+| Session = event log | Per-tool writes to scattered tables | ~~No shared event stream~~ **W1 shipped (#27): `events` table + `get_events` / `events_prune`** |
+| Harness stateless | In-memory caches (embeddings cache, vector cache, model bandit state) | ~~Crash loses in-flight state~~ **W2 shipped: crash recovery via `wake_session` now available** |
 | Uniform tool envelope | Each tool returns dict / str / yields | Inconsistent error reporting; hard to wrap with cross-cutting concerns |
 | Cred vault | `config.json` plaintext | Voyage / Anthropic / GitHub tokens in config |
 | Sandbox | `subprocess.run` with full PATH inheritance | No execution-time isolation for plan steps |
