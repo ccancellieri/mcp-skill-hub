@@ -103,6 +103,10 @@ def test_reconciler_does_not_block_caller_on_slow_startup_align(tmp_path):
         assert slow.starts >= 1, "startup_align never ran in the background thread"
     finally:
         handle.stop()
+        assert not handle.is_alive(), (
+            "reconciler thread did not stop — it would keep ticking in the "
+            "background and could bleed into a later test (issue #143)"
+        )
 
 
 def test_reconciler_picks_up_config_changes(tmp_path):
@@ -152,3 +156,7 @@ def test_reconciler_picks_up_config_changes(tmp_path):
         assert svc.starts >= 1
     finally:
         handle.stop()
+        assert not handle.is_alive(), (
+            "reconciler thread did not stop — it would keep ticking in the "
+            "background and could bleed into a later test (issue #143)"
+        )

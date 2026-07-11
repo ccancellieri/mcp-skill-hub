@@ -249,6 +249,16 @@ class ReconcilerHandle:
         self._stop.set()
         self._thread.join(timeout=5)
 
+    def is_alive(self) -> bool:
+        """True if the daemon thread is still running after stop().
+
+        ``join(timeout=5)`` above is best-effort — it does not raise if the
+        thread hasn't exited yet. Callers that need a hard guarantee (tests
+        spinning up a real reconciler thread, which must never survive past
+        the test that started it) should check this after calling stop().
+        """
+        return self._thread.is_alive()
+
 
 def start_reconciler(
     registry: ServiceRegistry,
