@@ -35,7 +35,7 @@ The above is a paraphrase; refer to the source for the verbatim treatment.
 
 | Principle | Current state | Gap |
 |---|---|---|
-| Session = event log | Per-tool writes to scattered tables | No shared event stream |
+| Session = event log | Per-tool writes to scattered tables | ~~No shared event stream~~ **W1 shipped (#27): `events` table + `get_events` / `events_prune`** |
 | Harness stateless | In-memory caches (embeddings cache, vector cache, model bandit state) | ~~Crash loses in-flight state~~ **W2 shipped: crash recovery via `wake_session` now available** |
 | Uniform tool envelope | Each tool returns dict / str / yields | Inconsistent error reporting; hard to wrap with cross-cutting concerns |
 | Cred vault | `config.json` plaintext | Voyage / Anthropic / GitHub tokens in config |
