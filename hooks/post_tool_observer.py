@@ -246,29 +246,14 @@ def _maybe_auto_teach_from_feedback(tool_name: str, tool_input: dict) -> None:
 
     try:
         from pathlib import Path
+        from skill_hub.feedback_teachings import parse_feedback_text_single
+
         content = Path(file_path).read_text(encoding="utf-8", errors="replace")
-        rule = ""
-        why = ""
-
-        # Strip YAML frontmatter
-        fm_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-        if fm_match:
-            body = content[fm_match.end():]
-        else:
-            body = content
-
-        # Get first paragraph as rule
-        paragraphs = [p.strip() for p in re.split(r'\n{2,}', body) if p.strip()]
-        if paragraphs:
-            rule = paragraphs[0][:500]
-
-        # Find **Why:** section
-        why_match = re.search(r'\*\*Why:\*\*\s*(.+?)(?=\n\n|\Z)', body, re.DOTALL)
-        if why_match:
-            why = why_match.group(1).strip()[:300]
-
-        if not rule:
+        item = parse_feedback_text_single(content)
+        if item is None:
             return
+        rule = item["rule"]
+        why = item["why"]
 
         from skill_hub.store import SkillStore
         store = SkillStore()

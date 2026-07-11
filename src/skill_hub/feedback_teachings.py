@@ -10,6 +10,12 @@ way an explicitly taught one is.
 
 Called from ``cron._feedback_to_teachings_handler`` when
 ``continuous_teaching_enabled`` is set (default off).
+
+The parse primitives below (``parse_feedback_text``, ``parse_feedback_text_single``,
+``split_frontmatter``, ``extract_why``, ``extract_how_to_apply``, ``build_action``)
+are the single source of truth for this file format: ``scripts/feedback_to_teachings.py``
+(manual CLI migration) and ``hooks/post_tool_observer.py`` (single-file auto-teach
+on Write/Edit) both delegate to them rather than re-implementing the parse.
 """
 from __future__ import annotations
 
@@ -34,7 +40,8 @@ _RULE_MAX_LEN = 500
 _ACTION_MAX_LEN = 300
 
 
-def _parse_frontmatter(raw: str) -> dict[str, str]:
+def parse_frontmatter(raw: str) -> dict[str, str]:
+    """Parse simple ``key: value`` frontmatter lines into a dict."""
     fm: dict[str, str] = {}
     for line in raw.splitlines():
         if ":" in line:
@@ -43,53 +50,98 @@ def _parse_frontmatter(raw: str) -> dict[str, str]:
     return fm
 
 
-def _parse_feedback_file(path: Path) -> dict[str, str] | None:
-    """Extract a teaching-ready rule/action from one feedback_*.md file.
+def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Split feedback_*.md *text* into (frontmatter dict, body).
 
-    Returns ``None`` if the file is missing, empty, or has no usable content.
+    Text without a ``---`` frontmatter block returns an empty dict and the
+    stripped text as body.
     """
-    try:
-        text = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        _log.warning("feedback_to_teachings: cannot read %s: %s", path, exc)
-        return None
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        return parse_frontmatter(match.group(1)), match.group(2).strip()
+    return {}, text.strip()
+
+
+def extract_why(body: str, default: str = "") -> str:
+    """Return the ``**Why:**`` section of *body*, or *default* if absent."""
+    match = _WHY_RE.search(body)
+    why = match.group(1).strip() if match else default
+    return why[:_ACTION_MAX_LEN]
+
+
+def extract_how_to_apply(body: str) -> str:
+    """Return the ``**How to apply:**`` section of *body*, or "" if absent."""
+    match = _HOW_RE.search(body)
+    return match.group(1).strip()[:_ACTION_MAX_LEN] if match else ""
+
+
+def parse_feedback_text(text: str, *, name_fallback: str = "") -> dict[str, str] | None:
+    """Parse feedback_*.md *text* into a rule/why/how_to_apply/name dict.
+
+    *name_fallback* becomes ``name`` when the frontmatter has none (file-based
+    callers pass the file stem). Returns ``None`` if *text* is empty or yields
+    no usable rule content.
+    """
+    text = text.strip()
     if not text:
         return None
 
-    match = _FRONTMATTER_RE.match(text)
-    if match:
-        fm = _parse_frontmatter(match.group(1))
-        body = match.group(2).strip()
-    else:
-        fm = {}
-        body = text
-
+    fm, body = split_frontmatter(text)
     description = fm.get("description", "")
     rule = (body or description)[:_RULE_MAX_LEN]
     if not rule:
         return None
 
-    why_match = _WHY_RE.search(body)
-    why = (why_match.group(1).strip() if why_match else description)[:_ACTION_MAX_LEN]
-
-    how_match = _HOW_RE.search(body)
-    how_to_apply = how_match.group(1).strip()[:_ACTION_MAX_LEN] if how_match else ""
-
     return {
-        "name": fm.get("name") or path.stem,
+        "name": fm.get("name") or name_fallback,
         "rule": rule,
-        "why": why,
-        "how_to_apply": how_to_apply,
+        "why": extract_why(body, default=description),
+        "how_to_apply": extract_how_to_apply(body),
+        "description": description,
     }
 
 
-def _build_action(item: dict[str, str]) -> str:
+def parse_feedback_text_single(text: str) -> dict[str, str] | None:
+    """Lightweight parse for the single-file auto-teach-on-write hook.
+
+    The hook fires on one Write/Edit and wants a quick rule, not the whole
+    document: the rule is the *first paragraph* of the body rather than the
+    full body used by :func:`parse_feedback_text`. Returns ``None`` if
+    there's no usable rule text.
+    """
+    _fm, body = split_frontmatter(text.strip())
+    paragraphs = [p.strip() for p in re.split(r"\n{2,}", body) if p.strip()]
+    rule = paragraphs[0][:_RULE_MAX_LEN] if paragraphs else ""
+    if not rule:
+        return None
+    return {"rule": rule, "why": extract_why(body)}
+
+
+def build_action(item: dict[str, str]) -> str:
+    """Build the action/context string stored alongside a teaching's rule."""
     parts = []
     if item["why"]:
         parts.append(f"Why: {item['why']}")
     if item["how_to_apply"]:
         parts.append(f"How to apply: {item['how_to_apply']}")
     return "\n".join(parts) if parts else f"apply rule: {item['name']}"
+
+
+def _parse_feedback_file(path: Path) -> dict[str, str] | None:
+    """Extract a teaching-ready rule/action from one feedback_*.md file.
+
+    Returns ``None`` if the file is missing, empty, or has no usable content.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _log.warning("feedback_to_teachings: cannot read %s: %s", path, exc)
+        return None
+    return parse_feedback_text(text, name_fallback=path.stem)
+
+
+def _build_action(item: dict[str, str]) -> str:
+    return build_action(item)
 
 
 def _normalize_rule(text: str) -> str:
