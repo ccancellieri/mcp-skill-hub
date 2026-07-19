@@ -1,14 +1,17 @@
 """Main router orchestrator — called by the CLI 'route' command.
 
-Flow:
+This is the canonical staged context pipeline (classification + enrichment):
   1. Tier 1 heuristics (always, <5ms)
   2. Tier 2 Ollama (if T1 confidence < 0.85)
   3. Tier 3 Haiku batch (if T2 confidence < 0.7 AND haiku enabled)
   4. Enforcement (write settings.json or suggest)
-  5. Preload skills for domain_hints
-  6. Compact advisor (estimate context pressure)
-  7. Thin-prompt enrichment (if prompt is very short)
-  8. Build and return output dict for the hook
+  5. Skill preloading + compact advisor + thin-prompt enrichment — the
+     "enrich" stage (context: skills, plugins, memory, tasks)
+  6. Prompt rewriters (opt-in) — the "prepare" stage (S5 F-PROMPT)
+  7. Compress — shrink an over-budget systemMessage/userMessage before
+     handoff, when it estimates over ``router_compress_budget_tokens``
+  8. Build and return output dict for the hook (the "final" handoff to the
+     client's own model)
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
+from ..compression import maybe_compress
 from . import heuristics, ollama_client, haiku_client, enforcement, preloader
 from .verdict import Verdict, format_system_message, format_stable_block, format_volatile, append_audit_log
 from . import verdict_cache
@@ -48,6 +52,29 @@ def _project_override(cfg_from_file: dict[str, Any], cwd: str) -> dict[str, Any]
         return overrides
     except OSError:
         return {}
+
+
+def _compress_stage(output: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """Stage: compress — shrink an over-budget systemMessage/userMessage
+    before handoff to the client's model (WS-A: the pipeline's previously
+    missing stage).
+
+    Estimates tokens as ``len(text)//4`` (the repo's tokenizer-free convention)
+    against ``router_compress_budget_tokens``; over-budget fields are passed
+    through ``compression.maybe_compress()`` (deterministic-only — JSON minify
+    / duplicate-line collapse — never the retired lossy ML path). That helper
+    already re-checks ``compression_enabled``/``compression_min_tokens``, so
+    this stage doesn't duplicate those gates.
+    """
+    if not cfg.get("router_compress_context_enabled", True):
+        return output
+    budget = int(cfg.get("router_compress_budget_tokens", 1500))
+    for key in ("systemMessage", "userMessage"):
+        text = output.get(key)
+        if not text or len(text) // 4 <= budget:
+            continue
+        output[key] = maybe_compress(text, site=f"router.{key}")
+    return output
 
 
 def route(
@@ -186,11 +213,11 @@ def route(
         if suggest_c:
             compact_hint = {"suggest_compact": True, "reason": compact_reason}
 
-    # ── Skill preloading ─────────────────────────────────────────────────────
+    # ── Stage: enrich — skill preloading ─────────────────────────────────────
     max_skills: int = int(cfg.get("hook_context_top_k_skills", 3))
     skill_names, plugin_names, teaching_text = preloader.load_skills(domain_hints, cfg, top_k=max_skills)
 
-    # ── Thin-prompt enrichment ───────────────────────────────────────────────
+    # ── Stage: enrich — thin-prompt enrichment ───────────────────────────────
     enriched_msg = preloader.enrich_thin_prompt(prompt, session_id, cfg)
     enrichment_applied = enriched_msg is not None
     enrichment_source  = ""
@@ -288,7 +315,7 @@ def route(
     if enriched_msg:
         output["userMessage"] = enriched_msg
 
-    # ── S5 F-PROMPT: apply prompt rewriters (opt-in via config) ──────────────
+    # ── Stage: prepare — S5 F-PROMPT prompt rewriters (opt-in via config) ────
     if cfg.get("router_improve_prompt_enabled", False):
         try:
             from . import rewriters as _rw
@@ -347,6 +374,9 @@ def route(
             ).start()
     except Exception:
         pass
+
+    # ── Stage: compress — shrink an over-budget assembled message ───────────
+    output = _compress_stage(output, cfg)
 
     if "systemMessage" not in output and "userMessage" not in output:
         return {}

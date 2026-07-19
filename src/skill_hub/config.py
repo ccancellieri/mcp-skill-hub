@@ -435,6 +435,14 @@ _DEFAULTS = {
     # context from the active task to help Claude respond without clarifying
     "router_enrich_thin_prompts": True,
 
+    # Compress stage: shrink the assembled systemMessage/userMessage before
+    # handoff to the client's model once it estimates over budget (len(text)//4,
+    # the repo's token-estimate convention). Deterministic only — delegates to
+    # compression.maybe_compress(), which still honors compression_enabled /
+    # compression_min_tokens.
+    "router_compress_context_enabled": True,
+    "router_compress_budget_tokens": 1500,
+
     # User memory bridge — auto-index ~/.claude/projects/*/memory/*.md into
     # the memory:user-project namespace so search_context surfaces user notes
     # alongside skills and tasks. Set to False to disable.
