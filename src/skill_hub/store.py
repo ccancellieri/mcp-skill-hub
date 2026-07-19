@@ -4779,6 +4779,8 @@ class SkillStore:
              "check_embedding_backends", {}, True, False),
             ("codegraph-sync", "Keep configured CodeGraph indexes fresh (incremental)",
              "*/30 * * * *", "codegraph_sync", {}, True, False),
+            ("provider-reprobe", "Re-enable auto_reenable providers when reachable",
+             "*/15 * * * *", "reprobe_disabled_providers", {}, True, False),
         ]
         for name, desc, sched, cmd, params, enabled, is_dangerous in defaults:
             self._conn.execute(

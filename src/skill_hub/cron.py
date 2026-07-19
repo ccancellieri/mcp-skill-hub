@@ -34,6 +34,9 @@ _DEFAULT_JOBS = [
     ("pipeline-health-check",   "*/15 * * * *", "check_embedding_backends",   1),
     # Keeps configured CodeGraph indexes fresh; inert until roots are set.
     ("codegraph-sync",          "*/30 * * * *", "codegraph_sync",             1),
+    # Re-enables providers marked auto_reenable once /models answers again;
+    # inert unless a provider actually carries the flag.
+    ("provider-reprobe",        "*/15 * * * *", "reprobe_disabled_providers", 1),
     # Disabled by default — enable explicitly via the cron UI or config.
     ("log-digest-snapshot",        "0 6 * * *",   "log_digest_snapshot",         0),
     # L1/L2 plugin curation — decides which dormant plugins to disable. Only
@@ -434,6 +437,32 @@ def _check_embedding_backends_handler() -> None:
         )
 
 
+def _reprobe_disabled_providers_handler() -> None:
+    """Cron handler: re-enable transiently-disabled providers that recovered.
+
+    Off unless ``provider_reprobe_enabled`` is set. Probes each disabled
+    provider marked ``auto_reenable`` (see :mod:`skill_hub.llm.health`) and logs
+    any that came back so the escalation ladder can use them again. Only ever
+    re-enables — never disables — so it is safe to run unattended.
+    """
+    from . import config as _cfg
+
+    if not _cfg.get("provider_reprobe_enabled"):
+        return
+    from .llm import health
+
+    try:
+        changed = health.reprobe_disabled_providers()
+    except Exception as exc:  # a probe error must never kill the scheduler thread
+        _log.warning("reprobe_disabled_providers: probe failed: %s", exc)
+        return
+    for c in changed:
+        _log.info(
+            "reprobe_disabled_providers: re-enabled provider=%s (status=%s)",
+            c.get("name"), c.get("status"),
+        )
+
+
 # Register module-level handlers so the scheduler can dispatch them.
 _HANDLERS["log_digest_snapshot"] = _log_digest_snapshot_handler
 _HANDLERS["wiki_reindex_nightly"] = _wiki_reindex_nightly_handler
@@ -446,6 +475,7 @@ _HANDLERS["check_embedding_backends"] = _check_embedding_backends_handler
 _HANDLERS["codegraph_sync"] = _codegraph_sync_handler
 _HANDLERS["discussions_sync_nightly"] = _discussions_sync_nightly_handler
 _HANDLERS["plugin_curation"] = _plugin_curation_handler
+_HANDLERS["reprobe_disabled_providers"] = _reprobe_disabled_providers_handler
 
 
 def human_schedule(schedule: str) -> str:

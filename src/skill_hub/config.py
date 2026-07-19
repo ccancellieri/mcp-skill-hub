@@ -188,6 +188,12 @@ _DEFAULTS = {
     "offline_auto_fallback": False,       # disabled: L4 agent unreliable with small models
     "offline_check_interval": 30.0,    # seconds between reachability checks
 
+    # Provider auto-reprobe — a provider disabled for a *transient* upstream
+    # outage can carry ``"auto_reenable": true`` in its llm_provider_registry
+    # record; the provider-reprobe cron job then re-enables it once its /models
+    # endpoint answers again. No-op unless a provider actually carries the flag.
+    "provider_reprobe_enabled": True,
+
     # Implicit feedback — infer skill quality from session tool usage at session-end
     # Skills whose domain keywords match the tools Claude actually used → positive
     # Skills loaded but completely unrelated to what Claude did → negative
