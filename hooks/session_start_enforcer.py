@@ -567,44 +567,6 @@ def log(msg: str):
         pass
 
 
-def _run_pipeline(message: str, session_id: str) -> str:
-    """Run the 4-tier pre-conversation pipeline if enabled.
-
-    Returns a systemMessage block with synthesis + task_id, or empty string.
-    Never raises.
-    """
-    try:
-        from skill_hub import config as _cfg
-        if not _cfg.get("pre_conversation_pipeline_enabled"):
-            return ""
-    except Exception:
-        return ""
-
-    try:
-        from skill_hub.pipeline import Pipeline
-        pipe = Pipeline()
-        result = pipe.run(message=message, session_id=session_id)
-
-        parts = []
-        if result.task_id:
-            parts.append(f"[task #{result.task_id} tracking this session]")
-        if result.synthesis:
-            parts.append(f"Context from prior work: {result.synthesis}")
-        if result.enriched_prompt:
-            parts.append(f"Suggested refined prompt: {result.enriched_prompt}")
-
-        if not parts:
-            return ""
-
-        return "PIPELINE CONTEXT:\n" + "\n".join(parts)
-    except Exception as exc:
-        try:
-            log(f"pipeline error: {exc}")
-        except Exception:
-            pass
-        return ""
-
-
 def _maybe_teach_from_message(message: str, session_id: str) -> str:
     """If first message contains a teach-directive, auto-teach it. Returns advisory."""
     if not message.strip():
@@ -735,10 +697,6 @@ def main():
     if teach_advisory:
         log(f"AUTO-TEACH  msg=\"{teach_advisory[:100]}\"")
 
-    pipeline_msg = _run_pipeline(user_message, session_id)
-    if pipeline_msg:
-        log(f"PIPELINE  chars={len(pipeline_msg)}")
-
     import time as _time
     housekeeping_msg = _dispatch_background_jobs(session_id, _time.time())
     if housekeeping_msg:
@@ -754,8 +712,6 @@ def main():
         f"Hook activity log: {log_cmd}\n"
         "Mention the log command to the user so they can follow local LLM activity."
     )
-    if pipeline_msg:
-        system_msg = pipeline_msg + "\n\n" + system_msg
     if memory_msg:
         system_msg = memory_msg + "\n\n" + system_msg
     if resume_msg:

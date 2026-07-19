@@ -245,17 +245,6 @@ _DEFAULTS = {
     "skill_evolution_cross_pollinate": True,    # reference official Claude skills during evolution
     "skill_sync_on_index": True,               # check for plugin updates when indexing
 
-    # Pre-conversation pipeline — 4-tier enrichment (L1-L4)
-    "pre_conversation_pipeline_enabled": False,  # opt-in
-    "pipeline_tier1_timeout_ms": 500,
-    "pipeline_tier2_timeout_ms": 400,
-    "pipeline_tier3_timeout_ms": 1200,
-    "pipeline_tier4_timeout_ms": 1500,
-    "pipeline_tier4_min_complexity": "medium",   # low | medium | high
-    "task_similarity_threshold": 0.75,
-    "task_auto_create_min_chars": 0,             # every conversation
-    "pipeline_synthesis_max_sentences": 5,
-
     # Session → task auto-bind (resume-or-create on every new session)
     "session_task_auto_create_enabled": True,          # master kill switch
     "session_task_match_strategy": "hybrid",           # hybrid | cwd_branch | semantic | off
