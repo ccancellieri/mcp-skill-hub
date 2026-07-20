@@ -316,6 +316,11 @@ def _classify_complexity(msg_vector: list[float]) -> str:
         return "moderate"
 
 
+def _ollama_model(name: str) -> str:
+    """Prefix a bare Ollama model name with ``ollama/`` for litellm routing."""
+    return name if "/" in name else f"ollama/{name}"
+
+
 def _classify_intent(message: str) -> dict:
     """
     Classify whether a message is a task command using a two-stage filter:
@@ -332,10 +337,9 @@ def _classify_intent(message: str) -> dict:
 
     Returns {"intent": "save_task|close_task|list_tasks|search_context|none", ...}
     """
-    import httpx
-    import re
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL
+    from .embeddings import RERANK_MODEL
+    from .llm.request import request
 
     # Stage 1a: length guard — long messages are almost never task commands
     max_len = int(_cfg.get("hook_max_message_length") or 400)
@@ -404,14 +408,11 @@ User message: {message}"""
 
     try:
         with llm_timer() as _t:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": classify_model, "prompt": prompt, "stream": False,
-                      "options": {"num_predict": 100}},
-                timeout=15.0,
+            raw = request(
+                "cheap", prompt, local_only=True,
+                model=_ollama_model(classify_model),
+                op="classify_intent", timeout=15.0, max_tokens=100,
             )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "{}")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -560,10 +561,8 @@ User message: {message}"""
 
 def _match_local_command(message: str) -> dict | None:
     """Level 1: Map user message to a whitelisted shell command via local LLM."""
-    import httpx
-    import re
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE
+    from .llm.request import request
 
     if not _cfg.get("local_execution_enabled"):
         return None
@@ -581,13 +580,11 @@ def _match_local_command(message: str) -> dict | None:
         prompt = f"{persona}\n\n{prompt}"
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=15.0,
+        raw = request(
+            "cheap", prompt, local_only=True,
+            model=_ollama_model(model),
+            op="match_local_command", timeout=15.0,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -643,9 +640,8 @@ def _sanitize_param(value: str, param_type: str) -> str | None:
 
 def _match_local_template(message: str) -> dict | None:
     """Level 2: Map user message to a templated command with extracted params."""
-    import httpx
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE
+    from .llm.request import request
 
     if not _cfg.get("local_execution_enabled"):
         return None
@@ -666,13 +662,11 @@ def _match_local_template(message: str) -> dict | None:
         prompt = f"{persona}\n\n{prompt}"
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=20.0,
+        raw = request(
+            "cheap", prompt, local_only=True,
+            model=_ollama_model(model),
+            op="match_local_template", timeout=20.0,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
@@ -947,9 +941,9 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
     """
     import subprocess
     import re
-    import httpx
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     name = skill.get("name", "unknown")
     steps = skill.get("steps", [])
@@ -1192,15 +1186,16 @@ def _execute_local_skill(skill: dict, cwd: str | None = None) -> str | None:
             if not ollama_available(llm_model):
                 llm_model = RERANK_MODEL
             try:
-                resp = httpx.post(
-                    f"{OLLAMA_BASE}/api/generate",
-                    json={"model": llm_model, "prompt": prompt, "stream": False,
-                          "options": {"temperature": float(step.get("temperature", 0.2)),
-                                      "num_predict": int(step.get("max_tokens", 150))}},
+                raw = request(
+                    "mid", prompt, local_only=False,
+                    model=_ollama_model(llm_model),
+                    op="execute_local_skill",
                     timeout=float(step.get("timeout", 15)),
+                    temperature=float(step.get("temperature", 0.2)),
+                    max_tokens=int(step.get("max_tokens", 150)),
                 )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
+                if not raw:
+                    raise RuntimeError("empty LLM response")
                 raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
                 # Clean up common LLM artifacts
                 raw = raw.strip().strip('"').strip("'").strip("`")
@@ -4301,10 +4296,9 @@ def _llm_split(message: str) -> list[str] | None:
     - Multiple independent actions: "commit and push" → 2 commands
     - Single request with natural conjunctions: "analyze X and provide Y" → 1 command
     """
-    import httpx
-    import re
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     split_model = (_cfg.get("local_models") or {}).get("level_2", RERANK_MODEL)
     if not ollama_available(split_model):
@@ -4360,14 +4354,11 @@ Reply with ONLY JSON, no explanation:
 or {{"multiple": true, "commands": ["command 1", "command 2", ...]}}"""
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": split_model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.0, "num_predict": 200}},
-            timeout=20.0,
+        raw = request(
+            "cheap", prompt, local_only=True,
+            model=_ollama_model(split_model),
+            op="llm_split", timeout=20.0, temperature=0.0, max_tokens=200,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
@@ -4393,10 +4384,9 @@ def _hydrate_passthrough(commands: list[str], already_done: list[str]) -> str:
     "git push" → "Push the committed changes to the remote origin."
     Falls back to plain list if LLM is unavailable.
     """
-    import httpx
-    import re
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     fallback = "\n".join(f"- {cmd}" for cmd in commands)
 
@@ -4428,14 +4418,11 @@ Rules:
 Output:"""
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": split_model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.0, "num_predict": 300}},
-            timeout=10.0,
+        raw = request(
+            "cheap", prompt, local_only=True,
+            model=_ollama_model(split_model),
+            op="hydrate_passthrough", timeout=10.0, temperature=0.0, max_tokens=300,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         if raw and len(raw) > 10:
             log_detail(f"hydrate_passthrough: {len(commands)} commands, {len(raw)} chars")
@@ -5131,9 +5118,8 @@ def _update_repo_context(session_id: str) -> None:
     Runs only at session end — LLM latency is acceptable here.
     """
     import os
-    import httpx
-    import re
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     if not ollama_available(RERANK_MODEL):
         return
@@ -5173,15 +5159,12 @@ def _update_repo_context(session_id: str) -> None:
         )
 
         try:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
-                      "format": "json",
-                      "options": {"temperature": 0.0, "num_predict": 200}},
-                timeout=15.0,
+            raw = request(
+                "smart", prompt, local_only=False,
+                model=_ollama_model(RERANK_MODEL),
+                op="update_repo_context", timeout=15.0,
+                temperature=0.0, max_tokens=200,
             )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             # Brace-balanced extraction: find first '{' and walk to its match.
             data = None
@@ -5291,9 +5274,8 @@ def _evolve_skills(session_id: str) -> None:
     """
     from . import config as _cfg_mod
     from .store import SkillStore
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
-    import httpx
-    import re
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     if not _cfg_mod.get("skill_evolution_enabled"):
         return
@@ -5436,14 +5418,12 @@ def _evolve_skills(session_id: str) -> None:
             )
 
             try:
-                resp = httpx.post(
-                    f"{OLLAMA_BASE}/api/generate",
-                    json={"model": llm_model, "prompt": prompt, "stream": False,
-                          "options": {"temperature": 0.3, "num_predict": 2000}},
-                    timeout=60.0,
+                raw = request(
+                    "smart", prompt, local_only=False,
+                    model=_ollama_model(llm_model),
+                    op="evolve_skills", timeout=60.0,
+                    temperature=0.3, max_tokens=2000,
                 )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
                 raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             except Exception as exc:
                 log_skill_step(skill_name, "EVOLVE", f"LLM call failed: {exc!s:.80}", ok=False)
@@ -5528,9 +5508,8 @@ def _extract_teaching_examples(session_id: str) -> None:
     (commit style, search strategy, PR conventions) and promotes them to
     the teachings table for future local LLM persona enrichment.
     """
-    import httpx
-    import re
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available, embed
+    from .embeddings import RERANK_MODEL, ollama_available, embed
+    from .llm.request import request
 
     if not ollama_available(RERANK_MODEL):
         return
@@ -5568,14 +5547,12 @@ def _extract_teaching_examples(session_id: str) -> None:
     )
 
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2, "num_predict": 300}},
-            timeout=15.0,
+        raw = request(
+            "smart", prompt, local_only=False,
+            model=_ollama_model(RERANK_MODEL),
+            op="extract_teaching_examples", timeout=15.0,
+            temperature=0.2, max_tokens=300,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         m = re.search(r"\[.*\]", raw, re.DOTALL)
         if not m:
@@ -5626,10 +5603,10 @@ def _distill_tool_chains(transcript_path: str) -> None:
     This is how the system "learns from Claude" — observing what Claude does
     repeatedly and distilling it into cheap local execution.
     """
-    import re
     from pathlib import Path
     from . import config as _cfg
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
 
     path = Path(transcript_path)
     if not path.exists() or path.stat().st_size < 500:
@@ -5749,16 +5726,13 @@ Rules:
 - Keep it simple — only automate the mechanical parts
 - Output ONLY JSON, no markdown"""
 
-    import httpx
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2, "num_predict": 500}},
-            timeout=20.0,
+        raw = request(
+            "smart", prompt, local_only=False,
+            model=_ollama_model(RERANK_MODEL),
+            op="distill_tool_chains", timeout=20.0,
+            temperature=0.2, max_tokens=500,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -6678,9 +6652,8 @@ def _cmd_optimize_claude_md() -> str:
     that would be better served by MCP tools (teach(), save_task(), search_context())
     and suggests a leaner version of each file.
     """
-    import httpx
-    import re
-    from .embeddings import OLLAMA_BASE, RERANK_MODEL, ollama_available
+    from .embeddings import RERANK_MODEL, ollama_available
+    from .llm.request import request
     from . import config as _cfg
 
     if not ollama_available(RERANK_MODEL):
@@ -6728,14 +6701,14 @@ def _cmd_optimize_claude_md() -> str:
         )
 
         try:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": RERANK_MODEL, "prompt": prompt, "stream": False,
-                      "options": {"temperature": 0.0, "num_predict": 1000}},
-                timeout=30.0,
+            raw = request(
+                "smart", prompt, local_only=False,
+                model=_ollama_model(RERANK_MODEL),
+                op="cmd_optimize_claude_md", timeout=30.0,
+                temperature=0.0, max_tokens=1000,
             )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
+            if not raw:
+                raise RuntimeError("empty LLM response")
             raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
             # Try to parse JSON
