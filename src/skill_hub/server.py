@@ -2656,7 +2656,7 @@ def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
     tier = str(_cfg.get("optimize_memory_tier") or "smart")
     _TIER_MAP = {"smart": "tier_smart", "mid": "tier_mid", "cheap": "tier_cheap"}
     tier_key = _TIER_MAP.get(tier, tier)  # passthrough if already "tier_*"
-    from .llm.litellm_adapter import get_provider as _get_llm
+    from .llm.request import request as _llm_request
 
     mem_path = Path.home() / ".claude" / "projects" / \
                "-Users-ccancellieri-work-code" / "memory"
@@ -2727,16 +2727,18 @@ def optimize_memory(dry_run: bool = True, bypass_gate: bool = False) -> str:
 
     results: list[dict] = []
     try:
-        _provider = _get_llm()
-        raw = _provider.complete(
+        raw = _llm_request(
+            tier_key,
             classification_prompt,
-            tier=tier_key,
+            local_only=False,
             max_tokens=int(_cfg.get("optimize_memory_max_tokens") or 4000),
             temperature=0.0,
             timeout=300.0,
             op="optimize_context",
         )
         import re as _re
+        if not raw:
+            raise RuntimeError("empty LLM response")
         raw = _re.sub(r"<think>.*?</think>", "", raw, flags=_re.DOTALL).strip()
         for match in _re.finditer(r"\{[^{}]+\}", raw):
             try:
