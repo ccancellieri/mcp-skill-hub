@@ -51,6 +51,10 @@ _DEFAULTS = {
 
     # Embedding model — used for all vector operations
     # Options: nomic-embed-text (274MB), mxbai-embed-large (669MB), all-minilm (45MB)
+    # This is only the "ollama" tier's model choice within the embed() cascade —
+    # embedding_backend_priority already falls through to sentence_transformers
+    # (and the "ladder" remote tier) when the local daemon is unreachable, so
+    # this pin is not a single point of failure.
     "embed_model": "nomic-embed-text",
 
     # Reasoning model — used for re-ranking, compaction, intent classification
@@ -59,6 +63,11 @@ _DEFAULTS = {
     #   - 16GB RAM: deepseek-r1:7b (4.7GB) or qwen2.5:7b — good balance
     #   - 32GB RAM: deepseek-r1:14b (9GB) or qwen2.5:14b — best quality
     #   - 64GB+:    deepseek-r1:32b or qwen2.5-coder:32b — excellent
+    # Callers resolve this to an explicit "ollama/<model>" target, but the
+    # litellm adapter still rescues them onto the auxiliary escalation ladder
+    # when the local daemon is down or a call fails mid-flight (see
+    # LitellmProvider.chat's local-target rescue) — so this pin degrades
+    # gracefully rather than hard-failing.
     "reason_model": "deepseek-r1:1.5b",
 
     # Hook behavior
@@ -294,6 +303,9 @@ _DEFAULTS = {
 
     # Model per level — heavier models for harder tasks
     # Values: Ollama model name, or "remote:<base_url>" for external APIs
+    # These are local-first pins, not tier-map entries — cli.py's consumers
+    # (classify/local-command/local-skill paths) are latency-sensitive and
+    # intentionally stay local-only rather than routing through llm_providers.
     "local_models": {
         "level_1": "qwen2.5-coder:3b",           # simple command mapping
         "level_2": "qwen2.5-coder:7b-instruct-q4_k_m",  # parameter extraction
@@ -770,6 +782,11 @@ _DEFAULTS = {
     "wiki_export_private": False,
     # Max approved source pages distilled per batch wiki_ingest run (cost cap).
     "wiki_ingest_batch_limit": 10,
+    # NOTE: wiki.py reads a "wiki_ingest_model" key that has no entry here on
+    # purpose — it stays unset so ingestion resolves its model through the
+    # tier-based escalation ladder (tier="tier_smart") instead of a pinned
+    # local backend. Do not add a default here without re-checking that call
+    # path.
 }
 
 
