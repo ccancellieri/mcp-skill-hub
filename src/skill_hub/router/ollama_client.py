@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import config as _cfg
-from ..llm import LLMError, get_provider
+from ..llm.request import request
 
 
 _CLASSIFY_PROMPT = """\
@@ -60,7 +60,6 @@ def classify(
     if cfg is None:
         cfg = _cfg.load_config()
 
-    ollama_base: str = cfg.get("ollama_base", "http://localhost:11434")
     model: str = ((cfg.get("services") or {}).get("ollama_router") or {}).get("model") or "qwen2.5:3b"
     timeout: float = float(cfg.get("router_tier2_timeout", 10.0))
 
@@ -72,34 +71,36 @@ def classify(
 
     full_prompt = project_prefix + _CLASSIFY_PROMPT.format(prompt=prompt[:1500])
 
-    # Tier 2 IS the local tier. If the daemon is down, skip straight to
-    # Tier 3 (Haiku) / heuristics — do NOT let the provider silently rescue a
-    # dead local model onto the remote ladder here (that would spend a slow
-    # gateway round-trip inside the per-prompt hook and duplicate Tier 3).
-    from ..llm.escalation import ollama_daemon_reachable
-    if not ollama_daemon_reachable():
-        return None
-
-    # Route via pluggable LLM provider (litellm). ``model`` is resolved below
-    # in the same order of precedence:
+    # Tier 2 IS the local tier — latency-sensitive in the prompt path, so it
+    # must stay local-only and never escalate to a paid remote tier when the
+    # daemon is down (that would spend a slow gateway round-trip inside the
+    # per-prompt hook and duplicate Tier 3). ``local_only=True`` makes
+    # ``request()`` fail fast (return "") in that case, same as the previous
+    # explicit ``ollama_daemon_reachable()`` pre-check.
+    #
+    # ``model`` is resolved below in the same order of precedence:
     #   1. explicit services.ollama_router.model  → wrapped as "ollama/<m>"
     #   2. llm_providers.tier_cheap (if no explicit router model)
+    resolved = f"ollama/{model}" if model and "/" not in model else model
+    raw = request(
+        "cheap",
+        full_prompt,
+        local_only=True,
+        model=resolved,
+        max_tokens=150,
+        temperature=0.05,
+        timeout=timeout,
+        op="router_classify",
+    )
+    if not raw:
+        return None
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return None
     try:
-        resolved = f"ollama/{model}" if model and "/" not in model else model
-        raw = get_provider().complete(
-            full_prompt,
-            model=resolved,
-            max_tokens=150,
-            temperature=0.05,
-            timeout=timeout,
-            op="router_classify",
-        )
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not m:
-            return None
         data: dict[str, Any] = json.loads(m.group())
-    except (LLMError, ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
         return None
 
     try:
