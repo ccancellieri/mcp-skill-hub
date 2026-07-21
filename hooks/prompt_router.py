@@ -87,9 +87,15 @@ def main() -> None:
 
     t_cli = time.monotonic()
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        # Keep this strictly under the harness hook budget (8s, see settings.json)
+        # so we control the degradation: if the CLI overruns we abort ourselves
+        # and emit nothing (a clean allow-through) rather than letting the harness
+        # kill the hook at 8s and discard whatever it produced. Steady-state route
+        # latency is ~5s; 7s preserves a slow-but-valid verdict while still leaving
+        # headroom before the harness cutoff.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7)
     except subprocess.TimeoutExpired:
-        log("error  route CLI timed out after 20s")
+        log("error  route CLI exceeded 7s budget — allowing through")
         return
     except OSError as e:
         log(f"error  route CLI failed: {e}")

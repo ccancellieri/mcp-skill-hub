@@ -135,9 +135,17 @@ def route(
     tier2_ms = 0
     tier3_ms = 0
 
+    # Probe the local daemon once, up front. The result is cached per-process,
+    # so this single call spares every downstream Ollama/embed attempt (Tier 2,
+    # skill preload, thin-prompt enrichment) its own ~2s live probe when the
+    # daemon is down — the hook degrades to the Tier-1 heuristic verdict fast
+    # instead of burning the per-prompt timeout budget on doomed calls.
+    from ..llm.escalation import ollama_daemon_reachable
+    ollama_up = ollama_daemon_reachable()
+
     # ── Tier 2: Ollama local LLM ────────────────────────────────────────────
     t2_threshold: float = float(cfg.get("router_tier2_confidence_gate", 0.85))
-    if confidence < t2_threshold:
+    if confidence < t2_threshold and ollama_up:
         t2_start = time.monotonic()
         t2 = ollama_client.classify(prompt, cfg, cwd=cwd)
         tier2_ms = int((time.monotonic() - t2_start) * 1000)

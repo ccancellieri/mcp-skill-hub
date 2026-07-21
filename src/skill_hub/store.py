@@ -1419,9 +1419,16 @@ class SkillStore:
                 row = conn.execute(sql).fetchone()
                 return int(row[0]) if row and row[0] is not None else 0
 
-            # tasks/teachings: small tables — the idempotent FTS5 'rebuild' is cheap.
-            conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
-            conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
+            # tasks/teachings: small tables, but an FTS5 'rebuild' is still a
+            # write that takes the DB write lock on every open — under a busy
+            # writer (the long-lived server) that serialises and blocks the
+            # per-prompt hook. Rebuild only on real drift, same as skills/plugins.
+            if _count("SELECT count(*) FROM tasks_fts") != _count("SELECT count(*) FROM tasks"):
+                conn.execute("INSERT INTO tasks_fts(tasks_fts) VALUES('rebuild')")
+                _log.info("tasks_fts drift detected — index rebuilt")
+            if _count("SELECT count(*) FROM teachings_fts") != _count("SELECT count(*) FROM teachings"):
+                conn.execute("INSERT INTO teachings_fts(teachings_fts) VALUES('rebuild')")
+                _log.info("teachings_fts drift detected — index rebuilt")
 
             # skills_fts / plugins_fts hold large content — repopulate only on drift.
             if _count("SELECT count(*) FROM skills_fts") != _count("SELECT count(*) FROM skills"):
@@ -1855,9 +1862,19 @@ class SkillStore:
                 "SELECT skill_id FROM skills_vec_bin"
             ).fetchall()
         }
-        rows = self._conn.execute(
-            "SELECT skill_id, vector FROM embeddings"
-        ).fetchall()
+        # Fast path: when every source vector is already mirrored into the vec0
+        # table, skip the blob scan below. Reading the JSON-vector column for
+        # thousands of rows on every store open (a fresh store is opened per
+        # prompt by the router hook) is what dominates cold latency; COUNTs are
+        # cheap and take no write lock. Falls through to the full scan whenever
+        # anything is missing, so it stays self-correcting.
+        src_count = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE vector IS NOT NULL"
+        ).fetchone()[0]
+        rows = (
+            self._conn.execute("SELECT skill_id, vector FROM embeddings").fetchall()
+            if src_count > len(existing) else []
+        )
         added = 0
         for row in rows:
             sid = row["skill_id"]
@@ -1907,7 +1924,15 @@ class SkillStore:
                 f"SELECT {id_col} FROM {bin_tbl}"
             ).fetchall()
         }
-        rows = self._conn.execute(select_sql).fetchall()
+        # Fast path (see _backfill_vec_tables): skip the vector-blob scan when
+        # every source row is already mirrored into the vec0 table.
+        src_count = self._conn.execute(
+            f"SELECT COUNT(*) FROM ({select_sql})"
+        ).fetchone()[0]
+        rows = (
+            self._conn.execute(select_sql).fetchall()
+            if src_count > len(existing) else []
+        )
         added = 0
         for row in rows:
             rid = row["id"] if "id" in row.keys() else row[0]
