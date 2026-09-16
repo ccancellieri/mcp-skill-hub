@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: intercept task/memory commands before Claude sees them (cross-platform).
+"""Retired task-interception compatibility entrypoint.
 
-Flow:
-  1. Every user message passes through this hook BEFORE Claude sees it
-  2. Python CLI does a fast embedding similarity check (~100ms):
-     - Very long messages (>max_length) -> skip classification (coding questions)
-     - Short messages -> embed and compare to canonical task phrases
-     - Below similarity threshold -> allow through immediately
-     - Above threshold -> call local LLM for precise classification (~2-5s)
-  3. If it's a task command -> execute locally, block Claude (0 tokens used)
-  4. If not -> dynamic context evaluation + prompt optimization via local LLM
+Legacy installations may still invoke this file. It deliberately leaves every
+prompt and explicit task operation to Claude's native CLI/MCP interfaces.
 """
 
 import json
@@ -104,6 +97,9 @@ def warmup_ollama():
 
 
 def main():
+    """Exit cleanly without classifying, closing, or blocking a task."""
+    return
+
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):

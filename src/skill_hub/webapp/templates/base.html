@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Skill Hub control dashboard for skills, routing, providers, queues, and local services.">
   <title>skill-hub — {% block title %}control{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css">
+  {% set asset_versions = (request.app.state.asset_versions|default({})) if request else {} %}
+  <link rel="stylesheet" href="/static/app.css?v={{ asset_versions.get('app.css', '0') }}">
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v={{ asset_versions.get('app.js', '0') }}" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -24,7 +25,8 @@
          as its own trailing "Plugins" group so the topbar stays a single
          labeled hierarchy. #}
       {% set core_nav = request.app.state.core_nav if request else [] %}
-      {% set plugin_nav = request.app.state.plugin_nav if request else [] %}
+      {% set advanced_nav = (request.app.state.advanced_nav|default([])) if request else [] %}
+      {% set plugin_nav = (request.app.state.plugin_nav|default([])) if request else [] %}
       {% for group in core_nav %}
         <div class="nav-group">
           <span class="nav-group-label">{{ group.group }}</span>
@@ -35,15 +37,15 @@
           </div>
         </div>
       {% endfor %}
-      {% if plugin_nav %}
-        <div class="nav-group">
-          <span class="nav-group-label">Plugins</span>
-          <div class="nav-group-tabs">
-            {% for item in plugin_nav %}
+      {% if advanced_nav or plugin_nav %}
+        <details class="nav-advanced">
+          <summary>Advanced</summary>
+          <div class="nav-advanced-menu">
+            {% for item in advanced_nav + plugin_nav %}
               <a href="{{ item.href }}" class="tab{% if active_tab == item.key %} active{% endif %}"{% if active_tab == item.key %} aria-current="page"{% endif %}>{{ item.label }}</a>
             {% endfor %}
           </div>
-        </div>
+        </details>
       {% endif %}
     </nav>
   </header>

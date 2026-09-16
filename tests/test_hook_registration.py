@@ -48,7 +48,7 @@ def test_fresh_install_registers_all_events(monkeypatch, settings_path):
     # Every event we care about must be present.
     for event in (
         "UserPromptSubmit", "PreToolUse", "PostToolUse",
-        "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
+        "PostToolUseFailure", "StopFailure", "SessionEnd",
         "PreCompact", "PostCompact", "SubagentStart", "SubagentStop",
     ):
         assert event in hooks, f"event {event} not registered"
@@ -68,6 +68,75 @@ def test_re_run_does_not_duplicate(monkeypatch, settings_path):
         commands = [h["command"] for entry in blocks for h in entry.get("hooks", [])]
         assert len(commands) == len(set(commands)), \
             f"event {event} has duplicate commands: {commands}"
+
+
+def test_install_retires_legacy_prompt_hooks_and_preserves_unrelated_hooks(
+        monkeypatch, settings_path):
+    """Legacy task interception is removed without disturbing user hooks."""
+    mod = _load_install_module(monkeypatch, settings_path)
+    settings_path.write_text(json.dumps({
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/session-start-enforcer.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/intercept-task-commands.sh"},
+                {"type": "command", "command": "my-own-prompt-hook"},
+                {"type": "command", "command": "/custom/hooks/intercept-task-commands.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/intercept-task-commands.sh.backup"},
+            ]}],
+            "Stop": [{"hooks": [
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/session-end.sh"},
+                {"type": "command", "command": "/custom/hooks/session-end.sh"},
+            ]}],
+        },
+    }))
+
+    mod.step_install_hooks(1, 1)
+
+    data = _read(settings_path)
+    commands = [
+        hook["command"]
+        for entry in data["hooks"]["UserPromptSubmit"]
+        for hook in entry["hooks"]
+    ]
+    assert "my-own-prompt-hook" in commands
+    assert "/custom/hooks/intercept-task-commands.sh" in commands
+    assert "/old/mcp-skill-hub/hooks/intercept-task-commands.sh.backup" in commands
+    assert any("prompt-router" in command for command in commands)
+    assert not any("session-start-enforcer" in command for command in commands)
+    assert "/old/mcp-skill-hub/hooks/intercept-task-commands.sh" not in commands
+    stop_commands = [
+        hook["command"] for entry in data["hooks"]["Stop"]
+        for hook in entry["hooks"]
+    ]
+    assert "/custom/hooks/session-end.sh" in stop_commands
+    assert "/old/mcp-skill-hub/hooks/session-end.sh" not in stop_commands
+
+
+def test_router_uses_context_timeout_and_status(monkeypatch, settings_path):
+    mod = _load_install_module(monkeypatch, settings_path)
+    mod.step_install_hooks(1, 1)
+
+    router = next(
+        hook for entry in _read(settings_path)["hooks"]["UserPromptSubmit"]
+        for hook in entry["hooks"] if "prompt-router" in hook["command"]
+    )
+    assert router["timeout"] == 5
+    assert router["statusMessage"] == "Retrieving context..."
+
+
+def test_seed_hook_defaults_does_not_enable_legacy_automation(monkeypatch, tmp_path):
+    """Installer seeds context routing and native approvals without widening access."""
+    config_path = tmp_path / "config.json"
+    mod = _load_install_module(monkeypatch, tmp_path / "settings.json")
+    monkeypatch.setattr(mod, "CONFIG_JSON", config_path)
+
+    mod.seed_hook_defaults()
+
+    config = _read(config_path)
+    assert config["context_enabled"] is True
+    assert config["hook_approval_policy"] == "native"
+    assert "auto_proceed" not in config
+    assert "auto_approve_learn" not in config
 
 
 def test_re_run_upgrades_existing_entry_with_if_filter(monkeypatch, settings_path):

@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import shutil
+import shlex
 import subprocess
 import sys
 import urllib.request
@@ -264,68 +265,32 @@ def _hook_command(script_basename: str) -> str:
         return str(HOOKS_DIR / script_basename)
 
 
-def seed_auto_proceed_defaults():
-    """Seed auto_proceed_window (23:00-07:00) and auto_proceed_max if absent.
-    Only adds keys the user hasn't set; never overwrites."""
+def _references_managed_hook(command: str, script: str) -> bool:
+    """Match only current or historic Skill Hub hook paths exactly."""
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+    current_path = str(HOOKS_DIR / script).replace("\\", "/")
+    legacy_suffix = f"/mcp-skill-hub/hooks/{script}"
+    return any(
+        (path := token.strip("'\"").replace("\\", "/")) == current_path
+        or path.endswith(legacy_suffix)
+        for token in tokens
+    )
+
+
+def seed_hook_defaults():
+    """Seed conservative hook defaults without overwriting user choices."""
     CONFIG_JSON.parent.mkdir(parents=True, exist_ok=True)
     cfg = {}
     if CONFIG_JSON.exists():
         with open(CONFIG_JSON) as f:
             cfg = json.load(f)
     changed = False
-    if "auto_proceed" not in cfg:
-        cfg["auto_proceed"] = True
-        changed = True
-    if "auto_proceed_window" not in cfg:
-        # Relaxed default: always-on window. Env vars still override.
-        cfg["auto_proceed_window"] = {"start_hour": 0, "end_hour": 24}
-        changed = True
-    if "auto_proceed_max" not in cfg:
-        cfg["auto_proceed_max"] = 20
-        changed = True
-    # Adaptive auto-approve: cache is on by default (cheap, safe); LLM opt-in.
     defaults = {
-        "auto_approve_learn": True,           # record user-approved cmds
-        "auto_approve_llm": False,            # opt-in: local-LLM classifier
-        "auto_approve_confidence": 0.85,
-        "auto_approve_verdict_ttl_days": 30,
-        "auto_approve_timeout_s": 4.0,
-        # Interactive dashboard server (stdlib http.server, loopback only).
-        "dashboard_server_enabled": True,
-        "dashboard_server_port": 8765,
-        "dashboard_auto_open_browser": False,
-        # Vector-similarity classifier (faster than LLM, never denies).
-        "vector_autoapprove_enabled": True,
-        "vector_autoapprove_threshold": 0.88,
-        # Learn-from-Claude-sessions: harvest approvals into verdict cache.
-        "learn_from_claude_sessions": False,
-        # Ask-the-user fallback: when an unknown command isn't classified by
-        # cache, vector or LLM, briefly poll the dashboard's question queue.
-        "ask_user_on_ambiguous": False,
-        "ask_user_timeout_s": 10.0,
-        # Ask-on-deny: when a deny_pattern matches, escalate to the user via
-        # the dashboard question queue instead of hard-blocking. Catastrophic
-        # patterns (fork bombs, dd to raw device) always block immediately.
-        "ask_on_deny": True,
-        # Adaptive allowance: tiered time windows. First match wins. A window's
-        # prefix_bundle is a key into the built-in bundles (read_only, build,
-        # deploy) or into user-defined "prefix_bundles". The sentinel
-        # "all_non_denied" approves anything not matching a deny_pattern
-        # (legacy night-mode behavior).
-        "adaptive_windows": [
-            {"name": "evening", "start_hour": 18, "end_hour": 23,
-             "prefix_bundle": "read_only"},
-            {"name": "night", "start_hour": 23, "end_hour": 7,
-             "prefix_bundle": "all_non_denied"},
-        ],
-        # Task-type -> bundle mapping. Active task marker may carry
-        # "task_type"; matching prefixes are ADDED additively (never reduce
-        # safety). Value may be a bundle name (str) or an inline list.
-        "task_type_bundles": {
-            "research": "read_only",
-            "build": "build",
-            "deploy": "deploy",
-        },
+        "context_enabled": True,
+        "hook_approval_policy": "native",
     }
     for k, v in defaults.items():
         if k not in cfg:
@@ -334,9 +299,9 @@ def seed_auto_proceed_defaults():
     if changed:
         with open(CONFIG_JSON, "w") as f:
             json.dump(cfg, f, indent=2)
-        print(f"  Auto-proceed enabled (always-on window; edit {CONFIG_JSON} to change)")
+        print(f"  Hook defaults seeded in {CONFIG_JSON}")
     else:
-        print("  auto_proceed settings already present.")
+        print("  Hook defaults already present.")
 
 
 def step_install_commands(step: int, total: int):
@@ -419,24 +384,12 @@ def step_install_hooks(step: int, total: int):
     event_hooks: dict[str, list[dict]] = {
         "UserPromptSubmit": [
             {
-                "type": "command",
-                "command": _hook_command("session-start-enforcer.sh"),
-                "timeout": 5,
-                "statusMessage": "Checking session start protocol...",
-            },
-            {
                 # Prompt router: three-tier classifier (heuristics → Ollama → Haiku)
                 # Selects model, plan-mode, preloads skills before Claude responds.
                 "type": "command",
                 "command": _hook_command("prompt-router.sh"),
-                "timeout": 20,
-                "statusMessage": "Routing prompt...",
-            },
-            {
-                "type": "command",
-                "command": _hook_command("intercept-task-commands.sh"),
-                "timeout": 45,
-                "statusMessage": "Checking for task commands...",
+                "timeout": 5,
+                "statusMessage": "Retrieving context...",
             },
         ],
         "PreToolUse": [
@@ -477,23 +430,6 @@ def step_install_hooks(step: int, total: int):
                 "if": "Bash(*)",
                 "timeout": 5,
                 "statusMessage": "Recording failed command...",
-            },
-        ],
-        "Stop": [
-            {
-                "type": "command",
-                "command": _hook_command("session-end.sh"),
-                "timeout": 45,
-                "statusMessage": "Saving session memory...",
-            },
-            {
-                # Opt-in overnight auto-proceed (requires SKILL_HUB_AUTO_PROCEED=1).
-                # Re-feeds "proceed" to Claude while the active plan still has
-                # unchecked items, up to SKILL_HUB_MAX_PROCEEDS (default 20).
-                "type": "command",
-                "command": _hook_command("auto-proceed.sh"),
-                "timeout": 5,
-                "statusMessage": "Checking for plan continuation...",
             },
         ],
         "StopFailure": [
@@ -585,6 +521,49 @@ def step_install_hooks(step: int, total: int):
                     del h[key]
                     changed = True
                     print(f"  - {event_name}: {basename} (removed stale {key})")
+
+    # Retire prompt hooks that used to create, close, or intercept tasks.
+    # Match only our shipped entrypoint names so unrelated user hooks survive.
+    legacy_prompt_hooks = {
+        "session-start-enforcer.sh",
+        "session_start_enforcer.py",
+        "intercept-task-commands.sh",
+        "intercept_task_commands.py",
+    }
+    legacy_stop_hooks = {"session-end.sh", "session_end.py"}
+    for entry in hooks.get("UserPromptSubmit", []):
+        command_hooks = entry.get("hooks", [])
+        retained = []
+        for hook in command_hooks:
+            command = hook.get("command", "")
+            script = next(
+                (name for name in legacy_prompt_hooks
+                 if _references_managed_hook(command, name)),
+                None,
+            )
+            if script is not None:
+                changed = True
+                print(f"  - UserPromptSubmit: {script} (retired)")
+            else:
+                retained.append(hook)
+        entry["hooks"] = retained
+
+    for entry in hooks.get("Stop", []):
+        command_hooks = entry.get("hooks", [])
+        retained = []
+        for hook in command_hooks:
+            command = hook.get("command", "")
+            script = next(
+                (name for name in legacy_stop_hooks
+                 if _references_managed_hook(command, name)),
+                None,
+            )
+            if script is not None:
+                changed = True
+                print(f"  - Stop: {script} (retired)")
+            else:
+                retained.append(hook)
+        entry["hooks"] = retained
 
     # Upgrade strategy: shallow-merge ONLY missing keys. We never overwrite a
     # field the user has manually customized (e.g. ``statusMessage``,
@@ -896,7 +875,7 @@ def main():
     step_check_ollama(step, total, interactive=interactive); step += 1
     step_register_mcp(step, total); step += 1
     step_seed_allowlist(step, total); step += 1
-    seed_auto_proceed_defaults()
+    seed_hook_defaults()
     step_install_hooks(step, total); step += 1
     step_install_commands(step, total); step += 1
     step_install_agents(step, total); step += 1

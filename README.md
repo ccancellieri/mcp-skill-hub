@@ -1,7 +1,13 @@
 # MCP Skill Hub
 
-> **A local MCP server that makes Claude Code smarter, cheaper, and offline-capable.**
-> Semantic skill search, zero-token hook interception, and a full 4-level local execution engine — all running on your machine with Ollama.
+Scoped memory and skill context for Claude, Codex, Pi and OpenClaw.
+The interactive path preserves the original prompt and works without a local
+model or API key. Client-specific adapters use the same context service.
+
+**Migration:** generic auto-proceed, automatic task interception, model switching
+in the prompt hook and inferred approvals have been retired. See
+[context retrieval and migration](docs/context-service.md) and
+[client integrations](integrations/README.md). Existing task and memory data are preserved.
 
 <p align="center">
   <a href="#-quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick_Start-3_minutes-brightgreen?style=flat-square"></a>
@@ -15,17 +21,19 @@
 
 ## Why Skill Hub?
 
-Claude Code loads **every enabled plugin's skills** into your context at session start. With 20+ plugins, that's thousands of wasted tokens on definitions you'll never use. Responses degrade, latency grows, bills rise.
+Keep the current task's evidence available without filling every prompt with
+unrelated tasks or the full skill library. The Context page previews retrieved
+sources and the exact supplemental text before it reaches a coding client.
 
-Skill Hub fixes this with three layers that work together:
+| Component | Responsibility |
+|-----------|----------------|
+| Context service | Deterministic, scoped retrieval with size limits and source references |
+| Skill library | Import, inspect and load relevant skill content on demand |
+| Task and memory tools | Explicit updates and background curation |
+| Client | Reasoning, model choice, continuation and permissions |
 
-| Layer | What it does | Saved |
-|------|--------------|-------|
-| 🔎 **Semantic search** | Finds skills by meaning, not keywords — only loads what matters | ~80% context |
-| 🎯 **Zero-token hooks** | Task commands (`save task`, `close task`, `list tasks`) are caught **before** Claude sees them | **100%** of those tokens |
-| 🤖 **Local execution (L1–L4)** | Whitelisted commands → templates → skills → full local agent; all on Ollama | API calls avoided |
-
-Add teaching rules, feedback learning, shadow skill evolution, offline auto-fallback, and a web control panel — and the hub **learns your vocabulary** over time.
+L1 is a local model, L2 a remote API model, and L3 the coding agent in the client.
+Those deployment roles are separate from legacy execution-level names below.
 
 ---
 
@@ -54,24 +62,13 @@ index_plugins()     # index plugin descriptions
 ## 🎬 In 30 Seconds
 
 ```
-User: "save to memory and close"
-         │
-    ┌────┴──────────────────┐
-    │  UserPromptSubmit     │ ← hook fires BEFORE Claude
-    │  Hook                 │
-    └────┬──────────────────┘
-         │
-    ┌────┴──────────────────┐
-    │  Local LLM classifies │ ← qwen2.5-coder:7b on your machine
-    │  "Is this a task      │
-    │   command?"           │
-    └────┬──────────────────┘
-         │
-    YES: execute locally           NO: pass through
-    save_task() / close_task()     → Claude processes normally
-    return {"decision":"block"}
-         │
-    0 Claude tokens used
+Original prompt + project identity
+                |
+      bounded context retrieval
+                |
+Original prompt + sourced evidence -> client reasoning
+
+Timeout or missing context -> original prompt passes through
 ```
 
 ---
@@ -92,14 +89,12 @@ search_skills("debug failing pytest")
 </td>
 <td width="33%" valign="top">
 
-### 🎯 Zero-Token Hooks
-Task commands are intercepted **before** Claude. Each interception saves 300–800 tokens.
-```
-"save this as task"      →  0 tokens
-"list my open tasks"     →  0 tokens
-"what was I working on?" →  0 tokens
-```
-**→ [docs/features/hooks.md](docs/features/hooks.md)**
+### Prompt Context
+The hook adds bounded evidence without intercepting task commands or rewriting
+the request. Clients without an installed adapter can call `prepare_context`
+through MCP. Permission and continuation decisions remain with the client.
+
+**[Context contract](docs/context-service.md)**
 
 </td>
 <td width="33%" valign="top">

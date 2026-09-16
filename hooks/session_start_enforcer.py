@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Session-start protocol enforcer hook (cross-platform).
+"""Retired session-start hook compatibility entrypoint.
 
-On the first user prompt of each session, injects a systemMessage
-reminding Claude to execute the mandatory session-start checklist.
-
-Cost: 0 LLM tokens. Just a file-existence check (~1ms after first call).
+Kept for installations that still point at this repository file. It no longer
+injects instructions or creates tasks; prompt routing owns prompt context.
 """
 
 import json
@@ -612,6 +610,9 @@ def _maybe_teach_from_message(message: str, session_id: str) -> str:
 
 
 def main():
+    """Exit cleanly for legacy registrations without changing session state."""
+    return
+
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):

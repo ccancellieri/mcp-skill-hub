@@ -1,0 +1,16 @@
+{
+  "name": "skill-hub-context-openclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mcp-skill-hub/context-adapter": "file:../shared"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "plugin": {
+      "id": "skill-hub-context",
+      "label": "Skill Hub Context"
+    }
+  }
+}

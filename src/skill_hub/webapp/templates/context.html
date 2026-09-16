@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}context{% endblock %}
+{% block content %}
+<section class="context-workspace" aria-labelledby="context-title">
+  <header class="context-header">
+    <h1 id="context-title" class="page-h">Context</h1>
+  </header>
+
+  <form class="context-form" hx-post="/context/build" hx-target="#context-result" hx-swap="innerHTML" aria-label="Build context">
+    <div class="context-field context-prompt-field">
+      <label for="context-prompt">Prompt</label>
+      <textarea id="context-prompt" name="prompt" required rows="8" placeholder="Describe the work you need to do.">{{ form.prompt }}</textarea>
+    </div>
+    <div class="context-input-grid">
+      <div class="context-field">
+        <label for="context-cwd">Project path <span class="muted">optional</span></label>
+        <input id="context-cwd" name="cwd" type="text" value="{{ form.cwd }}" autocomplete="off" placeholder="/path/to/project">
+      </div>
+      <div class="context-field">
+        <label for="context-session-id">Session ID <span class="muted">optional</span></label>
+        <input id="context-session-id" name="session_id" type="text" value="{{ form.session_id }}" autocomplete="off">
+      </div>
+      <div class="context-field">
+        <label for="context-task-id">Task ID <span class="muted">optional</span></label>
+        <input id="context-task-id" name="task_id" type="number" value="{{ form.task_id }}" min="1" step="1" inputmode="numeric">
+      </div>
+    </div>
+    <div class="context-actions">
+      <button class="btn" type="submit">Build context</button>
+      <span class="muted htmx-indicator" aria-live="polite">Building context...</span>
+    </div>
+  </form>
+
+  <details class="context-integrations">
+    <summary>Integration routes</summary>
+    <ul>
+      <li>Claude hook</li>
+      <li>Codex MCP</li>
+      <li>Pi extension</li>
+      <li>OpenClaw plugin</li>
+    </ul>
+  </details>
+
+  <div id="context-result" class="context-result" aria-live="polite">
+    {% include "_context_result.html" %}
+  </div>
+</section>
+{% endblock %}

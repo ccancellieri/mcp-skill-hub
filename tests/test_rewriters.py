@@ -1,4 +1,4 @@
-"""Tests for S5 F-PROMPT — pluggable prompt rewriters."""
+"""Compatibility tests for prompt enrichment backed by scoped context."""
 from __future__ import annotations
 
 import sys
@@ -24,23 +24,28 @@ def test_registry_has_builtins():
     names = rewriters.available()
     assert "add_skill_context" in names
     assert "add_recent_tasks" in names
-    assert "normalize_language" in names
+    assert "normalize_language" not in names
 
 
-def test_add_recent_tasks_prefixes_open_task(store):
+def test_builtin_context_uses_scoped_task_and_preserves_original_body(store):
     from skill_hub.router import rewriters
 
     store.save_task(
         title="Wire up bandit",
         summary="Bandit MCP tools need docs",
         vector=[0.0] * 8,
+        session_id="session-a",
+        cwd="/projects/alpha",
     )
+    prompt = "Keep this exact line.\nAnd this one too."
     result = rewriters.improve_prompt(
-        "what next?", store, rewriters=["add_recent_tasks"]
+        prompt, store, rewriters=["add_recent_tasks"],
+        cwd="/projects/alpha", session_id="session-a",
     )
-    assert "add_recent_tasks" in result.applied
+    assert result.applied == ["context"]
     assert "Wire up bandit" in result.prompt
-    assert result.original == "what next?"
+    assert result.original == prompt
+    assert result.prompt.startswith(prompt + "\n\n")
 
 
 def test_unknown_rewriter_is_noted_not_raised(store):
@@ -71,74 +76,42 @@ def test_rewriter_errors_are_contained(store, monkeypatch):
         rewriters._REGISTRY.pop("boom", None)
 
 
-def test_default_chain_runs_when_rewriters_none(store, monkeypatch):
+def test_default_chain_uses_shared_context_builder(store, monkeypatch):
     from skill_hub.router import rewriters
 
-    calls: list[str] = []
+    received = {}
 
-    def fake_skill(prompt, store, cfg):
-        calls.append("skill")
-        return rewriters.RewriterResult(prefix="[skills]", note="ok", applied=True)
+    def fake_build_context(prompt, **kwargs):
+        received.update(prompt=prompt, **kwargs)
+        return {"context": "[memory] project note", "warnings": []}
 
-    def fake_tasks(prompt, store, cfg):
-        calls.append("tasks")
-        return rewriters.RewriterResult(note="no tasks")
+    monkeypatch.setattr("skill_hub.context_service.build_context", fake_build_context)
 
-    monkeypatch.setitem(rewriters._REGISTRY, "add_skill_context", fake_skill)
-    monkeypatch.setitem(rewriters._REGISTRY, "add_recent_tasks", fake_tasks)
-
-    result = rewriters.improve_prompt("hello", store, cfg={})
-    assert calls == ["skill", "tasks"]
-    assert result.prompt.startswith("[skills]")
-    assert "hello" in result.prompt
-
-
-def test_normalize_language_routes_via_ladder(store, monkeypatch):
-    """G4: the optimizer must hit the gateway ladder, not pin a local model.
-
-    It calls the provider with ``op="improve_prompt"`` (ladder-eligible) and no
-    explicit ``model``, so chat() routes through L1 -> work gateway.
-    """
-    from skill_hub.router import rewriters
-    from skill_hub import llm as _llm
-
-    captured: dict = {}
-
-    class _FakeProvider:
-        def chat(self, messages, **kwargs):
-            captured.update(kwargs)
-            captured["messages"] = messages
-            return "tighten the OLAP pagination question"
-
-    monkeypatch.setattr(_llm, "get_provider", lambda: _FakeProvider())
     result = rewriters.improve_prompt(
-        "please help me figure out how olap dimension pagination should work",
+        "hello", store, cfg={"context_enabled": True}, cwd="/project",
+        session_id="session-1", task_id=4,
+    )
+    assert received == {
+        "prompt": "hello", "store": store, "cfg": {"context_enabled": True},
+        "cwd": "/project", "session_id": "session-1", "task_id": 4,
+    }
+    assert result.prompt == "hello\n\n[memory] project note"
+    assert result.applied == ["context"]
+
+
+def test_normalize_language_is_retired_and_preserves_original_prompt(store):
+    from skill_hub.router import rewriters
+    prompt = "please help me figure out pagination"
+    result = rewriters.improve_prompt(
+        prompt,
         store, rewriters=["normalize_language"],
     )
-    assert captured.get("op") == "improve_prompt"
-    assert "model" not in captured  # no pinned model -> ladder picks it
-    assert result.applied == ["normalize_language"]
-    assert result.prompt == "tighten the OLAP pagination question"
-
-
-def test_normalize_language_skips_short_prompt(store):
-    from skill_hub.router import rewriters
-
-    result = rewriters.improve_prompt("hi", store, rewriters=["normalize_language"])
     assert result.applied == []
-    assert any("too short" in n for n in result.notes)
+    assert result.prompt == prompt
+    assert any("retired" in note for note in result.notes)
 
 
-def test_improve_prompt_op_is_ladder_eligible():
-    """The op must carry a routing signal so chat() escalates to the gateway."""
-    from skill_hub.llm import litellm_adapter as la
-
-    assert "improve_prompt" in la._OP_ROUTING
-    complexity, domain = la._OP_ROUTING["improve_prompt"]
-    assert 0.0 < complexity <= 0.5 and domain  # cheap + signalled
-
-
-def test_body_rewrite_replaces_prompt(store, monkeypatch):
+def test_body_replacement_is_ignored_and_original_body_is_preserved(store, monkeypatch):
     from skill_hub.router import rewriters
 
     def replacer(prompt, store, cfg):
@@ -148,5 +121,36 @@ def test_body_rewrite_replaces_prompt(store, monkeypatch):
     result = rewriters.improve_prompt(
         "original text", store, rewriters=["replacer"]
     )
-    assert result.prompt == "REWRITTEN"
-    assert result.applied == ["replacer"]
+    assert result.prompt == "original text"
+    assert result.applied == []
+    assert any("body replacement ignored" in note for note in result.notes)
+
+
+def test_no_cwd_does_not_leak_foreign_task(store):
+    from skill_hub.router import rewriters
+
+    store.save_task(
+        title="Foreign task", summary="This must remain scoped to beta.", vector=[0.0] * 8,
+        session_id="session-b", cwd="/projects/beta",
+    )
+
+    result = rewriters.improve_prompt(
+        "continue", store, rewriters=["add_recent_tasks"], session_id="session-a",
+    )
+
+    assert result.prompt == "continue"
+    assert "Foreign task" not in result.prompt
+
+
+def test_context_builder_errors_are_contained(store, monkeypatch):
+    from skill_hub.router import rewriters
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("context unavailable")
+
+    monkeypatch.setattr("skill_hub.context_service.build_context", boom)
+
+    result = rewriters.improve_prompt("original text", store)
+
+    assert result.prompt == "original text"
+    assert any("context" in note and "error" in note for note in result.notes)

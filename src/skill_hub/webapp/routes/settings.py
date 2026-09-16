@@ -25,9 +25,9 @@ _BUCKETS = [
     ("hook_llm", "LLM triage"),         # hook_llm_* pre-triage
     ("hook", "Hook behavior"),          # remaining hook_* core
     # ── Router ────────────────────────────────────────────────────────────────
-    ("router_haiku", "Haiku router"),   # router_haiku_* — must precede "router"
-    ("improve_prompt", "Prompt rewriters"),  # improve_prompt_*
-    ("router", "Router core"),          # remaining router_*
+    ("router_haiku", "Haiku router"),   # router_haiku_* — retained in old config
+    ("improve_prompt", "Prompt rewriters"),  # retained in old config
+    ("router", "Router compatibility"), # router_enabled only
     # ── Execution ─────────────────────────────────────────────────────────────
     ("local_persona", "Local persona"), # local_persona_* — must precede "local"
     ("local", "Local execution"),
@@ -39,6 +39,7 @@ _BUCKETS = [
     # ── Session & memory ──────────────────────────────────────────────────────
     ("session_memory", "Session memory"),
     ("context_bridge", "Context bridge"),
+    ("context", "Context"),
     ("skill_evolution", "Skill evolution"),
     ("digest", "Digest & eviction"),
     ("response_cache", "Response cache"),
@@ -62,12 +63,13 @@ _BUCKET_HELP = {
     "adaptive_windows": "Tiered time windows that relax/tighten auto-approve based on recent outcomes.",
     "prefix_bundles": "Command-prefix bundles granted as a group once any member is verdict-allowed.",
     "task_type_bundles": "Per-task-type bundles: e.g. editing tasks unlock read-only bash by default.",
+    "context": "Deterministic context assembly limits and project aliases.",
     "hook": "Core hook toggles — enabled/disabled, timeout, message-length guard, semantic threshold.",
     "hook_context": "RAG context injection into systemMessage — skills, tasks, precompact budget.",
     "hook_llm": "Local LLM pre-triage of every prompt before Claude — confidence gating and timeout.",
     "router_haiku": "Haiku 4.5 batched escalation tasks — classify, compact-hint, subtask decomp.",
     "improve_prompt": "Prompt-rewriter chain — skill-context enrichment and recent-task injection.",
-    "router": "Router core — enable/disable, tier-2 Ollama gate, compact advisor, thin-prompt fill.",
+    "router": "Compatibility switch for older clients. New context assembly is controlled in Context settings.",
     "local_persona": "Local LLM identity — static bio seed, TTL, and max assembled persona length.",
     "local": "Local execution levels 1–4: commands, templates, skill runner, agent, remote endpoint.",
     "llm": "LLM provider tiers (cheap/mid/smart/embed), Ollama base URL, reasoning model.",
@@ -92,6 +94,13 @@ _BUCKET_HELP = {
 
 # Field-level hints extracted from config.py comments
 _FIELD_HINTS = {
+    # Context
+    "context_enabled": "Enable deterministic context assembly for the native client.",
+    "context_max_chars": "Maximum assembled context size in characters.",
+    "context_max_items": "Maximum number of source items to include.",
+    "context_hook_timeout_s": "Maximum seconds allowed for context assembly in the prompt hook.",
+    "context_project_aliases": "Optional JSON object that maps project aliases to paths.",
+    "hook_approval_policy": "Skill Hub hook policy: native defers to the client; explicit applies deterministic local rules.",
     # Connection
     "ollama_base": "Ollama server URL (default: localhost:11434)",
     # Models
@@ -230,13 +239,12 @@ _FIELD_HINTS = {
 
 # Keys whose names don't share the prefix of their logical bucket.
 _BUCKET_OVERRIDES: dict[str, str] = {
-    # llm
-    "embed_model": "llm",
-    "reason_model": "llm",
-    "ollama_base": "llm",
     # hook core
     "token_profiling": "hook",
     "always_forward_to_claude": "hook",
+    # Context service settings use a concise namespace, while the approval
+    # policy remains hook-prefixed for compatibility with the native client.
+    "hook_approval_policy": "context",
     # hook_context: keys that don't start with "hook_context"
     "hook_precompact_threshold": "hook_context",
     "precompact_use_llm": "hook_context",
@@ -293,6 +301,7 @@ _BUCKET_OVERRIDES: dict[str, str] = {
 # Nav group headers: maps the first bucket of each visual group to a label.
 _NAV_GROUPS: dict[str, str] = {
     "auto_approve": "Automation",
+    "context": "Context",
     "hook_context": "Hook",
     "router_haiku": "Router",
     "local_persona": "Execution",
@@ -302,6 +311,25 @@ _NAV_GROUPS: dict[str, str] = {
     "vector": "Legacy / Plugins",
     "other": "Misc",
 }
+
+_RETIRED_AUTOMATION_BUCKETS = {
+    "auto_approve",
+    "auto_proceed",
+    "adaptive_windows",
+    "prefix_bundles",
+    "task_type_bundles",
+}
+
+_RETIRED_ROUTER_BUCKETS = {"router_haiku", "improve_prompt"}
+
+
+def _is_retired_setting(key: str) -> bool:
+    """Keep settings that no longer affect the native context path out of the UI."""
+    if key.startswith(("improve_prompt_", "router_haiku_")):
+        return True
+    if key.startswith("router_") and key != "router_enabled":
+        return True
+    return "normalizer" in key.lower()
 
 
 def _bucket_for(key: str) -> str:
@@ -330,6 +358,8 @@ def _field_type(val: Any) -> str:
 def _group_config(cfg: dict) -> dict[str, list[dict]]:
     groups: dict[str, list[dict]] = {b: [] for b, _ in _BUCKETS}
     for key in sorted(cfg.keys()):
+        if _is_retired_setting(key):
+            continue
         val = cfg[key]
         bucket = _bucket_for(key)
         entry = {"key": key, "value": val, "type": _field_type(val), "hint": _FIELD_HINTS.get(key, "")}
@@ -409,6 +439,10 @@ def _coerce(original: Any, raw: str | None) -> Any:
 def settings_page(request: Request) -> Any:
     cfg = _config.load_config()
     groups = _group_config(cfg)
+    for prefix in _RETIRED_AUTOMATION_BUCKETS:
+        groups[prefix] = []
+    for prefix in _RETIRED_ROUTER_BUCKETS:
+        groups[prefix] = []
 
     # Orchestrator panel data — resolved inline so the template renders live state.
     orch_mode_stored = _config.get("orchestrator_mode")

@@ -1,0 +1,5 @@
+{
+  "name": "skill-hub-context-integrations",
+  "private": true,
+  "workspaces": ["shared", "pi", "openclaw"]
+}

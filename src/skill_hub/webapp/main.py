@@ -1,6 +1,7 @@
 """FastAPI app factory for skill-hub webapp."""
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -16,6 +17,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 
 from .middleware.banner import BannerMiddleware
 from .routes import capabilities as capabilities_routes
+from .routes import context as context_routes
 from .routes import control as control_routes
 from .routes import control_plugins as control_plugins_routes
 from .routes import control_graphcode as control_graphcode_routes
@@ -57,46 +59,50 @@ _log = logging.getLogger(__name__)
 # ``app.state.plugin_nav`` — see base.html.
 _CORE_NAV: list[dict[str, Any]] = [
     {
-        "group": "Observe",
+        "group": "Context",
         "tabs": [
-            {"key": "dashboard", "label": "Dashboard", "href": "/"},
-            {"key": "health", "label": "Health", "href": "/health"},
-            {"key": "logs", "label": "Logs", "href": "/logs"},
-            {"key": "router", "label": "Router", "href": "/router"},
-            {"key": "report", "label": "Report", "href": "/report"},
+            {"key": "context", "label": "Context", "href": "/context"},
         ],
     },
     {
-        "group": "Govern",
-        "tabs": [
-            {"key": "control", "label": "Control", "href": "/control"},
-            {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
-            {"key": "providers", "label": "Providers", "href": "/providers"},
-            {"key": "settings", "label": "Settings", "href": "/settings"},
-            {"key": "cron", "label": "Cron", "href": "/cron"},
-        ],
-    },
-    {
-        "group": "Knowledge",
+        "group": "Skills & sources",
         "tabs": [
             {"key": "skills", "label": "Skills", "href": "/skills"},
-            {"key": "skill_sources", "label": "Skill Sources", "href": "/skill-sources"},
-            {"key": "teachings", "label": "Teachings", "href": "/teachings"},
-            {"key": "memory", "label": "Memory", "href": "/memory"},
-            {"key": "wiki", "label": "Wiki", "href": "/wiki"},
-            {"key": "vector", "label": "Vector", "href": "/vector"},
+            {"key": "skill_sources", "label": "Sources", "href": "/skill-sources"},
         ],
     },
     {
-        "group": "Queues",
+        "group": "Activity",
         "tabs": [
+            {"key": "dashboard", "label": "Dashboard", "href": "/"},
             {"key": "tasks", "label": "Tasks", "href": "/tasks"},
-            {"key": "intents", "label": "Intents", "href": "/intents"},
-            {"key": "questions", "label": "Questions", "href": "/questions"},
-            {"key": "experiments", "label": "Experiments", "href": "/experiments"},
-            {"key": "capabilities", "label": "Capabilities", "href": "/status/capabilities"},
         ],
     },
+    {
+        "group": "Diagnostics",
+        "tabs": [
+            {"key": "health", "label": "Health", "href": "/health"},
+            {"key": "settings", "label": "Settings", "href": "/settings"},
+        ],
+    },
+]
+
+_ADVANCED_NAV: list[dict[str, str]] = [
+    {"key": "memory", "label": "Memory", "href": "/memory"},
+    {"key": "vector", "label": "Vector", "href": "/vector"},
+    {"key": "teachings", "label": "Teachings", "href": "/teachings"},
+    {"key": "wiki", "label": "Wiki", "href": "/wiki"},
+    {"key": "intents", "label": "Intents", "href": "/intents"},
+    {"key": "questions", "label": "Questions", "href": "/questions"},
+    {"key": "logs", "label": "Logs", "href": "/logs"},
+    {"key": "report", "label": "Report", "href": "/report"},
+    {"key": "cron", "label": "Cron", "href": "/cron"},
+    {"key": "control", "label": "Control", "href": "/control"},
+    {"key": "verdicts", "label": "Verdicts", "href": "/verdicts"},
+    {"key": "providers", "label": "Providers", "href": "/providers"},
+    {"key": "router", "label": "Router history", "href": "/router"},
+    {"key": "experiments", "label": "Experiments", "href": "/experiments"},
+    {"key": "capabilities", "label": "Capabilities", "href": "/status/capabilities"},
 ]
 
 
@@ -213,6 +219,10 @@ def create_app(store: Any) -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.state.store = store
     app.state.templates = templates
+    app.state.asset_versions = {
+        name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        for name in ("app.css", "app.js")
+    }
     from pathlib import Path as _Path
     _verdicts_db = _Path.home() / ".claude" / "mcp-skill-hub" / "command_verdicts.db"
     app.state.source_registry = _build_source_registry(store, _verdicts_db)
@@ -222,6 +232,7 @@ def create_app(store: Any) -> FastAPI:
 
     # Plugin extension-point: A1 — base.html iterates core_nav + plugin_nav.
     app.state.core_nav = list(_CORE_NAV)
+    app.state.advanced_nav = list(_ADVANCED_NAV)
     app.state.plugin_nav = []
 
     app.mount(
@@ -235,6 +246,7 @@ def create_app(store: Any) -> FastAPI:
     app.add_middleware(BannerMiddleware)
 
     app.include_router(dashboard_routes.router)
+    app.include_router(context_routes.router)
     app.include_router(control_routes.llm_router)
     app.include_router(control_routes.router)
     app.include_router(health_routes.router)

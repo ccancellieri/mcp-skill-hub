@@ -1,5 +1,10 @@
 #!/bin/bash
-# UserPromptSubmit hook: intercept task/memory commands before Claude sees them.
+# Retired task-interception compatibility entrypoint.
+# Legacy settings may still invoke this repository file, but task commands now
+# pass through to native CLI/MCP tools unchanged.
+exit 0
+
+# Historical implementation retained below for reference.
 #
 # Flow:
 #   1. Every user message passes through this hook BEFORE Claude sees it

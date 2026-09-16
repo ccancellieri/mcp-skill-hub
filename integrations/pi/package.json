@@ -1,0 +1,12 @@
+{
+  "name": "@mcp-skill-hub/pi-context",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@mcp-skill-hub/context-adapter": "file:../shared"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}

@@ -14,6 +14,14 @@ CONFIG_PATH = Path.home() / ".claude" / "mcp-skill-hub" / "config.json"
 
 # Defaults — minimal footprint, works on any machine
 _DEFAULTS = {
+    # The interactive path only retrieves evidence. Models and permissions
+    # remain under the calling client's control.
+    "context_enabled": True,
+    "context_max_chars": 6000,
+    "context_max_items": 6,
+    "context_project_aliases": {},
+    "context_hook_timeout_s": 2.0,
+    "hook_approval_policy": "native",
     # Ollama connection
     "ollama_base": "http://localhost:11434",
 

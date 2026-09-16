@@ -1,1 +1,1 @@
-"""Prompt Router — three-tier classifier for model/plan-mode selection."""
+"""Prompt context adapters and explicit legacy classification utilities."""

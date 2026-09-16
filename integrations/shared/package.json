@@ -1,0 +1,7 @@
+{
+  "name": "@mcp-skill-hub/context-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./context-adapter.mjs"
+}

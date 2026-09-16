@@ -7,7 +7,7 @@ from typing import Any
 
 import asyncio
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -28,6 +28,8 @@ def _clear_marker_if_matches(task_id: int) -> None:
         pass
 
 router = APIRouter()
+
+_WORK_STATES = {"active", "waiting_user", "waiting_external", "paused"}
 
 
 def _try_embed(text: str) -> list[float] | None:
@@ -316,6 +318,12 @@ async def set_task_options(task_id: int, request: Request) -> JSONResponse:
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    work_state = body.get("work_state")
+    if work_state is not None and work_state not in _WORK_STATES:
+        return JSONResponse(
+            {"error": "work_state must be active, waiting_user, waiting_external, or paused"},
+            status_code=422,
+        )
     store = request.app.state.store
     ok = store.set_task_options(task_id, body)
     if not ok:
@@ -698,7 +706,6 @@ def task_refs(request: Request, q: str = "") -> JSONResponse:
             ).fetchall()
         import json as _json
         for r in art_rows:
-            ns = r["doc_id"] if r else ""
             skip = any(r["namespace"].startswith(p) for p in _article_ns_exclude)
             if skip:
                 continue

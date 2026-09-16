@@ -227,13 +227,13 @@ def _coerce_stdout(raw: Any) -> tuple[str, dict | None]:
     return str(raw), None
 
 
-def tool_envelope(fn: F) -> F:
+def tool_envelope(fn: F, *, structured_output: bool = False) -> F:
     """Wrap ``fn`` so every invocation produces a :class:`ToolResult`.
 
     The wrapper:
 
-    * Returns ``ToolResult.stdout`` (a plain string) to the caller so
-      FastMCP's serializer keeps working.
+    * Returns ``ToolResult.stdout`` by default. With ``structured_output``,
+      preserves the dictionary required by FastMCP's object output schema.
     * Stamps the full :class:`ToolResult` on the thread-local
       ``_LOCAL.last_result`` *and* on the wrapper's ``last_result``
       attribute.
@@ -289,8 +289,13 @@ def tool_envelope(fn: F) -> F:
         return result
 
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> str:
-        return _run(args, kwargs).stdout
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = _run(args, kwargs)
+        if structured_output:
+            if result.structured is not None:
+                return result.structured
+            return {"error": result.error or "Expected a structured tool response"}
+        return result.stdout
 
     def envelope(*args: Any, **kwargs: Any) -> ToolResult:
         """Invoke the tool and return the full :class:`ToolResult`."""

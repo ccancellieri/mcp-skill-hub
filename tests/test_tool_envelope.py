@@ -75,6 +75,28 @@ def test_dict_return_json_serializes_to_stdout_keeps_structured():
     assert result.error is None
 
 
+def test_structured_output_returns_dict_for_object_schema():
+    payload = {"context": "evidence", "items": []}
+
+    def dict_tool() -> dict:
+        return payload
+
+    wrapped = tool_envelope(dict_tool, structured_output=True)
+
+    assert wrapped() == payload
+    assert wrapped.envelope().structured == payload
+
+
+def test_structured_output_contains_errors_as_objects():
+    def broken_tool() -> dict:
+        raise RuntimeError("unavailable")
+
+    wrapped = tool_envelope(broken_tool, structured_output=True)
+
+    assert wrapped() == {"error": "RuntimeError: unavailable"}
+    assert wrapped.envelope().error == "RuntimeError: unavailable"
+
+
 def test_elapsed_ms_reflects_real_work():
     @tool_envelope
     def slow_tool() -> str:

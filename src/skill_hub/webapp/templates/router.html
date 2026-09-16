@@ -292,17 +292,16 @@
 
 {% if not log_exists %}
 <div class="card" style="padding:24px; text-align:center; color:var(--color-muted)">
-  Router log not found at <code>~/.claude/mcp-skill-hub/router.jsonl</code>.
-  The prompt-router hook must run at least once to generate data.
+  Router history is not available at <code>~/.claude/mcp-skill-hub/router.jsonl</code>.
 </div>
 {% elif stats.total == 0 %}
 <div class="card" style="padding:24px; text-align:center; color:var(--color-muted)">
-  Router log is empty.
+  Router history is empty.
 </div>
 {% else %}
 
 <div class="router-header">
-  <h1 class="page-h" style="margin:0">Router</h1>
+  <h1 class="page-h" style="margin:0">Router history</h1>
   <div class="router-header-right">
     {% if stats.first_ts and stats.last_ts and stats.first_ts != stats.last_ts %}
     <span class="router-date-range">{{ stats.first_ts }} → {{ stats.last_ts }}</span>

@@ -143,9 +143,24 @@ echo "[4/5] Installing hooks..."
 HOOKS_DIR="$SCRIPT_DIR/hooks"
 chmod +x "$HOOKS_DIR"/*.sh 2>/dev/null
 
+# Seed only conservative defaults; preserve any user-selected values.
+python3 -c "
+import json, os
+cfg_path = os.path.expanduser('~/.claude/mcp-skill-hub/config.json')
+os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+cfg = {}
+if os.path.exists(cfg_path):
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+cfg.setdefault('context_enabled', True)
+cfg.setdefault('hook_approval_policy', 'native')
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+"
+
 # Merge hooks into settings.json (idempotent — skips if already present)
 python3 -c "
-import json, os, sys
+import json, os, shlex, sys
 
 settings_path = os.path.expanduser('$SETTINGS')
 hooks_dir = '$HOOKS_DIR'
@@ -154,23 +169,9 @@ hooks_dir = '$HOOKS_DIR'
 required_hooks = [
     {
         'type': 'command',
-        'command': f'{hooks_dir}/session-start-enforcer.sh',
+        'command': f'{hooks_dir}/prompt-router.sh',
         'timeout': 5,
-        'statusMessage': 'Checking session start protocol...'
-    },
-    {
-        'type': 'command',
-        'command': f'{hooks_dir}/intercept-task-commands.sh',
-        'timeout': 45,
-        'statusMessage': 'Checking for task commands...'
-    },
-]
-stop_hooks = [
-    {
-        'type': 'command',
-        'command': f'{hooks_dir}/session-end.sh',
-        'timeout': 45,
-        'statusMessage': 'Saving session memory...'
+        'statusMessage': 'Retrieving context...'
     },
 ]
 
@@ -183,25 +184,64 @@ else:
     settings = {}
 
 hooks = settings.setdefault('hooks', {})
-existing_json = json.dumps(hooks)
 
 changed = False
 
-# UserPromptSubmit — merge required hooks (order matters: enforcer before interceptor)
+# Retire only the old skill-hub task-interception entrypoints. Other hooks,
+# including user-defined UserPromptSubmit hooks, remain untouched.
+legacy = {
+    'session-start-enforcer.sh', 'session_start_enforcer.py',
+    'intercept-task-commands.sh', 'intercept_task_commands.py',
+}
+legacy_stop = {'session-end.sh', 'session_end.py'}
+
+def references_managed_hook(command, script):
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+    current_path = f'{hooks_dir}/{script}'.replace('\\\\', '/')
+    legacy_suffix = f'/mcp-skill-hub/hooks/{script}'
+    for token in tokens:
+        path = token.strip('\"\'').replace('\\\\', '/')
+        if path == current_path or path.endswith(legacy_suffix):
+            return True
+    return False
+
+for entry in hooks.get('UserPromptSubmit', []):
+    current = entry.get('hooks', [])
+    retained = []
+    for hook in current:
+        command = hook.get('command', '')
+        script = next((name for name in legacy
+                       if references_managed_hook(command, name)), None)
+        if script is not None:
+            changed = True
+            print(f'  - Retired {script}')
+        else:
+            retained.append(hook)
+    entry['hooks'] = retained
+
+for entry in hooks.get('Stop', []):
+    current = entry.get('hooks', [])
+    retained = []
+    for hook in current:
+        command = hook.get('command', '')
+        script = next((name for name in legacy_stop
+                       if references_managed_hook(command, name)), None)
+        if script is not None:
+            changed = True
+            print(f'  - Retired {script}')
+        else:
+            retained.append(hook)
+    entry['hooks'] = retained
+
+# UserPromptSubmit — install the prompt router only.
 ups = hooks.setdefault('UserPromptSubmit', [{'hooks': []}])
 existing_cmds = {h.get('command', '') for entry in ups for h in entry.get('hooks', [])}
 for hook_def in required_hooks:
     if hook_def['command'] not in existing_cmds:
         ups[0].setdefault('hooks', []).append(hook_def)
-        changed = True
-        print(f'  + Added {os.path.basename(hook_def[\"command\"])}')
-
-# Stop — merge session-end hook
-stop = hooks.setdefault('Stop', [{'hooks': []}])
-existing_stop_cmds = {h.get('command', '') for entry in stop for h in entry.get('hooks', [])}
-for hook_def in stop_hooks:
-    if hook_def['command'] not in existing_stop_cmds:
-        stop[0].setdefault('hooks', []).append(hook_def)
         changed = True
         print(f'  + Added {os.path.basename(hook_def[\"command\"])}')
 

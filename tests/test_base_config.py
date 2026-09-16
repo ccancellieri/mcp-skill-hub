@@ -15,16 +15,20 @@ from skill_hub import base_config as bc  # noqa: E402
 def test_base_hooks_cover_all_events():
     hooks = bc.base_hooks()
     for event in (
-        "PreCompact", "UserPromptSubmit", "Stop", "PreToolUse", "PostToolUse",
+        "PreCompact", "UserPromptSubmit", "PreToolUse", "PostToolUse",
         "PostToolUseFailure", "StopFailure", "SessionEnd", "PostCompact",
         "SubagentStart", "SubagentStop",
     ):
         assert event in hooks, f"missing event {event}"
-    # The three UserPromptSubmit hooks (enforcer, intercept, router) must be there.
+    # Prompt routing is the only UserPromptSubmit hook managed by Skill Hub.
     ups = [h["hooks"][0]["command"] for h in hooks["UserPromptSubmit"]]
-    assert any("session-start-enforcer.sh" in c for c in ups)
+    assert len(ups) == 1
     assert any("prompt-router.sh" in c for c in ups)
-    assert any("intercept-task-commands.sh" in c for c in ups)
+    assert not any("session-start-enforcer" in c for c in ups)
+    assert not any("intercept-task-commands" in c for c in ups)
+    router = hooks["UserPromptSubmit"][0]["hooks"][0]
+    assert router["timeout"] == 5
+    assert router["statusMessage"] == "Retrieving context..."
 
 
 def test_commands_are_absolute_paths():
@@ -69,10 +73,79 @@ def test_merge_preserves_existing_unrelated_hooks():
     assert merged["model"] == "sonnet"
     cmds_stop = [h["command"] for g in merged["hooks"]["Stop"] for h in g["hooks"]]
     assert "codegraph sync-if-dirty" in cmds_stop
-    assert any("session-end.sh" in c for c in cmds_stop)
+    assert not any("session-end.sh" in c for c in cmds_stop)
     cmds_ptu = [h["command"] for g in merged["hooks"]["PostToolUse"] for h in g["hooks"]]
     assert "codegraph mark-dirty" in cmds_ptu
     assert any("post-tool-observer.sh" in c for c in cmds_ptu)
+
+
+def test_merge_retires_legacy_hooks_and_preserves_unrelated_hooks():
+    """Config repair removes only retired Skill Hub automation entrypoints."""
+    settings = {
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/session-start-enforcer.sh"},
+                {"type": "command", "command": "C:\\old\\.venv\\python.exe C:\\old\\mcp-skill-hub\\hooks\\intercept_task_commands.py"},
+                {"type": "command", "command": "my-own-prompt-hook"},
+                {"type": "command", "command": "/custom/hooks/intercept-task-commands.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/intercept-task-commands.sh.backup"},
+            ]}],
+            "Stop": [{"hooks": [
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/auto-proceed.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/session-end.sh"},
+                {"type": "command", "command": "my-own-stop-hook"},
+                {"type": "command", "command": "/custom/hooks/auto-proceed.sh"},
+                {"type": "command", "command": "/custom/hooks/session-end.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/auto-proceed.sh.backup"},
+            ]}],
+        },
+    }
+
+    merged, _ = bc.merge(settings)
+
+    prompt_commands = [
+        h["command"] for group in merged["hooks"]["UserPromptSubmit"]
+        for h in group["hooks"]
+    ]
+    assert "my-own-prompt-hook" in prompt_commands
+    assert "/custom/hooks/intercept-task-commands.sh" in prompt_commands
+    assert "/old/mcp-skill-hub/hooks/intercept-task-commands.sh.backup" in prompt_commands
+    assert any("prompt-router.sh" in command for command in prompt_commands)
+    assert not any("session-start-enforcer" in command for command in prompt_commands)
+    assert not any("intercept_task_commands" in command for command in prompt_commands)
+
+    stop_commands = [
+        h["command"] for group in merged["hooks"]["Stop"]
+        for h in group["hooks"]
+    ]
+    assert "my-own-stop-hook" in stop_commands
+    assert "/custom/hooks/auto-proceed.sh" in stop_commands
+    assert "/custom/hooks/session-end.sh" in stop_commands
+    assert "/old/mcp-skill-hub/hooks/auto-proceed.sh.backup" in stop_commands
+    assert "/old/mcp-skill-hub/hooks/session-end.sh" not in stop_commands
+    assert "/old/mcp-skill-hub/hooks/auto-proceed.sh" not in stop_commands
+
+
+def test_install_persists_legacy_hook_retirement(tmp_path):
+    """Repair writes a settings update even when retirement is its only change."""
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [{
+                "type": "command",
+                "command": "/old/mcp-skill-hub/hooks/intercept-task-commands.sh",
+            }]}],
+        },
+    }), encoding="utf-8")
+
+    bc.install(sp, backup=False)
+
+    written = json.loads(sp.read_text(encoding="utf-8"))
+    commands = [
+        h["command"] for group in written["hooks"]["UserPromptSubmit"]
+        for h in group["hooks"]
+    ]
+    assert not any("intercept-task-commands" in command for command in commands)
 
 
 def test_merge_matches_by_basename_not_full_path(tmp_path):

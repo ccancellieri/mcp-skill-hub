@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -97,16 +98,8 @@ def _repo_root() -> Path:
 _HOOKS: tuple[dict[str, Any], ...] = (
     {"event": "PreCompact", "script": "precompact.sh", "timeout": 10,
      "statusMessage": "Snapshotting routing state..."},
-    {"event": "UserPromptSubmit", "script": "session-start-enforcer.sh", "timeout": 5,
-     "statusMessage": "Checking session start protocol..."},
-    {"event": "UserPromptSubmit", "script": "intercept-task-commands.sh", "timeout": 45,
-     "statusMessage": "Skill Hub: enriching context..."},
-    {"event": "UserPromptSubmit", "script": "prompt-router.sh", "timeout": 20,
-     "statusMessage": "Routing prompt..."},
-    {"event": "Stop", "script": "session-end.sh", "timeout": 45,
-     "statusMessage": "Saving session memory..."},
-    {"event": "Stop", "script": "auto-proceed.sh", "timeout": 5,
-     "statusMessage": "Checking for plan continuation..."},
+    {"event": "UserPromptSubmit", "script": "prompt-router.sh", "timeout": 5,
+     "statusMessage": "Retrieving context..."},
     {"event": "PreToolUse", "script": "auto-approve.sh", "if": "Bash(*)", "timeout": 5,
      "statusMessage": "Checking allow-list..."},
     # No ``if`` filter: this hook also projects TodoWrite/TaskCreate/TaskUpdate/
@@ -129,6 +122,18 @@ _HOOKS: tuple[dict[str, Any], ...] = (
      "statusMessage": "Logging subagent stop..."},
 )
 
+_RETIRED_HOOKS: dict[str, frozenset[str]] = {
+    "UserPromptSubmit": frozenset({
+        "session-start-enforcer.sh",
+        "session_start_enforcer.py",
+        "intercept-task-commands.sh",
+        "intercept_task_commands.py",
+    }),
+    "Stop": frozenset({
+        "auto-proceed.sh", "auto_proceed.py", "session-end.sh", "session_end.py",
+    }),
+}
+
 
 def _build_hook(spec: dict[str, Any]) -> dict[str, Any]:
     """Render a single hook-command dict with an absolute command path."""
@@ -150,6 +155,26 @@ def _first_token(command: str) -> str:
     return command.split(None, 1)[0] if command else ""
 
 
+def _command_basename(command: str) -> str:
+    """Return a command path's basename across POSIX and Windows settings."""
+    return _first_token(command).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _command_references_script(command: str, script: str) -> bool:
+    """Match only exact managed Skill Hub hook paths in a command string."""
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+    current_path = str(hooks_dir() / script).replace("\\", "/")
+    legacy_suffix = f"/mcp-skill-hub/hooks/{script}"
+    for token in tokens:
+        path = token.strip("'\"").replace("\\", "/")
+        if path == current_path or path.endswith(legacy_suffix):
+            return True
+    return False
+
+
 def _script_basenames_in_event(settings: dict[str, Any], event: str) -> set[str]:
     """All ``*.sh`` basenames already wired for ``event`` in settings."""
     names: set[str] = set()
@@ -157,8 +182,29 @@ def _script_basenames_in_event(settings: dict[str, Any], event: str) -> set[str]
         for h in group.get("hooks", []) or []:
             tok = _first_token(h.get("command", ""))
             if tok.endswith(".sh"):
-                names.add(Path(tok).name)
+                names.add(_command_basename(tok))
     return names
+
+
+def _retire_legacy_hooks(settings: dict[str, Any]) -> list[str]:
+    """Remove only Skill Hub's retired automation hook entrypoints."""
+    retired: list[str] = []
+    for event, names in _RETIRED_HOOKS.items():
+        for group in settings.get("hooks", {}).get(event, []) or []:
+            hooks = group.get("hooks", []) or []
+            retained = []
+            for hook in hooks:
+                command = hook.get("command", "")
+                script = next(
+                    (name for name in names if _command_references_script(command, name)),
+                    None,
+                )
+                if script is not None:
+                    retired.append(f"{event}:{script}")
+                else:
+                    retained.append(hook)
+            group["hooks"] = retained
+    return retired
 
 
 def base_hooks() -> dict[str, list[dict[str, Any]]]:
@@ -189,6 +235,7 @@ def merge(settings: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     ``event:script`` labels that were appended.
     """
     added: list[str] = []
+    _retire_legacy_hooks(settings)
     hooks = settings.setdefault("hooks", {})
     for spec in _HOOKS:
         event = spec["event"]
@@ -239,6 +286,7 @@ def install(
         except (OSError, ValueError):
             settings = {}
 
+    retired = _retire_legacy_hooks(settings)
     before_missing = check(settings)
     merged, added = merge(settings)
 
@@ -246,6 +294,7 @@ def install(
         "settings_path": str(settings_path),
         "existed": existed,
         "added": added,
+        "retired": retired,
         "already_present": [m for m in (
             f"{s['event']}:{s['script']}" for s in _HOOKS
         ) if m not in before_missing],
@@ -254,7 +303,7 @@ def install(
         "dry_run": dry_run,
     }
 
-    if dry_run or not added:
+    if dry_run or not (added or retired):
         return report
 
     if backup and existed:

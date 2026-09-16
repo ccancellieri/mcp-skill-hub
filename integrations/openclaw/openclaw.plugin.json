@@ -1,0 +1,23 @@
+{
+  "id": "skill-hub-context",
+  "name": "Skill Hub Context",
+  "description": "Adds deterministic project context before an agent turn.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pythonCommand": {
+        "type": "string",
+        "description": "Python executable used with -m skill_hub.context_cli."
+      },
+      "contextCommand": {
+        "type": "string",
+        "description": "Optional direct context CLI command, such as skill-hub-context."
+      },
+      "projectRoot": {
+        "type": "string",
+        "description": "Absolute project root allowed for context lookup."
+      }
+    }
+  }
+}

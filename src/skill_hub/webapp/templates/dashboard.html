@@ -345,12 +345,12 @@
     {% endif %}
   </div>
 
-  {# Auto-approve hook #}
+  {# Historical auto-approve hook activity #}
   <div class="db-card">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
-        <span>Auto-approve hook</span>
-        <a class="tooltip-help" href="#" data-tooltip="Automatic tool approval system: allow = approved actions, deny = rejected actions, pass-through = forwarded to user." data-help-page="auto-approve-hook" tabindex="0">?</a>
+        <span>Historical auto-approve activity</span>
+        <a class="tooltip-help" href="#" data-tooltip="Historical records from the retired approval hook. Current permissions are managed by the native client." data-help-page="auto-approve-hook" tabindex="0">?</a>
       </span>
     </h3>
     <table class="db-table">
@@ -443,7 +443,7 @@
   </div>
   {% endif %}
 
-  {# Router mini stats #}
+  {# Historical router mini stats #}
   {% if router_stats and router_stats.total %}
   <div class="db-card expandable"
        x-data="{expanded:false}" :class="{expanded}"
@@ -451,10 +451,10 @@
        @click="expanded=!expanded" @keydown.enter="expanded=!expanded" @keydown.space.prevent="expanded=!expanded">
     <h3 class="db-card-title">
       <span class="tooltip-wrapper">
-        <span>Router</span>
-        <a class="tooltip-help" href="#" data-tooltip="Model routing statistics: which LLM tier (haiku/sonnet/opus) handled each prompt, enrichment rate, plan mode activations, confidence scores." data-help-page="routing-distributions" tabindex="0">?</a>
+        <span>Router history</span>
+        <a class="tooltip-help" href="#" data-tooltip="Historical prompt-routing records. The current context path does not use router controls." data-help-page="routing-distributions" tabindex="0">?</a>
       </span>
-      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px" @click.stop>view all →</a>
+      <a href="/router" style="font-size:9.5px;color:var(--color-accent);font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px" @click.stop>view history →</a>
     </h3>
     <table class="db-table" style="margin-bottom:10px">
       <tr><td>prompts (window)</td><td>{{ router_stats.total }}</td></tr>

@@ -1,0 +1,46 @@
+{% if result %}
+<section class="context-output" aria-label="Context result">
+  <div class="context-summary">
+    <span>{{ result["mode"] }}</span>
+    <span>{{ result["selected_count"] }} selected</span>
+    <span>{{ result["omitted_count"] }} excluded by limits</span>
+    <span>{{ result["elapsed_ms"] }} ms</span>
+  </div>
+
+  <section class="context-panel" aria-labelledby="original-prompt-title">
+    <h2 id="original-prompt-title">Original prompt</h2>
+    <pre>{{ result["original_prompt"] }}</pre>
+  </section>
+
+  {% if result["warnings"] %}
+  <section class="context-warnings" aria-labelledby="context-warnings-title">
+    <h2 id="context-warnings-title">Warnings</h2>
+    <ul>{% for warning in result["warnings"] %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section class="context-sources" aria-labelledby="context-sources-title">
+    <h2 id="context-sources-title">Sources</h2>
+    {% if result["items"] %}
+    <ol class="context-source-list">
+      {% for item in result["items"] %}
+      <li>
+      <details class="context-source-item">
+        <summary><span>{{ item.title }}</span><span class="context-source-meta"><span>{{ item.kind }}</span><span>{{ item.source }}</span></span></summary>
+        <pre>{{ item.text }}</pre>
+      </details>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="muted">No sources were selected.</p>
+    {% endif %}
+  </section>
+  <details class="context-raw">
+    <summary>Raw assembled context</summary>
+    <pre>{{ result["context"] }}</pre>
+  </details>
+</section>
+{% else %}
+<p class="context-empty">No context built yet.</p>
+{% endif %}

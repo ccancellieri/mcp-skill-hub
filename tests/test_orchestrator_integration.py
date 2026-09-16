@@ -1,14 +1,4 @@
-"""Integration tests for the tooling orchestrator feature.
-
-Covers the route-injection path (``skill_hub.router.route.route``) and the
-explicit ``ensure_tooling_core`` path end-to-end.
-
-Constraints enforced here:
-- ``skill_hub.server`` is NEVER imported (would open a live DB).
-- No real subprocess is launched: ``skill_hub.orchestrator.engine.dispatch_async``
-  (and ``subprocess.Popen``) are monkeypatched in every test that could trigger
-  provisioning.
-"""
+"""Integration tests for explicit tooling and deterministic route context."""
 from __future__ import annotations
 
 import os
@@ -24,24 +14,6 @@ from skill_hub.orchestrator import (
     evaluate,
 )
 from skill_hub.orchestrator import engine as _engine
-
-
-@pytest.fixture(autouse=True)
-def _no_live_llm(monkeypatch):
-    """Keep route() hermetic — force Tier-1 heuristic classification.
-
-    These tests assert the tooling directive, not the classifier. On a
-    developer machine a reachable local Ollama or the remote gateway silently
-    satisfied the escalation ladder inside ``ollama_client.classify`` /
-    ``haiku_client.classify``, so the tests were making live LLM calls. With an
-    isolated home (no provider config) the ladder is exhausted; stub both
-    classifiers to ``None`` so route() falls back to deterministic heuristics
-    and never touches a live model.
-    """
-    monkeypatch.setattr("skill_hub.router.ollama_client.classify",
-                        lambda *a, **k: None)
-    monkeypatch.setattr("skill_hub.router.haiku_client.classify",
-                        lambda *a, **k: None)
 
 
 # ---------------------------------------------------------------------------
@@ -115,226 +87,7 @@ def _mark_index_stale(tmp_path: Path) -> None:
     (cg / ".dirty").write_text(str(int(now * 1000)))
 
 
-# ---------------------------------------------------------------------------
-# 1. Route injection — missing index (offer path)
-# ---------------------------------------------------------------------------
-
-class TestRouteInjectionMissingIndex:
-    """route() injects a [tooling] offer directive when the index is absent."""
-
-    def test_system_message_contains_tooling_directive(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path)
-        dispatched: list[list[str]] = []
-
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.engine.dispatch_async",
-            lambda actions: dispatched.extend(actions),
-        )
-        _engine._probe_cache.clear()
-
-        from skill_hub.router.route import route
-        result = route(
-            "explore how the auth module works",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        assert isinstance(result, dict)
-        sys_msg = result.get("systemMessage", "")
-        assert "[tooling]" in sys_msg, f"no [tooling] directive in: {sys_msg!r}"
-
-    def test_missing_directive_mentions_path_or_offer(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path)
-
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.engine.dispatch_async",
-            lambda actions: None,
-        )
-        _engine._probe_cache.clear()
-
-        from skill_hub.router.route import route
-        result = route(
-            "explore how the auth module works",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        sys_msg = result.get("systemMessage", "")
-        # The missing directive must either mention the path or the offer text.
-        assert (str(tmp_path) in sys_msg or "offer" in sys_msg or "not indexed" in sys_msg), (
-            f"expected path/offer mention in: {sys_msg!r}"
-        )
-
-    def test_no_real_provisioning_ran(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path)
-        popen_called = []
-
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.engine.dispatch_async",
-            lambda actions: None,  # swallow; no Popen
-        )
-        monkeypatch.setattr(
-            "subprocess.Popen",
-            lambda *a, **kw: popen_called.append(a),
-        )
-        _engine._probe_cache.clear()
-
-        from skill_hub.router.route import route
-        route(
-            "explore how the auth module works",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        assert popen_called == [], "real Popen was called unexpectedly"
-
-
-# ---------------------------------------------------------------------------
-# 2. Route injection — present index (steer + auto-refresh)
-# ---------------------------------------------------------------------------
-
-class TestRouteInjectionPresentIndex:
-    """route() steers toward indexed queries and queues a refresh."""
-
-    @pytest.fixture(autouse=True)
-    def _codegraph_installed(self, monkeypatch):
-        # These tests assert what gets queued, not host tooling — pin the
-        # resolver so machines without codegraph in a trusted dir (CI)
-        # behave like a dev machine that has it. Dispatch is stubbed.
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.registry._resolve_codegraph_bin",
-            lambda: "/usr/local/bin/codegraph",
-        )
-
-    def test_system_message_steers_toward_codegraph(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path, with_codegraph=True)
-        _engine._probe_cache.clear()
-        _engine._last_dispatch.clear()
-
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: None)
-
-        from skill_hub.router.route import route
-        result = route(
-            "explore how the auth module works",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        sys_msg = result.get("systemMessage", "")
-        assert "[tooling]" in sys_msg, f"no [tooling] directive in: {sys_msg!r}"
-        # The ready directive steers toward indexed queries.
-        assert any(
-            kw in sys_msg
-            for kw in ("indexed", "code-graph", "prefer", "search")
-        ), f"expected steering language in: {sys_msg!r}"
-
-    def test_refresh_action_queued(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path, with_codegraph=True)
-        _mark_index_stale(tmp_path)  # only a stale index warrants an auto-sync
-        _engine._probe_cache.clear()
-        _engine._last_dispatch.clear()
-
-        dispatched: list[list[str]] = []
-
-        # "everywhere" mode authorises the auto-sync (offer mode would only surface it).
-        monkeypatch.setattr(
-            "skill_hub.config.get",
-            _orch_enabled_config(orchestrator_mode="everywhere"),
-        )
-
-        def _recording_dispatch(actions: list[list[str]]) -> None:
-            dispatched.extend(actions)
-            # Do NOT call Popen.
-
-        # route.py imports dispatch_async from skill_hub.orchestrator at call
-        # time; patch at that namespace so the route's local binding sees our
-        # recorder.
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.dispatch_async",
-            _recording_dispatch,
-        )
-        # Also patch the engine-level name so ensure_tooling_core / internal
-        # evaluate paths don't launch a real subprocess.
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.engine.dispatch_async",
-            _recording_dispatch,
-        )
-        monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: None)
-
-        from skill_hub.router.route import route
-        route(
-            "explore the codebase",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        # At least one "sync"-style argv must have been recorded.
-        sync_actions = [a for a in dispatched if "sync" in a]
-        assert sync_actions, (
-            f"expected a sync/refresh action; got dispatched={dispatched}"
-        )
-
-    def test_refresh_argv_shape(self, tmp_path, monkeypatch):
-        """The queued refresh argv must contain 'codegraph' and 'sync'."""
-        _make_code_project(tmp_path, with_codegraph=True)
-        _mark_index_stale(tmp_path)
-        _engine._probe_cache.clear()
-        _engine._last_dispatch.clear()
-        monkeypatch.setattr(
-            "skill_hub.config.get",
-            _orch_enabled_config(orchestrator_mode="everywhere"),
-        )
-
-        result = evaluate(
-            str(tmp_path),
-            "explore the codebase",
-        )
-        # provision_actions from evaluate() directly.
-        sync_actions = [a for a in result.provision_actions if "sync" in a]
-        assert sync_actions, f"no sync action; got {result.provision_actions}"
-        first = sync_actions[0]
-        assert any("codegraph" in tok for tok in first), (
-            f"argv does not reference codegraph binary: {first}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. Disabled switch
-# ---------------------------------------------------------------------------
-
-class TestOrchestratorDisabled:
-    """When orchestrator_enabled is False, route() must produce no [tooling] directive."""
-
-    def test_disabled_no_tooling_directive(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path)
-
-        monkeypatch.setattr(
-            "skill_hub.config.get",
-            _config_get_factory({"orchestrator_enabled": False}),
-        )
-
-        from skill_hub.router.route import route
-        result = route(
-            "explore how the auth module works",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
-
-        sys_msg = result.get("systemMessage", "")
-        assert "[tooling]" not in sys_msg, (
-            f"[tooling] found despite disabled switch: {sys_msg!r}"
-        )
-
+class TestExplicitOrchestratorDisabled:
     def test_evaluate_disabled_returns_empty(self, monkeypatch):
         monkeypatch.setattr(
             "skill_hub.config.get",
@@ -346,54 +99,59 @@ class TestOrchestratorDisabled:
         assert result.provision_actions == []
 
 
-# ---------------------------------------------------------------------------
-# 4. Non-code / non-matching — no directive
-# ---------------------------------------------------------------------------
+class TestRouteContextOnly:
+    def test_route_passes_exact_prompt_and_scoped_identity_to_context(self, monkeypatch):
+        import skill_hub.router.route as route_mod
 
-class TestNoDirectiveWhenNotApplicable:
-    """No [tooling] directive for non-code directories or non-explore messages."""
+        prompt = "Plan this work.\nKeep every line exactly as written."
+        received = {}
 
-    def test_non_code_dir_no_directive(self, tmp_path, monkeypatch):
-        _make_non_code_dir(tmp_path)
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        _engine._probe_cache.clear()
+        def fake_build_context(value, **kwargs):
+            received.update(prompt=value, **kwargs)
+            return {"context": "[skill] Use the local pattern."}
 
-        result = evaluate(str(tmp_path), "explore everything here")
-        assert result.directive == "", (
-            f"expected empty directive for non-code dir, got: {result.directive!r}"
-        )
+        monkeypatch.setattr(route_mod._cfg, "load_config", lambda: {"router_enabled": True, "hook_enabled": True, "context_enabled": True})
+        monkeypatch.setattr("skill_hub.context_service.build_context", fake_build_context)
 
-    def test_non_explore_message_no_directive(self, tmp_path, monkeypatch):
-        _make_code_project(tmp_path)
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        _engine._probe_cache.clear()
+        result = route_mod.route(prompt, cwd="/work/alpha", session_id="session-7", task_id=3)
 
-        result = evaluate(str(tmp_path), "write a haiku about Python")
-        assert result.directive == "", (
-            f"expected empty directive for non-explore message, got: {result.directive!r}"
-        )
+        assert received == {
+            "prompt": prompt, "cwd": "/work/alpha", "session_id": "session-7",
+            "task_id": 3, "cfg": {"router_enabled": True, "hook_enabled": True, "context_enabled": True},
+        }
+        assert result == {"userMessage": "[skill] Use the local pattern."}
+        assert prompt == "Plan this work.\nKeep every line exactly as written."
 
-    def test_route_non_code_no_tooling(self, tmp_path, monkeypatch):
-        _make_non_code_dir(tmp_path)
-        monkeypatch.setattr("skill_hub.config.get", _orch_enabled_config())
-        monkeypatch.setattr(
-            "skill_hub.orchestrator.engine.dispatch_async",
-            lambda actions: None,
-        )
-        _engine._probe_cache.clear()
+    def test_route_never_calls_llm_enforcement_or_provisioning(self, monkeypatch):
+        import skill_hub.router.route as route_mod
 
-        from skill_hub.router.route import route
-        result = route(
-            "explore this directory",
-            session_id="t",
-            cwd=str(tmp_path),
-            task_id=None,
-        )
+        def forbidden(*_args, **_kwargs):
+            pytest.fail("retired route dependency was called")
 
-        sys_msg = result.get("systemMessage", "")
-        assert "[tooling]" not in sys_msg, (
-            f"unexpected [tooling] in non-code dir: {sys_msg!r}"
-        )
+        old_enabled = {
+            "router_enabled": True, "hook_enabled": True, "context_enabled": True,
+            "router_haiku_classify": True, "orchestrator_enabled": True,
+            "orchestrator_auto_init": True,
+        }
+        monkeypatch.setattr(route_mod._cfg, "load_config", lambda: old_enabled)
+        monkeypatch.setattr("skill_hub.router.ollama_client.classify", forbidden)
+        monkeypatch.setattr("skill_hub.router.haiku_client.classify", forbidden)
+        monkeypatch.setattr("skill_hub.orchestrator.engine.evaluate", forbidden)
+        monkeypatch.setattr("skill_hub.orchestrator.engine.dispatch_async", forbidden)
+        monkeypatch.setattr("skill_hub.router.enforcement.apply", forbidden, raising=False)
+        monkeypatch.setattr("skill_hub.context_service.build_context", lambda *_args, **_kwargs: {"context": "evidence"})
+
+        assert route_mod.route("explore the codebase", cwd="/work/alpha") == {"userMessage": "evidence"}
+
+    def test_disabled_or_failed_context_returns_empty(self, monkeypatch):
+        import skill_hub.router.route as route_mod
+
+        monkeypatch.setattr(route_mod._cfg, "load_config", lambda: {"context_enabled": False})
+        assert route_mod.route("prompt") == {}
+
+        monkeypatch.setattr(route_mod._cfg, "load_config", lambda: {"router_enabled": True, "hook_enabled": True, "context_enabled": True})
+        monkeypatch.setattr("skill_hub.context_service.build_context", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")))
+        assert route_mod.route("prompt") == {}
 
 
 # ---------------------------------------------------------------------------

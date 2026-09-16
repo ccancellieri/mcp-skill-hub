@@ -77,6 +77,10 @@ const TASK_DATA = {};
                   :class="'pill-' + (activityStates[t.id] || 'open')"
                   x-text="activityStates[t.id] || 'open'"
                   style="flex-shrink:0; margin-top:1px"></span>
+            <span class="work-state-badge"
+                  :class="'work-state-' + (t.options?.work_state || 'active')"
+                  x-text="(t.options?.work_state || 'active').replace('_', ' ')"
+                  style="flex-shrink:0; margin-top:1px"></span>
             <button class="btn sm danger" style="flex-shrink:0"
                     @click.stop="selectById(t.id); openClose()"
                     title="Close task">close</button>
@@ -180,19 +184,17 @@ const TASK_DATA = {};
                 </button>
               </span>
             </template>
-            {# Per-task option toggles #}
-            <button class="btn sm"
-                    :class="taskOptions.auto_approve === true ? 'on' : taskOptions.auto_approve === false ? 'off' : ''"
-                    :title="'Auto-approve: ' + (taskOptions.auto_approve === true ? 'ON (click to disable)' : taskOptions.auto_approve === false ? 'OFF (click to clear)' : 'inherit global (click to enable)')"
-                    @click="cycleAutoApprove()"
-                    x-text="'AA:' + (taskOptions.auto_approve === true ? 'on' : taskOptions.auto_approve === false ? 'off' : '—')">
-            </button>
-            <button class="btn sm"
-                    :class="taskOptions.routing_disabled ? 'off' : ''"
-                    :title="taskOptions.routing_disabled ? 'Routing disabled — click to re-enable' : 'Routing active — click to disable'"
-                    @click="toggleRouting()"
-                    x-text="'R:' + (taskOptions.routing_disabled ? 'off' : 'on')">
-            </button>
+            <label class="work-state-control" x-show="filter==='open'">
+              <span>Work state</span>
+              <select :value="taskOptions.work_state || 'active'"
+                      @change="setWorkState($event.target.value)"
+                      aria-label="Work state">
+                <option value="active">Active</option>
+                <option value="waiting_user">Waiting for user</option>
+                <option value="waiting_external">Waiting external</option>
+                <option value="paused">Paused</option>
+              </select>
+            </label>
             <button class="btn sm danger"
                     @click="if(confirm('Delete task #'+selectedId+'?')) fetch('/tasks/'+selectedId+'/delete',{method:'POST'}).then(()=>location.reload())"
                     title="Permanently delete task">
@@ -617,19 +619,15 @@ function tasksApp() {
         if (r.ok) {
           const j = await r.json();
           this.taskOptions = j.options || {};
+          this.selectedTask = {...this.selectedTask, options: this.taskOptions};
+          if (TASK_DATA[this.selectedId]) TASK_DATA[this.selectedId].options = this.taskOptions;
+          this.openTasks = this.openTasks.map(t => t.id === this.selectedId ? {...t, options: this.taskOptions} : t);
         }
       } catch(_) {}
     },
 
-    cycleAutoApprove() {
-      // null → true → false → null
-      const cur = this.taskOptions.auto_approve;
-      const next = cur === null || cur === undefined ? true : cur === true ? false : null;
-      this._patchOptions({auto_approve: next});
-    },
-
-    toggleRouting() {
-      this._patchOptions({routing_disabled: !this.taskOptions.routing_disabled});
+    setWorkState(workState) {
+      this._patchOptions({work_state: workState});
     },
 
     async fetchModelStats() {

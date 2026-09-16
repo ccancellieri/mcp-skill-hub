@@ -55,6 +55,7 @@ Repository = "https://github.com/ccancellieri/mcp-skill-hub"
 [project.scripts]
 skill-hub = "skill_hub.server:main"
 skill-hub-cli = "skill_hub.cli:main"
+skill-hub-context = "skill_hub.context_cli:main"
 skill-hub-repl = "skill_hub.repl:main"
 skill-hub-dashboard = "skill_hub.webapp.__main__:main"
 cwt = "skill_hub.cwt:main"

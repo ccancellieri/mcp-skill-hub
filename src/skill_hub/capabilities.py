@@ -170,6 +170,8 @@ class ToolSpec:
 # the page renders predictably. Dependencies were derived by inspecting each
 # tool body — keep this list in sync when adding/removing @mcp.tool entries.
 TOOLS: tuple[ToolSpec, ...] = (
+    ToolSpec("prepare_context", "Retrieve bounded project evidence without an LLM",
+             hard=(BACKEND_DB,)),
     # --- Search & RAG (need an embedding backend) ---
     ToolSpec("search_skills", "Semantic skill search",
              hard=(BACKEND_DB, BACKEND_EMBED)),
@@ -268,7 +270,7 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("curate_plugins", "L1/L2 decide (and optionally apply) plugin disables",
              hard=(BACKEND_DB,), soft=(BACKEND_REASON_LLM,)),
     # --- Router (prompt rewriting) ---
-    ToolSpec("improve_prompt", "Run a prompt rewriter pipeline",
+    ToolSpec("improve_prompt", "Append scoped evidence while preserving the prompt",
              hard=(), soft=(BACKEND_REASON_LLM,)),
     ToolSpec("list_prompt_rewriters", "List available prompt rewriters",
              hard=()),
