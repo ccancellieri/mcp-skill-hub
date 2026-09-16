@@ -9,3 +9,13 @@ build/
 .memory/
 .worktrees/
 .codegraph/
+AGENTS.md
+CLAUDE.md
+.codex/
+.Codex/
+.agents/
+.superpowers/
+GEMINI.md
+.cursorrules
+.aider*
+**/copilot-instructions.md
