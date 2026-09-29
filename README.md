@@ -4,9 +4,23 @@
 
 **Choose the evidence a coding assistant needs, then keep the context small.**
 
-Skill Hub is a local Python MCP server for project memory, skill discovery and
-reviewable context composition. Its core retrieval path uses SQLite and keyword
-search: no model download or API key is needed. The original prompt stays intact.
+**MCP Skill Hub** is a local Python toolkit for project memory, skill discovery
+and reviewable context composition. It started as an MCP server to provide a
+standard integration interface across AI clients and agent runtimes
+("harnesses"). The name reflects those origins; today the project exposes
+several interfaces:
+
+- **[MCP tools](docs/mcp-profiles.md)** for clients that support the Model Context Protocol.
+- **CLI tools and a [shared JSON interface](integrations/README.md)** for scripts and direct client integrations.
+- **[Plugin extension points](docs/plugin-extension-points.md)** for adding web views, storage and indexing capabilities.
+- **Optional [hooks](docs/features/hooks.md) and [native adapters](integrations/README.md)** for supported client events.
+- **A web dashboard and [context composer](docs/context-composer.md)** for inspecting sources, reviewing context and copying it into a client.
+
+MCP is one way to access these capabilities. Hooks and native adapters are
+client-specific; choose the integration supported by your harness.
+
+The core retrieval path uses SQLite and keyword search: no model download or API
+key is needed. The original prompt stays intact.
 
 [Get started](#get-started) · [Context composer](docs/context-composer.md) ·
 [Measured results](benchmarks/VERIFIED_RESULTS.md) · [Client integrations](integrations/README.md)
