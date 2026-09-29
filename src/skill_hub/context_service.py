@@ -247,30 +247,42 @@ def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int,
                       include_full_text: bool = False) -> list[dict]:
     terms = _tokens(prompt)
     rows = _search_skills_text(conn, terms, top_k=100, include_content=include_full_text)
-    ranked: list[tuple[int, int, dict, str]] = []
+    ranked: list[tuple[set[str], set[str], bool, bool, bool, dict, str]] = []
     for row in rows:
         description = row.get("description") or ""
         if not _usable_description(description):
             continue
-        name_overlap = len(terms & _tokens(f"{row['id']} {row.get('name') or ''}"))
-        description_overlap = len(terms & _tokens(description))
-        if not name_overlap and not description_overlap:
+        name = row.get("name") or row["id"].rsplit(":", 1)[-1]
+        name_terms = terms & _tokens(name)
+        description_terms = terms & _tokens(description)
+        explicit_id = ":" in row["id"] and bool(re.search(
+            rf"(?<![\w:-]){re.escape(row['id'])}(?![\w:-])", prompt, re.IGNORECASE
+        ))
+        namespace_terms = terms & _tokens(row["id"].rsplit(":", 1)[0]) if ":" in row["id"] else set()
+        namespace_only = bool(namespace_terms) and not name_terms
+        corroborated = namespace_only and bool(description_terms - namespace_terms)
+        if not name_terms and not description_terms and not explicit_id:
             continue
-        ranked.append((name_overlap, description_overlap, row, description))
+        ranked.append((name_terms, description_terms, namespace_only, corroborated,
+                       explicit_id, row, description))
 
-    strongest_name_overlap = max((entry[0] for entry in ranked), default=0)
-    if strongest_name_overlap:
-        ranked = [entry for entry in ranked if entry[0] > 0]
+    name_match = any(entry[0] for entry in ranked)
+    namespace_match = any(entry[3] for entry in ranked)
+    explicit_match = any(entry[4] for entry in ranked)
+    if name_match or namespace_match or explicit_match:
+        ranked = [entry for entry in ranked if entry[0] or entry[3] or entry[4]]
+    else:
+        ranked = [entry for entry in ranked if not entry[2]]
 
     items = []
-    for name_overlap, description_overlap, row, description in ranked:
+    for name_terms, description_terms, _, _, _, row, description in ranked:
         title = row.get("name") or row["id"]
         if row.get("indexed_at"):
             title = f"{title} (indexed {row['indexed_at']})"
         bm25_bonus = min(99, max(0, int(-float(row.get("score") or 0) * 100)))
         items.append(_item(
             "skill", title, f"skill:{row['id']}",
-            description, 5_000 + name_overlap * 1_000 + description_overlap * 100 + bm25_bonus,
+            description, 5_000 + len(name_terms) * 1_000 + len(description_terms) * 100 + bm25_bonus,
             row.get("content") if include_full_text else None,
         ))
     return items

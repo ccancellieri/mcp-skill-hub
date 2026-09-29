@@ -2,8 +2,9 @@
 
 ## Current priority: measured token savings
 
-- [ ] #154 — Reviewable context composer, explicit project selection and deterministic compression; implementation available locally, integration pending.
-- [ ] #156 — Explicit minimal MCP profile and description-first lookup; measure actual schema overhead before claiming task savings.
+- [ ] #158 — Reduce irrelevant suggestions first: distinguish a skill's actual name and description from its plugin namespace, preserve useful description matches, and test abstention in both languages.
+- [ ] #154 — Reviewable context composer, explicit project selection and deterministic compression; candidate in PR #159, integration pending.
+- [ ] #156 — Explicit minimal MCP profile and description-first lookup; the PR #159 protocol comparison measures 92.41% smaller serialized schemas/instructions (87 tools to 8). Native task savings remain unqualified.
 - [ ] #157 and #112 — Preserve compression fidelity and verified source provenance.
 - [ ] #152 — Compare full-task usage and correctness, with at least 15% median token reduction required for promotion. Payload estimates and synthetic checks alone do not qualify.
 - [ ] #128 and #129 — Finish common dispatch and qualify native client integrations.
@@ -11,6 +12,12 @@
 DwarfStar (#121) and preference learning (#155) are not planned. Current local
 selector studies are concluded without promotion; visual workflows remain
 deferred. No experimental selector is activated automatically.
+
+The useful product boundary is scoped evidence, faithful deterministic
+compression, and explicit source recovery. The next release should pass CI,
+reduce demonstrated irrelevant suggestions, and make that boundary easy to use.
+The synthetic packet reduction (11.49% paired median) is a separate result from
+whole-task savings; it is not a reason to enable automatic enrichment more broadly.
 
 ## Shipped ✅
 

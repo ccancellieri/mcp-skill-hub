@@ -389,6 +389,78 @@ def test_skill_ranking_prefers_exact_fastapi_metadata_over_content_distractors(s
     assert all(item["source"] != "skill:distractor:maintenance" for item in skills)
 
 
+@pytest.mark.parametrize("prompt, expected", [
+    ("Improve MCP", {"skill:tools:mcp-builder"}),
+    ("Migliora MCP", {"skill:tools:mcp-builder"}),
+    ("MCP tool to inspect accessibility", {
+        "skill:tools:mcp-builder", "skill:chrome-devtools-mcp:a11y-debugging",
+    }),
+    ("Strumento MCP per verificare accessibilità", {
+        "skill:tools:mcp-builder", "skill:chrome-devtools-mcp:a11y-debugging",
+    }),
+    ("Use chrome-devtools-mcp:a11y-debugging", {
+        "skill:chrome-devtools-mcp:a11y-debugging",
+    }),
+    ("Use chrome-devtools-mcp:a11y-debugging with MCP builder", {
+        "skill:chrome-devtools-mcp:a11y-debugging", "skill:tools:mcp-builder",
+    }),
+    ("Use tools:mcp-builder", {"skill:tools:mcp-builder"}),
+    ("Review PostgreSQL migration", set()),
+])
+def test_skill_namespace_does_not_make_unrelated_skills_relevant(store, prompt, expected):
+    from skill_hub.context_service import build_context
+
+    store.upsert_skill(Skill(
+        id="tools:mcp-builder", name="MCP builder",
+        description="Build and improve MCP tools and servers.", content="# MCP builder",
+        file_path="/trusted/skills/mcp-builder/SKILL.md", plugin="tools",
+    ))
+    store.upsert_skill(Skill(
+        id="chrome-devtools-mcp:a11y-debugging", name="a11y debugging",
+        description="Inspect accessibility and accessibilità with Chrome DevTools MCP.",
+        content="# Accessibility", file_path="/trusted/skills/a11y/SKILL.md",
+        plugin="chrome-devtools-mcp",
+    ))
+    store.upsert_skill(Skill(
+        id="tools:filesystem", name="filesystem",
+        description="Improve file system diagnostics.", content="# Filesystem",
+        file_path="/trusted/skills/filesystem/SKILL.md", plugin="tools",
+    ))
+    store.upsert_skill(Skill(
+        id="tools:mcp-build", name="helper",
+        description="MCP diagnostics for a different helper.", content="# Helper",
+        file_path="/trusted/skills/helper/SKILL.md", plugin="tools",
+    ))
+    for name in ("performance", "cookies", "network", "memory", "troubleshooting"):
+        store.upsert_skill(Skill(
+            id=f"chrome-devtools-mcp:{name}", name=name,
+            description=f"Use Chrome DevTools MCP for {name} diagnostics.",
+            content=f"# {name}", file_path=f"/trusted/skills/{name}/SKILL.md",
+            plugin="chrome-devtools-mcp",
+        ))
+
+    result = build_context(prompt, store=store)
+    actual = {item["source"] for item in result["items"] if item["kind"] == "skill"}
+    if "chrome-devtools-mcp:a11y-debugging" in prompt or "tools:mcp-builder" in prompt:
+        assert expected <= actual
+        assert "skill:tools:mcp-build" not in actual
+    else:
+        assert actual == expected
+
+
+def test_skill_without_name_matches_its_leaf_id(store):
+    from skill_hub.context_service import build_context
+
+    store.upsert_skill(Skill(
+        id="tools:accessibility", name="",
+        description="Audit keyboard focus with semantic markup.", content="# Accessibility",
+        file_path="/trusted/skills/accessibility/SKILL.md", plugin="tools",
+    ))
+
+    result = build_context("Improve accessibility", store=store)
+    assert [item["source"] for item in result["items"]] == ["skill:tools:accessibility"]
+
+
 @pytest.mark.parametrize("kind", ["memory", "wiki"])
 def test_scoped_context_uses_original_instead_of_generated_digest(store, kind):
     from skill_hub.context_service import build_context
