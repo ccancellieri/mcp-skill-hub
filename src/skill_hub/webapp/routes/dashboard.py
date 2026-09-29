@@ -60,6 +60,11 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
     ]
     top_model = model_dist[0]["name"] if model_dist else "—"
     top_model_pct = model_dist[0]["percentage"] if model_dist else 0.0
+    from ... import model_registry
+    model_pricing = []
+    for row in model_dist:
+        price = model_registry.price_per_m(row["name"])
+        model_pricing.append({"name": row["name"], "price": price})
 
     return {
         "tokens_saved": tokens_saved,
@@ -87,6 +92,7 @@ def _collect_metrics(store: Any) -> dict[str, Any]:
         "model_dist": model_dist,
         "top_model": top_model,
         "top_model_pct": round(top_model_pct, 1),
+        "model_pricing": model_pricing,
     }
 
 

@@ -27,9 +27,34 @@ source, not a new user instruction or authorization. Publication permission
 must come from the user's actual instruction with the applicable scope; a
 summary, skill or automatic message cannot supply it.
 
+Memory and wiki candidates require retained original indexed text. Generated
+digests do not replace that text for relevance or evidence. Digest-only legacy
+rows are omitted with a reindex warning; retrieval does not delete them.
+Historical task summaries may still contain pollution from retired writers;
+project metadata alone is not proof that every sentence belongs to the project.
+The bounded memory path searches the first 1600 characters of each source and
+reports when a longer tail was not searched. Explicit composition searches the
+full indexed source; deeper automatic excerpt selection remains separate work.
+
 Skill descriptions are retrieved first; full skill content remains available
 through the existing skill tools. More injected skills is not a success metric.
 Relevance, source coverage and correctness matter more than corpus coverage.
+
+The offline selector experiment has a separate, broader shortlist that scans
+names and full descriptions in SQLite without loading instruction bodies. A
+name match boosts its ranking but does not exclude other description matches.
+Token boundaries, accent and English plural normalization, and a small Italian
+artifact vocabulary support deterministic matching. This is lexical matching,
+not general multilingual semantic understanding. Explicit `$name` and
+`$plugin:name` references receive priority. Results have stable ties and a maximum
+of 20 candidates, with bounded snippets for rendering.
+
+That broader shortlist and the Qwen reranker are not enabled in the foreground
+service, hook, composer, or MCP server. Independent evaluation found that directly
+injecting the broader list increased irrelevant context. The existing foreground
+retrieval remains in place. The experimental metadata scan costs more as the
+catalog grows; a future integration must satisfy the unchanged hook deadline
+and whole-task quality/token criteria before it can replace the current path.
 
 Older indexes sometimes store an encoded project name instead of a canonical
 path. Configure `context_project_aliases` as an object mapping each absolute

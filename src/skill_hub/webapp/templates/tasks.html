@@ -285,9 +285,6 @@ const TASK_DATA = {};
                         :style="{background: modelStats.matched_by==='task_id' ? 'rgba(166,227,161,0.12)' : modelStats.matched_by==='time_window' ? 'rgba(249,226,175,0.12)' : 'rgba(255,255,255,0.05)', color: modelStats.matched_by==='task_id' ? 'var(--color-good)' : modelStats.matched_by==='time_window' ? 'var(--color-warn)' : 'var(--color-muted)'}"
                         x-text="'matched: ' + (modelStats.matched_by || 'none')"
                         :title="modelStats.matched_by==='task_id' ? 'Exact task match' : modelStats.matched_by==='time_window' ? 'Time-window match (may include concurrent tasks)' : 'No router data found for this task'"></span>
-                  <span style="font-size:10px; color:var(--color-muted)"
-                        x-text="'~$' + estCost(modelStats.models).toFixed(3)"
-                        title="Rough cost estimate: haiku $0.003, sonnet $0.010, opus $0.050 per prompt"></span>
                 </span>
               </div>
               <div style="display: flex; flex-direction: column; gap: 8px">
@@ -301,7 +298,7 @@ const TASK_DATA = {};
                     </div>
                     <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden">
                       <div style="height: 100%; border-radius: 2px; transition: width 0.4s ease"
-                           :style="{width: model.percentage + '%', background: model.name==='opus' ? 'var(--color-accent)' : model.name==='haiku' ? '#6b7280' : 'var(--color-good)'}"></div>
+                           :style="{width: model.percentage + '%', background: modelColor(model.name)}"></div>
                     </div>
                   </div>
                 </template>
@@ -344,9 +341,9 @@ const TASK_DATA = {};
                       stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 3"></line>
               </svg>
               <div style="display:flex; gap:10px; margin-top:6px; font-size:9px; color:var(--color-muted)">
-                <span><span style="display:inline-block; width:8px; height:8px; background:var(--color-accent); border-radius:1px; vertical-align:middle; margin-right:3px"></span>opus</span>
-                <span><span style="display:inline-block; width:8px; height:8px; background:var(--color-good); border-radius:1px; vertical-align:middle; margin-right:3px"></span>sonnet</span>
-                <span><span style="display:inline-block; width:8px; height:8px; background:#6b7280; border-radius:1px; vertical-align:middle; margin-right:3px"></span>haiku</span>
+                <template x-for="model in modelStats.models" :key="model.name">
+                  <span><span :style="{display:'inline-block', width:'8px', height:'8px', background:modelColor(model.name), borderRadius:'1px', verticalAlign:'middle', marginRight:'3px'}"></span><span x-text="model.name"></span></span>
+                </template>
                 <span style="margin-left:auto">avg ~<span x-text="fmtTokens(modelStats.prompt_tokens_avg)"></span> tok/turn</span>
               </div>
             </div>
@@ -670,17 +667,11 @@ function tasksApp() {
       const peak = Math.max(1, ...turns.map(t => t.prompt_tokens || 0));
       const gap = turns.length > 80 ? 0 : 1;
       const barW = Math.max(1, (w - gap * (turns.length - 1)) / turns.length);
-      const palette = {
-        opus: 'var(--color-accent, #89b4fa)',
-        sonnet: 'var(--color-good, #a6e3a1)',
-        haiku: '#6b7280',
-      };
       return turns.map((t, i) => {
         const tokens = t.prompt_tokens || 0;
         const ratio = tokens / peak;
         const barH = Math.max(1.5, ratio * (h - 4));
-        const model = (t.model || '').toLowerCase();
-        const color = palette[Object.keys(palette).find(k => model.includes(k))] || '#a6a6a6';
+        const color = this.modelColor(t.model);
         return {
           x: i * (barW + gap),
           y: h - barH,
@@ -694,12 +685,12 @@ function tasksApp() {
       });
     },
 
-    estCost(models) {
-      const rates = {opus: 0.050, sonnet: 0.010, haiku: 0.003};
-      return (models || []).reduce((sum, m) => {
-        const key = Object.keys(rates).find(k => m.name.includes(k)) || 'sonnet';
-        return sum + m.count * rates[key];
-      }, 0);
+    modelColor(model) {
+      const palette = ['#89b4fa', '#a6e3a1', '#f9e2af', '#cba6f7', '#94e2d5', '#fab387'];
+      const name = String(model || 'unknown');
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+      return palette[Math.abs(hash) % palette.length];
     },
 
     async refreshLogs() {

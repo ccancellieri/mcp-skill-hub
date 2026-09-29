@@ -78,7 +78,13 @@ def _maybe_observe_claude_task(data: dict) -> None:
         if not parsed:
             return
         session_id = data.get("session_id", "")
-        cwd = data.get("cwd") or os.getcwd()
+        source_cwd = data.get("cwd")
+        if not isinstance(source_cwd, str) or not source_cwd:
+            return
+        project_dir = Path(source_cwd)
+        if not project_dir.is_absolute() or not project_dir.is_dir():
+            return
+        cwd = os.path.normcase(os.path.normpath(source_cwd))
         branch = ""
         try:
             import subprocess

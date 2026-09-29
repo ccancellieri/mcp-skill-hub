@@ -700,3 +700,25 @@ function getHelpContent(pageId) {
     html: '<p>No detailed help available for this topic yet.</p>'
   };
 }
+
+// Keep validation failures visible inside the context workspace.
+document.addEventListener('htmx:beforeSwap', (event) => {
+  if (event.detail.target?.closest('.context-workspace') && [422, 503].includes(event.detail.xhr.status)) {
+    event.detail.shouldSwap = true;
+    event.detail.isError = false;
+  }
+});
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-context-copy]');
+  if (!button) return;
+  const field = document.getElementById(button.dataset.contextCopy);
+  const status = button.parentElement.querySelector('[data-copy-status]');
+  if (!field) return;
+  try {
+    await navigator.clipboard.writeText(field.value);
+    if (status) status.textContent = 'Copied';
+  } catch (_) {
+    field.focus(); field.select();
+    if (status) status.textContent = 'Text selected. Use your copy shortcut.';
+  }
+});

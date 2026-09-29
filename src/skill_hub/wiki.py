@@ -1478,9 +1478,9 @@ def file_answer(
             top_k=top_k,
             pages_block=pages_block[:16000],
         )
-        raw_answer = _emb.get_provider().complete(
-            prompt,
-            tier=tier,
+        from .llm import request
+        raw_answer = request(
+            tier, prompt, get_provider_fn=_emb.get_provider,
             model=model,
             max_tokens=2048,
             temperature=0.1,

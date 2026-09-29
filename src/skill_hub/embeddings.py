@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -127,6 +128,24 @@ Skill description: {description}
 """
 
 
+@dataclass(frozen=True)
+class EmbeddingResult:
+    """An embedding plus the backend and model that actually produced it."""
+
+    vector: tuple[float, ...]
+    model: str
+    backend: str
+
+
+class EmbeddingVector(list[float]):
+    """List-compatible vector carrying per-result provenance."""
+
+    def __init__(self, values: list[float] | tuple[float, ...], *, model: str, backend: str) -> None:
+        super().__init__(values)
+        self.model = model
+        self.backend = backend
+
+
 def quantize_binary(vector: list[float]) -> bytes:
     """Pack a float vector's sign bits into bytes for sqlite-vec ``bit[N]`` storage.
 
@@ -146,7 +165,9 @@ def quantize_binary(vector: list[float]) -> bytes:
     return bytes(out)
 
 
-def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[float]:
+def embed_with_metadata(
+    text: str, model: str | None = None, timeout: float = 15.0,
+) -> EmbeddingResult:
     """Return embedding vector using the configured backend cascade.
 
     Tries backends in order from config `embedding_backend_priority`:
@@ -180,7 +201,17 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
             else:
                 continue
             if vec is not None and len(vec) > 0:
-                return vec
+                if backend == "ollama":
+                    actual_model = model
+                elif backend == "sentence_transformers":
+                    actual_model = str(
+                        _cfg.get("sentence_transformers_model") or "all-MiniLM-L6-v2"
+                    )
+                else:
+                    actual_model = getattr(vec, "model", "")
+                    if not actual_model:
+                        raise RuntimeError("ladder result omitted actual model provenance")
+                return EmbeddingResult(tuple(float(value) for value in vec), actual_model, backend)
             # If we reach here, backend returned empty/None — record it and try next
             errors.append(f"{backend}: returned empty vector")
         except Exception as exc:
@@ -188,6 +219,12 @@ def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[fl
             continue
 
     raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
+
+
+def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[float]:
+    """Return a list-compatible vector with actual model provenance attached."""
+    result = embed_with_metadata(text, model=model, timeout=timeout)
+    return EmbeddingVector(list(result.vector), model=result.model, backend=result.backend)
 
 
 def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:
@@ -274,7 +311,7 @@ def _embed_ladder(text: str, *, timeout: float = 15.0) -> list[float]:
                 f"{sel.provider}/{sel.model}: dim {len(vec)} != index dim {expected}"
             )
             continue
-        return vec
+        return EmbeddingVector(vec, model=sel.model, backend=f"ladder:{sel.provider}")
 
 
 def _embed_sentence_transformers(text: str) -> list[float]:

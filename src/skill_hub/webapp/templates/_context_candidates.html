@@ -1,0 +1,31 @@
+<section class="composer-selection" aria-label="Suggested context">
+  <div class="context-summary"><span>{{ draft.candidates|length }} candidates</span><span>Budget {{ draft.token_budget }} estimated tokens</span></div>
+  {% for warning in draft.warnings %}<p class="context-warnings">{{ warning }}</p>{% endfor %}
+  <p>Review this selection before using it.</p>
+  <form hx-post="/context/compose" hx-target="#composer-preview" hx-swap="innerHTML">
+    <input type="hidden" name="draft_id" value="{{ draft.draft_id }}">
+    <ol class="composer-candidates">
+    {% for item in draft.candidates %}
+      <li class="composer-candidate">
+        <div class="composer-candidate-head">
+          <label><input type="checkbox" name="selected_ids" value="{{ item.candidate_id }}" {% if item.candidate_id in draft.selected_ids %}checked{% endif %}> <strong>{{ item.title }}</strong></label>
+          <span class="muted">{{ item.estimated_tokens }} estimated tokens</span>
+        </div>
+        <p class="composer-source">{{ item.kind }} · {{ item.source }}{% if item.project_root %} · {{ item.project_root }}{% endif %}</p>
+        <p class="muted">{{ item.reason }} · Updated: {{ item.updated_at or 'not reported' }}</p>
+        <details><summary>Read and shorten</summary>
+          <pre>{{ item.text }}</pre>
+          <div class="context-field"><label for="excerpt-{{ item.candidate_id }}">Optional exact excerpt to keep</label><textarea id="excerpt-{{ item.candidate_id }}" name="excerpt:{{ item.candidate_id }}" rows="3" placeholder="Paste a continuous passage from this source"></textarea></div>
+          <button class="btn secondary" type="button" hx-get="/context/source/{{ draft.draft_id }}/{{ item.candidate_id }}" hx-target="#source-{{ item.candidate_id }}">Expand source</button>
+          <div id="source-{{ item.candidate_id }}"></div>
+        </details>
+      </li>
+    {% else %}<li class="muted">No relevant evidence found. You can continue with the original prompt.</li>{% endfor %}
+    </ol>
+    <p class="muted">Uncheck any source you do not want in the packet. Exact excerpts shorten a source and are marked as lossy compression.</p>
+    <div class="context-actions">
+      <button type="submit" class="btn">Preview selection</button>
+    </div>
+  </form>
+  <div id="composer-preview" aria-live="polite"></div>
+</section>

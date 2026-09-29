@@ -56,3 +56,36 @@ def test_shell_stop_hook_is_a_noop_for_legacy_enabled_input(tmp_path: Path):
     assert result.stdout == result.stderr == ""
     assert "skill-hub-cli" not in source
     assert "python3" not in source
+
+
+def test_legacy_session_end_does_not_journal_unscoped_activity(monkeypatch):
+    from skill_hub import cli, config
+
+    updates = []
+
+    class Store:
+        def get_session_context(self, session_id):
+            return {"recent_messages": ["Review alpha beta changes"], "message_count": 3}
+
+        def get_interception_totals(self):
+            return {}
+
+        def list_tasks(self, **kwargs):
+            return [{"id": 1, "title": "Alpha beta work", "tags": "", "summary": "Original"}]
+
+        def update_task(self, task_id, **kwargs):
+            updates.append((task_id, kwargs))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "SkillStore", Store)
+    monkeypatch.setattr(cli, "smart_memory_write", lambda **kwargs: {
+        "quality": 0, "escalate": True, "reason": "test", "directive": "",
+    })
+    monkeypatch.setattr(cli, "embed_available", lambda: False)
+    monkeypatch.setattr(config, "get", lambda key: key == "task_journal_enabled")
+
+    cli._cmd_session_end("session-alpha", "", "")
+
+    assert updates == []

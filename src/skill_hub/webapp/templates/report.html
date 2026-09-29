@@ -148,16 +148,16 @@
     <div class="rp-kpi accent" style="cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='rgba(58,160,255,0.3)'" onmouseout="this.style.borderColor='var(--color-border)'" onclick="this.classList.toggle('expanded')">
       <div class="rp-kpi-label">
         <span class="tooltip-wrapper">
-          <span>Tokens saved</span>
-          <a class="tooltip-help" href="#" data-tooltip="Estimated tokens and costs avoided by using smaller models (haiku) instead of larger ones." data-help-page="tokens-saved" tabindex="0">?</a>
+          <span>Historical token estimates</span>
+          <a class="tooltip-help" href="#" data-tooltip="Legacy router estimates, not measured savings on completed tasks. Some historical events used fixed heuristics." data-help-page="tokens-saved" tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-kpi-value">{{ "{:,}".format(tokens_saved) }}</div>
-      <div class="rp-kpi-sub">≈ {{ tokens_per_prompt }}/prompt · <strong style="color:var(--color-good)">~${{ "{:,.2f}".format(tokens_saved_usd) }}</strong> saved</div>
+      <div class="rp-kpi-sub">≈ {{ tokens_per_prompt }}/prompt · <strong style="color:var(--color-good)">{% if tokens_saved_usd is not none %}~${{ "{:,.2f}".format(tokens_saved_usd) }} saved{% else %}price not reported{% endif %}</strong></div>
       <div class="expanded-kpi" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);font-size:10px;color:var(--color-muted);line-height:1.5">
-        <div style="margin-bottom:6px"><strong style="color:var(--color-fg)">USD estimate:</strong> per-model blended rates (30% input / 70% output)</div>
-        <div>Haiku $0.95/M · Sonnet $11.40/M · Opus $57.00/M</div>
-        <div style="margin-top:4px">Totals weighted by tokens attributed to each model</div>
+        <div style="margin-bottom:6px"><strong style="color:var(--color-fg)">USD estimate:</strong> prices resolved from the model registry</div>
+        <div>Unknown model prices remain unknown.</div>
+        <div style="margin-top:4px">Totals are weighted by tokens attributed to each model.</div>
       </div>
     </div>
 
@@ -297,7 +297,7 @@
   <div class="rp-h2">
     <span class="tooltip-wrapper">
       <span>Daily trends</span>
-      <a class="tooltip-help" href="#" data-tooltip="Day-over-day evolution of routing volume, token savings, enrichment rate, and latency. Shows whether the system is improving over time." tabindex="0">?</a>
+      <a class="tooltip-help" href="#" data-tooltip="Day-over-day evolution of routing volume, token savings, enrichment rate, and latency. Historical routing data does not establish task-level improvement." tabindex="0">?</a>
     </span>
   </div>
   <div class="rp-card">
@@ -312,7 +312,7 @@
           <tr>
             <th style="width:90px">Day</th>
             <th>Prompts</th>
-            <th>Tokens saved</th>
+            <th>Historical token estimates</th>
             <th>Enrichment %</th>
             <th>Plan mode</th>
             <th>Avg latency (ms)</th>
@@ -379,13 +379,13 @@
       <div class="rp-card-title">
         <span class="tooltip-wrapper">
           <span>Model distribution</span>
-          <a class="tooltip-help" href="#" data-tooltip="Percentage of prompts routed to each LLM model: Haiku (fast/routine), Sonnet (standard), Opus (complex/plan-mode)." tabindex="0">?</a>
+          <a class="tooltip-help" href="#" data-tooltip="Percentage of recorded prompts attributed to each reported model." tabindex="0">?</a>
         </span>
       </div>
       <div class="rp-bar-list">
         {% for model, count in model_counts.items() %}
           {% set pct = model_pcts.get(model, 0) %}
-          {% set css = model if model in ('sonnet','opus','haiku') else 'muted' %}
+          {% set css = 'muted' %}
           <div class="rp-bar-row">
             <span class="rp-bar-key">{{ model }}</span>
             <div class="rp-bar-track">
@@ -396,7 +396,7 @@
         {% endfor %}
       </div>
       <div style="margin-top:12px;font-size:10px;color:var(--color-muted)">
-        Haiku/sonnet = routine · Opus = complex/plan-mode
+        Model names are taken from recorded routing events.
       </div>
     </div>
 
@@ -404,8 +404,8 @@
     <div class="rp-card">
       <div class="rp-card-title">
         <span class="tooltip-wrapper">
-          <span>Token savings breakdown</span>
-          <a class="tooltip-help" href="#" data-tooltip="How tokens were saved: enrichment = reused context avoiding rework, plan_mode = avoided unnecessary design work, tier_selection = using smaller models where appropriate." tabindex="0">?</a>
+          <span>Historical estimate breakdown</span>
+          <a class="tooltip-help" href="#" data-tooltip="Historical estimates grouped by the recorded router category. These categories do not establish avoided work or end-to-end token savings." tabindex="0">?</a>
         </span>
       </div>
       {% set total_sv = tokens_saved %}

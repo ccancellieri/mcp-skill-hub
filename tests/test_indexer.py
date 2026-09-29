@@ -263,3 +263,46 @@ def test_index_all_prunes_orphaned_row_on_reindex(index_env):
     ids = {r["id"] for r in store._conn.execute("SELECT id FROM skills")}
     assert "superpowers:using-git-worktrees" not in ids
     assert any("pruned" in e for e in errors)
+
+
+def test_explicit_text_only_index_uses_selected_directory_without_embeddings(index_env, tmp_path, monkeypatch):
+    store, cache_dir, _ = index_env
+    selected = tmp_path / "selected"
+    _write_skill(selected, "skills", "review", name="review",
+                 description="Review database migrations")
+    _write_skill(cache_dir, "skills", "unrelated", name="unrelated",
+                 description="Unrelated skill")
+    monkeypatch.setattr(indexer, "embed", lambda *_a, **_kw: (_ for _ in ()).throw(
+        AssertionError("embedding must not run")))
+
+    indexed, errors = indexer.index_all(store, text_only=True, skill_dirs=[selected])
+
+    assert indexed == 1
+    assert errors == []
+    hits = store.search_skills_text("database migrations")
+    assert [hit["id"] for hit in hits] == ["selected:review"]
+    assert store.get_skill_content("selected:review") == "# review\n\nBody content for review.\n"
+    assert {skill["id"] for skill in store.list_skills()} == {"selected:review"}
+    assert store._conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0
+
+
+def test_text_only_index_does_not_replace_content_with_stale_vector(index_env, tmp_path):
+    store, _, _ = index_env
+    selected = tmp_path / "selected"
+    skill_file = _write_skill(selected, "skills", "review", name="review",
+                              description="Original migration advice")
+    indexer.index_all(store, skill_dirs=[selected])
+    old_content = store.get_skill_content("selected:review")
+    old_vector = store._conn.execute(
+        "SELECT vector FROM embeddings WHERE skill_id = 'selected:review'"
+    ).fetchone()[0]
+    skill_file.write_text(SKILL_TEMPLATE.format(name="review", description="Changed migration advice"))
+
+    indexed, errors = indexer.index_all(store, text_only=True, skill_dirs=[selected])
+
+    assert indexed == 0
+    assert any("existing embedding" in error for error in errors)
+    assert store.get_skill_content("selected:review") == old_content
+    assert store._conn.execute(
+        "SELECT vector FROM embeddings WHERE skill_id = 'selected:review'"
+    ).fetchone()[0] == old_vector

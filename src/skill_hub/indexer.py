@@ -130,7 +130,9 @@ def _plugin_from_id(skill_id: str) -> str:
 
 def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
               use_rerank: bool = False,
-              changed_paths: set[Path] | None = None) -> tuple[int, list[str]]:
+              changed_paths: set[Path] | None = None,
+              *, text_only: bool = False,
+              skill_dirs: list[Path] | None = None) -> tuple[int, list[str]]:
     """
     Walk all plugin directories, index every SKILL.md found (target=claude).
     Also index local JSON skills from local_skills_dir (target=local).
@@ -138,10 +140,16 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
     that set are processed — enables watcher-driven incremental reindex.
     Files whose ``content_hash`` matches the stored hash are skipped without
     re-embedding.
+    ``skill_dirs`` limits scanning to those directories and skips whole-corpus
+    maintenance. ``text_only`` requires this explicit scope and stores skill
+    text for keyword search without calling an embedding provider.
 
     Returns (count_indexed, list_of_errors).
     """
     import json as _json
+
+    if text_only and not skill_dirs:
+        raise ValueError("text-only indexing requires explicit skill directories")
 
     indexed = 0
     skipped = 0
@@ -167,6 +175,11 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         if store.get_content_hash(skill_id) == new_hash:
             skipped += 1
             return
+        if text_only and store._conn.execute(
+            "SELECT 1 FROM embeddings WHERE skill_id = ? LIMIT 1", (skill_id,)
+        ).fetchone():
+            errors.append(f"existing embedding for {skill_id}; full indexing is required to update it")
+            return
         skill = Skill(
             id=skill_id,
             name=name,
@@ -177,6 +190,9 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             target=target,
         )
         store.upsert_skill(skill, content_hash=new_hash)
+        if text_only:
+            indexed += 1
+            return
         embed_text = f"{name}: {description}" if description else name
         try:
             vector = embed(embed_text, model=embed_model)
@@ -225,7 +241,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             errors.append(f"embed failed for {skill_id}: {exc}")
 
     # Built-in plugin directories (target=claude)
-    for base in PLUGIN_DIRS:
+    for base in (PLUGIN_DIRS if skill_dirs is None else skill_dirs):
         if not base.exists():
             continue
         for skill_file in base.rglob("SKILL.md"):
@@ -235,7 +251,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             _index_skill_file(skill_file, skill_id, _plugin_from_id(skill_id))
 
     # Extra skill/plugin directories from config (target=claude)
-    for entry in _cfg.get("extra_skill_dirs") or []:
+    for entry in (_cfg.get("extra_skill_dirs") or []) if skill_dirs is None else []:
         if not entry.get("enabled", True):
             continue
         base = Path(entry["path"]).expanduser()
@@ -251,7 +267,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
     # Local JSON skills (target=local)
     local_dir = Path(str(_cfg.get("local_skills_dir") or
                          "~/.claude/local-skills")).expanduser()
-    if local_dir.exists():
+    if skill_dirs is None and local_dir.exists():
         for json_file in sorted(local_dir.glob("*.json")):
             if not _path_allowed(json_file):
                 continue
@@ -259,7 +275,7 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
 
     # Skip the heavy whole-corpus passes (plugin memory, user memory, registry
     # seeding) when we're doing a targeted incremental reindex.
-    if changed_paths is None:
+    if changed_paths is None and skill_dirs is None:
         # Prune stale rows: skills whose backing file was uninstalled/removed,
         # or that live under an excluded dir. Upsert-only indexing would
         # otherwise let the index grow orphaned entries forever, which then

@@ -86,6 +86,9 @@ def test_install_retires_legacy_prompt_hooks_and_preserves_unrelated_hooks(
             "Stop": [{"hooks": [
                 {"type": "command", "command": "/old/mcp-skill-hub/hooks/session-end.sh"},
                 {"type": "command", "command": "/custom/hooks/session-end.sh"},
+                {"type": "command", "command": "/old/mcp-skill-hub/hooks/auto-proceed.sh"},
+                {"type": "command", "command": "python /old/mcp-skill-hub/hooks/auto_proceed.py"},
+                {"type": "command", "command": "/custom/hooks/auto-proceed.sh"},
             ]}],
         },
     }))
@@ -110,6 +113,9 @@ def test_install_retires_legacy_prompt_hooks_and_preserves_unrelated_hooks(
     ]
     assert "/custom/hooks/session-end.sh" in stop_commands
     assert "/old/mcp-skill-hub/hooks/session-end.sh" not in stop_commands
+    assert "/old/mcp-skill-hub/hooks/auto-proceed.sh" not in stop_commands
+    assert "python /old/mcp-skill-hub/hooks/auto_proceed.py" not in stop_commands
+    assert "/custom/hooks/auto-proceed.sh" in stop_commands
 
 
 def test_router_uses_context_timeout_and_status(monkeypatch, settings_path):

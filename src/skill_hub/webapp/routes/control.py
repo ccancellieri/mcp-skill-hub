@@ -221,7 +221,7 @@ def control_install_log(svc: str) -> Any:
 # ──────────────────────────────────────────────────────────────────────
 
 
-_TIER_KEYS = ("tier_cheap", "tier_mid", "tier_smart", "embed")
+_DEFAULT_TIER_KEYS = ("tier_cheap", "tier_mid", "tier_smart", "embed")
 
 _pull_threads: dict[str, threading.Thread] = {}
 _pull_state: dict[str, dict[str, Any]] = {}  # model → {"status": ..., "started_at": ...}
@@ -246,15 +246,57 @@ def _list_installed_models() -> list[dict[str, Any]]:
     return models
 
 
+def _tier_keys() -> tuple[str, ...]:
+    """Editable service keys: compatibility defaults plus explicit saved keys."""
+    providers = _cfg.get("llm_providers") or {}
+    if not isinstance(providers, dict):
+        return _DEFAULT_TIER_KEYS
+    extras = sorted(str(key) for key in providers if str(key) not in _DEFAULT_TIER_KEYS)
+    return (*_DEFAULT_TIER_KEYS, *extras)
+
+
 def _current_tier_models() -> dict[str, str]:
     providers = _cfg.get("llm_providers") or {}
     if not isinstance(providers, dict):
         return {}
-    return {k: str(providers.get(k, "")) for k in _TIER_KEYS if k in providers}
+    return {k: str(providers.get(k, "")) for k in _tier_keys() if k in providers}
 
 
 def _strip_ollama_prefix(model_id: str) -> str:
     return model_id.split("/", 1)[1] if model_id.startswith("ollama/") else model_id
+
+
+def _model_options() -> list[dict[str, Any]]:
+    """Return display-ready, provider-bound options without probing networks."""
+    try:
+        from ... import model_registry
+
+        options = []
+        for raw in model_registry.model_options():
+            option = dict(raw)
+            provider = str(option.get("provider") or "")
+            model_id = str(option.get("id") or "")
+            option["value"] = (
+                model_id if provider.startswith("legacy:")
+                else f"{provider}::{model_id}"
+            )
+            option["price"] = model_registry.price_per_m(str(option.get("id") or ""))
+            options.append(option)
+        return options
+    except (AttributeError, ImportError):
+        # Compatibility while upgrading installations that predate the catalog.
+        return []
+
+
+def _runtime_sessions() -> list[dict[str, Any]]:
+    """Return read-only last-observed client sessions, newest first."""
+    try:
+        from ...runtime_context import list_runtime_sessions
+
+        return [dict(row) for row in list_runtime_sessions(limit=100)]
+    except (ImportError, OSError):
+        # Older clients and stores legitimately have no runtime observations.
+        return []
 
 
 @llm_router.get("/control/llm", response_class=JSONResponse)
@@ -294,8 +336,10 @@ def control_llm_card(request: Request) -> Any:
         {
             "installed": _list_installed_models(),
             "tiers": _current_tier_models(),
-            "tier_keys": _TIER_KEYS,
+            "tier_keys": _tier_keys(),
             "pulls": dict(_pull_state),
+            "model_options": _model_options(),
+            "runtime_sessions": _runtime_sessions(),
         },
     )
 
@@ -363,7 +407,7 @@ async def control_llm_tier(request: Request) -> Any:
     form = await request.form()
     tier = str(form.get("tier") or "").strip()
     model_id = str(form.get("model_id") or "").strip()
-    if tier not in _TIER_KEYS:
+    if tier not in _tier_keys():
         return HTMLResponse(f"<div class='error'>unknown tier: {tier}</div>",
                             status_code=400)
     if not model_id or not _VALID_MODEL_RE.match(model_id):

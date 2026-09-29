@@ -386,3 +386,51 @@ class TestClaudeTaskIngestFiresForTodoWrite:
         assert len(rows) == 1
         assert rows[0]["title"] == "Write the fix"
         assert rows[0]["claude_task_key"] is not None
+
+    def test_missing_project_cwd_does_not_project_task(self, tmp_path):
+        import post_tool_observer as pto
+        import skill_hub.store as store_mod
+        from skill_hub.store import SkillStore
+
+        store = SkillStore(db_path=tmp_path / "unknown_source.db")
+        store.close = lambda: None
+        event = {
+            "session_id": "session-unknown",
+            "tool_name": "TodoWrite",
+            "tool_input": {"todos": [{"content": "Review alpha beta changes", "status": "in_progress"}]},
+            "tool_response": {},
+        }
+        with patch.object(store_mod, "SkillStore", return_value=store):
+            pto._maybe_observe_claude_task(event)
+            pto._maybe_observe_claude_task({**event, "cwd": "relative/path"})
+
+        assert store._conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
+
+    def test_event_project_alias_matches_context_scope(self, tmp_path):
+        import post_tool_observer as pto
+        import skill_hub.store as store_mod
+        from skill_hub.context_service import build_context
+        from skill_hub.store import SkillStore
+
+        project = tmp_path / "project"
+        project.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(project, target_is_directory=True)
+        store = SkillStore(db_path=tmp_path / "alias.db")
+        try:
+            with patch.object(store_mod, "SkillStore", return_value=store), patch.object(store, "close"):
+                pto._maybe_observe_claude_task({
+                    "session_id": "session-alias", "cwd": str(alias),
+                    "tool_name": "TodoWrite", "tool_response": {},
+                    "tool_input": {"todos": [{"content": "Review database migration", "status": "in_progress"}]},
+                })
+            row = store._conn.execute("SELECT id, cwd, session_id FROM tasks").fetchone()
+            assert row["cwd"] == str(alias)
+            assert row["session_id"] == "session-alias"
+            store.update_task(row["id"], summary="Review the database migration before release.")
+            result = build_context(
+                "database migration", cwd=str(alias), session_id="session-alias", store=store,
+            )
+            assert any(item["kind"] == "task" for item in result["items"])
+        finally:
+            store.close()

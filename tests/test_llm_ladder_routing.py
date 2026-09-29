@@ -243,9 +243,8 @@ def _fake_litellm(calls: list[str]):
     return FakeLitellm()
 
 
-def test_pinned_local_skips_dead_daemon_and_routes_to_gateway(monkeypatch, tmp_path):
-    """A hook pins ``ollama/...`` but the daemon is down: the call must skip the
-    dead local model entirely and route through the ladder to the gateway."""
+def test_pinned_local_down_surfaces_error_without_ladder(monkeypatch, tmp_path):
+    """An explicit local model remains pinned when its daemon is unavailable."""
     _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
     escalation, litellm_adapter, provider = _reload_llm_modules()
     escalation.reset_cooldowns()
@@ -255,10 +254,9 @@ def test_pinned_local_skips_dead_daemon_and_routes_to_gateway(monkeypatch, tmp_p
     p = litellm_adapter.LitellmProvider()
     p._litellm = _fake_litellm(calls)
 
-    out = p.complete("x", model="ollama/qwen-local", op="conversation_digest")
-    assert out == "ok"
-    assert calls == ["openai/gw-fast"]     # never issued a doomed local call
-    assert escalation.is_cooled("qwen-local")  # local cooled so the ladder skips it
+    with pytest.raises(provider.LLMError, match="unavailable"):
+        p.complete("x", model="ollama/qwen-local", op="conversation_digest")
+    assert calls == []
 
 
 def test_model_none_skips_dead_local_via_ladder(monkeypatch, tmp_path):
@@ -293,9 +291,8 @@ def test_local_used_first_when_daemon_up(monkeypatch, tmp_path):
     assert calls == ["ollama/qwen-local"]   # local-first preserved when up
 
 
-def test_local_runtime_failure_falls_through_to_ladder(monkeypatch, tmp_path):
-    """Daemon passes the probe but the call fails mid-flight: fall through to the
-    ladder, excluding the failed model."""
+def test_pinned_local_runtime_failure_does_not_fall_through(monkeypatch, tmp_path):
+    """A transport failure for an explicit model must not change providers."""
     _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
     escalation, litellm_adapter, provider = _reload_llm_modules()
     escalation.reset_cooldowns()
@@ -316,9 +313,9 @@ def test_local_runtime_failure_falls_through_to_ladder(monkeypatch, tmp_path):
 
     p = litellm_adapter.LitellmProvider()
     p._litellm = FlakyLocal()
-    out = p.complete("x", model="ollama/qwen-local", op="conversation_digest")
-    assert out == "ok"
-    assert calls == ["ollama/qwen-local", "openai/gw-fast"]   # tried local, then ladder
+    with pytest.raises(provider.LLMError, match="connection refused"):
+        p.complete("x", model="ollama/qwen-local", op="conversation_digest")
+    assert calls == ["ollama/qwen-local"]
 
 
 def test_unsignalled_local_down_rescued_by_gateway(monkeypatch, tmp_path):
@@ -617,7 +614,8 @@ def test_chat_once_falls_back_to_reasoning_content(monkeypatch, tmp_path):
     """A reasoning model returns ``content: null`` with text in
     ``reasoning_content``; the parse must return that rather than fail/empty."""
     _write_cfg(monkeypatch, tmp_path, _REG)
-    _escalation, litellm_adapter, _provider = _reload_llm_modules()
+    escalation, litellm_adapter, _provider = _reload_llm_modules()
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **kwargs: True)
 
     class FakeLitellm:
         suppress_debug_info = True

@@ -213,7 +213,7 @@ def _build_source_registry(store, verdicts_db_path):
     return reg
 
 
-def create_app(store: Any) -> FastAPI:
+def create_app(store: Any, *, start_background_services: bool = True) -> FastAPI:
     """Build the FastAPI app bound to the given SkillStore."""
     app = FastAPI(title="skill-hub control suite", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -275,34 +275,35 @@ def create_app(store: Any) -> FastAPI:
     app.include_router(capabilities_routes.router)
     app.include_router(providers_routes.router)
 
-    # Seed default cron jobs (no-op if table already populated) and start
-    # the background scheduler when cron_jobs_enabled is True.
-    try:
-        from .. import config as _cfg
-        from .. import cron as _cron_mod
-        from ..store import DB_PATH as _DB_PATH
-        _cron_mod.seed_defaults(str(_DB_PATH))
-        if _cfg.get("cron_jobs_enabled"):
-            _cron_mod.get_scheduler().start()
-    except Exception as _exc:
-        _log.warning("cron init failed (non-fatal): %s", _exc)
+    if start_background_services:
+        # Seed default cron jobs (no-op if table already populated) and start
+        # the background scheduler when cron_jobs_enabled is True.
+        try:
+            from .. import config as _cfg
+            from .. import cron as _cron_mod
+            from ..store import DB_PATH as _DB_PATH
+            _cron_mod.seed_defaults(str(_DB_PATH))
+            if _cfg.get("cron_jobs_enabled"):
+                _cron_mod.get_scheduler().start()
+        except Exception as _exc:
+            _log.warning("cron init failed (non-fatal): %s", _exc)
 
-    # Background system-health watcher: samples swap/RAM/CPU + stale Claude
-    # daemons and Docker periodically, surfacing them on /health. Advisory by
-    # default; auto_cleanup runs only the safe remediations (kill stale Claude
-    # processes, purge inactive memory under swap pressure) — never stops Docker.
-    try:
-        from .. import config as _cfg
-        from .. import system_health as _sh
-        _hc = _cfg.get("system_health") or {}
-        if _hc.get("watcher_enabled", True):
-            _sh.start_health_watcher(
-                interval_s=int(_hc.get("interval_seconds", 120)),
-                auto_cleanup=bool(_hc.get("auto_cleanup", False)),
-                swap_pct_trigger=float(_hc.get("swap_pct_trigger", 85.0)),
-            )
-    except Exception as _exc:
-        _log.warning("health watcher init failed (non-fatal): %s", _exc)
+        # Background system-health watcher: samples swap/RAM/CPU + stale Claude
+        # daemons and Docker periodically, surfacing them on /health. Advisory by
+        # default; auto_cleanup runs only the safe remediations (kill stale Claude
+        # processes, purge inactive memory under swap pressure) — never stops Docker.
+        try:
+            from .. import config as _cfg
+            from .. import system_health as _sh
+            _hc = _cfg.get("system_health") or {}
+            if _hc.get("watcher_enabled", True):
+                _sh.start_health_watcher(
+                    interval_s=int(_hc.get("interval_seconds", 120)),
+                    auto_cleanup=bool(_hc.get("auto_cleanup", False)),
+                    swap_pct_trigger=float(_hc.get("swap_pct_trigger", 85.0)),
+                )
+        except Exception as _exc:
+            _log.warning("health watcher init failed (non-fatal): %s", _exc)
 
     # Plugin extension-point: A1 — mount plugin web sub-apps.
     # See docs/plugin-extension-points.md for plugin.json "web_mount" + the

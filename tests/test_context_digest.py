@@ -60,11 +60,97 @@ def test_refresh_pending_builds_then_hit(store, monkeypatch, tmp_path):
     assert dg.refresh_pending(store) == 1
     rows = _pending_rows(store)
     assert rows[0]["digest"] == "the condensed digest"
-    assert rows[0]["content"] == ""          # raw source cleared after build
+    assert rows[0]["content"] == LONG_DOC
 
     text, is_digest = dg.digest_or_squeezed(store, "wiki:long", LONG_DOC)
     assert is_digest is True
     assert text == "the condensed digest"
+
+
+def test_cached_lookup_rehydrates_legacy_digest_only_row(store):
+    store._conn.execute(
+        "INSERT INTO context_digests (key, content_hash, digest, content) "
+        "VALUES (?, ?, 'legacy digest', '')",
+        ("wiki:legacy", dg._hash(LONG_DOC)),
+    )
+    store._conn.commit()
+
+    text, is_digest = dg.digest_or_squeezed(store, "wiki:legacy", LONG_DOC)
+
+    assert (text, is_digest) == ("legacy digest", True)
+    row = store._conn.execute(
+        "SELECT content FROM context_digests WHERE key = 'wiki:legacy'"
+    ).fetchone()
+    assert row["content"] == LONG_DOC
+
+
+def test_pending_same_hash_row_rehydrates_missing_source(store):
+    store._conn.execute(
+        "INSERT INTO context_digests (key, content_hash, digest, content) "
+        "VALUES (?, ?, '', '')",
+        ("wiki:pending", dg._hash(LONG_DOC)),
+    )
+    store._conn.commit()
+
+    text, is_digest = dg.digest_or_squeezed(store, "wiki:pending", LONG_DOC)
+
+    assert is_digest is False
+    assert "escalation ladder" in text
+    row = store._conn.execute(
+        "SELECT content_hash, digest, content FROM context_digests WHERE key = 'wiki:pending'"
+    ).fetchone()
+    assert row["content_hash"] == dg._hash(LONG_DOC)
+    assert row["digest"] == ""
+    assert row["content"] == LONG_DOC
+
+
+def test_pending_hydration_does_not_overwrite_newer_source(store):
+    from types import SimpleNamespace
+
+    store._conn.execute(
+        "INSERT INTO context_digests (key, content_hash, digest, content) "
+        "VALUES (?, ?, '', '')",
+        ("wiki:racing", dg._hash(LONG_DOC)),
+    )
+    store._conn.commit()
+    newer = LONG_DOC + " Newer source."
+
+    class RacingConnection:
+        def execute(self, sql, params=()):
+            if sql.startswith("SELECT content_hash, content FROM context_digests"):
+                old = store._conn.execute(sql, params).fetchone()
+                store._conn.execute(
+                    "UPDATE context_digests SET content_hash = ?, content = ? WHERE key = ?",
+                    (dg._hash(newer), newer, "wiki:racing"),
+                )
+                store._conn.commit()
+                return SimpleNamespace(fetchone=lambda: old)
+            return store._conn.execute(sql, params)
+
+        def commit(self):
+            store._conn.commit()
+
+    dg.mark_pending(SimpleNamespace(_conn=RacingConnection()), "wiki:racing", LONG_DOC)
+
+    row = store._conn.execute(
+        "SELECT content_hash, content FROM context_digests WHERE key = 'wiki:racing'"
+    ).fetchone()
+    assert row["content_hash"] == dg._hash(newer)
+    assert row["content"] == newer
+
+
+def test_legacy_cache_hit_survives_unavailable_hydration_write(store):
+    store._conn.execute(
+        "INSERT INTO context_digests (key, content_hash, digest, content) "
+        "VALUES (?, ?, 'legacy digest', '')",
+        ("wiki:legacy", dg._hash(LONG_DOC)),
+    )
+    store._conn.commit()
+    store._conn.execute("PRAGMA query_only = ON")
+    try:
+        assert dg.lookup(store, "wiki:legacy", LONG_DOC) == "legacy digest"
+    finally:
+        store._conn.execute("PRAGMA query_only = OFF")
 
 
 def test_changed_content_invalidates_digest(store, monkeypatch, tmp_path):

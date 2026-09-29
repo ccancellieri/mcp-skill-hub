@@ -1,8 +1,8 @@
 """Deterministic content compression, plus an optional-dependency prose helper.
 
 **Deterministic-first, deterministic-only.** ``compress_payload()`` runs a
-dependency-free JSON-minify + duplicate-line-collapse pass over structured/log/
-grep output that floods context (see ``_builtin_deterministic``). This is the
+dependency-free JSON-minify pass and an opt-in lossy duplicate-line collapse
+over structured/log/grep output (see ``_builtin_deterministic``). This is the
 only compression strategy the cascade runs (#119: the ML/code-aware advanced
 paths, gated on the optional ``headroom-ai`` package, were retired — they never
 ran in practice because that package isn't installed).
@@ -24,12 +24,18 @@ import logging
 import re
 from dataclasses import dataclass
 
+from .json_minify import minify_json_preserving_lexemes
+
 logger = logging.getLogger(__name__)
 
 # Rough chars-per-token proxy (matches headroom's own estimator for prose).
 _CHARS_PER_TOKEN = 4
 
 _DEFAULT_MIN_TOKENS = 200
+
+_LOG_LINE_RE = re.compile(
+    r"^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL)(?:\s+|:\s+)[^=(){};]+$"
+)
 
 # Cached direct Kompress compressor (prose), used only by kompress_prose().
 _kompress = None
@@ -93,7 +99,7 @@ def _kompress_direct(text: str, context: str) -> "CompressedPayload | None":
         logger.debug("kompress_direct failed: %s", e)
         return None
     compressed = getattr(out, "compressed", None) or text
-    bytes_before, bytes_after = len(text), len(compressed)
+    bytes_before, bytes_after = len(text.encode("utf-8")), len(compressed.encode("utf-8"))
     if bytes_after >= bytes_before:
         return None
     return CompressedPayload(
@@ -122,11 +128,10 @@ def compress_payload(
             call-site compatibility.
         min_tokens: Skip compression below this approximate token count. Defaults to
             ``_DEFAULT_MIN_TOKENS`` (small payloads aren't worth the work).
-        allow_lossy: Unused by the current (deterministic-only) cascade; kept for
-            call-site compatibility (#119).
+        allow_lossy: Permit repeated-line collapse, which discards line instances.
     """
     text = content if isinstance(content, str) else str(content)
-    bytes_before = len(text)
+    bytes_before = len(text.encode("utf-8"))
     passthrough = CompressedPayload(
         compressed=text,
         content_type="PASSTHROUGH",
@@ -140,43 +145,43 @@ def compress_payload(
         return passthrough
 
     threshold = _DEFAULT_MIN_TOKENS if min_tokens is None else int(min_tokens)
-    if bytes_before < threshold * _CHARS_PER_TOKEN:
+    if len(text) < threshold * _CHARS_PER_TOKEN:
         return passthrough
 
-    won = _builtin_deterministic(text)
+    won = _builtin_deterministic(text, allow_lossy=allow_lossy)
     if won is not None:
         return won
 
     return passthrough
 
 
-def _builtin_deterministic(text: str) -> "CompressedPayload | None":
+def _builtin_deterministic(text: str, *, allow_lossy: bool = False) -> "CompressedPayload | None":
     """Dependency-free deterministic compression for the structured/log/grep
     output that floods context — the only strategy ``compress_payload`` runs.
-    Safe and near-lossless — returns None unless it actually shrinks the payload.
+    Returns None unless it actually shrinks the payload.
 
     Two transforms, tried in order:
     * **JSON minify** — strip insignificant whitespace from a pretty-printed JSON
       body (lossless). Catches large ``curl``/API responses.
-    * **Run-length line collapse** — fold runs of >=3 identical consecutive lines
-      into one with a ``… (xN)`` marker (logs, repeated grep hits, stack spam).
+    * **Run-length line collapse** — when explicitly allowed, fold runs of >=3
+      identical consecutive lines into one with a ``… (xN)`` marker. This is
+      lossy: the marker is descriptive, not a reversible encoding.
     """
-    import json as _json
-
-    bytes_before = len(text)
+    bytes_before = len(text.encode("utf-8"))
     best: tuple[str, str] | None = None
 
-    stripped = text.strip()
-    if stripped[:1] in "[{":
-        try:
-            obj = _json.loads(stripped)
-            minified = _json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
-            if len(minified) < bytes_before:
-                best = ("JSON_MIN", minified)
-        except Exception:  # noqa: BLE001 - not valid JSON; fall through
-            pass
+    minified = minify_json_preserving_lexemes(text)
+    if minified is not None and len(minified.encode("utf-8")) < bytes_before:
+        best = ("JSON_MIN", minified)
 
-    if best is None:
+    # JSON-like input that failed validation and fenced/source code are not
+    # suitable for line replacement, even if they contain repeated lines.
+    stripped = text.lstrip()
+    code_like = (
+        stripped.startswith(("def ", "class ", "import ", "from ", "#!"))
+        or "```" in text or "~~~" in text or "… (x" in text
+    )
+    if best is None and allow_lossy and not code_like and not stripped.startswith(("{", "[")):
         lines = text.split("\n")
         out: list[str] = []
         i, n, collapsed = 0, len(lines), False
@@ -185,7 +190,7 @@ def _builtin_deterministic(text: str) -> "CompressedPayload | None":
             while j + 1 < n and lines[j + 1] == lines[i]:
                 j += 1
             run = j - i + 1
-            if run >= 3:
+            if run >= 3 and _LOG_LINE_RE.match(lines[i]):
                 out.append(f"{lines[i]}  … (x{run})")
                 collapsed = True
             else:
@@ -193,20 +198,20 @@ def _builtin_deterministic(text: str) -> "CompressedPayload | None":
             i = j + 1
         if collapsed:
             dedup = "\n".join(out)
-            if len(dedup) < bytes_before:
+            if len(dedup.encode("utf-8")) < bytes_before:
                 best = ("DEDUP", dedup)
 
     if best is None:
         return None
     name, compressed = best
-    bytes_after = len(compressed)
+    bytes_after = len(compressed.encode("utf-8"))
     return CompressedPayload(
         compressed=compressed,
         content_type=name,
         ratio=bytes_after / bytes_before if bytes_before else 1.0,
         bytes_before=bytes_before,
         bytes_after=bytes_after,
-        lossy=False,
+        lossy=name == "DEDUP",
     )
 
 
@@ -272,7 +277,7 @@ def maybe_compress(
     *,
     context: str = "",
     site: str = "",
-    allow_lossy: bool = True,
+    allow_lossy: bool = False,
 ) -> str:
     """Config-gated convenience used at wiring sites: returns compressed text when the
     ``compression_enabled`` flag is on and compression is effective, otherwise the
@@ -282,8 +287,7 @@ def maybe_compress(
 
     Args:
         site: short label for telemetry (e.g. ``"searxng"``, ``"search_context"``).
-        allow_lossy: unused by the current (deterministic-only) cascade; kept
-            for call-site compatibility (#119).
+        allow_lossy: Permit repeated-line collapse, which discards line instances.
     """
     try:
         from .. import config as _cfg
@@ -303,7 +307,7 @@ def maybe_compress(
         return content
     # Only emit telemetry for attempts that actually reached the compressor
     # (i.e. were large enough to try) — skip tiny no-op passthroughs.
-    if payload.bytes_before >= min_tokens * _CHARS_PER_TOKEN:
+    if len(content) >= min_tokens * _CHARS_PER_TOKEN:
         _emit_compression_event(payload, site, pressure_tier)
     return payload.compressed
 

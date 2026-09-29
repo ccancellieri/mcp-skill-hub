@@ -193,7 +193,7 @@ legacy = {
     'session-start-enforcer.sh', 'session_start_enforcer.py',
     'intercept-task-commands.sh', 'intercept_task_commands.py',
 }
-legacy_stop = {'session-end.sh', 'session_end.py'}
+legacy_stop = {'session-end.sh', 'session_end.py', 'auto-proceed.sh', 'auto_proceed.py'}
 
 def references_managed_hook(command, script):
     try:
