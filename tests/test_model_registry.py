@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,17 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from skill_hub import model_registry as mr  # noqa: E402
+
+
+@pytest.fixture
+def opus_catalogue(monkeypatch):
+    """Keep lineup tests independent of LiteLLM's changing model catalogue."""
+    rates = {"input_cost_per_token": 0.000005, "output_cost_per_token": 0.000025}
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(model_cost={
+        "anthropic/claude-opus-4-6": rates,
+        "anthropic/claude-opus-4-8": rates,
+    }))
+    monkeypatch.setattr(mr, "_STATIC_USD_PER_M", {"claude-opus-4-6": (5.0, 25.0)})
 
 
 def test_bare_id_strips_prefix_and_suffix():
@@ -183,14 +195,27 @@ def test_model_options_deduplicates_provider_qualified_saved_models(monkeypatch)
                row["id"] == "missing::frontier" for row in options)
 
 
-def test_latest_in_family():
+def test_latest_in_family(opus_catalogue):
     latest = mr.latest_in_family("opus")
-    assert latest is not None and latest.startswith("claude-opus-4")
-    # 4-8 must beat 4-6 in version ordering.
-    assert latest >= "claude-opus-4-8"
+    assert latest == "claude-opus-4-8"
 
 
-def test_sync_lineup_dry_run_detects_stale_and_persists_nothing(monkeypatch):
+def test_latest_in_family_orders_numeric_versions_in_mixed_catalogue(monkeypatch):
+    rates = {"input_cost_per_token": 0.000005, "output_cost_per_token": 0.000025}
+    catalogue = {
+        "anthropic/claude-opus-4-9": rates,
+        "anthropic/claude-opus-4-10": rates,
+        "anthropic/claude-sonnet-9-9": rates,
+    }
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(model_cost=catalogue))
+    monkeypatch.setattr(mr, "_STATIC_USD_PER_M", {"claude-opus-4-8": (5.0, 25.0)})
+
+    assert mr.latest_in_family("opus") == "claude-opus-4-10"
+    catalogue["anthropic/claude-opus-5-1"] = rates
+    assert mr.latest_in_family("opus") == "claude-opus-5-1"
+
+
+def test_sync_lineup_dry_run_detects_stale_and_persists_nothing(monkeypatch, opus_catalogue):
     from skill_hub import config
 
     cfg = {
@@ -207,14 +232,14 @@ def test_sync_lineup_dry_run_detects_stale_and_persists_nothing(monkeypatch):
     res = mr.sync_lineup(dry_run=True)
     planner_changes = [c for c in res["changes"] if c["tier"] == "tier_planner"]
     assert planner_changes and planner_changes[0]["from"] == "anthropic/claude-opus-4-6"
-    assert planner_changes[0]["to"].startswith("anthropic/claude-opus-4")
+    assert planner_changes[0]["to"] == "anthropic/claude-opus-4-8"
     assert res["applied"] is False
     assert not saved, "dry-run must not persist"
     # Non-Claude tier never proposed for change.
     assert all(c["tier"] != "tier_cheap" for c in res["changes"])
 
 
-def test_sync_lineup_applies_and_persists(monkeypatch):
+def test_sync_lineup_applies_and_persists(monkeypatch, opus_catalogue):
     from skill_hub import config
 
     cfg = {
@@ -228,4 +253,4 @@ def test_sync_lineup_applies_and_persists(monkeypatch):
     res = mr.sync_lineup(dry_run=False)
     assert res["applied"] is True
     assert "llm_providers" in saved
-    assert saved["llm_providers"]["tier_planner"].startswith("anthropic/claude-opus-4")
+    assert saved["llm_providers"]["tier_planner"] == "anthropic/claude-opus-4-8"
