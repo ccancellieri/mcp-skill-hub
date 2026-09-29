@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "mcp-skill-hub"
 version = "0.2.0"
-description = "Local MCP server for semantic skill search with usage-based learning"
+description = "Local MCP context service for scoped retrieval and deterministic compression"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
     { name = "Carlo Cancellieri" },
 ]
-keywords = ["mcp", "claude", "skills", "semantic-search", "ollama"]
+keywords = ["mcp", "context", "skills", "memory", "compression"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: Apache Software License",

@@ -1,65 +1,45 @@
-# Skill Hub Documentation
+# Skill Hub documentation
 
-The [root README](../README.md) is the introduction. These guides are split so clients and readers can load only what is needed.
+Start with the [project introduction](../README.md) and
+[verified measurements](../benchmarks/VERIFIED_RESULTS.md).
+The core workflow is deterministic retrieval and manual composition. Models,
+hooks and background services are optional, separately configured features.
 
-## 🗺️ Map
+## Core workflow
 
-```
-docs/
-├── installation.md              Install modes, models, SearXNG, remote VPS
-│
-├── features/                    What Skill Hub does, feature by feature
-│   ├── web-control-panel.md     The /control FastAPI suite
-│   ├── semantic-search.md       search_skills, search_context, tasks, digest
-│   ├── hooks.md                 Zero-token interception + context injection
-│   ├── learning.md              Teachings, feedback EMA, implicit learning, evolution
-│   ├── local-execution.md       L1-L4 engine, agent, offline, exhaustion, triage
-│   ├── profiles.md              Session plugin profiles + auto-recommendation
-│   └── utilities.md             Extra dirs, status, gating, REPL, tooltips, inline help
-│
-├── reference/                   Stable contracts — tools, config, schema
-│   ├── tools.md                 Every MCP tool + CLI command
-│   ├── config.md                All config keys, defaults, descriptions
-│   ├── architecture.md          Source layout + dual skill index + output paths
-│   ├── database.md              SQLite schema
-│   └── logs.md                  Log streams + troubleshooting
-│
-├── advanced/                    For power users building on top of the hub
-│   ├── skill-chaining.md        Local skill branching, labels, agent-as-skill
-│   ├── context-bridge.md        Claude → local skill intelligence flow
-│   └── fine-tuning.md           Training export + mlx-lm fine-tuning
-│
-├── plugin-extension-points.md   Third-party plugin extension contract
-├── unattended.md                Run Claude Code overnight
-├── design/                      Long-form designs for in-flight refactors
-│   └── managed-agents-refactor.md   M2 design phase
-└── roadmap.md                   Shipped + upcoming milestones
-```
+| Task | Guide |
+| --- | --- |
+| Install the Python package and configure an MCP client | [Installation](installation.md) |
+| Use the eight-tool context surface | [MCP profiles](mcp-profiles.md) |
+| Choose sources, shorten passages, preview and copy | [Context composer](context-composer.md) |
+| Understand scope, failure behavior and retired hooks | [Context contract and migration](context-service.md) |
+| Connect Claude, Codex, Pi or OpenClaw | [Client integrations](../integrations/README.md) |
+| Reproduce measurements and understand limits | [Verified results](../benchmarks/VERIFIED_RESULTS.md) |
+| Measure total-task usage and correctness | [Evaluation protocol](../benchmarks/CONTEXT_VALUE.md) |
 
-## 🎯 Quick paths
+## Reference and operations
 
-| I want to… | Read |
-|------------|------|
-| **Install** on my machine | [installation.md](installation.md) |
-| **Choose and compress context** before sending it | [context-composer.md](context-composer.md) |
-| **Reduce the MCP tool surface** | [mcp-profiles.md](mcp-profiles.md) |
-| Inspect **offline learning experiments** | [context-learning.md](context-learning.md) |
-| **Measure net task token savings** | [evaluation protocol](../benchmarks/CONTEXT_VALUE.md) |
-| Understand **how the hook saves tokens** | [features/hooks.md](features/hooks.md) |
-| **Keep working when Claude is rate-limited** | [features/local-execution.md](features/local-execution.md) |
-| **Teach** the hub my vocabulary | [features/learning.md](features/learning.md) |
-| Drive **my real Chrome session** (logged-in accounts) | [features/browser-automation.md](features/browser-automation.md) |
-| See every **MCP tool** I can call | [reference/tools.md](reference/tools.md) |
-| Tune a **config value** | [reference/config.md](reference/config.md) |
-| Build a **custom local skill** | [advanced/skill-chaining.md](advanced/skill-chaining.md) |
-| **Fine-tune** on my own data | [advanced/fine-tuning.md](advanced/fine-tuning.md) |
-| **Debug** a hook that isn't firing | [reference/logs.md](reference/logs.md) |
-| **Run overnight** without prompts | [unattended.md](unattended.md) |
+- [Tools and CLI](reference/tools.md)
+- [Configuration](reference/config.md)
+- [Architecture](reference/architecture.md) and [database](reference/database.md)
+- [Logs and troubleshooting](reference/logs.md)
+- [Dashboard](features/web-control-panel.md)
+- [Development invariants](development/README.md) and [roadmap](roadmap.md)
 
-## 📝 Editing guidance
+## Optional services and research
 
-- Keep each doc single-purpose. If it starts overflowing, split it.
-- Link across docs rather than duplicating. The goal is **minimum context while editing**.
-- Code examples: prefer the actual tool names (`search_skills`, `configure`) over invented phrasing.
-- Tables beat prose for config and tool references.
-- When adding a feature, also update [roadmap.md](roadmap.md) and this index.
+These guides describe the broader compatibility surface. They are not
+requirements for the minimal MCP profile or promises of improved task outcomes.
+The current context contract takes precedence over historical automatic-routing
+examples.
+
+- [Semantic search](features/semantic-search.md) and [plugin profiles](features/profiles.md)
+- [Optional hook registrations](features/hooks.md)
+- [Local execution](features/local-execution.md) and [skill chaining](advanced/skill-chaining.md)
+- [Learning mechanisms](features/learning.md), [offline context learning](context-learning.md)
+  and [fine-tuning](advanced/fine-tuning.md)
+- [Context bridge](advanced/context-bridge.md) and [plugin extension points](plugin-extension-points.md)
+
+Keep documentation focused on observable behavior. Label tokenizer counts,
+text estimates and native-client usage separately; never infer task savings
+from a smaller context packet alone.

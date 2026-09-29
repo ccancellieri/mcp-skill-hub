@@ -1,5 +1,9 @@
 # Context composer
 
+To start the UI without automatic background services or maintenance, run
+`skill-hub-dashboard --no-services` and open `http://127.0.0.1:8765/context`.
+The option is local to that process and does not stop services already running.
+
 Open `/context` to prepare a reviewable context packet with a text-estimated
 token budget. The normal workflow is manual. Enter the original prompt and
 explicitly select project roots. Only those projects contribute memory and task

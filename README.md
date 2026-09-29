@@ -1,331 +1,140 @@
 # MCP Skill Hub
 
-Scoped memory and skill context for Claude, Codex, Pi and OpenClaw.
-The primary goal is fewer total tokens per completed task through deterministic
-compression and explicit context selection.
-Quality and whole-task savings are measured separately from payload estimates.
-The interactive path preserves the original prompt and works without a local
-model or API key. Client-specific adapters use the same context service.
+**Alpha · Apache License 2.0 · Author: Carlo Cancellieri**
 
-**Migration:** generic auto-proceed, automatic task interception, model switching
-in the prompt hook and inferred approvals have been retired. See
-[context retrieval and migration](docs/context-service.md) and
-[client integrations](integrations/README.md). Existing task and memory data are preserved.
+**Choose the evidence a coding assistant needs, then keep the context small.**
 
-<p align="center">
-  <a href="#-quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/Quick_Start-3_minutes-brightgreen?style=flat-square"></a>
-  <a href="docs/"><img alt="Docs" src="https://img.shields.io/badge/Docs-→_docs/-blue?style=flat-square"></a>
-  <a href="#-license"><img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-lightgrey?style=flat-square"></a>
-  <img alt="Platform" src="https://img.shields.io/badge/Platform-macOS_·_Linux_·_Windows-black?style=flat-square">
-  <img alt="Offline" src="https://img.shields.io/badge/Works-Offline-purple?style=flat-square">
-</p>
+Skill Hub is a local Python MCP server for project memory, skill discovery and
+reviewable context composition. Its core retrieval path uses SQLite and keyword
+search: no model download or API key is needed. The original prompt stays intact.
 
----
+[Get started](#get-started) · [Context composer](docs/context-composer.md) ·
+[Measured results](benchmarks/VERIFIED_RESULTS.md) · [Client integrations](integrations/README.md)
 
-## Why Skill Hub?
+## What works today
 
-Keep the current task's evidence available without filling every prompt with
-unrelated tasks or the full skill library. The Context page previews retrieved
-sources and the exact supplemental text before it reaches a coding client.
+| Capability | What you can do | Verification |
+| --- | --- | --- |
+| **Minimal MCP profile** | Expose eight context tools; load full skill instructions only when needed. | Protocol tests verify the advertised tools, reject excluded calls and prevent background-service startup. |
+| **Manual context composer** | Select projects, review candidate sources, choose exact passages, preview and copy a bounded packet. | UI and service checks cover selection, expansion, preview and source changes. |
+| **Scoped memory retrieval** | Retrieve project evidence only from explicitly supplied project roots. Missing scope allows global skills only. | Synthetic fixtures and scope regressions check foreign-source rejection. |
+| **Deterministic compression** | Compact JSON whitespace while preserving strings, duplicate keys and numeric spelling; identify lossy excerpt selection and truncation. | Fidelity tests cover duplicate members, huge exponents, escapes, Unicode and code. |
+| **Source recovery** | Expand a selected candidate or fetch a skill's full indexed text. Changed sources require a new selection. | Fingerprint and stale-source tests; retained originals are used instead of generated digests. |
+| **Optional client adapters** | Add bounded evidence while preserving the prompt and native client approvals. MCP and manual copy work without hooks. | Python and Node adapter tests; native-client qualification is tracked separately. |
 
-Start at `/context`: choose projects, review ranked sources, set a budget,
-and copy the composed packet. [Composer guide](docs/context-composer.md) ·
-[Minimal MCP profile](docs/mcp-profiles.md) ·
-[Evaluation protocol](benchmarks/CONTEXT_VALUE.md).
+The full MCP profile remains the compatibility default. The minimal profile is
+an explicit choice and does not configure providers, install hooks or start a
+model service. Claude, Codex, Pi and OpenClaw integration paths are documented;
+adapter tests do not imply every live client configuration has been qualified.
 
-Use `skill-hub --profile minimal` to expose eight everyday context tools with
-description-first skill lookup. The full profile remains the compatibility
-default. Local selector learning stays an offline experiment, not an ordinary
-workflow requirement.
+## Measured, with limits
 
-| Component | Responsibility |
-|-----------|----------------|
-| Context service | Deterministic, scoped retrieval with size limits and source references |
-| Skill library | Import, inspect and load relevant skill content on demand |
-| Task and memory tools | Explicit updates and background curation |
-| Client | Reasoning, model choice, continuation and permissions |
+| Comparison | Result | What was measured |
+| --- | --- | --- |
+| Full → minimal MCP surface | **87 → 8 tools; 92.41% fewer serialized tokens** | Tool schemas and server instructions: 16,362 → 1,242 `o200k_base` tokens, counted once as compact JSON. |
+| Project isolation | **0 labeled foreign-source leaks across 144 cases** | Frozen synthetic project-scope fixtures, not an audit of every historical memory record. |
 
-L1 is a local model, L2 a remote API model, and L3 the coding agent in the client.
-Those deployment roles are separate from legacy execution-level names below.
+These measurements concern protocol and context payloads. **A reduction in total
+tokens per completed task has not been demonstrated.** Clients may cache or defer
+tool definitions, and extra context can increase usage. See the
+[reproducible report](benchmarks/VERIFIED_RESULTS.md) for versions, commands,
+corpus scope and limitations, and the [task evaluation protocol](benchmarks/CONTEXT_VALUE.md).
 
----
+Local selector studies did not justify promotion. Model-based ranking,
+preference learning and automatic prompt rewriting are not part of the normal
+composer workflow. A more complex model must earn its place through task-level
+results.
 
-## 🚀 Quick Start
+## Get started
 
-```bash
+Requires **Python 3.11+**. For the core workflow, install the Python package:
+
+```sh
 git clone https://github.com/ccancellieri/mcp-skill-hub.git
 cd mcp-skill-hub
-./install.sh          # macOS / Linux
-python install.py     # cross-platform
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
 ```
 
-The installer pulls a 274 MB embedding model, registers the MCP server, and merges hooks into `~/.claude/settings.json` (idempotent — safe to re-run).
+On Windows, use the executables in `.venv/Scripts` instead of `.venv/bin`.
+The package installation does not register hooks or download model weights.
+Index a skill directory you explicitly choose, without generating embeddings:
 
-**Then restart Claude Code and run:**
-
-```
-index_skills()      # index all plugin skills
-index_plugins()     # index plugin descriptions
-```
-
-👉 Full installation options (SearXNG, remote VPS, model picks per RAM budget): **[docs/installation.md](docs/installation.md)**
-
----
-
-## 🎬 In 30 Seconds
-
-```
-Original prompt + project identity
-                |
-      bounded context retrieval
-                |
-Original prompt + sourced evidence -> client reasoning
-
-Timeout or missing context -> original prompt passes through
+```sh
+.venv/bin/skill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills
 ```
 
----
+Repeat `--skill-dir` for additional directories. The command scans their
+`SKILL.md` files only. It does not scan other configured locations or index
+project memory. See [MCP profiles](docs/mcp-profiles.md) for the tool list.
 
-## ✨ Feature Highlights
+Configure your MCP client's stdio server with the installed executable and
+explicit minimal profile. A typical server entry is:
 
-<table>
-<tr>
-<td width="33%" valign="top">
-
-### 🔎 Semantic Search
-Describe the task in natural language — get matching skills ranked by cosine similarity + your feedback history.
-```python
-search_skills("debug failing pytest")
-```
-**→ [docs/features/semantic-search.md](docs/features/semantic-search.md)**
-
-</td>
-<td width="33%" valign="top">
-
-### Prompt Context
-The hook adds bounded evidence without intercepting task commands or rewriting
-the request. Clients without an installed adapter can call `prepare_context`
-through MCP. Permission and continuation decisions remain with the client.
-
-**[Context contract](docs/context-service.md)**
-
-</td>
-<td width="33%" valign="top">
-
-### 🤖 Local Execution
-4 escalating levels: whitelisted commands → templates → multi-step skills → full L4 agent loop.
-```
-L1: "git status"
-L2: "show last 5 commits"
-L3: "project summary"  (4-step skill)
-L4: "run tests and summarize"
-```
-**→ [docs/features/local-execution.md](docs/features/local-execution.md)**
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### 🧠 Learning
-Confirmed context selections can train a small local ranker. New versions stay
-inactive until explicitly promoted with qualifying task-level evidence; improvement
-is not assumed.
-**→ [docs/features/learning.md](docs/features/learning.md)**
-
-</td>
-<td valign="top">
-
-### 🖥️ Web Control Panel
-FastAPI suite at `http://localhost:8765/control` — start/stop Ollama, SearXNG, models; live RAM/CPU pressure; plugin toggles; profile switching.
-**→ [docs/features/web-control-panel.md](docs/features/web-control-panel.md)**
-
-</td>
-<td valign="top">
-
-### 🧭 Offline & Fallback
-TCP probes Anthropic every 30 s. Unreachable? L4 agent silently takes over. Rate-limited? Exhaustion-save compacts your session.
-**→ [docs/features/local-execution.md#offline--exhaustion](docs/features/local-execution.md#offline--exhaustion)**
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-### 🗂️ Session Profiles
-Swap entire plugin sets per context: `minimal`, `backend`, `frontend`, `mcp-dev`, `data`, `full` — or save your own.
-**→ [docs/features/profiles.md](docs/features/profiles.md)**
-
-</td>
-<td valign="top">
-
-### 🪶 Context Bridge
-Captures Claude's tool calls in real-time → `{session_context}`, `{tool_examples}`, `{repo_context}` injected into every local skill.
-**→ [docs/advanced/context-bridge.md](docs/advanced/context-bridge.md)**
-
-</td>
-<td valign="top">
-
-### 🎓 Fine-Tuning
-Export JSONL training data from your own feedback, triage, and compact history. Fine-tune on Apple Silicon via `mlx-lm`.
-**→ [docs/advanced/fine-tuning.md](docs/advanced/fine-tuning.md)**
-
-</td>
-</tr>
-</table>
-
----
-
-## 📚 Documentation
-
-Everything lives in [docs/](docs/). Start with the index below — it's kept in sync with code.
-
-### 🧭 [**Documentation Index →**](docs/README.md)
-
-| Area | Doc | When to read |
-|------|-----|--------------|
-| **Getting Started** | [installation.md](docs/installation.md) | First install, model picks, SearXNG, remote VPS |
-| **Features** | [web-control-panel.md](docs/features/web-control-panel.md) | Manage services + plugins from a browser |
-|  | [semantic-search.md](docs/features/semantic-search.md) | `search_skills`, `search_context`, tasks, digest |
-|  | [hooks.md](docs/features/hooks.md) | How zero-token interception + context injection work |
-|  | [learning.md](docs/features/learning.md) | Teachings, feedback, implicit learning, evolution |
-|  | [local-execution.md](docs/features/local-execution.md) | L1–L4, offline fallback, exhaustion save, triage |
-|  | [profiles.md](docs/features/profiles.md) | Plugin profile packs + auto-recommendation |
-|  | [utilities.md](docs/features/utilities.md) | Extra skill dirs, status, resource gating, REPL, tooltips |
-| **Reference** | [reference/tools.md](docs/reference/tools.md) | Every MCP tool + CLI command |
-|  | [reference/config.md](docs/reference/config.md) | All config keys, defaults, description |
-|  | [reference/architecture.md](docs/reference/architecture.md) | Source layout, dual skill index, output paths |
-|  | [reference/database.md](docs/reference/database.md) | SQLite schema + table purposes |
-|  | [reference/logs.md](docs/reference/logs.md) | Log streams, common issues, troubleshooting |
-| **Advanced** | [advanced/skill-chaining.md](docs/advanced/skill-chaining.md) | Local skill branching, labels, `agent` type |
-|  | [advanced/context-bridge.md](docs/advanced/context-bridge.md) | How Claude's tool calls flow into local skills |
-|  | [advanced/fine-tuning.md](docs/advanced/fine-tuning.md) | Exporting JSONL, training with `mlx-lm` |
-| **Ops** | [unattended.md](docs/unattended.md) | Run Claude Code overnight without prompts |
-|  | [plugin-extension-points.md](docs/plugin-extension-points.md) | How third-party plugins extend Skill Hub |
-|  | [roadmap.md](docs/roadmap.md) | Shipped milestones + what's next |
-
----
-
-## 🏃 Common Workflows
-
-```bash
-# Search past work
-search_context("accessibility audit for a website")
-
-# Save & close tasks (zero Claude tokens via hooks)
-save_task(title="MCP skill hub dev", summary="Building semantic search…")
-close_task(task_id=1)    # compacts to ~200 tokens, writes memory entry
-
-# Master State compaction (folds task auto-memory into project's decisions.md)
-compact_master_state(project_root="~/work/code/geoid", dry_run=True)
-# After preview + approval:
-compact_master_state(project_root="~/work/code/geoid")
-# Or wire into close_task:
-close_task(task_id=1, compact_master_state=True)
-
-# Teach the hub
-teach(rule="when I give a URL", suggest="chrome-devtools-mcp")
-
-# Switch profiles
-/profile backend
-/profile auto build MCP server
-
-# Check token savings
-token_stats()   # → e.g. "52,300 tokens saved across 89 interceptions"
-```
-
----
-
-## 🌳 Worktree-Driven Parallel Sessions
-
-Spawn a Claude session inside an isolated git worktree as part of saving a task,
-and resume it later — the worktree outlives the task by default.
-
-```bash
-# Cold start from a non-repo dir like ~/work/code/
-cwt geoid es-pr2c                              # opens iTerm tab in a fresh worktree
-cwt geoid swarm-3 --mode background            # headless agent, output to logfile
-cwt --resume 47                                # focus alive session, or relaunch
-cwt --list                                     # open tasks + worktree liveness
-```
-
-From inside Claude (auto-saves the task and spawns the session):
-```python
-save_task("ES PR-2c retarget", "...", project="geoid", mode="terminal")
-reopen_task(47)                                # alive → focus, dead → relaunch
-close_task(47, remove_worktree=True)           # also tears down the worktree
-```
-
-**Layout:**
-- Worktree: `<repo>/.claude/worktrees/<slug>` (per-repo, gitignored)
-- Branch: `cc/<slug>` (local-only convention for AI-tooling work)
-- Liveness: `<worktree>/.claude/session.pid` (cleaned up by a Stop hook)
-
-**Modes:** `terminal` (macOS iTerm/Terminal tab), `tmux` (window in `$TMUX`),
-`background` (headless `claude --print` to a logfile).
-
-**Config** (`~/.claude/mcp-skill-hub/config.json`):
 ```json
 {
-  "worktree": {
-    "repo_roots": ["~/work/code"],
-    "default_mode": "terminal"
-  }
+  "command": "/absolute/path/to/mcp-skill-hub/.venv/bin/skill-hub",
+  "args": ["--profile", "minimal"]
 }
 ```
 
----
+Use your client's configuration format and reconnect after changing it.
+The server uses the existing local index; select and index your skill sources
+before searching. [Installation options](docs/installation.md) cover the full
+installer and optional model-backed services.
 
-## /team — specialized orchestration
+## Use only the context you need
 
-Skill Hub is the **intelligence layer** on top of Claude Code's native agent primitives — subagents, agent teams, and the Workflow tool. It does not re-implement orchestration; it supplies specialized role definitions, a model·effort policy, and an upfront prompt-refactor step, then delegates execution entirely to the native substrate. The `/team` command is the single entry point for all of this.
+1. **Discover:** call `search_skills` for short descriptions; use
+   `get_skill_content` when a specific skill is needed.
+2. **Retrieve:** call `prepare_context` with the original request and the
+   absolute project path. Retrieved text is evidence, not an instruction or
+   authorization.
+3. **Review:** use `prepare_composition`, `expand_context_candidate` and
+   `compose_context`, or open the dashboard's `/context` page. Review the sources,
+   budget and any lossy transformations before copying the result.
 
-Before spawning a single agent, `/team` calls `improve_prompt` to sharpen the working brief. It then calls `team_plan` to resolve the full roster: which agent types run, at what model tier, in what order, with how many verification loops. The roster is deterministic given `(kind, effort)` — pass `--estimate` to see it without executing anything.
-
-| `/team <kind>` | Task shape | Substrate | Notes |
-|---|---|---|---|
-| `review` | adversarial — 4 lens reviewers challenge each other | agent team | requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`; falls back to parallel subagents |
-| `arch` | adversarial — competing hypotheses + devil's-advocate debate | agent team | same fallback |
-| `issues` | deterministic triage pipeline | Workflow tool | fetch → classify → draft; resumable; cheap |
-| `implement` | deterministic build pipeline | Workflow tool | design → build → verify → clean → PR |
-
-The `--effort` flag sets both the model floor and the number of verification loops (default `xhigh`):
-
-| Effort | Model floor | Verification loops |
-|---|---|---|
-| `low` | haiku / sonnet | 0 |
-| `medium` | sonnet | 1 |
-| `high` | sonnet / opus | 2 |
-| `xhigh` (default) | opus | 3 |
-
-Accuracy-critical roles (`team-arch-analyst`, `team-reviewer`, `team-human-voice-writer`) reach Opus at `xhigh`. Mechanical roles (`team-code-implementer`, `team-mechanical-refactorer`, `team-github-operator`) cap at sonnet or haiku — they do not need Opus-level judgement.
-
-The six agent types and their assignments:
-
-- **team-arch-analyst** (opus) — read-only deep architecture and code analysis; cites `file:line`; never edits
-- **team-reviewer** (opus at xhigh) — adversarial review; refute-by-default; severity ratings
-- **team-code-implementer** (sonnet) — implements a clear spec following existing patterns; no scope creep
-- **team-mechanical-refactorer** (sonnet) — behavior-preserving rename/simplify; smallest diff
-- **team-human-voice-writer** (opus) — first-person engineer prose; no AI attribution, no emoji, no "recommendations" tables
-- **team-github-operator** (haiku) — `gh` inspect/fetch/triage/post; posts only pre-written prose, never authors it
-
-```
-/team review 142                                  # adversarial 4-lens review of PR 142
-/team arch src/skill_hub/router                   # architecture analysis with devil's advocate
-/team issues mcp-skill-hub label:bug --estimate   # preview triage plan + cost, no execution
-/team implement 49 --effort high                  # build pipeline, high effort (2 verify loops)
+```python
+# MCP tool arguments, sent through your client:
+prepare_context(text="Review the migration constraints", repo_root="/path/to/project")
+search_skills(query="database migration")
 ```
 
----
+For the web composer, run `skill-hub-dashboard --no-services` separately and open
+`http://127.0.0.1:8765/context`. This option skips background service startup and
+maintenance; it does not stop services already running. Starting the minimal MCP server does
+not launch the dashboard. Token counts in the
+composer are text estimates. Optional prompt compression is an explicit
+original/proposal/diff action and never replaces the request automatically.
 
-## 🔧 Requirements
+## Boundaries and compatibility
 
-- **Python 3.10+**, **Ollama**, **~5 GB disk** for models (more for larger reasoning models)
-- macOS / Linux / Windows — cross-platform installer picks the right hooks
-- Optional: **Docker** (for SearXNG), **remote Ollama VPS** (offload heaviest model)
+- Project scope is explicit. Neither ranking history nor client identity grants
+  access to another project's memory.
+- The automatic context hook is deterministic, has a two-second adapter deadline
+  and makes no L1/L2 model call. Failure adds no context; the prompt passes through.
+- Client model and effort observations are separate from the server's configured
+  providers. Unreported runtime metadata remains unknown.
+- Generic auto-proceed, task interception, inferred approvals and hook-driven
+  model switching have been retired. See the [migration guide](docs/context-service.md).
+- Optional semantic search, provider services and research APIs are documented
+  separately. They are not required to use the core context service.
 
----
+## Development and evidence
 
-## 📄 License
+Run the isolated Python suite and client-adapter checks:
 
-Copyright © 2026 Carlo Cancellieri — Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE).
+```sh
+uv run --with pytest --with pytest-asyncio --with pytest-timeout \
+  python -m pytest -m 'not local_only'
+node --test integrations/tests/context-adapters.test.mjs
+```
+
+[Development guide](docs/development/README.md) ·
+[Documentation index](docs/README.md) · [Roadmap](docs/roadmap.md) ·
+[Open issues](https://github.com/ccancellieri/mcp-skill-hub/issues)
+
+## License
+
+Copyright © 2026 Carlo Cancellieri. Licensed under the
+[Apache License 2.0](LICENSE).

@@ -16,6 +16,33 @@ Minimal startup does not launch the dashboard, service reconciler, memory sweep,
 or reindex sweep. Run indexing or the dashboard separately when needed; the
 minimal process consumes the existing local index.
 
+## Prepare an index without a model
+
+From a package installation, explicitly choose the skill directories to index:
+
+```sh
+skill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills
+```
+
+Repeat `--skill-dir` to include additional directories. This command scans only
+their `SKILL.md` files, stores text for keyword search, and makes no embedding
+call. It does not index project memory, install hooks or modify providers.
+Existing vector-backed rows are not replaced with changed text and stale
+vectors: those updates require the full indexing path and report an error.
+Invalid directories and indexing errors return a nonzero exit status.
+
+`--db /absolute/path/index.db` allows isolated indexing checks. A server launched
+normally still uses its default store, so omit this option when preparing the
+index for your configured MCP server. An empty index legitimately returns no
+matches; it does not trigger a model download or fallback.
+
+For the web composer without automatic background startup, separately run
+`skill-hub-dashboard --no-services` and open `/context`. This skips service
+reconciliation, scheduled maintenance and the health watcher. It does not stop
+already-running services or disable explicitly requested operations in the UI.
+
+## Tool surface
+
 The minimal profile advertises these eight tools:
 
 | Tool | Use |

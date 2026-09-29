@@ -7189,13 +7189,41 @@ def main() -> None:
         print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context,")
         print("          exhaustion_save, digest, optimize_context, save_memory,")
-        print("          local_agent")
+        print("          local_agent, index_skills_text")
         sys.exit(1)
 
     cmd = sys.argv[1]
     args = sys.argv[2:]
 
-    if cmd == "classify":
+    if cmd == "index_skills_text":
+        import argparse
+        from .indexer import index_all
+
+        parser = argparse.ArgumentParser(
+            prog="skill-hub-cli index_skills_text",
+            description="Index SKILL.md files for local keyword search without embeddings",
+        )
+        parser.add_argument("--skill-dir", action="append", required=True,
+                            type=Path, help="Directory to scan (repeatable)")
+        parser.add_argument("--db", type=Path,
+                            help="SQLite index path (defaults to the Skill Hub store)")
+        options = parser.parse_args(args)
+        skill_dirs = [path.expanduser().resolve() for path in options.skill_dir]
+        for path in skill_dirs:
+            if not path.is_dir():
+                parser.error(f"skill directory does not exist: {path}")
+        store = SkillStore(db_path=options.db.expanduser()) if options.db else SkillStore()
+        try:
+            count, errors = index_all(store, text_only=True, skill_dirs=skill_dirs)
+        finally:
+            store.close()
+        print(f"Indexed {count} skills for keyword search without embeddings.")
+        for error in errors:
+            print(error)
+        if any(not error.startswith("info:") for error in errors):
+            raise SystemExit(1)
+
+    elif cmd == "classify":
         # Extract --session-id / --cwd if present
         session_id = ""
         cwd = ""
