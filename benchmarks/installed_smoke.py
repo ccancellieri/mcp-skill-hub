@@ -107,6 +107,22 @@ async def _probe(env: dict[str, str], cwd: Path) -> dict[str, object]:
         assert not expanded.is_error, _text(expanded)
         assert MARKER in expanded.structured_content["text"]
 
+        index_result = await client.call_tool("prepare_composition", {
+            "prompt": PROMPT, "project_roots": [str(cwd)], "detail": "index",
+        })
+        assert not index_result.is_error, _text(index_result)
+        index = index_result.structured_content
+        assert index["original_prompt"] == PROMPT
+        assert all("text" not in item for item in index["candidates"])
+        indexed_skill = next(item for item in index["candidates"] if item["source"] == f"skill:{SKILL_ID}")
+        batch = await client.call_tool("expand_context_candidate", {
+            "draft_id": index["draft_id"], "candidate_id": [indexed_skill["candidate_id"]],
+            "detail": "compact",
+        })
+        assert not batch.is_error, _text(batch)
+        assert MARKER in batch.structured_content["items"][0]["text"]
+        assert "features" not in batch.structured_content["items"][0]
+
         composed = await client.call_tool("compose_context", {
             "draft_id": draft["draft_id"],
             "selected_ids": [skill["candidate_id"]],
@@ -124,7 +140,8 @@ async def _probe(env: dict[str, str], cwd: Path) -> dict[str, object]:
 
         return {"tool_count": len(names), "searched_description_only": True,
                 "full_text_loaded": True, "prompt_preserved": True,
-                "manual_composition": True, "model_calls_requested": 0}
+                "manual_composition": True, "index_and_compact_batch": True,
+                "model_calls_requested": 0}
 
 
 def main() -> int:

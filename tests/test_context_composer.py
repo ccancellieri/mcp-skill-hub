@@ -74,6 +74,193 @@ def test_prepare_is_bounded_scoped_and_persisted(store):
     assert expanded["source_hash"] == candidate["source_hash"]
 
 
+def test_index_preserves_prompt_scope_and_warnings_without_evidence_bodies(store):
+    from skill_hub.context_composer import prepare_composition
+
+    _seed(store)
+    prompt = "Postgres migration.\nKeep this exact constraint."
+    result = prepare_composition(
+        prompt, project_roots=["/repos/alpha"], detail="index", store=store,
+    )
+
+    assert result["original_prompt"] == prompt
+    assert result["needs_review"] is True
+    assert result["mode"] == "manual"
+    saved_warnings = store._conn.execute(
+        "SELECT warnings FROM context_composer_drafts WHERE draft_id = ?",
+        (result["draft_id"],),
+    ).fetchone()[0]
+    assert result["warnings"] == json.loads(saved_warnings)
+    assert "expand_context_candidate" in result["read_instruction"]
+    assert all(item["project_root"] in {"", "/repos/alpha"} for item in result["candidates"])
+    assert all(set(item) == {
+        "candidate_id", "kind", "title", "source", "project_root", "source_hash",
+        "updated_at", "estimated_tokens",
+    } for item in result["candidates"])
+    assert "Alpha migration requires an additive schema." not in json.dumps(result)
+    assert "BETA SECRET" not in json.dumps(result)
+
+
+def test_index_estimates_full_source_while_preview_keeps_preview_estimate(store):
+    from skill_hub.context_composer import prepare_composition
+
+    _seed(store)
+    full_text = "Alpha additive migration. " + ("x" * 1800) + " exact ending"
+    store._conn.execute(
+        "UPDATE context_digests SET digest = ?, content = ? WHERE key = 'memory:alpha'",
+        (full_text, full_text),
+    )
+    store._conn.commit()
+
+    preview = prepare_composition(
+        "alpha additive migration", project_roots=["/repos/alpha"], store=store,
+    )
+    index = prepare_composition(
+        "alpha additive migration", project_roots=["/repos/alpha"],
+        detail="index", store=store,
+    )
+    preview_memory = next(item for item in preview["candidates"] if item["kind"] == "memory")
+    index_memory = next(item for item in index["candidates"] if item["kind"] == "memory")
+    assert preview_memory["estimated_tokens"] == 300
+    assert index_memory["estimated_tokens"] == 460
+
+
+@pytest.mark.parametrize("detail", ["unknown", "", None, 1])
+def test_prepare_rejects_unknown_detail(store, detail):
+    from skill_hub.context_composer import prepare_composition
+
+    with pytest.raises(ValueError, match="detail"):
+        prepare_composition("postgres", project_roots=[], detail=detail, store=store)
+
+
+def test_compact_batch_returns_exact_verified_sources_without_ranking_fields(store):
+    from skill_hub.context_composer import get_composition_candidate, prepare_composition
+
+    _seed(store)
+    draft = prepare_composition(
+        "postgres migration additive", project_roots=["/repos/alpha"],
+        detail="index", store=store,
+    )
+    memory = next(item for item in draft["candidates"] if item["kind"] == "memory")
+    skill = next(item for item in draft["candidates"] if item["kind"] == "skill")
+    result = get_composition_candidate(
+        draft["draft_id"], [memory["candidate_id"], skill["candidate_id"]],
+        detail="compact", store=store,
+    )
+
+    assert set(result) == {"draft_id", "items"}
+    assert result["draft_id"] == draft["draft_id"]
+    assert [item["candidate_id"] for item in result["items"]] == [
+        memory["candidate_id"], skill["candidate_id"],
+    ]
+    assert [item["text"] for item in result["items"]] == [
+        "Alpha migration requires an additive schema.",
+        "# PostgreSQL\nFull instructions.",
+    ]
+    assert all(set(item) == {
+        "candidate_id", "kind", "title", "source", "project_root", "source_hash",
+        "updated_at", "text",
+    } for item in result["items"])
+
+
+@pytest.mark.parametrize("candidate_ids", [
+    [], [""], [" "], [4], ["candidate", "candidate"], ["candidate"] * 7,
+])
+def test_batch_rejects_invalid_ids(store, candidate_ids):
+    from skill_hub.context_composer import get_composition_candidate, prepare_composition
+
+    _seed(store)
+    draft = prepare_composition("postgres migration", project_roots=["/repos/alpha"], store=store)
+    with pytest.raises(ValueError, match="candidate"):
+        get_composition_candidate(draft["draft_id"], candidate_ids, detail="compact", store=store)
+
+
+def test_batch_rejects_stale_and_foreign_ids_atomically(store):
+    from skill_hub.context_composer import get_composition_candidate, prepare_composition
+
+    _seed(store)
+    draft = prepare_composition("postgres migration", project_roots=["/repos/alpha"], store=store)
+    ids = [item["candidate_id"] for item in draft["candidates"][:2]]
+    with pytest.raises(ValueError, match="candidate"):
+        get_composition_candidate(draft["draft_id"], [ids[0], "fabricated"], detail="compact", store=store)
+
+    other = prepare_composition("postgres migration", project_roots=["/repos/beta"], store=store)
+    with pytest.raises(ValueError, match="candidate"):
+        get_composition_candidate(
+            draft["draft_id"], [ids[0], other["candidates"][0]["candidate_id"]],
+            detail="compact", store=store,
+        )
+
+    memory = next(item for item in draft["candidates"] if item["kind"] == "memory")
+    store._conn.execute(
+        "UPDATE context_digests SET content = 'Changed source' WHERE key = 'memory:alpha'"
+    )
+    store._conn.commit()
+    with pytest.raises(ValueError, match="stale"):
+        get_composition_candidate(
+            draft["draft_id"], [ids[0], memory["candidate_id"]]
+            if ids[0] != memory["candidate_id"] else [ids[1], memory["candidate_id"]],
+            detail="compact", store=store,
+        )
+
+
+def test_batch_rejects_oversize_source_without_truncating_legacy_single(store):
+    from skill_hub.context_composer import get_composition_candidate, prepare_composition
+
+    _seed(store)
+    full_text = "Alpha migration " + ("x" * 100_000) + " exact ending"
+    store._conn.execute(
+        "UPDATE context_digests SET digest = ?, content = ? WHERE key = 'memory:alpha'",
+        (full_text, full_text),
+    )
+    store._conn.commit()
+    draft = prepare_composition(
+        "alpha migration", project_roots=["/repos/alpha"], detail="index", store=store,
+    )
+    memory = next(item for item in draft["candidates"] if item["kind"] == "memory")
+    with pytest.raises(ValueError, match="request fewer candidate ids"):
+        get_composition_candidate(
+            draft["draft_id"], [memory["candidate_id"]], detail="compact", store=store,
+        )
+    assert get_composition_candidate(
+        draft["draft_id"], memory["candidate_id"], store=store,
+    )["text"] == full_text
+
+
+def test_batch_full_shape_and_single_revalidation(store, monkeypatch):
+    from skill_hub import context_composer
+
+    _seed(store)
+    draft = context_composer.prepare_composition(
+        "postgres migration", project_roots=["/repos/alpha"], store=store,
+    )
+    ids = [item["candidate_id"] for item in draft["candidates"][:2]]
+    original_collect = context_composer.collect_context_candidates
+    calls = []
+
+    def collect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_collect(*args, **kwargs)
+
+    monkeypatch.setattr(context_composer, "collect_context_candidates", collect)
+    batch = context_composer.get_composition_candidate(
+        draft["draft_id"], ids, store=store,
+    )
+    assert len(calls) == 1
+    assert [item["candidate_id"] for item in batch["items"]] == ids
+    assert all("features" in item and "score" in item for item in batch["items"])
+
+
+def test_expansion_rejects_unknown_detail(store):
+    from skill_hub.context_composer import get_composition_candidate, prepare_composition
+
+    _seed(store)
+    draft = prepare_composition("postgres", project_roots=["/repos/alpha"], store=store)
+    candidate_id = draft["candidates"][0]["candidate_id"]
+    with pytest.raises(ValueError, match="detail"):
+        get_composition_candidate(draft["draft_id"], candidate_id, detail="summary", store=store)
+
+
 def test_task_id_requires_exactly_one_project_and_verified_scope(store):
     from skill_hub.context_composer import prepare_composition
 
