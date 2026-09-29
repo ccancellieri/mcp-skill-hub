@@ -2,7 +2,8 @@
 
 Covers:
 (a) Chat ladder: when ollama_daemon_reachable() is False, ladder skips ollama
-    models without issuing any HTTP call to litellm.
+    models without issuing any HTTP call to litellm; an explicit model remains
+    pinned and fails before HTTP instead of switching providers.
 (b) Embed path: when ollama_daemon_reachable() is False, embed() does NOT
     attempt _embed_ollama's HTTP call and falls back to sentence_transformers.
 (c) A gated skip (daemon down) writes no llm_call error event to the store.
@@ -123,7 +124,7 @@ def test_chat_ladder_skips_ollama_when_daemon_down(monkeypatch, tmp_path):
 
 
 def test_chat_pinned_local_skips_http_when_daemon_down(monkeypatch, tmp_path):
-    """A pinned local model must skip the HTTP call and route to ladder when down."""
+    """A pinned local model fails before HTTP without switching providers."""
     import importlib
     _write_cfg(monkeypatch, tmp_path, _REG_LOCAL_PLUS_GW)
 
@@ -141,11 +142,9 @@ def test_chat_pinned_local_skips_http_when_daemon_down(monkeypatch, tmp_path):
     p = litellm_adapter.LitellmProvider()
     p._litellm = _fake_litellm_ok(calls)
 
-    out = p.complete("hello", model="ollama/local-model", op="compact")
-    assert out == "ok"
-    # Local model must not be called.
-    assert "ollama/local-model" not in calls, f"doomed ollama call issued: {calls}"
-    assert any("gw-model" in c for c in calls)
+    with pytest.raises(litellm_adapter.LLMError, match="explicit model unavailable"):
+        p.complete("hello", model="ollama/local-model", op="compact")
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +257,9 @@ def test_gated_skip_writes_no_error_event(monkeypatch, tmp_path):
     p = litellm_adapter.LitellmProvider()
     p._litellm = _fake_litellm_ok(calls)
 
-    out = p.complete("hello", model="ollama/local-model", op="compact")
-    assert out == "ok"
+    with pytest.raises(litellm_adapter.LLMError, match="explicit model unavailable"):
+        p.complete("hello", model="ollama/local-model", op="compact")
+    assert calls == []
 
     # No error events must appear for ollama.
     ollama_errors = [

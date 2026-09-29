@@ -1,0 +1,11 @@
+<section class="context-output" aria-label="Composed context">
+  <h2>Ready to use</h2>
+  <p>{{ composition.estimated_tokens }} estimated context tokens. This is a payload estimate, not measured task savings.</p>
+  {% for warning in composition.warnings %}<p class="context-warnings">{{ warning }}</p>{% endfor %}
+  <details><summary>Original prompt</summary><pre>{{ composition.original_prompt }}</pre></details>
+  <label for="composed-context">Context packet</label>
+  <textarea id="composed-context" class="composer-packet" readonly rows="10">{{ composition.context }}</textarea>
+  <div class="context-actions"><button class="btn" type="button" data-context-copy="composed-context">Copy context</button><span data-copy-status role="status"></span></div>
+  <p class="muted">Paste alongside your original prompt. Copying does not send it to a client or start a task.</p>
+  <details><summary>Composition reference</summary><code>{{ composition.composition_id }}</code></details>
+</section>

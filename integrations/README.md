@@ -4,12 +4,21 @@ These adapters call the shared JSON interface implemented by
 `python -m skill_hub.context_cli`. They pass:
 
 ```json
-{"prompt":"...","cwd":"/absolute/project","session_id":"...","task_id":null}
+{"prompt":"...","cwd":"/absolute/project","session_id":"...","task_id":null,"runtime":{"client":{"id":"pi"},"session":{"id":"..."},"model":{"id":"...","provider":"...","display_name":"..."},"effort":{"value":"high","scheme":"thinking_level"}}}
 ```
 
 The command returns the context service result JSON. Each adapter has a hard
 two-second timeout, limits stdout to 128 KiB, and treats any failure as no
 context. It invokes the command directly, never through a shell.
+
+`runtime` is optional telemetry. Adapters report only fields exposed by their
+host event API, so absent model or effort values remain unknown. The installed
+adapter selects an out-of-band CLI flag and records these fields as
+`adapter_reported`; this label is diagnostic provenance, not authentication or
+proof of an untampered native event. Direct CLI and MCP arguments are
+`caller_reported`, and JSON payloads cannot promote their own provenance.
+Persistence is local, client/session scoped, bounded, and does not participate
+in context selection.
 
 The adapters depend on the local `@mcp-skill-hub/context-adapter` workspace
 package. From this directory, run `npm install` once. Link package directories

@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "fastmcp>=2.0.0",
+    "fastmcp>=3.2.0",
     "httpx>=0.27.0",
     "watchdog>=4.0.0",
     "fastapi>=0.110",
@@ -36,7 +36,6 @@ dependencies = [
     "litellm>=1.52",
     "pyyaml>=6.0",
     "croniter>=3.0",
-    "keyring>=24.0",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +52,7 @@ all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0", "headroom-ai[ml]>=0.27
 Repository = "https://github.com/ccancellieri/mcp-skill-hub"
 
 [project.scripts]
-skill-hub = "skill_hub.server:main"
+skill-hub = "skill_hub.mcp_entry:main"
 skill-hub-cli = "skill_hub.cli:main"
 skill-hub-context = "skill_hub.context_cli:main"
 skill-hub-repl = "skill_hub.repl:main"

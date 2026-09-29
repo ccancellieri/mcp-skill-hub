@@ -172,9 +172,6 @@
   .mini-bar-track { height: 8px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
   .mini-bar-fill { height: 100%; border-radius: 2px; }
   .mini-bar-val { font-size: 10px; color: var(--color-muted); text-align: right; font-variant-numeric: tabular-nums; }
-  .bar-sonnet { background: rgba(58,160,255,0.65); }
-  .bar-opus   { background: rgba(192,57,43,0.65); }
-  .bar-haiku  { background: rgba(74,211,107,0.65); }
   .bar-other  { background: rgba(125,136,150,0.4); }
   .bar-t1 { background: rgba(58,160,255,0.6); }
   .bar-t2 { background: rgba(74,211,107,0.6); }
@@ -241,8 +238,8 @@
        @click="expanded=!expanded" @keydown.enter="expanded=!expanded" @keydown.space.prevent="expanded=!expanded">
     <div class="db-kpi-label">
       <span class="tooltip-wrapper">
-        <span>Cloud savings</span>
-        <a class="tooltip-help" href="#" data-tooltip="Dollar savings from routing to cheaper models, using published Anthropic pricing. Proportional to actual prompt size and complexity. Local LLM time (rerank, embeddings) has no $ cost and is shown separately." data-help-page="net-tokens" tabindex="0">?</a>
+        <span>Historical savings estimates</span>
+        <a class="tooltip-help" href="#" data-tooltip="Historical router estimates, not measured task-level savings. Some old events used fixed heuristic estimates. Unknown model prices are not inferred." data-help-page="net-tokens" tabindex="0">?</a>
       </span>
     </div>
     <div class="db-kpi-value">
@@ -254,18 +251,24 @@
     </div>
     <div class="db-kpi-sub">
       {% if m.usd_saved and m.usd_saved > 0 %}
-        ~{{ "{:,}".format(m.tokens_saved) }} tokens &middot; +{{ m.llm_seconds }}s local (free)
+        ~{{ "{:,}".format(m.tokens_saved) }} tokens &middot; {{ m.llm_seconds }}s local processing
       {% else %}
-        +~{{ m.llm_seconds }}s local LLM time (free)
+        {{ m.llm_seconds }}s local processing
       {% endif %}
     </div>
     <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px;color:var(--color-muted)" class="expanded-content">
-      <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Where savings come from:</strong></div>
+      <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Recorded pricing:</strong></div>
       <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.5">
-        <div style="margin-bottom:4px">✓ <strong>Tier selection:</strong> Routing to Haiku (vs Opus) saves ~95% per token; Sonnet saves ~80%</div>
-        <div style="margin-bottom:4px">✓ <strong>Pricing:</strong> Opus $15/$75 · Sonnet $3/$15 · Haiku $0.80/$4 per M in/out tokens</div>
-        <div style="margin-bottom:4px">✓ <strong>Proportional:</strong> Savings scale with actual prompt length and complexity score</div>
-        <div>✓ <strong>Enrichment / Plan mode:</strong> Counted in tokens only (no direct $ model — avoids rework)</div>
+        {% if m.model_pricing %}
+          {% for row in m.model_pricing %}
+            <div style="margin-bottom:4px"><strong>{{ row.name }}:</strong>
+              {% if row.price %}${{ row.price.input }}/M input · ${{ row.price.output }}/M output{% else %}Price not reported{% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <div>No model pricing was reported for this window.</div>
+        {% endif %}
+        <div style="margin-top:6px">Token-only records remain token-only when a model price is unknown.</div>
       </div>
     </div>
   </div>
@@ -466,11 +469,10 @@
     {% set total = router_stats.total %}
     {% for model, count in router_stats.model_counts.items() %}
       {% set pct = (count / total * 100)|round(0) %}
-      {% set css = model if model in ('sonnet','opus','haiku') else 'other' %}
       <div class="mini-bar-row">
         <span class="mini-bar-key">{{ model }}</span>
         <div class="mini-bar-track">
-          <div class="mini-bar-fill bar-{{ css }}" style="width:{{ pct }}%"></div>
+          <div class="mini-bar-fill bar-other" style="width:{{ pct }}%"></div>
         </div>
         <span class="mini-bar-val">{{ count }}</span>
       </div>
@@ -478,12 +480,9 @@
     <div style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:11px" class="expanded-content">
       <div style="margin-bottom:8px"><strong style="color:var(--color-fg)">Model routing breakdown:</strong></div>
       <div style="padding:8px;background:rgba(58,160,255,0.08);border-radius:3px;line-height:1.6;font-size:11px">
-        {% set haiku_pct = (router_stats.model_counts.get('haiku', 0) / total * 100)|round(1) %}
-        {% set sonnet_pct = (router_stats.model_counts.get('sonnet', 0) / total * 100)|round(1) %}
-        {% set opus_pct = (router_stats.model_counts.get('opus', 0) / total * 100)|round(1) %}
-        <div style="margin-bottom:6px">🟢 <strong>Haiku {{ haiku_pct }}%:</strong> Routine tasks, documentation, simple code</div>
-        <div style="margin-bottom:6px">🔵 <strong>Sonnet {{ sonnet_pct }}%:</strong> Standard features, debugging, analysis</div>
-        <div style="margin-bottom:6px">🔴 <strong>Opus {{ opus_pct }}%:</strong> Complex architecture, planning, research</div>
+        {% for model, count in router_stats.model_counts.items() %}
+          <div style="margin-bottom:6px"><strong>{{ model }} {{ (count / total * 100)|round(1) }}%:</strong> {{ count }} recorded prompt{{ '' if count == 1 else 's' }}</div>
+        {% endfor %}
         <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(58,160,255,0.2);color:var(--color-muted)">
           <span style="color:var(--color-good)">{{ router_stats.enriched }}</span> prompts enriched with context ·
           <span style="color:var(--color-accent)">{{ router_stats.plan_mode }}</span> entered plan mode

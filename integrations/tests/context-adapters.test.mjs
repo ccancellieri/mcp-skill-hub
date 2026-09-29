@@ -38,6 +38,22 @@ test("runner spawns configured Python without a shell and parses context", async
   assert.equal(calls[0].options.maxBuffer, 128 * 1024);
 });
 
+test("runner selects adapter-reported CLI provenance outside the JSON payload", async () => {
+  const calls = [];
+  await runContextCli(
+    { prompt: "find cache policy", cwd: "/repo", session_id: "s-1" },
+    {
+      adapterSource: "pi",
+      pythonCommand: "/opt/python",
+      spawn: successfulSpawn({ context: "" }, calls),
+    },
+  );
+
+  assert.deepEqual(calls[0].args, [
+    "-m", "skill_hub.context_cli", "--adapter-source", "pi",
+  ]);
+});
+
 test("runner kills a process that exceeds the two-second budget", async () => {
   let killed = false;
   const result = await runContextCli(
@@ -88,6 +104,35 @@ test("Pi adapter injects a custom context message without rewriting system promp
     message: { customType: "skill-hub-context", content: "project evidence", display: false },
   });
   assert.equal("systemPrompt" in output, false);
+});
+
+test("Pi adapter reports native model and thinking level for its session", async () => {
+  const handlers = new Map();
+  const pi = { on(event, callback) { handlers.set(event, callback); } };
+  let payload;
+  createPiExtension(pi, { runContext: async (value) => { payload = value; return {}; } });
+
+  await handlers.get("before_agent_start")(
+    { prompt: "implement it", thinkingLevel: "high" },
+    {
+      cwd: "/repo",
+      model: { id: "claude-sonnet", provider: "anthropic", name: "Claude Sonnet" },
+      sessionManager: { getSessionId: () => "pi-session" },
+    },
+  );
+
+  assert.deepEqual(payload.runtime, {
+    client: { id: "pi" },
+    model: { id: "claude-sonnet", provider: "anthropic", display_name: "Claude Sonnet" },
+    effort: { value: "high", scheme: "thinking_level" },
+    session: { id: "pi-session" },
+    provenance: {
+      client_id: "native_event", model_id: "native_event",
+      model_provider: "native_event", model_display_name: "native_event",
+      effort_value: "native_event", effort_scheme: "native_event",
+      session_id: "native_event",
+    },
+  });
 });
 
 test("Pi context filtering keeps only the newest injected context without mutating history", () => {
@@ -169,4 +214,44 @@ test("OpenClaw adapter prefers an absolute configured project root", async () =>
     { workspaceDir: "/other-project", sessionKey: "oc-session" },
   );
   assert.deepEqual(output, { prependContext: "/configured-project" });
+});
+
+test("OpenClaw reports only documented prompt-hook identity fields", async () => {
+  let handler;
+  const api = { on(_event, callback) { handler = callback; } };
+  let payload;
+  registerOpenClawContext(api, {
+    runContext: async (value) => { payload = value; return {}; },
+  });
+
+  await handler(
+    { prompt: "scope it", model: "must-not-be-trusted" },
+    {
+      workspaceDir: "/repo", sessionKey: "routing-key", sessionId: "oc-session-2",
+      runId: "run-7", agentId: "main", modelId: "gpt-5", modelProviderId: "openai",
+    },
+  );
+
+  assert.equal(payload.runtime.client.id, "openclaw");
+  assert.equal(payload.session_id, "routing-key");
+  assert.equal(payload.runtime.session.id, "oc-session-2");
+  assert.equal(payload.runtime.session.turn_id, "run-7");
+  assert.deepEqual(payload.runtime.model, { id: "gpt-5", provider: "openai" });
+});
+
+test("OpenClaw routing key alone is not persisted as native session identity", async () => {
+  let handler;
+  const api = { on(_event, callback) { handler = callback; } };
+  let payload;
+  registerOpenClawContext(api, {
+    runContext: async (value) => { payload = value; return {}; },
+  });
+
+  await handler(
+    { prompt: "scope it" },
+    { workspaceDir: "/repo", sessionKey: "stable-routing-key", modelId: "gpt-5" },
+  );
+
+  assert.equal(payload.session_id, "stable-routing-key");
+  assert.equal("id" in payload.runtime.session, false);
 });

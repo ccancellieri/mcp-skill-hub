@@ -1,6 +1,6 @@
 # Skill Hub Documentation
 
-The [root README](../README.md) is the elevator pitch. Everything else lives here — split so Claude (and you) only load what's needed.
+The [root README](../README.md) is the introduction. These guides are split so clients and readers can load only what is needed.
 
 ## 🗺️ Map
 
@@ -41,6 +41,10 @@ docs/
 | I want to… | Read |
 |------------|------|
 | **Install** on my machine | [installation.md](installation.md) |
+| **Choose and compress context** before sending it | [context-composer.md](context-composer.md) |
+| **Reduce the MCP tool surface** | [mcp-profiles.md](mcp-profiles.md) |
+| Inspect **offline learning experiments** | [context-learning.md](context-learning.md) |
+| **Measure net task token savings** | [evaluation protocol](../benchmarks/CONTEXT_VALUE.md) |
 | Understand **how the hook saves tokens** | [features/hooks.md](features/hooks.md) |
 | **Keep working when Claude is rate-limited** | [features/local-execution.md](features/local-execution.md) |
 | **Teach** the hub my vocabulary | [features/learning.md](features/learning.md) |

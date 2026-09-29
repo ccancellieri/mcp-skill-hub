@@ -1,0 +1,9 @@
+<section class="context-output" aria-label="Prompt comparison">
+  <h2>Prompt comparison</h2>
+  <p class="muted">Review the proposal. Your original prompt has not been replaced.</p>
+  <p class="muted">Estimated tokens: {{ optimization.before_estimated_tokens }} original → {{ optimization.after_estimated_tokens }} proposed. This is a text estimate, not measured task savings.</p>
+  <div class="composer-comparison"><section><h3>Original prompt</h3><pre>{{ optimization.original_prompt }}</pre></section><section><h3>Proposed prompt</h3><pre>{{ optimization.optimized_prompt }}</pre></section></div>
+  {% if optimization.diff %}<details><summary>Changes</summary><pre>{{ optimization.diff }}</pre></details>{% else %}<p>No conservative reduction available.</p>{% endif %}
+  <textarea id="optimized-prompt" class="composer-packet" readonly rows="4">{{ optimization.optimized_prompt }}</textarea>
+  <button class="btn secondary" type="button" data-context-copy="optimized-prompt">Copy proposed prompt</button><span data-copy-status role="status"></span>
+</section>

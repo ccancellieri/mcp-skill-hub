@@ -166,12 +166,17 @@ class ToolSpec:
     soft: tuple[str, ...] = ()   # nice-to-have → yellow if any missing
 
 
-# 72 MCP tools (see server.py @mcp.tool decorators). Grouped by category so
+# MCP tools (see server.py @mcp.tool decorators). Grouped by category so
 # the page renders predictably. Dependencies were derived by inspecting each
 # tool body — keep this list in sync when adding/removing @mcp.tool entries.
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("prepare_context", "Retrieve bounded project evidence without an LLM",
              hard=(BACKEND_DB,)),
+    ToolSpec("prepare_composition", "Prepare editable scoped context candidates", hard=(BACKEND_DB,)),
+    ToolSpec("compose_context", "Compose verified source references", hard=(BACKEND_DB,)),
+    ToolSpec("expand_context_candidate", "Expand a verified indexed source", hard=(BACKEND_DB,)),
+    ToolSpec("get_skill_content", "Load full text of a selected skill", hard=(BACKEND_DB,)),
+    ToolSpec("optimize_prompt_deterministic", "Compare conservative prompt compression"),
     # --- Search & RAG (need an embedding backend) ---
     ToolSpec("search_skills", "Semantic skill search",
              hard=(BACKEND_DB, BACKEND_EMBED)),

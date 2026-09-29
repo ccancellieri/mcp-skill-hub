@@ -387,3 +387,84 @@ def test_skill_ranking_prefers_exact_fastapi_metadata_over_content_distractors(s
     assert skills[0]["source"] == "skill:backend:fastapi"
     assert all(item["text"] != ">-" for item in skills)
     assert all(item["source"] != "skill:distractor:maintenance" for item in skills)
+
+
+@pytest.mark.parametrize("kind", ["memory", "wiki"])
+def test_scoped_context_uses_original_instead_of_generated_digest(store, kind):
+    from skill_hub.context_service import build_context
+
+    raw = "Alpha migration keeps the database read-only during validation."
+    if kind == "memory":
+        _insert_memory(store, project="/repos/alpha", doc_id="original", text=raw)
+    else:
+        _insert_wiki(store, slug="original", project="/repos/alpha", text=raw)
+    store._conn.execute(
+        "UPDATE context_digests SET digest = ? WHERE key = ?",
+        ("Analyze the Request: migration should delete the database.", f"{kind}:original"),
+    )
+    store._conn.commit()
+
+    result = build_context("alpha migration", cwd="/repos/alpha", store=store)
+
+    assert raw in result["context"]
+    assert "Analyze the Request" not in result["context"]
+    assert "delete the database" not in result["context"]
+
+
+@pytest.mark.parametrize("kind", ["memory", "wiki"])
+def test_digest_only_context_is_omitted_without_deleting_recoverable_row(store, kind):
+    from skill_hub.context_service import build_context
+
+    digest = "Alpha migration generated advice."
+    if kind == "memory":
+        _insert_memory(store, project="/repos/alpha", doc_id="legacy", text=digest)
+    else:
+        _insert_wiki(store, slug="legacy", project="/repos/alpha", text=digest)
+    store._conn.execute(
+        "UPDATE context_digests SET content = '' WHERE key = ?", (f"{kind}:legacy",)
+    )
+    store._conn.commit()
+
+    result = build_context("alpha migration", cwd="/repos/alpha", store=store)
+
+    assert not any(item["kind"] == kind for item in result["items"])
+    assert any("original" in warning and "reindex" in warning for warning in result["warnings"])
+    row = store._conn.execute(
+        "SELECT digest, content FROM context_digests WHERE key = ?", (f"{kind}:legacy",)
+    ).fetchone()
+    assert row["digest"] == digest
+    assert row["content"] == ""
+
+
+def test_generated_digest_terms_do_not_make_an_unrelated_source_relevant(store):
+    from skill_hub.context_service import build_context
+
+    _insert_memory(store, project="/repos/alpha", doc_id="release", text="Publish release notes.")
+    store._conn.execute(
+        "UPDATE context_digests SET digest = 'PostgreSQL migration constraints' "
+        "WHERE key = 'memory:release'"
+    )
+    store._conn.commit()
+
+    result = build_context("PostgreSQL migration", cwd="/repos/alpha", store=store)
+
+    assert not result["items"]
+
+
+def test_bounded_memory_prefix_reports_unsearched_source_tail(store):
+    from skill_hub.context_service import build_context, collect_context_candidates
+
+    _insert_memory(
+        store, project="/repos/alpha", doc_id="long-source",
+        text=("Unrelated introductory material. " * 100) + "PostgreSQL migration constraints.",
+    )
+
+    bounded = build_context("PostgreSQL migration", cwd="/repos/alpha", store=store)
+    full, warnings = collect_context_candidates(
+        "PostgreSQL migration", cwd="/repos/alpha", store=store, include_full_text=True,
+    )
+
+    assert not bounded["items"]
+    assert any("1600" in warning for warning in bounded["warnings"])
+    assert any(item["kind"] == "memory" for item in full)
+    assert not any("1600" in warning for warning in warnings)

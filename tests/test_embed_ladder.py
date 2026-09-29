@@ -158,11 +158,18 @@ def test_embed_cascade_falls_through_to_ladder(escalation, monkeypatch):
     # Default priority is ["ollama", "ladder", "sentence_transformers"].
     monkeypatch.setattr(emb, "_embed_ollama", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("daemon down")))
-    monkeypatch.setattr(emb, "_embed_ladder", lambda text, timeout=15.0: [0.5] * 768)
+    monkeypatch.setattr(
+        emb,
+        "_embed_ladder",
+        lambda text, timeout=15.0: emb.EmbeddingVector(
+            [0.5] * 768, model="gw-embed", backend="ladder:gateway"
+        ),
+    )
     monkeypatch.setattr(emb, "_hot_path", lambda: False)
 
     vec = emb.embed("hello")
     assert len(vec) == 768
+    assert vec.model == "gw-embed"
 
 
 def test_embed_available_true_with_only_remote_embed_provider(

@@ -8,7 +8,16 @@ Everything callable from Claude (as MCP tools) or from a terminal (via `skill-hu
 
 | Tool | Description |
 |------|-------------|
-| `search_skills(query, top_k, use_rerank)` | Semantic search, returns full skill content |
+| `search_skills(query, top_k, use_rerank, include_content=False)` | Skill descriptions and IDs; `include_content=True` preserves the previous full-text response |
+| `get_skill_content(skill_id)` | Read full indexed text for a selected skill without a model call |
+| `prepare_composition(prompt, project_roots, token_budget, mode)` | Prepare scoped candidates for review; persists a local draft |
+| `compose_context(draft_id, selected_ids, rejected_ids, excerpts, confirmed)` | Compose verified references; only actual human confirmation supplies learning labels |
+| `expand_context_candidate(draft_id, candidate_id)` | Expand an indexed source after checking freshness and scope |
+| `optimize_prompt_deterministic(text)` | Explicit original/proposed prompt comparison; never silently rewrites input |
+| `context_learning_status()` | Eligible example counts and selector versions |
+| `record_context_outcome(composition_id, outcome)` | Outcome evidence separate from selection preferences |
+| `train_context_selector()` | Train an inactive local linear ranker from eligible feedback |
+| `promote_context_selector(version, evidence)` | Explicit promotion using caller-supplied paired evaluation records; validates structure and recomputes metrics, not record authenticity |
 | `search_context(query, top_k)` | Unified search: skills + tasks + teachings + plugins |
 | `search_web(query, top_k)` | Web search via SearXNG + local LLM summary |
 | `suggest_plugins(query)` | Suggest plugins (including disabled) for current task |

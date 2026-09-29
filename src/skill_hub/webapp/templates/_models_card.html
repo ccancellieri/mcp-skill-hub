@@ -3,11 +3,19 @@
    Refresh via HTMX from /control/llm/card.
 #}
 <div id="models-card" class="service-grid">
+  <style>
+    #models-card, #models-card .service-card { min-width: 0; }
+    #models-card .models-table-scroll { max-width: 100%; overflow-x: auto; }
+    #models-card .model-choice-form { display: flex; gap: 4px; min-width: 0; }
+    #models-card .model-choice-form select { min-width: 0; max-width: 100%; width: 18rem; }
+    #models-card .runtime-observed { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  </style>
 
-  <div class="service-card">
-    <div class="service-head"><strong>LLM tiers</strong></div>
-    <table class="compact-table">
-      <thead><tr><th>tier</th><th>model</th><th>installed</th><th></th></tr></thead>
+  <div class="service-card" style="grid-column:1/-1">
+    <div class="service-head"><strong>Skill Hub model services</strong></div>
+    <p class="muted">L1 runs locally and L2 uses configured remote APIs. These settings do not change the model used by a connected client agent.</p>
+    <div class="models-table-scroll"><table class="compact-table">
+      <thead><tr><th>service</th><th>saved model</th><th>availability</th><th></th></tr></thead>
       <tbody>
         {% for tier in tier_keys %}
           {% set current = tiers.get(tier, '') %}
@@ -20,22 +28,24 @@
                 {% set names = installed | map(attribute='name') | list %}
                 {% if short in names %}<span class="dot-running">●</span>{% else %}<span class="dot-stopped">●</span>{% endif %}
               {% else %}
-                —
+                {% set matches = model_options | selectattr('value', 'equalto', current) | list %}
+                {% if matches %}{{ matches[0].availability }}{% else %}Not reported{% endif %}
               {% endif %}
             </td>
             <td>
               <form hx-post="/control/llm/tier"
                     hx-target="#models-card"
                     hx-swap="outerHTML"
-                    style="display:inline-flex;gap:4px">
+                    class="model-choice-form">
                 <input type="hidden" name="tier" value="{{ tier }}"/>
                 <select name="model_id">
                   <option value="{{ current }}" selected>{{ current or 'pick model…' }}</option>
                   {% for m in installed %}
                     <option value="ollama/{{ m.name }}">ollama/{{ m.name }} ({{ m.size_gb }} GB)</option>
                   {% endfor %}
-                  <option value="anthropic/claude-haiku-4-5">anthropic/claude-haiku-4-5</option>
-                  <option value="anthropic/claude-sonnet-4-6">anthropic/claude-sonnet-4-6</option>
+                  {% for option in model_options if option.value != current %}
+                    <option value="{{ option.value }}">{{ option.provider }} / {{ option.id }} · {{ option.availability }}{% if option.configured %} · configured{% endif %}</option>
+                  {% endfor %}
                 </select>
                 <button type="submit">save</button>
               </form>
@@ -43,20 +53,85 @@
           </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
+  </div>
+
+  <div class="service-card" style="grid-column:1/-1">
+    <div class="service-head"><strong>Client agent sessions (L3)</strong></div>
+    <p class="muted">Read-only last-observed runtime identity. A row reports evidence from that session; it does not imply that the session is currently active.</p>
+    {% if runtime_sessions %}
+      <div class="models-table-scroll"><table class="compact-table">
+        <thead><tr><th>client</th><th>session</th><th>model</th><th>effort</th><th>evidence summary</th><th>observed at</th></tr></thead>
+        <tbody>
+        {% for session in runtime_sessions %}
+          {% set field_times = session.observed_at_by_field or {} %}
+          <tr>
+            <td>{{ session.client_id or 'Not reported' }}{% if session.client_version %} <span class="muted">{{ session.client_version }}</span>{% endif %}</td>
+            <td><code>{{ session.session_id or 'Not reported' }}</code></td>
+            <td>
+              {{ session.model_display_name or session.model_id or 'Not reported' }}
+              {% if session.model_provider %}<span class="muted"> · {{ session.model_provider }}</span>{% endif %}
+              {% set model_source = session.provenance.get('model_display_name') or session.provenance.get('model_id') or session.provenance.get('model_provider') %}
+              <div class="muted">model: {% if model_source == 'caller_reported' %}caller-reported{% elif model_source == 'adapter_reported' %}adapter-reported{% elif model_source == 'configured' %}configured{% elif model_source == 'mcp_client_info' %}MCP client info{% elif model_source == 'native_event' %}native event{% elif model_source == 'native_api' %}native API{% else %}Not reported{% endif %}{% set model_time = field_times.get('model_display_name') or field_times.get('model_id') or field_times.get('model_provider') %}{% if model_time %} · <time class="runtime-observed" title="{{ model_time }}">{{ model_time[:19] | replace('T', ' ') }}</time>{% endif %}</div>
+            </td>
+            <td>
+              {{ session.effort_value or 'Not reported' }}{% if session.effort_scheme %}<span class="muted"> · {{ session.effort_scheme }}</span>{% endif %}
+              {% set effort_source = session.provenance.get('effort_value') or session.provenance.get('effort_scheme') %}
+              <div class="muted">effort: {% if effort_source == 'caller_reported' %}caller-reported{% elif effort_source == 'adapter_reported' %}adapter-reported{% elif effort_source == 'configured' %}configured{% elif effort_source == 'mcp_client_info' %}MCP client info{% elif effort_source == 'native_event' %}native event{% elif effort_source == 'native_api' %}native API{% else %}Not reported{% endif %}{% set effort_time = field_times.get('effort_value') or field_times.get('effort_scheme') %}{% if effort_time %} · <time class="runtime-observed" title="{{ effort_time }}">{{ effort_time[:19] | replace('T', ' ') }}</time>{% endif %}</div>
+            </td>
+            <td>
+              {% if session.source == 'caller_reported' %}caller-reported
+              {% elif session.source == 'adapter_reported' %}adapter-reported
+              {% elif session.source == 'configured' %}configured
+              {% elif session.source == 'mcp_client_info' %}MCP client info
+              {% elif session.source == 'native_event' %}native event
+              {% elif session.source == 'native_api' %}native API
+              {% elif session.source == 'mixed' %}mixed evidence
+              {% else %}Not reported{% endif %}
+            </td>
+            <td>{% if session.observed_at %}<time class="runtime-observed" title="{{ session.observed_at }}">{{ session.observed_at[:19] | replace('T', ' ') }}</time>{% else %}Not reported{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    {% else %}
+      <p class="muted">No runtime observations reported.</p>
+    {% endif %}
+  </div>
+
+  <div class="service-card" style="grid-column:1/-1">
+    <div class="service-head"><strong>Configured model catalog</strong></div>
+    {% if model_options %}
+      <div class="models-table-scroll"><table class="compact-table">
+        <thead><tr><th>provider</th><th>model</th><th>kind</th><th>availability</th><th>price / 1M tokens</th></tr></thead>
+        <tbody>
+        {% for option in model_options %}
+          <tr>
+            <td>{{ option.provider }}</td>
+            <td><code>{{ option.id }}</code>{% if option.configured %} <span class="muted">configured</span>{% endif %}</td>
+            <td>{{ option.kind or 'Not reported' }}</td>
+            <td>{{ option.availability or 'unknown' }}</td>
+            <td>{% if option.price %}${{ option.price.input }} in / ${{ option.price.output }} out{% else %}Price not reported{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    {% else %}
+      <p class="muted">No configured model catalog entries.</p>
+    {% endif %}
   </div>
 
   <div class="service-card">
     <div class="service-head"><strong>Installed Ollama models</strong></div>
     {% if installed %}
-      <table class="compact-table">
+      <div class="models-table-scroll"><table class="compact-table">
         <thead><tr><th>name</th><th>size</th></tr></thead>
         <tbody>
           {% for m in installed %}
           <tr><td><code>{{ m.name }}</code></td><td>{{ m.size_gb }} GB</td></tr>
           {% endfor %}
         </tbody>
-      </table>
+      </table></div>
     {% else %}
       <p class="muted">Ollama not reachable or no models installed.</p>
     {% endif %}

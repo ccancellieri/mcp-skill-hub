@@ -1,6 +1,6 @@
-"""Tier 3 — Claude Haiku batched classifier.
+"""Optional provider-configured batched classifier (legacy module name).
 
-A single Haiku call amortises the per-request cost by returning four results
+A single auxiliary call amortises the per-request cost by returning four results
 simultaneously:
   1. Classification (complexity / ambiguity / scope / domain_hints / confidence)
   2. Settings optimisation hint (one config key worth tweaking)
@@ -11,7 +11,6 @@ Each task can be individually disabled via config (router_haiku_* keys).
 The call only fires when:
   - router_haiku_enabled = True  OR  SKILL_HUB_ROUTER_HAIKU env var = "1"
   - Tier-2 confidence < router_haiku_threshold (default 0.7)
-  - ANTHROPIC_API_KEY is set
 """
 
 from __future__ import annotations
@@ -23,9 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import config as _cfg
-from ..llm import LLMError, get_provider
+from ..llm import LLMError, get_provider, request
 
-_HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +105,10 @@ class HaikuResult:
 # ---------------------------------------------------------------------------
 
 def is_enabled(cfg: dict[str, Any]) -> bool:
-    """Return True if Tier 3 is available (API key present + config enabled)."""
+    """Return whether the legacy classifier service is explicitly enabled."""
     env_flag = os.environ.get("SKILL_HUB_ROUTER_HAIKU", "")
     config_flag = bool(((cfg.get("services") or {}).get("haiku_router") or {}).get("enabled", False))
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
-    return has_key and (env_flag == "1" or config_flag)
+    return env_flag == "1" or config_flag
 
 
 def classify(
@@ -120,12 +117,11 @@ def classify(
     msg_count: int = 0,
     cwd: str = "",
 ) -> HaikuResult | None:
-    """Call Haiku with a batched prompt. Returns None on any error."""
+    """Call the configured mid tier with a batched prompt. Returns None on any error."""
     if cfg is None:
         cfg = _cfg.load_config()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    if not is_enabled(cfg):
         return None
 
     # Build a compact summary of router-relevant config keys for the settings_opt task
@@ -138,9 +134,9 @@ def classify(
     system_msg = _build_prompt(prompt, cfg, msg_count, config_summary, cwd=cwd)
 
     try:
-        content = get_provider().complete(
-            system_msg,
-            model=_HAIKU_MODEL,
+        content = request(
+            "mid", system_msg,
+            get_provider_fn=get_provider,
             max_tokens=400,
             temperature=0.2,
             timeout=15.0,

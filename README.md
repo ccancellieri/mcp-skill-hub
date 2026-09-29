@@ -1,6 +1,9 @@
 # MCP Skill Hub
 
 Scoped memory and skill context for Claude, Codex, Pi and OpenClaw.
+The primary goal is fewer total tokens per completed task through deterministic
+compression and explicit context selection.
+Quality and whole-task savings are measured separately from payload estimates.
 The interactive path preserves the original prompt and works without a local
 model or API key. Client-specific adapters use the same context service.
 
@@ -24,6 +27,16 @@ in the prompt hook and inferred approvals have been retired. See
 Keep the current task's evidence available without filling every prompt with
 unrelated tasks or the full skill library. The Context page previews retrieved
 sources and the exact supplemental text before it reaches a coding client.
+
+Start at `/context`: choose projects, review ranked sources, set a budget,
+and copy the composed packet. [Composer guide](docs/context-composer.md) ·
+[Minimal MCP profile](docs/mcp-profiles.md) ·
+[Evaluation protocol](benchmarks/CONTEXT_VALUE.md).
+
+Use `skill-hub --profile minimal` to expose eight everyday context tools with
+description-first skill lookup. The full profile remains the compatibility
+default. Local selector learning stays an offline experiment, not an ordinary
+workflow requirement.
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -115,7 +128,9 @@ L4: "run tests and summarize"
 <td valign="top">
 
 ### 🧠 Learning
-Teaching rules, feedback EMA, session history, shadow evolution — the hub gets **measurably smarter** over time.
+Confirmed context selections can train a small local ranker. New versions stay
+inactive until explicitly promoted with qualifying task-level evidence; improvement
+is not assumed.
 **→ [docs/features/learning.md](docs/features/learning.md)**
 
 </td>

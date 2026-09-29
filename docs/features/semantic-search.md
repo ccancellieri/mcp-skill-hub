@@ -120,3 +120,5 @@ The local LLM picks a type (user / feedback / project / reference), writes the f
 
 - [hooks.md](hooks.md) — how context injection decides which skills to load
 - [reference/tools.md](../reference/tools.md) — full MCP tool reference
+
+Skill search returns descriptions and IDs by default. Load the chosen entry with `get_skill_content(skill_id)`. Existing clients can request `include_content=True` for the former full-text response. Description retrieval alone is not evidence that a skill was useful.

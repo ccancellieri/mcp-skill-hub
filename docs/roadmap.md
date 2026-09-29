@@ -1,5 +1,17 @@
 # Roadmap
 
+## Current priority: measured token savings
+
+- [ ] #154 — Reviewable context composer, explicit project selection and deterministic compression; implementation available locally, integration pending.
+- [ ] #156 — Explicit minimal MCP profile and description-first lookup; measure actual schema overhead before claiming task savings.
+- [ ] #157 and #112 — Preserve compression fidelity and verified source provenance.
+- [ ] #152 — Compare full-task usage and correctness, with at least 15% median token reduction required for promotion. Payload estimates and synthetic checks alone do not qualify.
+- [ ] #128 and #129 — Finish common dispatch and qualify native client integrations.
+
+DwarfStar (#121) and preference learning (#155) are not planned. Current local
+selector studies are concluded without promotion; visual workflows remain
+deferred. No experimental selector is activated automatically.
+
 ## Shipped ✅
 
 ### Core
@@ -62,7 +74,7 @@ Selectively apply patterns from Anthropic's Managed Agents post — durable even
 - [x] #27 — W1 event log: `events` table + emit decorator + `get_events` / `events_prune`
 - [x] #28 — W2 stateless recovery: `wake_session` + cache-rebuild discipline
 - [x] #29 — W3 uniform tool envelope: `ToolResult` + wrapping decorator
-- [x] #30 — W4 credential vault: keyring + 3-tier backend + config→vault migration
+- [x] #30 — W4 credential vault shipped, then retired in `324a544`: the current credential resolver uses provider configuration, environment variables and opencode credentials.
 - [x] ~~#31 — W5 sandbox interface: `provision()` + subprocess backend for plan-execution tools~~ — **shipped, then removed (PR #52).** It guarded the in-process plan-execution stepper (`author_plan` / `run_plan` / `execute_plan_step`), which has itself been retired in favour of Claude Code's native Workflow tool and `/team` subagents — those run in their own harness-managed worktrees, so an in-process sandbox no longer has anything to wrap. `validate_plan` (lint-only) survived PR #52, but was itself removed in the later #130 zero-usage purge (`plan_executor/validator.py`, zero calls) — no plan-lint tool remains today.
 
 ### M3 — Worktree + multi-repo policy enforcement

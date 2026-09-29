@@ -55,28 +55,56 @@ def build_context(
     if not scope:
         warnings.append("No cwd scope was provided; project context was not queried.")
 
-    candidates: list[dict] = []
-    try:
-        with _read_connection(store) as conn:
-            _collect(candidates, warnings, "skills", _skill_candidates, conn, prompt, max_items)
-            if scope:
-                _collect(candidates, warnings, "tasks", _task_candidates,
-                         conn, prompt, scope, session_id, task_id)
-                _collect(candidates, warnings, "memory", _memory_candidates,
-                         conn, prompt, scope, cfg, warnings)
-                _collect(candidates, warnings, "wiki", _wiki_candidates,
-                         conn, prompt, scope, cfg, warnings)
-    except Exception as exc:  # noqa: BLE001 - unavailable DB is a soft failure
-        warnings.append(f"Read-only context store was unavailable: {exc}")
-
-    candidates = _dedupe_candidates(candidates)
-    candidates.sort(key=lambda item: (-item["score"], item["kind"], item["source"]))
+    candidates, collection_warnings = collect_context_candidates(
+        prompt, cwd=scope, session_id=session_id, task_id=task_id, store=store,
+        cfg=cfg, max_skill_items=max_items,
+    )
+    warnings.extend(collection_warnings)
     items, omitted = _fit_items(candidates, max_items, max_chars)
     output["items"] = items
     output["context"] = _render_context(items, max_chars)
     output["selected_count"] = len(items)
     output["omitted_count"] = omitted
     return _finalize(output, started)
+
+
+def collect_context_candidates(
+    prompt: str,
+    *,
+    cwd: str = "",
+    session_id: str = "",
+    task_id: int | None = None,
+    store: Any = None,
+    cfg: Any = None,
+    max_skill_items: int = _MAX_ITEMS,
+    include_full_text: bool = False,
+) -> tuple[list[dict], list[str]]:
+    """Return ranked evidence before rendering and size fitting.
+
+    This is the shared deterministic retrieval boundary used by the foreground
+    context service and reviewable composition.  Callers must still enforce
+    their own output bounds.
+    """
+    warnings: list[str] = []
+    scope = _canonical_cwd(cwd)
+    candidates: list[dict] = []
+    try:
+        with _read_connection(store) as conn:
+            _collect(candidates, warnings, "skills", _skill_candidates,
+                     conn, prompt, _limit(max_skill_items, _MAX_ITEMS, _MAX_ITEMS),
+                     include_full_text)
+            if scope:
+                _collect(candidates, warnings, "tasks", _task_candidates,
+                         conn, prompt, scope, session_id, task_id, include_full_text)
+                _collect(candidates, warnings, "memory", _memory_candidates,
+                         conn, prompt, scope, _load_cfg(cfg), warnings, include_full_text)
+                _collect(candidates, warnings, "wiki", _wiki_candidates,
+                         conn, prompt, scope, _load_cfg(cfg), warnings, include_full_text)
+    except Exception as exc:  # noqa: BLE001 - unavailable DB is a soft failure
+        warnings.append(f"Read-only context store was unavailable: {exc}")
+    candidates = _dedupe_candidates(candidates)
+    candidates.sort(key=lambda item: (-item["score"], item["kind"], item["source"]))
+    return candidates, warnings
 
 
 def _empty_result(prompt: str, warnings: list[str], started: float) -> dict:
@@ -185,14 +213,18 @@ def _relevance(prompt: str, *parts: str) -> int:
     return sum(term in haystack for term in terms)
 
 
-def _item(kind: str, title: str, source: str, text: str, score: int) -> dict:
-    return {
+def _item(kind: str, title: str, source: str, text: str, score: int,
+          full_text: str | None = None) -> dict:
+    item = {
         "kind": kind,
         "title": title,
         "source": source,
         "text": _clean_snippet(text),
         "score": score,
     }
+    if full_text is not None:
+        item["_full_text"] = full_text
+    return item
 
 
 def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
@@ -211,9 +243,10 @@ def _clean_snippet(text: str) -> str:
     return text[:_SNIPPET_CHARS].rstrip()
 
 
-def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int) -> list[dict]:
+def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int,
+                      include_full_text: bool = False) -> list[dict]:
     terms = _tokens(prompt)
-    rows = _search_skills_text(conn, terms, top_k=100)
+    rows = _search_skills_text(conn, terms, top_k=100, include_content=include_full_text)
     ranked: list[tuple[int, int, dict, str]] = []
     for row in rows:
         description = row.get("description") or ""
@@ -238,16 +271,20 @@ def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int) -> 
         items.append(_item(
             "skill", title, f"skill:{row['id']}",
             description, 5_000 + name_overlap * 1_000 + description_overlap * 100 + bm25_bonus,
+            row.get("content") if include_full_text else None,
         ))
     return items
 
 
-def _search_skills_text(conn: sqlite3.Connection, terms: set[str], top_k: int) -> list[dict]:
+def _search_skills_text(conn: sqlite3.Connection, terms: set[str], top_k: int,
+                        include_content: bool = False) -> list[dict]:
     if not terms:
         return []
     try:
+        content = ", s.content" if include_content else ""
         rows = conn.execute(
-            "SELECT s.id, s.name, s.description, s.file_path, s.plugin, s.indexed_at, f.rank AS score "
+            "SELECT s.id, s.name, s.description" + content + ", s.file_path, s.plugin, "
+            "s.indexed_at, f.rank AS score "
             "FROM skills_fts f JOIN skills s ON s.id = f.skill_id "
             "WHERE skills_fts MATCH ? ORDER BY rank LIMIT ?",
             (" OR ".join(f'"{term}"' for term in sorted(terms)), top_k),
@@ -261,8 +298,36 @@ def _usable_description(description: str) -> bool:
     return bool(re.search(r"[a-z0-9]", description.lower()))
 
 
+# Explicit experimental shortlist only. Foreground context keeps the conservative
+# selector above; callers of this broader path must decide whether to inject it.
+def _skill_shortlist(conn: sqlite3.Connection, prompt: str, max_items: int,
+                     include_full_text: bool = False) -> list[dict]:
+    from .skill_retrieval import rank_skills
+
+    if max_items <= 0:
+        return []
+    rows = [dict(row) for row in conn.execute(
+        "SELECT id, name, description, indexed_at FROM skills ORDER BY id"
+    ).fetchall()]
+    items = []
+    for row, score in rank_skills(prompt, rows, max_items):
+        title = row.get("name") or row["id"]
+        description = row.get("description") or ""
+        if row.get("indexed_at"):
+            title = f"{title} (indexed {row['indexed_at']})"
+        content = None
+        if include_full_text:
+            full_row = conn.execute("SELECT content FROM skills WHERE id = ?", (row["id"],)).fetchone()
+            content = full_row["content"] if full_row else None
+        items.append(_item(
+            "skill", title, f"skill:{row['id']}",
+            description if description.strip(" >-\n\t") else title, score, content,
+        ))
+    return items
+
+
 def _task_candidates(conn: sqlite3.Connection, prompt: str, scope: str, session_id: str,
-                     task_id: int | None) -> list[dict]:
+                     task_id: int | None, include_full_text: bool = False) -> list[dict]:
     if task_id is not None:
         row = conn.execute(
             "SELECT id, title, summary, context, session_id, cwd, updated_at, options "
@@ -282,7 +347,7 @@ def _task_candidates(conn: sqlite3.Connection, prompt: str, scope: str, session_
     else:
         if _is_continuation(prompt):
             return []
-        rows = _search_scoped_tasks(conn, prompt, scope)
+        rows = _search_scoped_tasks(conn, prompt, scope, include_full_text)
 
     continuation = _is_continuation(prompt)
     items = []
@@ -302,18 +367,24 @@ def _task_candidates(conn: sqlite3.Connection, prompt: str, scope: str, session_
         if row["updated_at"]:
             title += f" (updated {row['updated_at']})"
         priority = 10_000 if continuation else 8_000
-        items.append(_item("task", title, f"task:{row['id']}", text, priority + score))
+        items.append(_item(
+            "task", title, f"task:{row['id']}", text, priority + score,
+            text if include_full_text else None,
+        ))
     return items
 
 
-def _search_scoped_tasks(conn: sqlite3.Connection, prompt: str, scope: str) -> list[Any]:
+def _search_scoped_tasks(conn: sqlite3.Connection, prompt: str, scope: str,
+                         include_full_text: bool = False) -> list[Any]:
     terms = _tokens(prompt)
     if not terms:
         return []
     try:
+        summary = "summary" if include_full_text else "substr(summary, 1, 1200)"
+        context = "context" if include_full_text else "substr(context, 1, 1200)"
         rows = conn.execute(
             "SELECT id, substr(title, 1, 240) AS title, "
-            "substr(summary, 1, 1200) AS summary, substr(context, 1, 1200) AS context, "
+            f"{summary} AS summary, {context} AS context, "
             "session_id, cwd, updated_at, options "
             "FROM tasks WHERE status = 'open' AND cwd = ? "
             "ORDER BY updated_at DESC LIMIT 100",
@@ -343,7 +414,7 @@ def _work_state(options: Any) -> str:
 
 
 def _memory_candidates(conn: sqlite3.Connection, prompt: str, scope: str,
-                       cfg: Any, warnings: list[str]) -> list[dict]:
+                       cfg: Any, warnings: list[str], include_full_text: bool = False) -> list[dict]:
     if not _has_columns(conn, "vectors", {"namespace", "doc_id", "project", "source"}):
         return []
     labels = sorted(_project_labels(scope, cfg))
@@ -352,24 +423,30 @@ def _memory_candidates(conn: sqlite3.Connection, prompt: str, scope: str,
         conn,
         "v.project IN (" + label_marks + ") OR v.source IN (" + label_marks + ") "
         "OR v.source = ? OR instr(v.source, ? || '/') = 1",
-        [*labels, *labels, scope, scope],
+        [*labels, *labels, scope, scope], include_full_text,
     )
     path_rows = _memory_rows(
         conn,
         "instr(v.metadata, ?) > 0",
-        [f'"path": "{scope}/'],
+        [f'"path": "{scope}/'], include_full_text,
     )
     rows_by_id = {row["doc_id"]: row for row in label_rows}
     rows_by_id.update(
         {row["doc_id"]: row for row in path_rows if _metadata_path_within_scope(row["metadata"], scope)}
     )
-    return _items_with_content("memory", list(rows_by_id.values()), prompt, warnings)
+    return _items_with_content(
+        "memory", list(rows_by_id.values()), prompt, warnings, include_full_text
+    )
 
 
-def _memory_rows(conn: sqlite3.Connection, where: str, params: list[Any]) -> list[Any]:
+def _memory_rows(conn: sqlite3.Connection, where: str, params: list[Any],
+                 include_full_text: bool = False) -> list[Any]:
+    digest = "d.digest" if include_full_text else "substr(d.digest, 1, 1600)"
+    content = "d.content" if include_full_text else "substr(d.content, 1, 1600)"
+    truncated = "0" if include_full_text else "length(d.content) > 1600"
     return conn.execute(
         "SELECT v.namespace, v.doc_id, v.source, v.project, v.metadata, v.indexed_at, "
-        "substr(d.digest, 1, 1600) AS digest, substr(d.content, 1, 1600) AS content, d.updated_at "
+        f"{digest} AS digest, {content} AS content, {truncated} AS content_truncated, d.updated_at "
         "FROM vectors v LEFT JOIN context_digests d ON d.key = 'memory:' || "
         "CASE WHEN instr(v.doc_id, '#chunk-') > 0 "
         "THEN substr(v.doc_id, 1, instr(v.doc_id, '#chunk-') - 1) ELSE v.doc_id END "
@@ -389,7 +466,7 @@ def _metadata_path_within_scope(metadata: Any, scope: str) -> bool:
 
 
 def _wiki_candidates(conn: sqlite3.Connection, prompt: str, scope: str,
-                     cfg: Any, warnings: list[str]) -> list[dict]:
+                     cfg: Any, warnings: list[str], include_full_text: bool = False) -> list[dict]:
     if not _has_columns(conn, "wiki_pages", {"slug", "title", "projects", "scope", "updated"}):
         return []
     labels = sorted(_project_labels(scope, cfg))
@@ -404,7 +481,7 @@ def _wiki_candidates(conn: sqlite3.Connection, prompt: str, scope: str,
         "SELECT 1 FROM json_each(wp.projects) WHERE value IN (" + marks + "))",
         labels,
     ).fetchall()
-    return _items_with_content("wiki", rows, prompt, warnings)
+    return _items_with_content("wiki", rows, prompt, warnings, include_full_text)
 
 
 def _project_labels(scope: str, cfg: Any) -> set[str]:
@@ -442,26 +519,43 @@ def _encoded_project_path(path: str) -> str:
 
 
 def _items_with_content(kind: str, rows: list[Any], prompt: str,
-                        warnings: list[str]) -> list[dict]:
+                        warnings: list[str], include_full_text: bool = False) -> list[dict]:
     available = []
     missing = False
+    digest_only = False
     for row in rows:
-        if row["digest"] or row["content"]:
+        if row["content"] and row["content"].strip():
             available.append(row)
+        elif row["digest"]:
+            digest_only = True
         else:
             missing = True
     if missing:
-        warnings.append(f"Scoped {kind} records without stored digest content were omitted.")
-    return _provenanced_items(kind, available, prompt)
+        warnings.append(f"Scoped {kind} records without stored original content were omitted.")
+    if digest_only:
+        warnings.append(
+            f"Scoped {kind} records with only a generated digest were omitted; "
+            "reindex from the original source to restore verified evidence."
+        )
+    if kind == "memory" and not include_full_text and any(row["content_truncated"] for row in rows):
+        warnings.append(
+            "Bounded memory retrieval searched only the first 1600 characters of some sources; "
+            "use explicit full-source composition to search their remaining text."
+        )
+    return _provenanced_items(kind, available, prompt, include_full_text)
 
 
-def _provenanced_items(kind: str, rows: list[Any], prompt: str) -> list[dict]:
+def _provenanced_items(kind: str, rows: list[Any], prompt: str,
+                       include_full_text: bool = False) -> list[dict]:
     items = []
     for row in rows:
         metadata = _json_object(row["metadata"]) if "metadata" in row.keys() else {}
         if _is_ignored(metadata):
             continue
-        text = row["digest"] or row["content"] or ""
+        # Generated digests may contain unsupported claims or process text.
+        # Rank and quote the retained indexed source; keep digests for review.
+        text = row["content"]
+        full_text = text
         title = row["title"] if "title" in row.keys() else row["doc_id"]
         score = _relevance(prompt, title or "", text)
         if not score:
@@ -472,7 +566,10 @@ def _provenanced_items(kind: str, rows: list[Any], prompt: str) -> list[dict]:
         date = row["updated_at"] or row["indexed_at"]
         if date:
             title = f"{title} (updated {date})"
-        items.append(_item(kind, title or row["doc_id"], source, text, 6_000 + score))
+        items.append(_item(
+            kind, title or row["doc_id"], source, text, 6_000 + score,
+            full_text if include_full_text else None,
+        ))
     return items
 
 

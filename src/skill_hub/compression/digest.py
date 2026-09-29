@@ -7,8 +7,8 @@ the hook budget — so digests are precomputed OFF the hot path:
 
 - The hook asks :func:`digest_or_squeezed`: a cached digest whose content
   hash still matches is injected instantly; otherwise the squeezed raw text
-  is injected and the source is queued (``digest = ''`` row, raw retained in
-  ``content``).
+  is injected and the source is queued (``digest = ''`` row). The indexed raw
+  source remains in ``content`` for verified expansion and freshness checks.
 - Background passes (the async-enrich worker and the reindex sweep) call
   :func:`refresh_pending`, which builds digests through the escalation
   ladder (``op="context_digest"`` → quota-aware, metered per provider).
@@ -49,12 +49,22 @@ def lookup(store: Any, key: str, content: str) -> str | None:
     """Cached digest for ``key`` iff the content hash still matches."""
     try:
         row = store._conn.execute(
-            "SELECT content_hash, digest FROM context_digests WHERE key = ?",
+            "SELECT content_hash, digest, content FROM context_digests WHERE key = ?",
             (key,),
         ).fetchone()
     except Exception:  # noqa: BLE001 - cache is best-effort
         return None
     if row and row["digest"] and row["content_hash"] == _hash(content):
+        if not row["content"]:
+            try:
+                store._conn.execute(
+                    "UPDATE context_digests SET content = ? "
+                    "WHERE key = ? AND content_hash = ? AND content = ''",
+                    (content, key, row["content_hash"]),
+                )
+                store._conn.commit()
+            except Exception as exc:  # noqa: BLE001 - optional hydration must not break a cache hit
+                log.debug("Digest source hydration unavailable: %s", type(exc).__name__)
         return row["digest"]
     return None
 
@@ -64,10 +74,17 @@ def mark_pending(store: Any, key: str, content: str) -> None:
     h = _hash(content)
     try:
         row = store._conn.execute(
-            "SELECT content_hash, digest FROM context_digests WHERE key = ?",
+            "SELECT content_hash, content FROM context_digests WHERE key = ?",
             (key,),
         ).fetchone()
         if row and row["content_hash"] == h:
+            if not row["content"]:
+                store._conn.execute(
+                    "UPDATE context_digests SET content = ? "
+                    "WHERE key = ? AND content_hash = ? AND content = ''",
+                    (content, key, h),
+                )
+                store._conn.commit()
             return  # already digested or already queued for this content
         store._conn.execute(
             "INSERT OR REPLACE INTO context_digests"
@@ -153,7 +170,7 @@ def refresh_pending(store: Any, *, limit: int = 10) -> int:
         try:
             store._conn.execute(
                 "UPDATE context_digests"
-                " SET digest = ?, content = '', provider = 'ladder',"
+                " SET digest = ?, provider = 'ladder',"
                 "     updated_at = datetime('now')"
                 " WHERE key = ? AND content_hash = ?",
                 (d, row["key"], row["content_hash"]),

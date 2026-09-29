@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -55,6 +57,130 @@ def test_resolve_tier(monkeypatch):
     assert mr.resolve_tier("tier_smart") == "anthropic/claude-sonnet-4-6"
     assert mr.resolve_tier("sonnet") == "anthropic/claude-sonnet-4-6"   # family alias
     assert mr.resolve_tier("opus") == "anthropic/claude-opus-4-8"
+
+
+def test_resolve_selection_uses_unique_registry_provider_credentials(monkeypatch):
+    from skill_hub import config
+
+    values = {
+        "llm_provider_registry": [{
+            "name": "work-gateway", "kind": "openai_compatible",
+            "api_base": "https://gateway.example/v1",
+            "api_key": {"source": "inline", "ref": "secret"},
+            "models": [{"id": "vendor/model:latest", "tags": ["python"]}],
+        }],
+        "llm_providers": {"tier_smart": "vendor/model:latest"},
+    }
+    monkeypatch.setattr(config, "get", lambda key, default=None: values.get(key, default))
+
+    resolved = mr.resolve_model_selection("tier_smart")
+
+    assert resolved.model == "vendor/model:latest"
+    assert resolved.requested == "tier_smart"
+    assert resolved.provider == "work-gateway"
+    assert resolved.kind == "openai_compatible"
+    assert resolved.api_base == "https://gateway.example/v1"
+    assert resolved.api_key == "secret"
+
+
+def test_resolve_selection_requires_qualification_for_duplicate_ids(monkeypatch):
+    from skill_hub import config
+
+    values = {
+        "llm_provider_registry": [
+            {"name": name, "kind": "openai_compatible", "enabled": True,
+             "api_base": f"https://{name}.example/v1",
+             "api_key": {"source": "inline", "ref": f"key-{name}"},
+             "models": [{"id": "shared/model"}]}
+            for name in ("first", "second")
+        ],
+        "llm_providers": {},
+    }
+    monkeypatch.setattr(config, "get", lambda key, default=None: values.get(key, default))
+
+    with pytest.raises(mr.ModelResolutionError, match="ambiguous"):
+        mr.resolve_model_selection("shared/model")
+
+    resolved = mr.resolve_model_selection("second::shared/model")
+    assert resolved.model == "shared/model"
+    assert resolved.provider == "second"
+    assert resolved.api_base == "https://second.example/v1"
+    assert resolved.api_key == "key-second"
+
+
+def test_provider_qualification_survives_legacy_tier_lookup(monkeypatch):
+    from skill_hub import config
+
+    values = {
+        "llm_provider_registry": [
+            {"name": name, "kind": "openai_compatible", "enabled": True,
+             "api_base": f"https://{name}.example/v1",
+             "api_key": {"source": "inline", "ref": f"key-{name}"},
+             "models": [{"id": "shared/model"}]}
+            for name in ("first", "second")
+        ],
+        "llm_providers": {"tier_smart": "second::shared/model"},
+    }
+    monkeypatch.setattr(config, "get", lambda key, default=None: values.get(key, default))
+
+    resolved = mr.resolve_model_selection("tier_smart")
+
+    assert resolved.requested == "tier_smart"
+    assert resolved.provider == "second"
+    assert resolved.model == "shared/model"
+
+
+def test_model_options_are_network_free_and_include_legacy_tiers(monkeypatch):
+    from skill_hub import config
+
+    values = {
+        "llm_provider_registry": [{
+            "name": "local", "kind": "ollama", "enabled": True,
+            "models": [{"id": "ollama/qwen:7b"}],
+        }],
+        "llm_providers": {"tier_smart": "custom/frontier-v2"},
+    }
+    monkeypatch.setattr(config, "get", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(mr, "_ollama_models", lambda: pytest.fail("model_options must not probe"))
+
+    options = mr.model_options()
+
+    assert {tuple(sorted(row)) for row in options} == {
+        tuple(sorted({"id": "ollama/qwen:7b", "provider": "local", "kind": "ollama",
+                      "configured": True, "availability": "configured"})),
+        tuple(sorted({"id": "custom/frontier-v2", "provider": "legacy:tier_smart",
+                      "kind": "unknown", "configured": True,
+                      "availability": "configured"})),
+    }
+
+
+def test_model_options_deduplicates_provider_qualified_saved_models(monkeypatch):
+    from skill_hub import config
+
+    values = {
+        "llm_provider_registry": [
+            {"name": "local", "kind": "ollama", "enabled": True,
+             "models": [{"id": "qwen-local"}]},
+            {"name": "work", "kind": "openai_compatible", "enabled": True,
+             "models": [{"id": "grok"}]},
+        ],
+        "llm_providers": {
+            "tier_cheap": "local::qwen-local",
+            "tier_smart": "work::grok",
+            "tier_planner": "missing::frontier",
+        },
+    }
+    monkeypatch.setattr(config, "get", lambda key, default=None: values.get(key, default))
+
+    options = mr.model_options()
+
+    assert [(row["provider"], row["id"]) for row in options].count(("local", "qwen-local")) == 1
+    assert [(row["provider"], row["id"]) for row in options].count(("work", "grok")) == 1
+    assert not any(row["provider"].startswith("legacy:") and row["id"] in {
+        "local::qwen-local", "work::grok",
+    } for row in options)
+    assert any(row["provider"] == "legacy:tier_planner" and
+               row["id"] == "missing::frontier" for row in options)
 
 
 def test_latest_in_family():
