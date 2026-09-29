@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from mcp.types import Implementation
+from skill_hub.store import Skill
 
 
 @pytest.fixture()
@@ -63,6 +65,69 @@ def test_composer_tools_are_available_without_models(server_and_store):
             assert data["original_prompt"] == "Keep this prompt"
             composed = await client.call_tool("compose_context", {"draft_id": data["draft_id"], "selected_ids": []})
             assert composed.structured_content["context"] == ""
+    asyncio.run(call())
+
+
+def test_compact_composer_mcp_contract_and_legacy_full_response(server_and_store):
+    server, store = server_and_store
+    store.upsert_skill(Skill(
+        id="backend:postgres", name="postgres", description="Postgres migration guidance.",
+        content="# PostgreSQL\nFull instructions.",
+        file_path="/trusted/postgres/SKILL.md", plugin="backend",
+    ))
+    store.save_task(
+        title="Postgres migration", summary="Alpha task full text.", vector=[],
+        session_id="session-a", cwd="/repos/alpha", repo="alpha",
+    )
+
+    async def call():
+        async with Client(server.mcp) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            prepare_schema = tools["prepare_composition"].inputSchema
+            expand_schema = tools["expand_context_candidate"].inputSchema
+            assert prepare_schema["properties"]["detail"]["default"] == "preview"
+            assert set(prepare_schema["properties"]["detail"]["enum"]) == {"preview", "index"}
+            assert expand_schema["properties"]["detail"]["default"] == "full"
+            assert set(expand_schema["properties"]["detail"]["enum"]) == {"full", "compact"}
+            candidate_schema = expand_schema["properties"]["candidate_id"]
+            assert {part["type"] for part in candidate_schema["anyOf"]} == {"string", "array"}
+
+            prompt = "Postgres migration.\nKeep this exact line."
+            prepared = await client.call_tool("prepare_composition", {
+                "prompt": prompt, "project_roots": ["/repos/alpha"], "detail": "index",
+            })
+            data = prepared.structured_content
+            assert data["original_prompt"] == prompt
+            assert data["needs_review"] is True
+            assert all("text" not in item for item in data["candidates"])
+            assert "Alpha task full text." not in json.dumps(data)
+            assert all(item["project_root"] in {"", "/repos/alpha"} for item in data["candidates"])
+
+            ids = [item["candidate_id"] for item in data["candidates"][:2]]
+            batch = await client.call_tool("expand_context_candidate", {
+                "draft_id": data["draft_id"], "candidate_id": ids, "detail": "compact",
+            })
+            assert batch.structured_content["draft_id"] == data["draft_id"]
+            assert [item["candidate_id"] for item in batch.structured_content["items"]] == ids
+            assert any("Full instructions." in item["text"] for item in batch.structured_content["items"])
+
+            legacy = await client.call_tool("expand_context_candidate", {
+                "draft_id": data["draft_id"], "candidate_id": ids[0],
+            })
+            assert legacy.structured_content["candidate_id"] == ids[0]
+            assert "items" not in legacy.structured_content
+            assert "features" in legacy.structured_content
+            assert "score" in legacy.structured_content
+
+            with pytest.raises(ToolError, match="detail"):
+                await client.call_tool("prepare_composition", {
+                    "prompt": prompt, "detail": "novel",
+                })
+            with pytest.raises(ToolError, match="unknown_parameter"):
+                await client.call_tool("prepare_composition", {
+                    "prompt": prompt, "unknown_parameter": "ignored?",
+                })
+
     asyncio.run(call())
 
 

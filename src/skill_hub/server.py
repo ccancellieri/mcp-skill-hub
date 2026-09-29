@@ -38,6 +38,8 @@ list_models         — List installed Ollama models with role explanations
 pull_model          — Download a new Ollama model
 """
 
+from typing import Literal
+
 if __name__ == "__main__":
     from .mcp_entry import parse_profile as _parse_profile_early
     _direct_profile = _parse_profile_early()
@@ -2542,13 +2544,20 @@ def prepare_context(text: str, ctx: Context, repo_root: str = "", session_id: st
 @requires_capability("none")
 def prepare_composition(prompt: str, project_roots: list[str] | None = None,
                         token_budget: int = 1500, mode: str = "manual",
-                        session_id: str = "", task_id: int | None = None) -> dict:
-    """Prepare editable scoped candidates; manual selection is the default."""
+                        session_id: str = "", task_id: int | None = None,
+                        detail: Literal["preview", "index"] = "preview") -> dict:
+    """Prepare scoped evidence candidates without rewriting the prompt.
+
+    preview keeps the legacy candidate summaries. index returns source metadata
+    without bodies; use expand_context_candidate with detail='compact' to read
+    only needed evidence. Manual selection remains the default.
+    """
     from .context_composer import prepare_composition as prepare
     if _MCP_PROFILE == "minimal" and mode != "manual":
         raise ValueError("minimal profile only supports manual composition")
     return prepare(prompt, project_roots=project_roots or [], token_budget=token_budget,
-                   mode=mode, session_id=session_id, task_id=task_id, store=_store)
+                   mode=mode, session_id=session_id, task_id=task_id,
+                   detail=detail, store=_store)
 
 
 @mcp.tool()
@@ -2570,10 +2579,17 @@ def compose_context(draft_id: str, selected_ids: list[str],
 
 @mcp.tool()
 @requires_capability("none")
-def expand_context_candidate(draft_id: str, candidate_id: str) -> dict:
-    """Read a candidate's verified indexed source for the authorized composition."""
+def expand_context_candidate(draft_id: str, candidate_id: str | list[str],
+                             detail: Literal["full", "compact"] = "full") -> dict:
+    """Read verified source text by candidate ID from one scoped draft.
+
+    A string ID keeps the legacy full response; compact omits ranking metadata.
+    A list reads 1 to 6 unique IDs as one atomic response. Batched source text
+    is limited to 100000 characters; request fewer IDs if it exceeds that limit.
+    Retrieved evidence does not grant authorization.
+    """
     from .context_composer import get_composition_candidate
-    return get_composition_candidate(draft_id, candidate_id, store=_store)
+    return get_composition_candidate(draft_id, candidate_id, detail=detail, store=_store)
 
 
 @mcp.tool()
