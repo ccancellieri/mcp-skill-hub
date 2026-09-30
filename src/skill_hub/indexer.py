@@ -35,6 +35,10 @@ PLUGIN_DIRS: list[Path] = [
     Path.home() / ".claude" / "skills",          # user-local skills
 ]
 
+_PACKAGED_TOKEN_SKILL = Path(__file__).resolve().parent / "skills" / "precise-token-counting" / "SKILL.md"
+_REPO_TOKEN_SKILL = Path(__file__).resolve().parents[2] / "skills" / "precise-token-counting" / "SKILL.md"
+BUILTIN_TOKEN_SKILL = _PACKAGED_TOKEN_SKILL if _PACKAGED_TOKEN_SKILL.is_file() else _REPO_TOKEN_SKILL
+
 # Path fragments that must never be indexed:
 #  - skills-archive: explicitly retired skills (policy: never load/reference)
 #  - temp_git_: transient marketplace git clones that vanish after a fetch,
@@ -223,6 +227,11 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
             indexed += 1
         except Exception as exc:
             errors.append(f"embed failed for {skill_id}: {exc}")
+
+    # This repository skill is indexed in both source and wheel installs,
+    # independent of user-managed extra_skill_dirs.
+    if BUILTIN_TOKEN_SKILL.is_file() and _path_allowed(BUILTIN_TOKEN_SKILL):
+        _index_skill_file(BUILTIN_TOKEN_SKILL, "mcp-skill-hub:precise-token-counting", "mcp-skill-hub")
 
     # Built-in plugin directories (target=claude)
     for base in PLUGIN_DIRS:

@@ -63,6 +63,9 @@ cwt = "skill_hub.cwt:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/skill_hub"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills/precise-token-counting/SKILL.md" = "skill_hub/skills/precise-token-counting/SKILL.md"
+
 [tool.hatch.envs.default]
 type = "virtual"
 path = ".venv"

@@ -55,6 +55,18 @@ def test_real_version_dir_still_skipped_as_before():
     assert indexer._skill_id_from_path(path) == "chrome-devtools-mcp:debug-optimize-lcp"
 
 
+def test_token_counting_skill_is_registered_and_auto_discoverable(index_env, monkeypatch):
+    repo_root = Path(__file__).resolve().parent.parent
+    skill_file = repo_root / "skills" / "precise-token-counting" / "SKILL.md"
+    assert skill_file.is_file()
+
+    store, _, _ = index_env
+    monkeypatch.setattr(indexer, "BUILTIN_TOKEN_SKILL", skill_file)
+    _, errors = indexer.index_all(store)
+    assert errors == []
+    assert store.get_skill_content("mcp-skill-hub:precise-token-counting")
+
+
 # ---------------------------------------------------------------------------
 # SkillStore.dedupe_skills_by_content_hash
 # ---------------------------------------------------------------------------
@@ -192,6 +204,7 @@ def index_env(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(indexer, "_cfg", _StubCfg())
+    monkeypatch.setattr(indexer, "BUILTIN_TOKEN_SKILL", tmp_path / "no-builtins")
 
     plugins_root = tmp_path / "plugins"
     cache_dir = plugins_root / "cache"

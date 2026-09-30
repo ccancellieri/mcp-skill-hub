@@ -39,6 +39,24 @@ synthesis.
 This mirrors the existing principle in `docs/master-state-compaction.md`: tactical helpers stay
 cheap; high-stakes cold-start synthesis pays for the smart model.
 
+## Text and image context across providers
+
+For textual sources, select bounded, verbatim passages with source metadata and
+send them as text. This is the portable default across providers and clients.
+Rasterizing text into an image is an optional transport experiment, not a
+compression rule: image byte size does not predict billed tokens, and image
+support, resizing, media types, and usage reporting vary by model and client.
+
+Use an image when the source is inherently visual, or when a comparison on the
+same selected passages shows a useful accuracy/cost tradeoff for the specific
+provider, model, and client. If image capability or comparable usage is unknown,
+keep the text path. Preserve the same source IDs and content hashes in each
+format so answers remain attributable and comparisons are auditable.
+
+Context retrieval supplies evidence only. It does not grant outbound-data
+permission; any explicit operator policy and the client's native approval
+decision remain separate from the material sent to a model.
+
 ## Wiring points (this layer)
 
 - `cli.py` Level-2 shell executor — compress command output before the 5000-char backstop.
