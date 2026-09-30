@@ -22,6 +22,16 @@ tier value is pinned: an unavailable backend produces an error instead of
 silently switching providers. Existing automatic escalation still applies to
 unpinned service requests.
 
+On the Providers page, **Discover** previews model IDs from a configured
+OpenAI-compatible gateway such as OmniRoute (for example,
+`api_base: https://gateway.example/v1`). Discovery reads the gateway's
+advertised catalog using that provider's configured endpoint and credential,
+then proposes IDs absent from its registry entry. An advertised ID does not
+establish that it is routable or eligible for the configured account. Discovery
+does not save or enable models. Availability and cost remain unknown; a missing
+price does not imply free access. Catalogs are capped at 1,000 entries and
+256 KiB, with truncation reported.
+
 Legacy tier values and Claude family aliases remain readable. Existing explicit
 configuration is retained. Diagnostics record operation, provider, requested and
 resolved model, and outcome; the new routing fields contain neither prompts nor

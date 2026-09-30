@@ -45,6 +45,22 @@ def test_providers_page_lists_registry_without_secrets(client):
     assert "gw" in r.text and "sk-SECRET" not in r.text
 
 
+def test_discovery_controls_are_limited_to_supported_providers_and_render_as_text(client):
+    c, cfg_path = client
+    _write(cfg_path, {"llm_provider_registry": [
+        {"name": "gateway", "kind": "openai_compatible", "api_base": "https://gw/v1",
+         "api_key": {}, "enabled": False, "order": 30, "models": []},
+        {"name": "local", "kind": "ollama", "api_base": "http://localhost:11434",
+         "api_key": {}, "enabled": True, "order": 40, "models": []},
+    ]})
+    response = c.get("/providers")
+    assert response.status_code == 200
+    assert 'data-discover-name="gateway"' in response.text
+    assert 'data-discover-name="local"' not in response.text
+    assert "routability, availability, and cost unknown" in response.text
+    assert "textContent" in response.text
+
+
 def test_post_persists_registry(client):
     c, cfg_path = client
     _write(cfg_path, {"llm_provider_registry": []})

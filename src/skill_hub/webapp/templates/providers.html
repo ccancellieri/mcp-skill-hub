@@ -56,6 +56,10 @@
       <td>
         <button class="btn-sm test-btn" data-name="{{ p.name }}">Test</button>
         <span id="test-result-{{ p.name }}"></span>
+        {% if p.kind == 'openai_compatible' %}
+          <button class="btn-sm discover-btn" data-discover-name="{{ p.name }}">Discover</button>
+          <div class="discover-result" aria-live="polite"></div>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -181,6 +185,40 @@ async function testProvider(name) {
   } catch (e) {
     el.textContent = '✗ ' + e.message;
     el.style.color = 'red';
+  }
+}
+
+async function discoverProvider(button) {
+  const result = button.parentElement.querySelector('.discover-result');
+  result.textContent = 'Discovering…';
+  try {
+    const resp = await fetch('/providers/discover', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: button.dataset.discoverName}),
+    });
+    const data = await resp.json();
+    result.replaceChildren();
+    if (!data.ok) {
+      result.textContent = data.error || 'Discovery failed';
+      return;
+    }
+    if (!data.proposed.length) result.textContent = 'No new model IDs found.';
+    for (const candidate of data.proposed) {
+      const row = document.createElement('div');
+      const id = document.createElement('code');
+      id.textContent = candidate.id;
+      const details = document.createElement('span');
+      details.textContent = ' — advertised candidate; routability, availability, and cost unknown';
+      row.append(id, details);
+      result.append(row);
+    }
+    if (data.truncated) {
+      const note = document.createElement('div');
+      note.textContent = 'Catalog truncated at 1,000 entries.';
+      result.append(note);
+    }
+  } catch (_) {
+    result.textContent = 'Discovery failed';
   }
 }
 
@@ -317,6 +355,9 @@ document.getElementById('import-apply-btn')?.addEventListener('click', importApp
 document.getElementById('save-registry-btn')?.addEventListener('click', saveRegistry);
 document.querySelectorAll('.test-btn').forEach(function (btn) {
   btn.addEventListener('click', function () { testProvider(btn.dataset.name); });
+});
+document.querySelectorAll('.discover-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () { discoverProvider(btn); });
 });
 </script>
 {% endblock %}

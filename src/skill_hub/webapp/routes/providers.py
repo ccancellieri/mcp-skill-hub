@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import httpx
@@ -14,6 +15,83 @@ from ...llm import importers as _importers
 from ...llm import registry as _registry
 
 router = APIRouter()
+
+_DISCOVERY_MAX_BYTES = 256 * 1024
+_DISCOVERY_MAX_MODELS = 1000
+_DISCOVERY_TIMEOUT_SECONDS = 5.0
+
+
+async def _read_bounded(response: httpx.Response, limit: int) -> bytes | None:
+    """Read at most ``limit`` bytes from a streamed upstream response."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post("/providers/discover")
+async def providers_discover(request: Request) -> JSONResponse:
+    """Preview model IDs from a configured OpenAI-compatible provider."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid request"})
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
+        return JSONResponse({"ok": False, "error": "Invalid provider name"})
+
+    raw_list = _config.get("llm_provider_registry") or []
+    provider = next((parsed for rec in (raw_list if isinstance(raw_list, list) else [])
+                     if (parsed := _registry._parse_provider(rec)) and parsed.name == name), None)
+    if provider is None or provider.kind != "openai_compatible":
+        return JSONResponse({"ok": False, "error": "Provider is unavailable for discovery"})
+
+    api_base, api_key = _creds.resolve_credentials(provider)
+    key_source = (provider.api_key or {}).get("source")
+    if not api_base or (key_source and not api_key):
+        return JSONResponse({"ok": False, "error": "Provider credentials are unavailable"})
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = api_base.rstrip("/") + "/models"
+    try:
+        async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(timeout=_DISCOVERY_TIMEOUT_SECONDS,
+                                         follow_redirects=False) as client:
+                async with client.stream("GET", url, headers=headers,
+                                         follow_redirects=False) as response:
+                    if not 200 <= response.status_code < 300:
+                        return JSONResponse({"ok": False, "error": "Provider discovery failed"})
+                    content = await _read_bounded(response, _DISCOVERY_MAX_BYTES)
+                    if content is None:
+                        return JSONResponse({"ok": False, "error": "Provider response is too large"})
+        data = httpx.Response(200, content=content).json()
+        rows = data.get("data", data.get("models", [])) if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            raise ValueError("invalid model catalog")
+    except Exception:  # noqa: BLE001 — never return upstream details or credentials
+        return JSONResponse({"ok": False, "error": "Provider discovery failed"})
+
+    configured = [model.id for model in provider.models]
+    configured_set = set(configured)
+    proposed = []
+    seen = set()
+    for row in rows[:_DISCOVERY_MAX_MODELS]:
+        model_id = row.get("id") if isinstance(row, dict) else None
+        if (not isinstance(model_id, str) or not model_id or len(model_id) > 512
+                or model_id != model_id.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in model_id)
+                or model_id in seen):
+            continue
+        seen.add(model_id)
+        if model_id not in configured_set:
+            proposed.append({"id": model_id, "qualified_id": f"{provider.name}::{model_id}",
+                             "availability": "unknown", "cost": "unknown"})
+    return JSONResponse({"ok": True, "configured": configured, "proposed": proposed,
+                         "truncated": len(rows) > _DISCOVERY_MAX_MODELS})
 
 
 def _credential_label(api_key: dict) -> str:
