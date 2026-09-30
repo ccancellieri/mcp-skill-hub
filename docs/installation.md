@@ -2,7 +2,30 @@
 
 All install flows are **idempotent** — safe to re-run. Settings are merged, not overwritten.
 
-## TL;DR
+## Core workflow: no model or hook setup
+
+Requires Python 3.11+. Install the package and index only the skill directories
+you choose:
+
+```sh
+git clone https://github.com/ccancellieri/mcp-skill-hub.git
+cd mcp-skill-hub
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/skill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills
+```
+
+Use `.venv/Scripts` on Windows. Register the installed `skill-hub` executable in
+your MCP client with arguments `["--profile", "minimal"]`. This eight-tool profile
+uses local keyword search and does not launch model services or install hooks.
+See [MCP profiles](mcp-profiles.md) for the command's scope and update limits.
+
+For the optional web composer, run `.venv/bin/skill-hub-dashboard --no-services`
+and open `http://127.0.0.1:8765/context`. This starts the UI without automatic
+service reconciliation, scheduled maintenance or the health watcher. Existing
+services keep running; your saved configuration remains unchanged.
+
+## Full installer and optional services
 
 ```bash
 git clone https://github.com/ccancellieri/mcp-skill-hub.git
@@ -26,7 +49,10 @@ index_plugins()     # index plugin descriptions for suggestions
 
 ## Installer modes
 
-`install.py` supports several opt-in flags:
+`install.py` supports several opt-in flags. Its `--minimal` installer mode is
+**different** from the eight-tool MCP `--profile minimal`: the installer can set
+up Ollama and Claude hooks, so use the package-only path above when those are not
+wanted.
 
 | Flag | What it adds |
 |------|--------------|

@@ -29,6 +29,7 @@ looked up lazily so import stays cheap and offline-safe.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 # Blended-rate weighting: assume 30% of tokens are input, 70% output. Matches
@@ -68,6 +69,23 @@ _FAMILY_TO_TIER = {
 }
 
 _DATE_SUFFIX = re.compile(r"[-@]\d{8}.*$|@default$|:\w[\w.\-]*$")
+_QUALIFIER = "::"
+
+
+class ModelResolutionError(ValueError):
+    """A model selector cannot be mapped to exactly one configured provider."""
+
+
+@dataclass(frozen=True)
+class ResolvedModel:
+    """Provider-bound model identity ready for a LiteLLM request."""
+
+    requested: str
+    model: str
+    provider: str = ""
+    kind: str = ""
+    api_base: str | None = None
+    api_key: str | None = None
 
 
 def _cfg() -> Any:
@@ -152,8 +170,75 @@ def resolve_tier(tier_or_alias: str) -> str:
         return providers[key]
     if key in _FAMILY_TO_TIER and _FAMILY_TO_TIER[key] in providers:
         return providers[_FAMILY_TO_TIER[key]]
-    default_tier = _cfg().get("llm_default_tier") or "tier_cheap"
-    return providers.get(key, providers.get(default_tier, key))
+    if key.startswith("tier_"):
+        default_tier = _cfg().get("llm_default_tier") or "tier_cheap"
+        return providers.get(default_tier, key)
+    # An explicit model id is opaque. In particular, do not silently replace
+    # an unknown provider/model with the configured default tier.
+    return key
+
+
+def resolve_model_selection(selector: str) -> ResolvedModel:
+    """Resolve a tier, alias, explicit id, or ``provider::id`` selection.
+
+    Explicit model IDs remain unchanged. A plain ID inherits registry endpoint
+    and credentials only when exactly one enabled provider contains it. When
+    multiple providers expose the same ID the caller must use the stable
+    ``<registry-name>::<model-id>`` form; silently choosing by registry order
+    would risk sending a request and credential to the wrong endpoint.
+
+    Legacy ``llm_providers`` tiers pass through when their model is absent from
+    the registry. This preserves old configurations without assuming that an
+    unqualified model belongs to Anthropic.
+    """
+    requested = (selector or "").strip()
+    provider_name = ""
+    model = resolve_tier(requested)
+    if _QUALIFIER in model:
+        provider_name, model = model.split(_QUALIFIER, 1)
+        provider_name = provider_name.strip()
+        model = model.strip()
+        if not provider_name or not model:
+            raise ModelResolutionError(f"invalid provider-qualified model {requested!r}")
+
+    # Imports stay lazy so the registry remains cheap and import-cycle free.
+    from .llm.credentials import resolve_credentials
+    from .llm.registry import load_registry
+
+    matches = [
+        p for p in load_registry()
+        if (not provider_name or p.name == provider_name)
+        and any(candidate.id == model for candidate in p.models)
+    ]
+    if not matches:
+        if provider_name:
+            raise ModelResolutionError(
+                f"provider {provider_name!r} does not configure model {model!r}"
+            )
+        return ResolvedModel(
+            requested=requested,
+            model=model,
+            provider=provider_of(model),
+            kind=provider_of(model),
+            api_base=None,
+            api_key=None,
+        )
+    if len(matches) > 1:
+        names = ", ".join(sorted(p.name for p in matches))
+        raise ModelResolutionError(
+            f"model {model!r} is ambiguous across providers: {names}; "
+            f"use '<provider>{_QUALIFIER}{model}'"
+        )
+    provider = matches[0]
+    api_base, api_key = resolve_credentials(provider)
+    return ResolvedModel(
+        requested=requested,
+        model=model,
+        provider=provider.name,
+        kind=provider.kind,
+        api_base=api_base,
+        api_key=api_key,
+    )
 
 
 def provider_of(model: str) -> str:
@@ -284,3 +369,60 @@ def available_models() -> dict[str, list[str]]:
         "ollama": _ollama_models(),
         "known": known,
     }
+
+
+def model_options() -> list[dict[str, Any]]:
+    """Return provider-neutral model choices without network probing.
+
+    Registry records retain their configured model IDs and provider names.
+    Legacy tier values are emitted as separate ``legacy:<tier>`` records so a
+    UI can show and preserve older configuration explicitly. Disabled registry
+    records are visible as unavailable but are not selectable as configured.
+    """
+    raw_registry = _cfg().get("llm_provider_registry") or []
+    options: list[dict[str, Any]] = []
+    if isinstance(raw_registry, list):
+        for raw_provider in raw_registry:
+            if not isinstance(raw_provider, dict):
+                continue
+            name = str(raw_provider.get("name") or "").strip()
+            kind = str(raw_provider.get("kind") or "unknown").strip() or "unknown"
+            if not name:
+                continue
+            enabled = bool(raw_provider.get("enabled", True))
+            for raw_model in raw_provider.get("models") or []:
+                if not isinstance(raw_model, dict) or not raw_model.get("id"):
+                    continue
+                options.append({
+                    "id": str(raw_model["id"]),
+                    "provider": name,
+                    "kind": kind,
+                    "configured": enabled,
+                    "availability": "configured" if enabled else "unavailable",
+                })
+
+    legacy = _cfg().get("llm_providers") or {}
+    if isinstance(legacy, dict):
+        registry_ids = {str(row["id"]) for row in options}
+        registry_selections = {
+            (str(row["provider"]), str(row["id"])) for row in options
+        }
+        for tier, model in legacy.items():
+            if not model:
+                continue
+            model_id = str(model)
+            if "::" in model_id:
+                provider, unqualified_id = model_id.split("::", 1)
+                if (provider, unqualified_id) in registry_selections:
+                    continue
+            elif model_id in registry_ids:
+                continue
+            inferred = provider_of(model_id)
+            options.append({
+                "id": model_id,
+                "provider": f"legacy:{tier}",
+                "kind": inferred if inferred != "unknown" else "unknown",
+                "configured": True,
+                "availability": "configured",
+            })
+    return sorted(options, key=lambda row: (str(row["provider"]), str(row["id"])))

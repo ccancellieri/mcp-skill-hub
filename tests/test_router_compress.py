@@ -25,20 +25,18 @@ def _isolate_config(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "cfg.json")
 
 
-def test_compress_stage_over_budget_compresses_and_shortens(monkeypatch, tmp_path):
+def test_compress_stage_over_budget_preserves_repeated_text(monkeypatch, tmp_path):
     _isolate_config(monkeypatch, tmp_path)
 
     marker = "<<ccr:deadbeef>>"
-    # Duplicate-line block the deterministic DEDUP strategy shrinks, well over
-    # both the router budget and compression's own min-token gate.
+    # Repeated text is not recoverable from a count marker, even above budget.
     big = "\n".join(["skill hint: foo bar baz"] * 200) + f"\n{marker}\n"
     output = {"systemMessage": big}
 
     result = _compress_stage(output, _cfg(router_compress_budget_tokens=50))
 
-    assert len(result["systemMessage"]) < len(big)
-    assert "(x200)" in result["systemMessage"]  # deterministic DEDUP, not lossy ML
-    assert marker in result["systemMessage"]     # reversible marker intact
+    assert result["systemMessage"] == big
+    assert marker in result["systemMessage"]
 
 
 def test_compress_stage_under_budget_unchanged(monkeypatch, tmp_path):

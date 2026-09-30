@@ -6,11 +6,17 @@ const MAX_BUFFER = 128 * 1024;
 
 function commandSpec(config) {
   if (typeof config.contextCommand === "string" && config.contextCommand) {
-    return { command: config.contextCommand, args: [] };
+    return {
+      command: config.contextCommand,
+      args: config.adapterSource ? ["--adapter-source", config.adapterSource] : [],
+    };
   }
   return {
     command: config.pythonCommand || "python3",
-    args: ["-m", "skill_hub.context_cli"],
+    args: [
+      "-m", "skill_hub.context_cli",
+      ...(config.adapterSource ? ["--adapter-source", config.adapterSource] : []),
+    ],
   };
 }
 
@@ -80,6 +86,60 @@ function contextText(result) {
     : "";
 }
 
+function addNative(provenance, field, value) {
+  if (typeof value === "string" && value) provenance[field] = "native_event";
+  return value;
+}
+
+function piRuntime(event, ctx, sessionId) {
+  const provenance = {};
+  const runtime = {
+    client: { id: addNative(provenance, "client_id", "pi") },
+    session: { id: addNative(provenance, "session_id", sessionId) },
+  };
+  const model = ctx?.model;
+  if (model && typeof model === "object") {
+    const normalized = {
+      id: addNative(provenance, "model_id", model.id),
+      provider: addNative(provenance, "model_provider", model.provider),
+      display_name: addNative(provenance, "model_display_name", model.name),
+    };
+    if (Object.values(normalized).some(Boolean)) runtime.model = normalized;
+  }
+  const thinkingLevel = typeof event?.thinkingLevel === "string"
+    ? event.thinkingLevel
+    : typeof ctx?.thinkingLevel === "string" ? ctx.thinkingLevel : "";
+  if (thinkingLevel) {
+    runtime.effort = {
+      value: addNative(provenance, "effort_value", thinkingLevel),
+      scheme: addNative(provenance, "effort_scheme", "thinking_level"),
+    };
+  }
+  runtime.provenance = provenance;
+  return runtime;
+}
+
+function openClawRuntime(ctx) {
+  const provenance = {};
+  const runtime = {
+    client: { id: addNative(provenance, "client_id", "openclaw") },
+    session: {},
+  };
+  if (typeof ctx?.sessionId === "string" && ctx.sessionId) {
+    runtime.session.id = addNative(provenance, "session_id", ctx.sessionId);
+  }
+  if (typeof ctx?.runId === "string" && ctx.runId) {
+    runtime.session.turn_id = addNative(provenance, "turn_id", ctx.runId);
+  }
+  const model = {
+    id: addNative(provenance, "model_id", ctx?.modelId),
+    provider: addNative(provenance, "model_provider", ctx?.modelProviderId),
+  };
+  if (Object.values(model).some(Boolean)) runtime.model = model;
+  runtime.provenance = provenance;
+  return runtime;
+}
+
 export function createPiExtension(pi, config = {}) {
   pi.on("context", (event) => {
     const messages = Array.isArray(event?.messages) ? event.messages : null;
@@ -111,7 +171,8 @@ export function createPiExtension(pi, config = {}) {
         cwd: ctx?.cwd || "",
         session_id: sessionId,
         task_id: null,
-      }, config);
+        runtime: piRuntime(event, ctx, sessionId),
+      }, { ...config, adapterSource: "pi" });
     } catch {
       return;
     }
@@ -151,7 +212,8 @@ export function registerOpenClawContext(api, config = {}) {
         cwd,
         session_id: ctx?.sessionKey || "",
         task_id: null,
-      }, config);
+        runtime: openClawRuntime(ctx),
+      }, { ...config, adapterSource: "openclaw" });
     } catch {
       return;
     }

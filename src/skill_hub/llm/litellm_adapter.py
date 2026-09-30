@@ -64,6 +64,8 @@ def _litellm_model(kind: str, model_id: str) -> str:
     """
     if kind == "openai_compatible" and not model_id.startswith("openai/"):
         return "openai/" + model_id
+    if kind == "ollama" and not model_id.startswith("ollama/"):
+        return "ollama/" + model_id
     return model_id
 
 
@@ -77,6 +79,9 @@ def _emit_llm_event(
     completion_tokens: int,
     total_tokens: int,
     status: str,
+    provider: str = "",
+    requested: str = "",
+    resolved: str = "",
 ) -> None:
     """Best-effort telemetry: record an ``llm_call`` event. Never raises."""
     try:
@@ -91,6 +96,10 @@ def _emit_llm_event(
             kind="llm_call",
             payload={
                 "op": op,
+                "provider": provider,
+                "requested": requested,
+                "resolved": resolved or model,
+                "outcome": status,
                 "model": model,
                 "tier": tier,
                 "duration_ms": duration_ms,
@@ -137,17 +146,17 @@ class LitellmProvider:
     # ------------------------------------------------------------------
     # Helpers
 
-    def _resolve_model(self, tier: str, model: str | None) -> str:
-        if model:
-            return model
-        providers = _cfg.get("llm_providers") or {}
-        resolved = providers.get(tier) if isinstance(providers, dict) else None
-        if not resolved:
-            default_tier = str(_cfg.get("llm_default_tier") or "tier_cheap")
-            resolved = (providers or {}).get(default_tier)
-        if not resolved:
+    def _resolve_model(self, tier: str, model: str | None):
+        from ..model_registry import ModelResolutionError, resolve_model_selection
+
+        requested = model or tier
+        try:
+            resolved = resolve_model_selection(requested)
+        except ModelResolutionError as exc:
+            raise LLMError(str(exc)) from exc
+        if not resolved.model:
             raise LLMError(f"no model configured for tier={tier!r}")
-        return str(resolved)
+        return resolved
 
     def _api_base(self, model: str) -> str | None:
         if model.startswith("ollama/"):
@@ -263,6 +272,9 @@ class LitellmProvider:
         op: str,
         cache_ttl: str,
         tier: str,
+        provider: str = "",
+        requested: str = "",
+        resolved: str = "",
     ) -> str:
         """Single litellm completion attempt with an already-resolved model.
 
@@ -295,6 +307,7 @@ class LitellmProvider:
                 duration_ms=_duration_ms,
                 prompt_tokens=0, completion_tokens=0, total_tokens=0,
                 status="error",
+                provider=provider, requested=requested, resolved=resolved,
             )
             raise LLMError(f"completion failed ({model}): {exc}") from exc
         _duration_ms = int(round((time.monotonic() - _t0) * 1000))
@@ -326,6 +339,7 @@ class LitellmProvider:
             completion_tokens=int(_usage.get("completion_tokens") or 0),
             total_tokens=int(_usage.get("total_tokens") or 0),
             status="ok",
+            provider=provider, requested=requested, resolved=resolved,
         )
         try:
             msg = resp["choices"][0]["message"]
@@ -368,6 +382,10 @@ class LitellmProvider:
                 eff_domain = policy[1]
         has_signal = eff_complexity is not None or eff_domain is not None
         ladder_ok = tier == "tier_cheap" and has_signal
+        configured_tiers = _cfg.get("llm_providers") or {}
+        tier_value = configured_tiers.get(tier) if isinstance(configured_tiers, dict) else None
+        provider_bound_tier = model is None and "::" in str(tier_value or "")
+        explicit_selection = model is not None or provider_bound_tier
         # Complexity the ladder uses when an op carries no explicit signal:
         # derive it from the tier so cheap work stays on light gateway models.
         ladder_complexity = (
@@ -388,20 +406,43 @@ class LitellmProvider:
 
         # No pinned model on a ladder-eligible op: let the ladder pick. Skip a
         # known-down local daemon up front so we never spend a call on a dead L0.
-        if model is None and ladder_ok:
+        if not explicit_selection and ladder_ok:
             if not escalation.ollama_daemon_reachable():
                 escalation.cool_ollama()
             return _ladder()
 
         # Resolve the model this op would otherwise use locally.
-        resolved_model = self._resolve_model(tier, model)
-        resolved_is_local = str(resolved_model).startswith("ollama/")
+        resolution = self._resolve_model(tier, model)
+        # Keep the helper monkeypatch-friendly for older integrations that
+        # returned a bare string from ``_resolve_model``.
+        if isinstance(resolution, str):
+            from ..model_registry import ResolvedModel
+            resolution = ResolvedModel(
+                requested=model or tier,
+                model=resolution,
+                provider="",
+                kind="ollama" if resolution.startswith("ollama/") else "",
+            )
+        resolved_model = resolution.model
+        request_model = _litellm_model(resolution.kind, resolved_model)
+        resolved_is_local = (
+            resolution.kind == "ollama" and not resolution.api_base
+        ) or (
+            not resolution.kind
+            and resolved_model.startswith("ollama/")
+            and not resolution.api_base
+        )
 
         # A LOCAL target whose daemon is down is doomed — rescue it via the
         # ladder (remote gateway) instead of issuing a failing call. This applies
         # to ALL ops, signalled or not, so the gateway absorbs local outages for
         # the high-volume unsignalled/tier_smart paths too, not just tier_cheap.
         if resolved_is_local and not escalation.ollama_daemon_reachable():
+            if explicit_selection:
+                raise LLMError(
+                    f"explicit model unavailable: local Ollama daemon is down "
+                    f"({resolved_model})"
+                )
             escalation.cool_ollama()
             return _ladder(exclude={resolved_model})
 
@@ -410,12 +451,16 @@ class LitellmProvider:
         # target only falls through when the op is ladder-eligible.
         try:
             return self._chat_once(
-                norm, model=resolved_model, api_base=self._api_base(resolved_model),
-                api_key=None, max_tokens=max_tokens, temperature=temperature,
+                norm, model=request_model,
+                api_base=resolution.api_base or self._api_base(resolved_model),
+                api_key=resolution.api_key, max_tokens=max_tokens, temperature=temperature,
                 timeout=timeout, cache=cache, extra=extra, op=op,
-                cache_ttl=cache_ttl, tier=tier,
+                cache_ttl=cache_ttl, tier=tier, provider=resolution.provider,
+                requested=resolution.requested, resolved=resolved_model,
             )
         except LLMError:
+            if explicit_selection:
+                raise
             if resolved_is_local:
                 escalation.cool_ollama()
                 return _ladder(exclude={resolved_model})
@@ -511,7 +556,8 @@ class LitellmProvider:
                     api_key=sel.api_key, max_tokens=max_tokens,
                     temperature=temperature, timeout=timeout, cache=cache,
                     extra=extra, op=op, cache_ttl=cache_ttl,
-                    tier=f"ladder:{sel.provider}",
+                    tier=f"ladder:{sel.provider}", provider=sel.provider,
+                    requested=f"ladder:{sel.provider}", resolved=sel.model,
                 )
                 escalation.record_ladder_pass(True)
                 return result
@@ -533,27 +579,61 @@ class LitellmProvider:
         timeout: float = 30.0,
         api_base: str | None = None,
     ) -> list[float] | list[list[float]]:
+        from ..model_registry import ModelResolutionError, resolve_model_selection
+
         providers = _cfg.get("llm_providers") or {}
-        resolved = model or (providers.get("embed") if isinstance(providers, dict) else None)
-        if not resolved:
-            resolved = f"ollama/{_cfg.get('embed_model') or 'nomic-embed-text'}"
-        resolved_api_base = api_base or self._api_base(resolved)  # explicit override wins
+        selected = model or (providers.get("embed") if isinstance(providers, dict) else None)
+        if not selected:
+            selected = f"ollama/{_cfg.get('embed_model') or 'nomic-embed-text'}"
+        try:
+            resolution = resolve_model_selection(str(selected))
+        except ModelResolutionError as exc:
+            raise LLMError(str(exc)) from exc
+        resolved = resolution.model
+        request_model = _litellm_model(resolution.kind, resolved)
+        # A call-site override remains authoritative over the registry endpoint.
+        resolved_api_base = api_base or resolution.api_base or self._api_base(resolved)
         kwargs: dict[str, Any] = {
-            "model": resolved,
+            "model": request_model,
             "input": text if isinstance(text, list) else [text],
             "timeout": timeout,
         }
         if resolved_api_base:
             kwargs["api_base"] = resolved_api_base
+        if resolution.api_key:
+            kwargs["api_key"] = resolution.api_key
+        _t0 = time.monotonic()
         try:
             resp = self._litellm.embedding(**kwargs)
         except Exception as exc:  # noqa: BLE001
+            _emit_llm_event(
+                op="embed", model=request_model, tier="embed",
+                duration_ms=int(round((time.monotonic() - _t0) * 1000)),
+                prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                status="error", provider=resolution.provider,
+                requested=str(selected), resolved=resolved,
+            )
             raise LLMError(f"embedding failed ({resolved}): {exc}") from exc
         try:
             vectors = [row["embedding"] for row in resp["data"]]
-        except (KeyError, TypeError) as exc:
+            result = vectors[0] if isinstance(text, str) else vectors
+        except (KeyError, TypeError, IndexError) as exc:
+            _emit_llm_event(
+                op="embed", model=request_model, tier="embed",
+                duration_ms=int(round((time.monotonic() - _t0) * 1000)),
+                prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                status="error", provider=resolution.provider,
+                requested=str(selected), resolved=resolved,
+            )
             raise LLMError(f"unexpected embed response from {resolved}: {exc}") from exc
-        return vectors[0] if isinstance(text, str) else vectors
+        _emit_llm_event(
+            op="embed", model=request_model, tier="embed",
+            duration_ms=int(round((time.monotonic() - _t0) * 1000)),
+            prompt_tokens=0, completion_tokens=0, total_tokens=0,
+            status="ok", provider=resolution.provider,
+            requested=str(selected), resolved=resolved,
+        )
+        return result
 
 
 _INSTANCE: LLMProvider | None = None

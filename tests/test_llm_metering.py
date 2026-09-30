@@ -187,3 +187,29 @@ def test_emit_llm_event_respects_metering_disabled_flag(patched_store, tmp_path,
         f"Expected no new llm_call event when metering is disabled; "
         f"count before={before}, after={after}"
     )
+
+
+def test_emit_llm_event_records_safe_resolution_fields(patched_store, tmp_path, monkeypatch):
+    from skill_hub import config as cfg
+    import skill_hub.llm.litellm_adapter as adapter_mod
+
+    monkeypatch.setattr(cfg, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(cfg, "get", lambda key, default=None: True if key == "llm_metering_enabled" else default)
+
+    adapter_mod._emit_llm_event(
+        op="rerank", provider="work", requested="tier_cheap",
+        resolved="gateway/model-v1", model="openai/gateway/model-v1",
+        tier="tier_cheap", duration_ms=10, prompt_tokens=2,
+        completion_tokens=1, total_tokens=3, status="ok",
+    )
+
+    import json
+    event = patched_store.get_events(kind="llm_call")[-1]
+    payload = json.loads(event["payload"])
+    assert payload["op"] == "rerank"
+    assert payload["provider"] == "work"
+    assert payload["requested"] == "tier_cheap"
+    assert payload["resolved"] == "gateway/model-v1"
+    assert payload["outcome"] == "ok"
+    assert "prompt" not in payload
+    assert "api_key" not in payload

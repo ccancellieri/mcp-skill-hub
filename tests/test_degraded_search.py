@@ -195,6 +195,46 @@ def test_search_skills_falls_back_to_fts5_when_no_embed(server_with_store, monke
     assert "degraded-search" in out.lower()
 
 
+def test_skill_search_can_return_descriptions_without_full_content(server_with_store, monkeypatch):
+    server = server_with_store
+    monkeypatch.setattr(server, "embed_available", lambda: False)
+    hits = server._store.search_skills_text("pasta cooking", top_k=3)
+    assert hits and hits[0]["content"]
+    compact = server.search_skills("pasta cooking", top_k=3, include_content=False)
+    assert hits[0]["content"] not in compact
+    assert "get_skill_content" in compact
+    assert "MATCHED" in compact
+    assert server._store._conn.execute("SELECT COUNT(*) FROM skill_injections").fetchone()[0] == 0
+    full = server.search_skills("pasta cooking", top_k=3, include_content=True)
+    assert hits[0]["content"].strip() in full
+    assert "LOADED" in full
+    assert server._store._conn.execute("SELECT COUNT(*) FROM skill_injections").fetchone()[0] > 0
+
+
+def test_full_profile_search_keeps_full_content_default(server_with_store, monkeypatch):
+    server = server_with_store
+    monkeypatch.setattr(server, "embed_available", lambda: False)
+    out = server.search_skills("pasta cooking", top_k=3)
+    assert "Detailed pasta cooking recipe." in out
+    assert "LOADED" in out
+
+
+def test_full_profile_search_honors_top_k_above_minimal_limit(server_with_store, monkeypatch):
+    from skill_hub.store import Skill
+
+    server = server_with_store
+    monkeypatch.setattr(server, "embed_available", lambda: False)
+    for index in range(24):
+        server._store.upsert_skill(Skill(
+            id=f"local:pasta-{index}", name=f"pasta-{index}",
+            description=f"Cook pasta recipe {index}", content=f"Pasta details {index}",
+            file_path="", plugin="", target="claude",
+        ))
+
+    out = server.search_skills("pasta", top_k=25)
+    assert "LOADED (25)" in out
+
+
 def test_search_skills_vector_path_when_embed_available(
     server_with_store, monkeypatch
 ):

@@ -530,7 +530,9 @@ def step_install_hooks(step: int, total: int):
         "intercept-task-commands.sh",
         "intercept_task_commands.py",
     }
-    legacy_stop_hooks = {"session-end.sh", "session_end.py"}
+    legacy_stop_hooks = {
+        "session-end.sh", "session_end.py", "auto-proceed.sh", "auto_proceed.py",
+    }
     for entry in hooks.get("UserPromptSubmit", []):
         command_hooks = entry.get("hooks", [])
         retained = []

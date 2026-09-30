@@ -137,7 +137,7 @@ def _summarize_results(query: str, results: list[dict]) -> str:
 
     # --- Legacy: abstractive summary via the local Ollama LLM ----------------
     from .embeddings import RERANK_MODEL
-    from .llm import LLMError, get_provider
+    from .llm import LLMError, get_provider, request
 
     # Deterministic-only here: this text is fed to the local summarize LLM, which
     # cannot rehydrate lossy Kompress output, so never apply the ML paths.
@@ -148,15 +148,15 @@ def _summarize_results(query: str, results: list[dict]) -> str:
     )
 
     model = str(_cfg.get("reason_model") or RERANK_MODEL)
-    resolved = model if "/" in model else f"ollama/{model}"
+    resolved = model if "/" in model or "::" in model else f"ollama/{model}"
     prompt = _SUMMARIZE_PROMPT.format(
         query=query[:200],
         results_text=results_text,
     )
 
     try:
-        raw = get_provider().complete(
-            prompt, model=resolved,
+        raw = request(
+            "cheap", prompt, model=resolved, get_provider_fn=get_provider,
             max_tokens=220, temperature=0.3,
             timeout=float(_cfg.get("searxng_timeout") or 5) + 20,
             op="search_summarize",

@@ -3957,49 +3957,6 @@ type: {mem_type}
     except Exception:
         pass
 
-    # 11. Open-task journaling — append a timestamped note to any open tasks
-    # whose title/tags overlap with this session's user messages.
-    # No LLM, no embeddings — pure keyword matching. Fast and idempotent.
-    if session_id and context_pieces and _cfg_mod.get("task_journal_enabled") is not False:
-        try:
-            import re as _re
-            _jstore = SkillStore()
-            _open = _jstore.list_tasks(status="open")
-            _recent_text = " ".join(context_pieces).lower()
-
-            for _row in _open:
-                _td = dict(_row)
-                _task_id = _td["id"]
-                _title = (_td.get("title") or "").lower()
-                _tags_raw = (_td.get("tags") or "").lower()
-
-                # Build keyword set from title words + tags
-                _keywords = set(_re.findall(r"[a-z][a-z0-9_-]{3,}", _title))
-                _keywords |= {t.strip() for t in _tags_raw.split(",") if len(t.strip()) > 3}
-                _keywords -= {"task", "from", "with", "that", "this", "auto", "created"}
-
-                # Count how many keywords appear in the session text
-                _hits = sum(1 for kw in _keywords if kw in _recent_text)
-                if _hits < 2:
-                    continue  # not enough signal
-
-                # Build a brief journal note
-                from datetime import datetime
-                _date = datetime.now().strftime("%Y-%m-%d")
-                _snippet = context_pieces[-1][:200].replace("\n", " ") if context_pieces else ""
-                _note = (
-                    f"\n[{_date} session {session_id[:8]}] "
-                    f"Active ({_hits}/{len(_keywords)} keywords matched). "
-                    f"Last activity: {_snippet}"
-                )
-                _existing = _td.get("summary") or ""
-                _jstore.update_task(_task_id, summary=(_existing + _note))
-                log_event("JOURNAL", f"task #{_task_id} updated ({_hits} kw hits)")
-
-            _jstore.close()
-        except Exception as exc:
-            log_event("JOURNAL", f"error: {exc}")
-
     if parts:
         result["systemMessage"] = "\n\n".join(parts)
 
@@ -7232,13 +7189,41 @@ def main() -> None:
         print("          list_skills, list_teachings, configure, profile,")
         print("          save_task, close_task, list_tasks, search_context,")
         print("          exhaustion_save, digest, optimize_context, save_memory,")
-        print("          local_agent")
+        print("          local_agent, index_skills_text")
         sys.exit(1)
 
     cmd = sys.argv[1]
     args = sys.argv[2:]
 
-    if cmd == "classify":
+    if cmd == "index_skills_text":
+        import argparse
+        from .indexer import index_all
+
+        parser = argparse.ArgumentParser(
+            prog="skill-hub-cli index_skills_text",
+            description="Index SKILL.md files for local keyword search without embeddings",
+        )
+        parser.add_argument("--skill-dir", action="append", required=True,
+                            type=Path, help="Directory to scan (repeatable)")
+        parser.add_argument("--db", type=Path,
+                            help="SQLite index path (defaults to the Skill Hub store)")
+        options = parser.parse_args(args)
+        skill_dirs = [path.expanduser().resolve() for path in options.skill_dir]
+        for path in skill_dirs:
+            if not path.is_dir():
+                parser.error(f"skill directory does not exist: {path}")
+        store = SkillStore(db_path=options.db.expanduser()) if options.db else SkillStore()
+        try:
+            count, errors = index_all(store, text_only=True, skill_dirs=skill_dirs)
+        finally:
+            store.close()
+        print(f"Indexed {count} skills for keyword search without embeddings.")
+        for error in errors:
+            print(error)
+        if any(not error.startswith("info:") for error in errors):
+            raise SystemExit(1)
+
+    elif cmd == "classify":
         # Extract --session-id / --cwd if present
         session_id = ""
         cwd = ""

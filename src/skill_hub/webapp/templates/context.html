@@ -4,8 +4,55 @@
 <section class="context-workspace" aria-labelledby="context-title">
   <header class="context-header">
     <h1 id="context-title" class="page-h">Context</h1>
+    <p class="muted">Review relevant evidence, fit it to a budget, and copy a context packet alongside your original prompt.</p>
   </header>
 
+  <form class="context-form composer-form" hx-post="/context/prepare" hx-target="#composer-candidates" hx-swap="innerHTML">
+    <div class="context-field">
+      <label for="composer-prompt">What are you working on?</label>
+      <textarea id="composer-prompt" name="prompt" required rows="6" placeholder="Write your original prompt. It stays unchanged."></textarea>
+    </div>
+    <div class="composer-controls">
+      <div class="context-field">
+        <label for="composer-projects">Projects to include</label>
+        {% if known_projects %}
+        <fieldset class="composer-known-projects">
+          <legend class="muted">Known projects</legend>
+          {% for project in known_projects %}
+          <label><input type="checkbox" name="selected_projects" value="{{ project }}"> <code>{{ project }}</code></label>
+          {% endfor %}
+        </fieldset>
+        {% endif %}
+        <textarea id="composer-projects" name="projects" rows="2" placeholder="One absolute project path per line" aria-describedby="composer-scope-help"></textarea>
+        <small id="composer-scope-help" class="muted">Only checked projects and custom paths are searched. Leave all unchecked and empty to search global skills only.</small>
+      </div>
+      <div class="context-field">
+        <label for="composer-budget">Context budget · estimated tokens</label>
+        <input id="composer-budget" type="number" name="token_budget" value="1500" min="100" max="12000" required>
+      </div>
+    </div>
+    <p class="muted composer-privacy">Preparing candidates saves a local draft of your prompt and source text. Previewing does not train a selector or send the packet to a client.</p>
+    <details class="context-integrations"><summary>Use a specific task or session as evidence</summary>
+      <p class="muted">Use an identity from your client only when you want that task or session considered as context.</p>
+      <div class="context-input-grid">
+        <div class="context-field"><label for="composer-session">Session ID</label><input id="composer-session" name="session_id" autocomplete="off"></div>
+        <div class="context-field"><label for="composer-task">Task ID · one project only</label><input id="composer-task" name="task_id" type="number" min="1"></div>
+      </div>
+    </details>
+    <div class="context-actions">
+      <button class="btn" type="submit">Suggest context</button>
+      <span class="muted htmx-indicator" aria-live="polite">Preparing candidates…</span>
+    </div>
+  </form>
+  <details class="context-integrations"><summary>Optional prompt compression</summary>
+    <p class="muted">Compare a conservative whitespace change before copying. Your original prompt remains unchanged.</p>
+    <button class="btn secondary" type="button" hx-post="/context/optimize" hx-include="#composer-prompt" hx-target="#composer-optimization">Compare prompt compression</button>
+  </details>
+  <div id="composer-optimization" aria-live="polite"></div>
+  <div id="composer-candidates" aria-live="polite"></div>
+
+  <details class="context-integrations">
+  <summary>Build context · existing deterministic preview</summary>
   <form class="context-form" hx-post="/context/build" hx-target="#context-result" hx-swap="innerHTML" aria-label="Build context">
     <div class="context-field context-prompt-field">
       <label for="context-prompt">Prompt</label>
@@ -30,6 +77,10 @@
       <span class="muted htmx-indicator" aria-live="polite">Building context...</span>
     </div>
   </form>
+  <div id="context-result" class="context-result" aria-live="polite">
+    {% include "_context_result.html" %}
+  </div>
+  </details>
 
   <details class="context-integrations">
     <summary>Integration routes</summary>
@@ -41,8 +92,5 @@
     </ul>
   </details>
 
-  <div id="context-result" class="context-result" aria-live="polite">
-    {% include "_context_result.html" %}
-  </div>
 </section>
 {% endblock %}

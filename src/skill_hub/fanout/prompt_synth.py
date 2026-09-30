@@ -239,7 +239,7 @@ def draft_prompt(
 
     if use_llm:
         try:
-            from ..llm import LLMError, get_provider
+            from ..llm import request
             from .. import config as _cfg
             cfg = (_cfg.load_config().get("fanout") or {})
             model = cfg.get("prompt_model")
@@ -247,7 +247,8 @@ def draft_prompt(
             kwargs: dict = {"max_tokens": 800, "temperature": 0.2, "timeout": timeout}
             if model:
                 kwargs["model"] = model
-            raw = get_provider().complete(_llm_prompt(issue, repo_ctx, repo_path), **kwargs)
+            raw = request("mid", _llm_prompt(issue, repo_ctx, repo_path),
+                          op="fanout_prompt", **kwargs)
             raw = (raw or "").strip()
             # Strip any accidental <think>...</think> block.
             if "<think>" in raw:

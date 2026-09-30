@@ -122,20 +122,21 @@ def _router_by_session(entries: list[dict]) -> dict[str, list[dict]]:
     return dict(result)
 
 
-def _estimate_usd(tokens_by_model: dict[str, int]) -> float:
+def _estimate_usd(tokens_by_model: dict[str, int]) -> float | None:
     """Blended $/1M-token cost estimate for tokens attributed to each model.
 
     Rates come from the shared model registry (litellm-derived, so they track
-    the live Claude lineup instead of going stale here). Unrecognised model
-    labels fall back to the sonnet rate so estimates never silently drop to 0.
+    the configured model catalog instead of going stale here). Unrecognised
+    model prices remain unknown.
     """
     from ... import model_registry
 
-    fallback = model_registry.blended_usd_per_m("sonnet") or 0.0
     total = 0.0
     for model, tok in tokens_by_model.items():
         rate = model_registry.blended_usd_per_m(model)
-        total += (tok / 1_000_000) * (rate if rate is not None else fallback)
+        if rate is None and tok:
+            return None
+        total += (tok / 1_000_000) * (rate or 0.0)
     return round(total, 2)
 
 
@@ -226,7 +227,7 @@ def _build_report() -> dict:
         usd_from_old = _estimate_usd(
             {m: int(t * old_entries / router_total) for m, t in tokens_by_model.items()}
         ) if old_entries > 0 else 0.0
-        tokens_saved_usd = round(usd_direct + usd_from_old, 2)
+        tokens_saved_usd = round(usd_direct + usd_from_old, 2) if usd_from_old is not None else None
     else:
         tokens_saved_usd = _estimate_usd(dict(tokens_by_model))
 

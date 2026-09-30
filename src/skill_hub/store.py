@@ -264,7 +264,7 @@ class SkillStore:
             except Exception as exc:  # noqa: BLE001
                 _log.warning("sqlite-vec load failed, using legacy search: %s", exc)
         # Legacy in-process vector cache (still used when vec engine unavailable).
-        self._vec_cache: dict[str, tuple[list[float], float]] = {}
+        self._vec_cache: dict[str, tuple[str | None, list[float], float]] = {}
         self._vec_cache_valid: bool = False
         # Active vector dimension — resolved per-store in _migrate (issue #35).
         # None until the first write or until existing data is inspected.
@@ -1794,6 +1794,10 @@ class SkillStore:
         return deleted
 
     def upsert_embedding(self, skill_id: str, model: str, vector: list[float]) -> None:
+        # embed() returns a list-compatible vector with the actual model.  When
+        # callers supply a plain legacy list, their explicit model remains the
+        # only provenance available.
+        actual_model = getattr(vector, "model", None) or model
         norm = math.sqrt(sum(x * x for x in vector))
         self._conn.execute("""
             INSERT INTO embeddings (skill_id, model, vector, norm)
@@ -1802,7 +1806,7 @@ class SkillStore:
                 model  = excluded.model,
                 vector = excluded.vector,
                 norm   = excluded.norm
-        """, (skill_id, model, json.dumps(vector), norm))
+        """, (skill_id, actual_model, json.dumps(vector), norm))
         self._conn.commit()
         # Invalidate in-process vector cache so the next search reloads
         self._vec_cache_valid = False
@@ -2189,10 +2193,12 @@ class SkillStore:
     def _load_vec_cache(self) -> None:
         """Populate in-process vector cache from DB (once per process per index cycle)."""
         rows = self._conn.execute(
-            "SELECT skill_id, vector, norm FROM embeddings"
+            "SELECT skill_id, model, vector, norm FROM embeddings"
         ).fetchall()
         self._vec_cache = {
-            row["skill_id"]: (json.loads(row["vector"]), row["norm"] or 0.0)
+            row["skill_id"]: (
+                row["model"], json.loads(row["vector"]), row["norm"] or 0.0,
+            )
             for row in rows
         }
         self._vec_cache_valid = True
@@ -2206,6 +2212,10 @@ class SkillStore:
         cosine rerank → feedback boost. Otherwise falls back to the legacy
         in-process cache path.
         """
+        query_model = getattr(query_vector, "model", None)
+        if not query_model:
+            _log.warning("skill vector search omitted: query model provenance is ambiguous")
+            return []
         if self._vec_engine == "sqlite-vec" and self._vec_dim is not None and len(query_vector) == self._vec_dim:
             try:
                 return self._search_vec(query_vector, top_k, similarity_threshold, target)
@@ -2236,11 +2246,15 @@ class SkillStore:
             """).fetchall()
 
         scored: list[tuple[float, dict]] = []
+        omitted = 0
         for row in rows:
             cached = self._vec_cache.get(row["id"])
             if cached is None:
                 continue  # no embedding yet
-            vec, snorm = cached
+            model, vec, snorm = cached
+            if not model or model != query_model or len(vec) != len(query_vector):
+                omitted += 1
+                continue
             if snorm == 0.0:
                 continue
             # Cosine using pre-stored norm: avoids sqrt per skill
@@ -2250,6 +2264,13 @@ class SkillStore:
                 continue
             boost = float(row["feedback_score"] or 1.0)
             scored.append((sim * boost, dict(row)))
+
+        if omitted:
+            _log.warning(
+                "skill vector search omitted %d incompatible or ambiguous embeddings "
+                "(model=%s, dimension=%d)",
+                omitted, query_model, len(query_vector),
+            )
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
@@ -2262,6 +2283,15 @@ class SkillStore:
         from .embeddings import quantize_binary
 
         rerank_k = max(top_k, int(_cfg.get("rerank_top_k") or 20))
+        query_model = getattr(query_vector, "model", None)
+        if not query_model:
+            _log.warning("sqlite-vec skill search omitted: query model provenance is ambiguous")
+            return []
+        # The vec0 mirror has no model column. Fetch every binary candidate so
+        # incompatible model spaces cannot crowd valid rows out before the
+        # canonical embeddings table applies the exact provenance filter.
+        corpus_size = self._conn.execute("SELECT COUNT(*) FROM skills_vec_bin").fetchone()[0]
+        rerank_k = max(rerank_k, int(corpus_size))
         qbin = quantize_binary(query_vector)
 
         # Stage 1: Hamming KNN on binary vectors.
@@ -2286,18 +2316,24 @@ class SkillStore:
         placeholders = ",".join("?" * len(candidate_ids))
         meta_sql = f"""
             SELECT s.id, s.name, s.description, s.content, s.plugin,
-                   s.target, s.feedback_score, e.vector, e.norm
+                   s.target, s.feedback_score, e.model, e.vector, e.norm
             FROM skills s
             JOIN embeddings e ON e.skill_id = s.id
-            WHERE s.id IN ({placeholders})
+            WHERE s.id IN ({placeholders}) AND e.model = ?
         """
-        params: list = list(candidate_ids)
+        params: list = [*candidate_ids, query_model]
         if target:
             meta_sql += " AND s.target = ?"
             params.append(target)
         rows = self._conn.execute(meta_sql, params).fetchall()
 
+        incompatible_models = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE model IS NULL OR model <> ?",
+            (query_model,),
+        ).fetchone()[0]
+
         scored: list[tuple[float, dict]] = []
+        incompatible_dimensions = 0
         for row in rows:
             snorm = row["norm"] or 0.0
             if snorm == 0.0:
@@ -2305,6 +2341,9 @@ class SkillStore:
             try:
                 vec = json.loads(row["vector"])
             except (TypeError, ValueError):
+                continue
+            if len(vec) != len(query_vector):
+                incompatible_dimensions += 1
                 continue
             dot = sum(a * b for a, b in zip(query_vector, vec))
             sim = dot / (qnorm * snorm)
@@ -2314,6 +2353,14 @@ class SkillStore:
             d = {k: row[k] for k in ("id", "name", "description", "content",
                                       "plugin", "target", "feedback_score")}
             scored.append((sim * boost, d))
+
+        omitted = int(incompatible_models) + incompatible_dimensions
+        if omitted:
+            _log.warning(
+                "sqlite-vec skill search omitted %d incompatible or ambiguous embeddings "
+                "(model=%s, dimension=%d)",
+                omitted, query_model, len(query_vector),
+            )
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
@@ -2506,13 +2553,14 @@ class SkillStore:
 
     def upsert_plugin_embedding(self, plugin_id: str, model: str,
                                 vector: list[float]) -> None:
+        actual_model = getattr(vector, "model", None) or model
         self._conn.execute("""
             INSERT INTO plugin_embeddings (plugin_id, model, vector)
             VALUES (?, ?, ?)
             ON CONFLICT(plugin_id) DO UPDATE SET
                 model  = excluded.model,
                 vector = excluded.vector
-        """, (plugin_id, model, json.dumps(vector)))
+        """, (plugin_id, actual_model, json.dumps(vector)))
         self._conn.commit()
 
     def suggest_plugins(self, query_vector: list[float],
@@ -4952,8 +5000,14 @@ class SkillStore:
         ``tags`` are opaque provenance fields used by retrieval profiles.
         """
         from .embeddings import embed as _embed, EMBED_MODEL
-        m = model or EMBED_MODEL
-        vec = _embed(text, model=m)
+        requested_model = model or EMBED_MODEL
+        vec = _embed(text, model=requested_model)
+        actual_model = getattr(vec, "model", None)
+        if not actual_model:
+            _log.warning(
+                "vector embed result omitted model provenance; storing ambiguous row for %s/%s",
+                namespace, doc_id,
+            )
         norm = math.sqrt(sum(x * x for x in vec))
         meta_json = json.dumps(metadata) if metadata is not None else None
         tags_json = json.dumps(tags) if tags else None
@@ -4979,7 +5033,7 @@ class SkillStore:
                 tags       = COALESCE(excluded.tags,    vectors.tags),
                 indexed_at = datetime('now')
             """,
-            (namespace, doc_id, m, json.dumps(vec), norm, meta_json,
+            (namespace, doc_id, actual_model, json.dumps(vec), norm, meta_json,
              level, source, project, tags_json),
         )
         self._conn.commit()
@@ -5004,6 +5058,10 @@ class SkillStore:
         from datetime import datetime as _dt
 
         qvec = _embed(query)
+        query_model = getattr(qvec, "model", None)
+        if not query_model:
+            _log.warning("vector search omitted: query embedding model provenance is ambiguous")
+            return []
         qnorm = math.sqrt(sum(x * x for x in qvec))
         if qnorm == 0.0:
             return []
@@ -5016,7 +5074,7 @@ class SkillStore:
         if levels:
             where.append(f"level IN ({','.join('?' * len(levels))})")
             params.extend(levels)
-        sql = ("SELECT namespace, doc_id, vector, norm, metadata, level, indexed_at "
+        sql = ("SELECT namespace, doc_id, model, vector, norm, metadata, level, indexed_at "
                "FROM vectors")
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -5038,11 +5096,18 @@ class SkillStore:
 
         now_ts = _time.time()
         scored: list[tuple[float, dict]] = []
+        omitted = 0
         for row in rows:
+            if not row["model"] or row["model"] != query_model:
+                omitted += 1
+                continue
             snorm = row["norm"] or 0.0
             if snorm == 0.0:
                 continue
             vec = json.loads(row["vector"])
+            if len(vec) != len(qvec):
+                omitted += 1
+                continue
             dot = sum(a * b for a, b in zip(qvec, vec))
             raw = dot / (qnorm * snorm)
             if raw < similarity_threshold:
@@ -5074,6 +5139,11 @@ class SkillStore:
                 "level": lvl,
                 "metadata": meta,
             }))
+        if omitted:
+            _log.warning(
+                "vector search omitted %d incompatible or ambiguous vectors (model=%s, dimension=%d)",
+                omitted, query_model, len(qvec),
+            )
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:top_k]]
 

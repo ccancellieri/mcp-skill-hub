@@ -55,9 +55,10 @@ def test_builtin_json_minify_is_lossless():
 
 def test_builtin_collapses_duplicate_log_lines():
     text = "\n".join(["INFO connecting"] * 50 + ["ERROR boom"] * 4)
-    out = compression._builtin_deterministic(text)
+    out = compression._builtin_deterministic(text, allow_lossy=True)
     assert out is not None
     assert out.content_type == "DEDUP"
+    assert out.lossy
     assert out.bytes_after < out.bytes_before
     assert "x50" in out.compressed and "ERROR boom" in out.compressed
 

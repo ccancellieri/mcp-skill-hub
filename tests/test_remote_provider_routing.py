@@ -12,9 +12,6 @@ from __future__ import annotations
 import json
 import importlib
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
 # ---------------------------------------------------------------------------
@@ -215,3 +212,267 @@ def test_embed_uses_remote_endpoint_when_configured(monkeypatch, tmp_path):
         "embed must forward the remote endpoint URL to get_provider().embed()"
     )
     assert captured["model"] == "ollama/nomic-embed-text"
+
+
+def test_qualified_model_uses_named_provider_without_rewriting_id(monkeypatch, tmp_path):
+    """Duplicate model IDs bind to the explicitly named endpoint and key."""
+    import json
+    from skill_hub import config as cfg
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_metering_enabled": False,
+        "llm_provider_registry": [
+            {"name": name, "kind": "openai_compatible", "enabled": True,
+             "api_base": f"https://{name}.example/v1",
+             "api_key": {"source": "inline", "ref": f"key-{name}"},
+             "models": [{"id": "vendor/model:stable"}]}
+            for name in ("first", "second")
+        ],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    captured = {}
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    provider = LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.complete("hello", model="second::vendor/model:stable") == "ok"
+    assert captured["model"] == "openai/vendor/model:stable"
+    assert captured["api_base"] == "https://second.example/v1"
+    assert captured["api_key"] == "key-second"
+    assert captured["messages"] == [{"role": "user", "content": "hello"}]
+
+
+def test_qualified_remote_ollama_ignores_local_daemon_state(monkeypatch, tmp_path):
+    import json
+    from skill_hub import config as cfg
+    from skill_hub.llm import escalation
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_metering_enabled": False,
+        "llm_provider_registry": [{
+            "name": "remote", "kind": "ollama", "enabled": True,
+            "api_base": "https://remote-ollama.example",
+            "models": [{"id": "qwen:7b"}],
+        }],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **kwargs: False)
+    captured = {}
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    provider = LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.complete("hello", model="remote::qwen:7b") == "ok"
+    assert captured["model"] == "ollama/qwen:7b"
+    assert captured["api_base"] == "https://remote-ollama.example"
+
+
+def test_gateway_model_named_ollama_uses_gateway_transport(monkeypatch, tmp_path):
+    import json
+    from skill_hub import config as cfg
+    from skill_hub.llm import escalation
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_metering_enabled": False,
+        "llm_provider_registry": [{
+            "name": "gateway", "kind": "openai_compatible", "enabled": True,
+            "api_base": "https://gateway.example/v1",
+            "api_key": {"source": "inline", "ref": "gateway-key"},
+            "models": [{"id": "ollama/qwen:7b"}],
+        }],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(escalation, "ollama_daemon_reachable", lambda **kwargs: False)
+    captured = {}
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            captured.update(kwargs)
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    provider = LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.complete("hello", model="gateway::ollama/qwen:7b") == "ok"
+    assert captured["model"] == "openai/ollama/qwen:7b"
+    assert captured["api_base"] == "https://gateway.example/v1"
+    assert captured["api_key"] == "gateway-key"
+
+
+def test_qualified_embedding_uses_provider_transport_and_credentials(monkeypatch, tmp_path):
+    import json
+    from skill_hub import config as cfg
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_provider_registry": [{
+            "name": "work", "kind": "openai_compatible", "enabled": True,
+            "api_base": "https://embeddings.example/v1",
+            "api_key": {"source": "inline", "ref": "embed-key"},
+            "models": [{"id": "my-embed", "embed": True}],
+        }],
+        "llm_providers": {"embed": "work::my-embed"},
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    captured = {}
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def embedding(self, **kwargs):
+            captured.update(kwargs)
+            return {"data": [{"embedding": [0.1, 0.2]}]}
+
+    provider = LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.embed("hello") == [0.1, 0.2]
+    assert captured["model"] == "openai/my-embed"
+    assert captured["api_base"] == "https://embeddings.example/v1"
+    assert captured["api_key"] == "embed-key"
+
+    provider.embed("hello", api_base="https://override.example/v1")
+    assert captured["api_base"] == "https://override.example/v1"
+
+
+def test_explicit_remote_failure_does_not_switch_to_ladder(monkeypatch, tmp_path):
+    import json
+    import pytest
+    from skill_hub import config as cfg
+    from skill_hub.llm import provider as provider_types
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_metering_enabled": False,
+        "llm_provider_registry": [
+            {"name": "work", "kind": "openai_compatible", "enabled": True,
+             "api_base": "https://work.example/v1",
+             "api_key": {"source": "inline", "ref": "work-key"},
+             "models": [{"id": "work-model"}]},
+            {"name": "backup", "kind": "openai_compatible", "enabled": True,
+             "api_base": "https://backup.example/v1",
+             "api_key": {"source": "inline", "ref": "backup-key"},
+             "models": [{"id": "backup-model", "tags": ["fast"]}]},
+        ],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    calls = []
+
+    class FailingLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            raise RuntimeError("work endpoint failed")
+
+    provider = LitellmProvider()
+    provider._litellm = FailingLitellm()
+    with pytest.raises(provider_types.LLMError, match="work endpoint failed"):
+        provider.complete("hello", model="work::work-model", op="rerank")
+    assert calls == ["openai/work-model"]
+
+
+def test_qualified_tier_binding_is_not_bypassed_by_op_ladder(monkeypatch, tmp_path):
+    import json
+    from skill_hub import config as cfg
+    from skill_hub.llm.litellm_adapter import LitellmProvider
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_metering_enabled": False,
+        "llm_providers": {"tier_cheap": "work::chosen-model"},
+        "llm_provider_registry": [{
+            "name": "work", "kind": "openai_compatible", "enabled": True,
+            "api_base": "https://work.example/v1",
+            "api_key": {"source": "inline", "ref": "work-key"},
+            "models": [{"id": "chosen-model"}, {"id": "ladder-model", "tags": ["fast"]}],
+        }],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    calls = []
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+
+        def completion(self, **kwargs):
+            calls.append(kwargs["model"])
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    provider = LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.complete("hello", tier="tier_cheap", op="rerank") == "ok"
+    assert calls == ["openai/chosen-model"]
+
+
+def test_embedding_emits_safe_routing_telemetry_on_success_and_failure(monkeypatch, tmp_path):
+    import json
+    import pytest
+    from skill_hub import config as cfg
+    from skill_hub.llm import litellm_adapter
+    from skill_hub.llm.provider import LLMError
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "llm_provider_registry": [{
+            "name": "work", "kind": "openai_compatible", "enabled": True,
+            "api_base": "https://embeddings.example/v1",
+            "api_key": {"source": "inline", "ref": "secret-key"},
+            "models": [{"id": "embed-model", "embed": True}],
+        }],
+    }))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", config_path)
+    events = []
+    monkeypatch.setattr(litellm_adapter, "_emit_llm_event", lambda **payload: events.append(payload))
+
+    class FakeLitellm:
+        suppress_debug_info = True
+        drop_params = True
+        fail = False
+
+        def embedding(self, **kwargs):
+            if self.fail:
+                raise RuntimeError("secret transport detail")
+            return {"data": [{"embedding": [0.1]}]}
+
+    provider = litellm_adapter.LitellmProvider()
+    provider._litellm = FakeLitellm()
+    assert provider.embed("private text", model="work::embed-model") == [0.1]
+    provider._litellm.fail = True
+    with pytest.raises(LLMError):
+        provider.embed("private text", model="work::embed-model")
+
+    assert [event["status"] for event in events] == ["ok", "error"]
+    for event in events:
+        assert event["op"] == "embed"
+        assert event["provider"] == "work"
+        assert event["requested"] == "work::embed-model"
+        assert event["resolved"] == "embed-model"
+        assert "private text" not in repr(event)
+        assert "secret-key" not in repr(event)
+        assert "secret transport detail" not in repr(event)

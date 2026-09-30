@@ -1083,8 +1083,8 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .update-ok    { background: rgba(34,197,94,.15);  color: var(--color-success, #22c55e); }
 .update-na    { background: rgba(100,116,139,.12); color: var(--color-muted); }
 .update-error { background: rgba(239,68,68,.12);  color: var(--color-error, #ef4444); }
-.htmx-indicator { opacity: 0; transition: opacity .15s; }
-.htmx-request .htmx-indicator, .htmx-indicator.htmx-request { opacity: 1; }
+.htmx-indicator { opacity: 0; visibility: hidden; transition: opacity .15s; }
+.htmx-request .htmx-indicator, .htmx-indicator.htmx-request { opacity: 1; visibility: visible; }
 
 /* ── Keyboard-operable expandable pattern ───────────────────────────────
    Contract for page owners: any div-based "click to expand" widget (e.g.
@@ -1112,3 +1112,22 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
     scroll-behavior: auto !important;
   }
 }
+
+/* Context composition uses source rows so evidence remains easy to compare. */
+.composer-controls { display:grid; grid-template-columns:minmax(0,2fr) minmax(160px,1fr); gap:16px; align-items:start; }
+.composer-controls input, .composer-packet { width:100%; box-sizing:border-box; }
+.composer-candidates { list-style:none; padding:0; }
+.composer-candidate { padding:20px 0; border-bottom:1px solid var(--color-border); }
+.composer-candidate-head { display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.context-workspace input[type="checkbox"] { width:auto; flex:none; margin:2px 8px 0 0; }
+.composer-candidate-head label, .composer-known-projects label { display:flex; align-items:flex-start; }
+.composer-known-projects { border:1px solid var(--color-border); padding:10px; margin:0 0 10px; }
+.composer-known-projects label { margin:6px 0; overflow-wrap:anywhere; }
+.composer-source { overflow-wrap:anywhere; font-size:12px; margin:8px 0; }
+.composer-selection { margin-top:24px; }
+.composer-selection pre, .composer-comparison pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.composer-packet { background:var(--color-surface); color:var(--color-fg); border:1px solid var(--color-border); padding:14px; margin:8px 0; }
+.composer-comparison { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+.composer-privacy { max-width:80ch; }
+.composer-candidate details { margin:12px 0; }
+@media (max-width:720px) { .composer-controls, .composer-comparison { grid-template-columns:1fr; } }

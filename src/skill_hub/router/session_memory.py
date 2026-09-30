@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
-from ..llm import LLMError, get_provider, load_prompt
+from ..llm import LLMError, get_provider, load_prompt, request
 
 _log = logging.getLogger(__name__)
 
@@ -69,9 +69,9 @@ def build_session_memory(
     cfg = _cfg.load_config()
     resolved_tier = tier or str(cfg.get("session_memory_tier") or "tier_mid")
     prompt = _render_prompt(transcript, previous_memory)
-    text = get_provider().complete(
-        prompt,
-        tier=resolved_tier,
+    text = request(
+        resolved_tier, prompt,
+        get_provider_fn=get_provider,
         max_tokens=max_tokens,
         temperature=0.1,
         timeout=60.0,
@@ -79,6 +79,8 @@ def build_session_memory(
         cache_ttl="1h",  # long-lived prefix reused within a session (opt-in tier)
         op="session_memory",
     )
+    if not text.strip():
+        raise LLMError("session memory completion unavailable")
     return text.strip()
 
 
@@ -102,9 +104,9 @@ def update_session_memory(
     cfg = _cfg.load_config()
     resolved_tier = tier or str(cfg.get("session_memory_tier") or "tier_cheap")
     prompt = _render_prompt(new_messages_transcript, previous_memory)
-    text = get_provider().complete(
-        prompt,
-        tier=resolved_tier,
+    text = request(
+        resolved_tier, prompt,
+        get_provider_fn=get_provider,
         max_tokens=max_tokens,
         temperature=0.1,
         timeout=60.0,
@@ -112,6 +114,8 @@ def update_session_memory(
         cache_ttl="1h",  # long-lived prefix reused within a session (opt-in tier)
         op="session_memory",
     )
+    if not text.strip():
+        raise LLMError("session memory completion unavailable")
     return text.strip()
 
 

@@ -1,43 +1,49 @@
-# Deterministic vs. LLM compression — policy
+# Deterministic compression and source fidelity
 
-Skill Hub reduces context two ways. This is the rule for which to use.
+The default compression path removes insignificant whitespace from valid JSON
+objects and arrays. It does not parse and reserialize values: duplicate keys,
+number spellings, escapes and string contents remain intact. Invalid JSON,
+prose, source code and unsupported formats pass through unchanged.
 
-## Use deterministic compression (builtin, dependency-free)
+Both `compress_payload` and `maybe_compress` default to `allow_lossy=False`.
+They run locally without a model or an optional dependency. This avoids an
+auxiliary inference call; it does not make the resulting client input free.
+Whole-task token savings must include any subsequent rereads and recovery.
 
-For **structured payloads** where structure carries the signal:
+## Lossy transformations
 
-- command / shell output, build & test logs (keep errors, tracebacks, summary)
-- search / grep output (keep first+last + top-scored matches per file)
-- JSON arrays of records (minify + duplicate-line collapse)
-- git diffs, CSV/TSV/markdown tables
+A caller can explicitly request repeated-log-line collapse with
+`allow_lossy=True`. Only recognized log-level lines are eligible; code-like,
+JSON-like and repetition-marker-bearing input is excluded. This transform is
+reported as `lossy=True`: a repetition count is not an exact recovery format.
+It does not automatically store the original. Keep it disabled when exact
+output is required or the caller has no original to recover.
 
-These run through `skill_hub.compression.compress_payload` / `maybe_compress`. They are
-**free, microsecond-fast, deterministic, and offline** — no model, no tokens, no network,
-no optional packages. The lossy ML "Kompress" / code-aware paths were retired (issue
-#119), so prose/code are never summarised or AST-mangled by this layer. (The optional
-`headroom-ai`-backed `kompress_prose` helper survives only in the webfetch/search lane;
-its reductions leave a reversible `<<ccr:HASH>>` marker — call the `retrieve_compressed`
-tool to rehydrate.)
+Selection, excerpts and truncation are also lossy even when deterministic.
+Never describe a transformation as lossless merely because it makes no model
+call. A recovery marker is usable only if the corresponding original was
+actually stored and remains accessible.
 
-## Keep the LLM (Ollama / Anthropic)
+The optional `kompress_prose` helper in the webfetch/search lane remains
+separate. It uses a model, may delete context that changes meaning, and is not
+part of the automatic prompt hook. This change does not activate it or revive
+the retired advanced compressor from #119.
 
-For **prose synthesis** where the value is in rewriting, not selecting:
+## Evidence and accounting
 
-- `compact_master_state` — architectural synthesis for cold-start context
-- `optimize_prompt` / query rewriting — paraphrase
-- narrative task summaries and conversation digests where coherence matters
+Compression results and events report UTF-8 byte counts. The minimum-size gate
+still uses the documented approximate character-to-token estimate; byte counts
+are not tokenizer measurements. Historical events retain their old values.
 
-Prose and source code **pass through `compress_payload` unchanged** by design, so feeding
-prose to it is a safe no-op — it simply returns the original and the LLM still does the
-synthesis.
+The scoped context service ranks and excerpts retained original memory/wiki
+text. It does not inject generated digests as a substitute for the source.
+Legacy rows containing only a digest are omitted with a recovery warning;
+original rows and generated text remain stored for review and reindexing.
 
-## The rule of thumb
-
-> Deterministic when the failure mode is "slightly worse selection". LLM when the failure mode
-> is "wrong synthesis / lost meaning".
-
-This mirrors the existing principle in `docs/master-state-compaction.md`: tactical helpers stay
-cheap; high-stakes cold-start synthesis pays for the smart model.
+The manual composer reuses the same JSON whitespace compactor. It preserves
+source references and distinguishes compaction from exact excerpt selection.
+Optional model-based curation remains an explicit/background operation and
+cannot confer source authority on generated claims.
 
 ## Text and image context across providers
 
@@ -57,20 +63,13 @@ Context retrieval supplies evidence only. It does not grant outbound-data
 permission; any explicit operator policy and the client's native approval
 decision remain separate from the material sent to a model.
 
-## Wiring points (this layer)
-
-- `cli.py` Level-2 shell executor — compress command output before the 5000-char backstop.
-- `searxng.py` `_summarize_results` — compress concatenated web results before the local LLM.
-- Prose skill-body truncations (`server.py`, `cli.py` per-skill clips) are intentionally **left
-  as-is** — they are markdown prose and correctly pass through.
-
-## Config
+## Configuration
 
 | Key | Default | Meaning |
 |---|---|---|
-| `compression_enabled` | `True` | Master switch for the deterministic pass. |
-| `compression_min_tokens` | `200` | Skip payloads below ~this token count. |
-| `compression_context_aware` | `True` | Pass the user query as relevance context. |
+| `compression_enabled` | `True` | Enable the deterministic pass. |
+| `compression_min_tokens` | `200` | Approximate minimum input size. |
+| `compression_context_aware` | `True` | Retained query-context plumbing; the current JSON transform does not rank content. |
 
-No extra install is needed — the deterministic pass is dependency-free. The `compression`
-extra (`headroom-ai`) only adds the optional webfetch/search `kompress_prose` helper.
+No package or model download is needed for the default pass. Unsupported input
+is returned intact rather than forced to meet an advertised compression ratio.

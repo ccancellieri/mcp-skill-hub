@@ -34,6 +34,8 @@ def main() -> int:
     parser.add_argument("--host", default=cfg.get("dashboard_server_host", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(cfg.get("dashboard_server_port", 8765)))
     parser.add_argument("--open", action="store_true", help="open the dashboard in a browser")
+    parser.add_argument("--no-services", action="store_true",
+                        help="serve the UI without starting background services or maintenance")
     args = parser.parse_args()
 
     # Build the service registry and start the reconciler so services align
@@ -43,15 +45,18 @@ def main() -> int:
     from ..services.registry import ServiceRegistry, set_registry, start_reconciler
     from ..services.monitor import PressureTracker
 
-    registry = ServiceRegistry.build_from_config(cfg)
-    pressure = PressureTracker(load_config_callable=_load_cfg)
-    set_registry(registry)
-    reconciler = start_reconciler(
-        registry, pressure, CONFIG, _load_cfg, interval_sec=5.0,
-    )
-    atexit.register(reconciler.stop)
+    if not args.no_services:
+        registry = ServiceRegistry.build_from_config(cfg)
+        pressure = PressureTracker(load_config_callable=_load_cfg)
+        set_registry(registry)
+        reconciler = start_reconciler(
+            registry, pressure, CONFIG, _load_cfg, interval_sec=5.0,
+        )
+        atexit.register(reconciler.stop)
+    else:
+        set_registry(ServiceRegistry([]))
 
-    app = create_app(SkillStore(DB))
+    app = create_app(SkillStore(DB), start_background_services=not args.no_services)
     url = f"http://{args.host}:{args.port}/"
     print(f"skill-hub dashboard: {url}")
     if args.open or cfg.get("dashboard_auto_open_browser"):
