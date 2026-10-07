@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .memory_routing import selected_memory_backend
+
 _DEFAULT_MAX_CHARS = 6000
 _DEFAULT_MAX_ITEMS = 6
 _MAX_CHARS = 50_000
@@ -87,6 +89,12 @@ def collect_context_candidates(
     """
     warnings: list[str] = []
     scope = _canonical_cwd(cwd)
+    cfg = _load_cfg(cfg)
+    backend = selected_memory_backend(cfg)
+    if backend is None:
+        warnings.append(
+            "Project memory was omitted because memory_retrieval_backend must be 'raw' or 'wiki'."
+        )
     candidates: list[dict] = []
     try:
         with _read_connection(store) as conn:
@@ -96,10 +104,12 @@ def collect_context_candidates(
             if scope:
                 _collect(candidates, warnings, "tasks", _task_candidates,
                          conn, prompt, scope, session_id, task_id, include_full_text)
-                _collect(candidates, warnings, "memory", _memory_candidates,
-                         conn, prompt, scope, _load_cfg(cfg), warnings, include_full_text)
-                _collect(candidates, warnings, "wiki", _wiki_candidates,
-                         conn, prompt, scope, _load_cfg(cfg), warnings, include_full_text)
+                if backend == "raw":
+                    _collect(candidates, warnings, "memory", _memory_candidates,
+                             conn, prompt, scope, cfg, warnings, include_full_text)
+                elif backend == "wiki":
+                    _collect(candidates, warnings, "wiki", _wiki_candidates,
+                             conn, prompt, scope, cfg, warnings, include_full_text)
     except Exception as exc:  # noqa: BLE001 - unavailable DB is a soft failure
         warnings.append(f"Read-only context store was unavailable: {exc}")
     candidates = _dedupe_candidates(candidates)

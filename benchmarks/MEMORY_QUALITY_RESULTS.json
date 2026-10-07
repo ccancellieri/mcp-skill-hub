@@ -1,0 +1,3554 @@
+{
+  "protocol": {
+    "top_k": 10,
+    "max_context_tokens": 1500,
+    "tokenizer": "o200k_base",
+    "similarity_threshold": 0.0,
+    "projection_seed": 42,
+    "answer_model_calls": 0,
+    "relationship_latency_includes": "wiki_hybrid seed query plus one-hop expansion",
+    "lexical_storage_basis": "independent wiki DB clone with vectors deleted and VACUUMed",
+    "graph_arm": "one-hop existing [[wikilinks]], not Microsoft GraphRAG",
+    "source_metric_warning": "quote/source coverage is retrieval evidence only, not answer quality"
+  },
+  "model": {
+    "requested_id": "all-MiniLM-L6-v2",
+    "resolved_id": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": null,
+    "dimension": 384
+  },
+  "fixtures": {
+    "path_hashes": {
+      "benchmarks/fixtures/memory_quality_questions.json": "0810a2b8c052261d560c48c32d8af35b8568abc7c4c936647d7d884160be2f3c",
+      "benchmarks/fixtures/memory_quality_wiki.json": "810ad733957c448c0afb43a65be0f9fdd55c02179c779b610e463f7fcd72ec66",
+      "docs/context-service.md": "692da5f94b60ee76ff04280809531a87a6aae9c268b6128aefd7f752a39e4330",
+      "docs/context-composer.md": "c9d81336839f1d0e38652a388e9ba4c6f9715b3c2f3a4606dadd915592e87a88",
+      "docs/mcp-profiles.md": "3b0e3e7539bf276a4de5fcacbba335c75821eafd3ab61958a50e6358af7ea45d",
+      "docs/runtime-models.md": "c8d4b67a690ccfa3edaf3f448664147e6273955707185af9d0d1caf4cbb91fc7",
+      "docs/compression-policy.md": "9c6e1274a9230df60ca1a550233bc263270e934447b7e95430599355d6c7fab1",
+      "docs/plugin-extension-points.md": "29035299ced5070b0ae2b4f0655d15cb8ecc334cd9a075e83150539c1359fdcb",
+      "docs/reference/database.md": "158644123923dfb3c05f09c4a9032dae3e8de6db7b92d549dac66c1898b57c2e",
+      "docs/backlog-review.md": "21a0800dfb8a09fd88eff643dd960a1c3b7860b5f710cc0873073f930ff3e6cb",
+      "benchmarks/FASTRP_RESULTS.md": "d296d34504066a78a94ab7aaf5996010f79e45657498b488f812fc558ea5ecde",
+      "docs/roadmap.md": "b58c75199a6761a012aa8dc5cd203acc0485e3d64bb2097f4966095c423144f1",
+      "benchmarks/memory_quality.py": "19b8f077f0316a4490e31b09299ca34e143fa8a1ce85ee8981fd57fec2670c33"
+    },
+    "source_files": [
+      "docs/context-service.md",
+      "docs/context-composer.md",
+      "docs/mcp-profiles.md",
+      "docs/runtime-models.md",
+      "docs/compression-policy.md",
+      "docs/plugin-extension-points.md",
+      "docs/reference/database.md",
+      "docs/backlog-review.md",
+      "benchmarks/FASTRP_RESULTS.md",
+      "docs/roadmap.md"
+    ],
+    "canonical_source_bytes": 55352,
+    "wiki_page_body_bytes": 25000
+  },
+  "code_revision": "8dccfff47f41a77c1ca24a9a91a5ffd498b1d6c5",
+  "storage": {
+    "canonical_source_bytes": 55352,
+    "arms": {
+      "memory_rag_full": {
+        "sqlite_bytes": 1105920,
+        "vector_backup_bytes": 0
+      },
+      "memory_rag_fastrp128": {
+        "sqlite_bytes": 782336,
+        "vector_backup_bytes": 0
+      },
+      "memory_rag_fastrp256": {
+        "sqlite_bytes": 921600,
+        "vector_backup_bytes": 0
+      },
+      "wiki_hybrid": {
+        "sqlite_bytes": 823296,
+        "vector_backup_bytes": 0
+      },
+      "wiki_lexical": {
+        "sqlite_bytes": 532480,
+        "vector_backup_bytes": 0
+      }
+    },
+    "wiki_vault_bytes": 34843
+  },
+  "review_packet_sha256": "18d513509db56f9f4c958468a220897dd2b6a7735b31a216cdb139b0a65e429c",
+  "quality_method": "Blinded model-based semantic evidence adjudication with independent spot checks; evidence quotes validated against rendered contexts. No answer generation or complete-task quality measured.",
+  "summary": {
+    "wiki_lexical": {
+      "facts": {
+        "supported": 31,
+        "missing": 16,
+        "partial": 1
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 64.58,
+      "split_facts": {
+        "calibration": {
+          "supported": 14,
+          "missing": 10
+        },
+        "holdout": {
+          "missing": 6,
+          "supported": 17,
+          "partial": 1
+        }
+      },
+      "explicit_abstention_evidence_questions": 2,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 2.25,
+      "median_retrieval_ms": 4.2,
+      "mean_context_tokens": 1023.0,
+      "total_candidate_bytes": 622675
+    },
+    "wiki_hybrid": {
+      "facts": {
+        "supported": 46,
+        "partial": 1,
+        "missing": 1
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 95.83,
+      "split_facts": {
+        "calibration": {
+          "supported": 22,
+          "partial": 1,
+          "missing": 1
+        },
+        "holdout": {
+          "supported": 24
+        }
+      },
+      "explicit_abstention_evidence_questions": 3,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 2,
+      "median_retrieval_ms": 38.84,
+      "mean_context_tokens": 1500,
+      "total_candidate_bytes": 913491
+    },
+    "memory_rag_fastrp128": {
+      "facts": {
+        "supported": 33,
+        "missing": 11,
+        "partial": 4
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 68.75,
+      "split_facts": {
+        "calibration": {
+          "supported": 15,
+          "missing": 6,
+          "partial": 3
+        },
+        "holdout": {
+          "missing": 5,
+          "supported": 18,
+          "partial": 1
+        }
+      },
+      "explicit_abstention_evidence_questions": 3,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 2.25,
+      "median_retrieval_ms": 2.91,
+      "mean_context_tokens": 1500,
+      "total_candidate_bytes": 837688
+    },
+    "wiki_relationship_one_hop": {
+      "facts": {
+        "supported": 45,
+        "partial": 2,
+        "missing": 1
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 93.75,
+      "split_facts": {
+        "calibration": {
+          "supported": 22,
+          "partial": 1,
+          "missing": 1
+        },
+        "holdout": {
+          "supported": 23,
+          "partial": 1
+        }
+      },
+      "explicit_abstention_evidence_questions": 4,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 1.92,
+      "median_retrieval_ms": 42.96,
+      "mean_context_tokens": 1395.5,
+      "total_candidate_bytes": 913491
+    },
+    "memory_rag_fastrp256": {
+      "facts": {
+        "supported": 34,
+        "partial": 7,
+        "missing": 7
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 70.83,
+      "split_facts": {
+        "calibration": {
+          "supported": 17,
+          "partial": 3,
+          "missing": 4
+        },
+        "holdout": {
+          "missing": 3,
+          "partial": 4,
+          "supported": 17
+        }
+      },
+      "explicit_abstention_evidence_questions": 4,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 2.08,
+      "median_retrieval_ms": 5.42,
+      "mean_context_tokens": 1500,
+      "total_candidate_bytes": 976952
+    },
+    "memory_rag_full": {
+      "facts": {
+        "supported": 38,
+        "partial": 6,
+        "missing": 4
+      },
+      "required_fact_count": 48,
+      "fully_supported_fact_percent": 79.17,
+      "split_facts": {
+        "calibration": {
+          "supported": 18,
+          "partial": 4,
+          "missing": 2
+        },
+        "holdout": {
+          "supported": 20,
+          "partial": 2,
+          "missing": 2
+        }
+      },
+      "explicit_abstention_evidence_questions": 4,
+      "unanswerable_questions": 4,
+      "mean_noise_0_to_3": 2,
+      "median_retrieval_ms": 7.81,
+      "mean_context_tokens": 1500,
+      "total_candidate_bytes": 1161272
+    }
+  },
+  "content_reviews": [
+    {
+      "id": "MQ01",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "g stays offline outside the MCP surface. Both profiles preserve the original prompt and verified project scope. Related: [[minimal-tool-profile]], [[composer-learning-compatibili"
+        },
+        {
+          "fact": "evidence",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "publication",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: evidence, publication. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ01",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "ves supplemental evidence for the original request. It does not choose the client model, rewrite user words, create tasks, provision tools, approve commands, or send continuation messages. Retriev"
+        },
+        {
+          "fact": "evidence",
+          "status": "supported",
+          "evidence": "nds, or send continuation messages. Retrieved material cannot become instruction or publication authorization. prepare_context accepts text, an absolute repo_root and optional"
+        },
+        {
+          "fact": "publication",
+          "status": "partial",
+          "evidence": "Retrieved material cannot become instruction or publication authorization."
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Negative publication boundary is explicit; the positive actual-user-instruction and scope requirement is absent. Most other items are unrelated.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ01",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "state,\nwithout body previews or ranking internals. The original prompt is preserved.\nThe compatible default `detail=\"preview\"` still returns the editable previews.\n\n```json\n{"
+        },
+        {
+          "fact": "evidence",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "publication",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: evidence, publication. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ01",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "ves supplemental evidence for the original request. It does not choose the client model, rewrite user words, create tasks, provision tools, approve commands, or send continuation messages. Retriev"
+        },
+        {
+          "fact": "evidence",
+          "status": "supported",
+          "evidence": "nds, or send continuation messages. Retrieved material cannot become instruction or publication authorization. prepare_context accepts text, an absolute repo_root and optional"
+        },
+        {
+          "fact": "publication",
+          "status": "partial",
+          "evidence": "Retrieved material cannot become instruction or publication authorization."
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Negative publication boundary is explicit; the positive actual-user-instruction and scope requirement is absent. Most other items are unrelated.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ01",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "state,\nwithout body previews or ranking internals. The original prompt is preserved.\nThe compatible default `detail=\"preview\"` still returns the editable previews.\n\n```json\n{"
+        },
+        {
+          "fact": "evidence",
+          "status": "supported",
+          "evidence": "her project. Retrieved text is evidence with a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope"
+        },
+        {
+          "fact": "publication",
+          "status": "supported",
+          "evidence": "a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope; a\nsummary, skill or automatic message cannot s"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ01",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "original",
+          "status": "supported",
+          "evidence": "ve hook retrieves evidence for the current request. It does not\nchoose the client's model, rewrite the user's words, create tasks, provision\ntools, approve commands, or send automatic continuation messa"
+        },
+        {
+          "fact": "evidence",
+          "status": "supported",
+          "evidence": "her project. Retrieved text is evidence with a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope"
+        },
+        {
+          "fact": "publication",
+          "status": "supported",
+          "evidence": "a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope; a\nsummary, skill or automatic message cannot s"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "tory basename.\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass thr"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": ".\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass through. Character and item limits are controlled by\n`context_max_chars` and `context_max_item"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "ailure-and-approval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. conte"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": "proval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. context_max_chars and context_max_items bound output; context_enabled=false disables"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "tory basename.\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass thr"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": ".\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass through. Character and item limits are controlled by\n`context_max_chars` and `context_max_item"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "tory basename.\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass thr"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": ".\n\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass through. Character and item limits are controlled by\n`context_max_chars` and `context_max_item"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "ailure-and-approval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. conte"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": "proval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. context_max_chars and context_max_items bound output; context_enabled=false disables"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ03",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "timeout_key",
+          "status": "supported",
+          "evidence": "ailure-and-approval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. conte"
+        },
+        {
+          "fact": "pass_through",
+          "status": "supported",
+          "evidence": "proval] Bounded hooks and native approval\ncontext_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. context_max_chars and context_max_items bound output; context_enabled=false disables"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "supported",
+          "evidence": "lexical matching, not general multilingual semantics. Broader shortlist and Qwen reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector"
+        },
+        {
+          "fact": "negative_result",
+          "status": "supported",
+          "evidence": "reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector evaluator has uncalibrated scores; smaller context or more abstention alon"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "supported",
+          "evidence": "lexical matching, not general multilingual semantics. Broader shortlist and Qwen reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector"
+        },
+        {
+          "fact": "negative_result",
+          "status": "supported",
+          "evidence": "reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector evaluator has uncalibrated scores; smaller context or more abstention alon"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "partial",
+          "evidence": "rage.\n\nThe offline selector experiment has a separate, broader shortlist that scans\nnames and full descriptions in SQLite without loading instruction bodies. A\nname ma"
+        },
+        {
+          "fact": "negative_result",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "The offline shortlist appears, but the chunk cuts off before the foreground exclusion and negative injection result. Other items discuss unrelated projection.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "partial",
+          "evidence": "rage.\n\nThe offline selector experiment has a separate, broader shortlist that scans\nnames and full descriptions in SQLite without loading instruction bodies. A\nname ma"
+        },
+        {
+          "fact": "negative_result",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "The offline shortlist appears, but the chunk cuts off before the foreground exclusion and negative injection result. Other items discuss unrelated projection.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "partial",
+          "evidence": "rage.\n\nThe offline selector experiment has a separate, broader shortlist that scans\nnames and full descriptions in SQLite without loading instruction bodies. A\nname ma"
+        },
+        {
+          "fact": "negative_result",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "The offline shortlist appears, but the chunk cuts off before the foreground exclusion and negative injection result. Other items discuss unrelated projection.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ05",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "offline",
+          "status": "supported",
+          "evidence": "lexical matching, not general multilingual semantics. Broader shortlist and Qwen reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector"
+        },
+        {
+          "fact": "negative_result",
+          "status": "supported",
+          "evidence": "reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector evaluator has uncalibrated scores; smaller context or more abstention alon"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "supported",
+          "evidence": "and arrays. It does not parse and reserialize values: duplicate keys,\nnumber spellings, escapes and string contents remain intact. Invalid JSON,\nprose, source code and unsupport"
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "supported",
+          "evidence": "eserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        },
+        {
+          "fact": "determinism",
+          "status": "supported",
+          "evidence": "re the index reflects it.\n\nExact duplicate removal and JSON whitespace compaction are deterministic.\nJSON compaction preserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "supported",
+          "evidence": "and arrays. It does not parse and reserialize values: duplicate keys,\nnumber spellings, escapes and string contents remain intact. Invalid JSON,\nprose, source code and unsupport"
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "supported",
+          "evidence": "eserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        },
+        {
+          "fact": "determinism",
+          "status": "supported",
+          "evidence": "re the index reflects it.\n\nExact duplicate removal and JSON whitespace compaction are deterministic.\nJSON compaction preserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "supported",
+          "evidence": "lid JSON objects/arrays without parse-and-reserialize. Strings, escapes, duplicate keys and number spellings remain intact. Invalid JSON, prose, source code and unsupported formats pass unchanged. co"
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "supported",
+          "evidence": "act recovery and original is not automatically stored. Selection, excerpts and truncation are lossy despite determinism. A marker is usable only when its stored original remains accessible. Opti"
+        },
+        {
+          "fact": "determinism",
+          "status": "supported",
+          "evidence": "tically stored. Selection, excerpts and truncation are lossy despite determinism. A marker is usable only when its stored original remains accessible. Optional kompress_prose"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "supported",
+          "evidence": "and arrays. It does not parse and reserialize values: duplicate keys,\nnumber spellings, escapes and string contents remain intact. Invalid JSON,\nprose, source code and unsupport"
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "supported",
+          "evidence": "eserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        },
+        {
+          "fact": "determinism",
+          "status": "supported",
+          "evidence": "re the index reflects it.\n\nExact duplicate removal and JSON whitespace compaction are deterministic.\nJSON compaction preserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather\nthan"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "One composer chunk explicitly calls JSON compaction deterministic and passage selection/truncation lossy; this supports the conceptual distinction.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "determinism",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: json_fidelity, excerpt_loss, determinism. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ07",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "json_fidelity",
+          "status": "supported",
+          "evidence": "lid JSON objects/arrays without parse-and-reserialize. Strings, escapes, duplicate keys and number spellings remain intact. Invalid JSON, prose, source code and unsupported formats pass unchanged. co"
+        },
+        {
+          "fact": "excerpt_loss",
+          "status": "supported",
+          "evidence": "act recovery and original is not automatically stored. Selection, excerpts and truncation are lossy despite determinism. A marker is usable only when its stored original remains accessible. Opti"
+        },
+        {
+          "fact": "determinism",
+          "status": "supported",
+          "evidence": "tically stored. Selection, excerpts and truncation are lossy despite determinism. A marker is usable only when its stored original remains accessible. Optional kompress_prose"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "e the skill directories to index:\n\n```sh\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills\n```\n\nRepeat `--skill-dir` to include additional directories. This command scans only\ntheir `SKILL.md` files, stores text for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-bac"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "xt for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-backed rows are not replaced with changed"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "xing] Model-free skill index preparation\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills scans only SKILL.md and stores keyword-search text without embedding calls. Repeat --skill-dir for more directories. It does not index project memory, install hook"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "ing calls. Repeat --skill-dir for more directories. It does not index project memory, install hooks or modify providers. Existing vector-backed rows cannot be replaced with change"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "xing] Model-free skill index preparation\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills scans only SKILL.md and stores keyword-search text without embedding calls. Repeat --skill-dir for more directories. It does not index project memory, install hook"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "ing calls. Repeat --skill-dir for more directories. It does not index project memory, install hooks or modify providers. Existing vector-backed rows cannot be replaced with change"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "e the skill directories to index:\n\n```sh\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills\n```\n\nRepeat `--skill-dir` to include additional directories. This command scans only\ntheir `SKILL.md` files, stores text for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-bac"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "xt for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-backed rows are not replaced with changed"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "xing] Model-free skill index preparation\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills scans only SKILL.md and stores keyword-search text without embedding calls. Repeat --skill-dir for more directories. It does not index project memory, install hook"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "ing calls. Repeat --skill-dir for more directories. It does not index project memory, install hooks or modify providers. Existing vector-backed rows cannot be replaced with change"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ09",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "skill_text",
+          "status": "supported",
+          "evidence": "e the skill directories to index:\n\n```sh\nskill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills\n```\n\nRepeat `--skill-dir` to include additional directories. This command scans only\ntheir `SKILL.md` files, stores text for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-bac"
+        },
+        {
+          "fact": "no_memory",
+          "status": "supported",
+          "evidence": "xt for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-backed rows are not replaced with changed"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "nknown, without borrowing another model's price.\n\nUse `provider-name::model-id` when an ID occurs in multiple provider records.\nThe provider name selects endpoint and credentials; the stored model ID is sent\nthrough the corresponding t"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "rgument or provider-qualified\ntier value is pinned: an unavailable backend produces an error instead of\nsilently switching providers. Existing automatic escalation still applies to\nunpinn"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "nknown, without borrowing another model's price.\n\nUse `provider-name::model-id` when an ID occurs in multiple provider records.\nThe provider name selects endpoint and credentials; the stored model ID is sent\nthrough the corresponding t"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "rgument or provider-qualified\ntier value is pinned: an unavailable backend produces an error instead of\nsilently switching providers. Existing automatic escalation still applies to\nunpinn"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "ied-routing] Pinned models and provider resolution\nUse provider-name::model-id for IDs present in multiple provider records. Provider chooses endpoint/credentials; stored ID is sent through its transport adapter. A plain ambiguo"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "t model argument or provider-qualified tier is pinned: unavailable backend errors instead of silently switching. Automatic escalation remains for unpinned service requests. Co"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "ied-routing] Pinned models and provider resolution\nUse provider-name::model-id for IDs present in multiple provider records. Provider chooses endpoint/credentials; stored ID is sent through its transport adapter. A plain ambiguo"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "t model argument or provider-qualified tier is pinned: unavailable backend errors instead of silently switching. Automatic escalation remains for unpinned service requests. Co"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "ied-routing] Pinned models and provider resolution\nUse provider-name::model-id for IDs present in multiple provider records. Provider chooses endpoint/credentials; stored ID is sent through its transport adapter. A plain ambiguo"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "t model argument or provider-qualified tier is pinned: unavailable backend errors instead of silently switching. Automatic escalation remains for unpinned service requests. Co"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ11",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "qualified_id",
+          "status": "supported",
+          "evidence": "nknown, without borrowing another model's price.\n\nUse `provider-name::model-id` when an ID occurs in multiple provider records.\nThe provider name selects endpoint and credentials; the stored model ID is sent\nthrough the corresponding t"
+        },
+        {
+          "fact": "pinned_error",
+          "status": "supported",
+          "evidence": "rgument or provider-qualified\ntier value is pinned: an unavailable backend produces an error instead of\nsilently switching providers. Existing automatic escalation still applies to\nunpinn"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources: docs/runtime-models."
+        },
+        {
+          "fact": "reported",
+          "status": "supported",
+          "evidence": "ot suppress successful retrieval. Normal arguments are caller-reported. MCP client info identifies implementation, not conversation model/effort; server PID is not c"
+        },
+        {
+          "fact": "no_permission",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources:"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources: docs/runtime-models."
+        },
+        {
+          "fact": "reported",
+          "status": "supported",
+          "evidence": "ot suppress successful retrieval. Normal arguments are caller-reported. MCP client info identifies implementation, not conversation model/effort; server PID is not c"
+        },
+        {
+          "fact": "no_permission",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources:"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "optional\nlocal models (L1) and remote API models (L2). Connecting Codex, Claude, Pi, or\nOpenClaw does not change the server's model configuration or supply API credentials.\nThe prompt hook remains deterministic and keeps its existing two-se"
+        },
+        {
+          "fact": "reported",
+          "status": "partial",
+          "evidence": "It shows the last reported\nclient, model, effort and the origin of those values."
+        },
+        {
+          "fact": "no_permission",
+          "status": "partial",
+          "evidence": "nrelated hooks.\n\nPermission handling defaults to `hook_approval_policy=native`, which leaves\nthe decision to the client. An explicitly selected deterministic"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Provider separation is explicit. Reported status lacks the stronger caller-provenance statement; permission boundary is only indirectly supported by native approval policy.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "tify closing an issue. Current-client model and\neffort observations never change configured server providers.\n\n## Qualify actual task value\n\n#152 remains the promotion gate: at least 15% lower median tot"
+        },
+        {
+          "fact": "reported",
+          "status": "partial",
+          "evidence": "It shows the last reported\nclient, model, effort and the origin of those values."
+        },
+        {
+          "fact": "no_permission",
+          "status": "partial",
+          "evidence": "nrelated hooks.\n\nPermission handling defaults to `hook_approval_policy=native`, which leaves\nthe decision to the client. An explicitly selected deterministic"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Provider separation is explicit. Reported status lacks the stronger caller-provenance statement; permission boundary is only indirectly supported by native approval policy.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources: docs/runtime-models."
+        },
+        {
+          "fact": "reported",
+          "status": "supported",
+          "evidence": "ot suppress successful retrieval. Normal arguments are caller-reported. MCP client info identifies implementation, not conversation model/effort; server PID is not c"
+        },
+        {
+          "fact": "no_permission",
+          "status": "supported",
+          "evidence": "changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].\nSources:"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ13",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "separate",
+          "status": "supported",
+          "evidence": "optional\nlocal models (L1) and remote API models (L2). Connecting Codex, Claude, Pi, or\nOpenClaw does not change the server's model configuration or supply API credentials.\nThe prompt hook remains deterministic and keeps its existing two-se"
+        },
+        {
+          "fact": "reported",
+          "status": "partial",
+          "evidence": "It shows the last reported\nclient, model, effort and the origin of those values."
+        },
+        {
+          "fact": "no_permission",
+          "status": "partial",
+          "evidence": "nrelated hooks.\n\nPermission handling defaults to `hook_approval_policy=native`, which leaves\nthe decision to the client. An explicitly selected deterministic"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Provider separation is explicit. Reported status lacks the stronger caller-provenance statement; permission boundary is only indirectly supported by native approval policy.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "partial",
+          "evidence": "If image capability or comparable usage is unknown,\nkeep the text path."
+        },
+        {
+          "fact": "image_condition",
+          "status": "supported",
+          "evidence": "types, and usage reporting vary by model and client.\n\nUse an image when the source is inherently visual, or when a comparison on the\nsame selected passages shows a useful accuracy/cost tradeoff for the specific\nprovider,"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Image condition is explicit. The text path is stated for unknown capabilities, but the general portable text default is outside the retrieved chunk. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "image_condition",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: text_default, image_condition. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "supported",
+          "evidence": "sus-image-transport] Verbatim text is portable default\nTextual sources use bounded verbatim passages with metadata sent as text by default. Rasterizing text is an optional transport experiment: bytes do not predict billed tokens, image support/resizin"
+        },
+        {
+          "fact": "image_condition",
+          "status": "supported",
+          "evidence": "rt/resizing/media/usage vary by provider/model/client. Use images for inherently visual sources or a same-passage comparison showing useful accuracy/cost tradeoff. Unknown capability or comparable usage means retain text. Keep identical source IDs/hashes fo"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "image_condition",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: text_default, image_condition. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "supported",
+          "evidence": "sus-image-transport] Verbatim text is portable default\nTextual sources use bounded verbatim passages with metadata sent as text by default. Rasterizing text is an optional transport experiment: bytes do not predict billed tokens, image support/resizin"
+        },
+        {
+          "fact": "image_condition",
+          "status": "supported",
+          "evidence": "rt/resizing/media/usage vary by provider/model/client. Use images for inherently visual sources or a same-passage comparison showing useful accuracy/cost tradeoff. Unknown capability or comparable usage means retain text. Keep identical source IDs/hashes fo"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ15",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "text_default",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "image_condition",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Missing required support: text_default, image_condition. Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "mespace. Schema only allows CREATE TABLE IF NOT EXISTS plugin_{namespace}_* and matching CREATE INDEX. store.plugin_db applies on first call per process and reapplies aft"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "sha256 change. Read-only core correlation is allowed; non-plugin writes raise PermissionError. A8 upsert_vector/search_vectors use shared vectors keyed by namespace/doc_id with model, vect"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "ema.sql` must contain only\n`CREATE TABLE IF NOT EXISTS plugin_{namespace}_*` (and matching `CREATE INDEX`)\nstatements. Applied on first `store.plugin_db(\"mynamespace\")` c"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "itle FROM tasks WHERE status='open'\")\n\n# But writes to non-plugin_* tables raise PermissionError.\n```\n\n## A8 — Namespaced vectors\n\n```python\nstore.upsert_vector(\"mynamespace\", doc_id=\"draft-2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "mespace. Schema only allows CREATE TABLE IF NOT EXISTS plugin_{namespace}_* and matching CREATE INDEX. store.plugin_db applies on first call per process and reapplies aft"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "sha256 change. Read-only core correlation is allowed; non-plugin writes raise PermissionError. A8 upsert_vector/search_vectors use shared vectors keyed by namespace/doc_id with model, vect"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "ema.sql` must contain only\n`CREATE TABLE IF NOT EXISTS plugin_{namespace}_*` (and matching `CREATE INDEX`)\nstatements. Applied on first `store.plugin_db(\"mynamespace\")` c"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "itle FROM tasks WHERE status='open'\")\n\n# But writes to non-plugin_* tables raise PermissionError.\n```\n\n## A8 — Namespaced vectors\n\n```python\nstore.upsert_vector(\"mynamespace\", doc_id=\"draft-2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "ema.sql` must contain only\n`CREATE TABLE IF NOT EXISTS plugin_{namespace}_*` (and matching `CREATE INDEX`)\nstatements. Applied on first `store.plugin_db(\"mynamespace\")` c"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "itle FROM tasks WHERE status='open'\")\n\n# But writes to non-plugin_* tables raise PermissionError.\n```\n\n## A8 — Namespaced vectors\n\n```python\nstore.upsert_vector(\"mynamespace\", doc_id=\"draft-2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ17",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "prefix",
+          "status": "supported",
+          "evidence": "mespace. Schema only allows CREATE TABLE IF NOT EXISTS plugin_{namespace}_* and matching CREATE INDEX. store.plugin_db applies on first call per process and reapplies aft"
+        },
+        {
+          "fact": "core_write",
+          "status": "supported",
+          "evidence": "sha256 change. Read-only core correlation is allowed; non-plugin writes raise PermissionError. A8 upsert_vector/search_vectors use shared vectors keyed by namespace/doc_id with model, vect"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Most selected items are unrelated to the decisive proposition.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "No retrieved item names the historical interceptions table. Current retirement is explicit.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "No retrieved item names the historical interceptions table. Current retirement is explicit.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "missing",
+          "evidence": null
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "The database summary does not mention the interceptions table or current retirement.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "supported",
+          "evidence": "a compatibility no-op even with old enabled settings. Automatic task interception and session task creation are retired; per-turn Stop memory maintenance is removed from the foreground, while session-close and expl"
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "supported",
+          "evidence": "a compatibility no-op even with old enabled settings. Automatic task interception and session task creation are retired; per-turn Stop memory maintenance is removed from the foreground, while session-close and expl"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "No retrieved item names the historical interceptions table. Current retirement is explicit.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "supported",
+          "evidence": "patibility no-op, including with old enabled\nsettings. Automatic task interception and session task creation hooks are also\nretired. Per-turn Stop memory maintenance is removed from the foreground path;\nsession-close and expli"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "No retrieved item names the historical interceptions table. Current retirement is explicit.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ19",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "historical_table",
+          "status": "missing",
+          "evidence": null
+        },
+        {
+          "fact": "retired_hook",
+          "status": "supported",
+          "evidence": "a compatibility no-op even with old enabled settings. Automatic task interception and session task creation are retired; per-turn Stop memory maintenance is removed from the foreground, while session-close and expl"
+        },
+        {
+          "fact": "roadmap_status",
+          "status": "supported",
+          "evidence": "a compatibility no-op even with old enabled settings. Automatic task interception and session task creation are retired; per-turn Stop memory maintenance is removed from the foreground, while session-close and expl"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "No retrieved item names the historical interceptions table. Current retirement is explicit.",
+      "split": "calibration",
+      "answerable": true
+    },
+    {
+      "id": "MQ21",
+      "arm": "memory_rag_full",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "red account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and\n256 KiB,",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ21",
+      "arm": "wiki_hybrid",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "poses IDs absent from registry. It saves/enables none. Advertised ID proves neither routability nor account eligibility; availability and cost stay unknown and missing price does not imply f",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ21",
+      "arm": "memory_rag_fastrp256",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "red account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and\n256 KiB,",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ21",
+      "arm": "wiki_lexical",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "poses IDs absent from registry. It saves/enables none. Advertised ID proves neither routability nor account eligibility; availability and cost stay unknown and missing price does not imply f",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ21",
+      "arm": "memory_rag_fastrp128",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "red account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and\n256 KiB,",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ21",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Catalog caveats directly establish that exact price and current eligibility cannot be inferred.",
+      "abstention_evidence": "poses IDs absent from registry. It saves/enables none. Advertised ID proves neither routability nor account eligibility; availability and cost stay unknown and missing price does not imply f",
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "memory_rag_fastrp128",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Synthetic neighbor agreement is distinguished from semantic/project-corpus correctness; numeric recall still invites a false answer.",
+      "abstention_evidence": "points recall loss**. Synthetic\nneighbor agreement is not semantic relevance or a production-corpus result.\nTimings vary with hardware and system load. Repeat with represe",
+      "distractors_invite_false_inference": true,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "memory_rag_full",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Synthetic neighbor agreement is distinguished from semantic/project-corpus correctness; numeric recall still invites a false answer.",
+      "abstention_evidence": "points recall loss**. Synthetic\nneighbor agreement is not semantic relevance or a production-corpus result.\nTimings vary with hardware and system load. Repeat with represe",
+      "distractors_invite_false_inference": true,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "memory_rag_fastrp256",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Synthetic neighbor agreement is distinguished from semantic/project-corpus correctness; numeric recall still invites a false answer.",
+      "abstention_evidence": "points recall loss**. Synthetic\nneighbor agreement is not semantic relevance or a production-corpus result.\nTimings vary with hardware and system load. Repeat with represe",
+      "distractors_invite_false_inference": true,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "wiki_lexical",
+      "facts": [],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": false,
+      "notes": "No FastRP-specific caveat or project-corpus result; the unrelated task-value warning does not establish this unknown.",
+      "abstention_evidence": null,
+      "distractors_invite_false_inference": false,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Synthetic neighbor agreement is distinguished from semantic/project-corpus correctness; numeric recall still invites a false answer.",
+      "abstention_evidence": "Fails ≥50% smaller total storage and <2pp recall loss. Synthetic neighbor agreement is not semantic/production relevance or proof at 100,000 docs/sublinear ANN. Feature experimental/default off;",
+      "distractors_invite_false_inference": true,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ23",
+      "arm": "wiki_hybrid",
+      "facts": [],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Synthetic neighbor agreement is distinguished from semantic/project-corpus correctness; numeric recall still invites a false answer.",
+      "abstention_evidence": "Fails ≥50% smaller total storage and <2pp recall loss. Synthetic neighbor agreement is not semantic/production relevance or proof at 100,000 docs/sublinear ANN. Feature experimental/default off;",
+      "distractors_invite_false_inference": true,
+      "split": "calibration",
+      "answerable": false
+    },
+    {
+      "id": "MQ02",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "supported",
+          "evidence": "No project\nscope means global skills only"
+        },
+        {
+          "fact": "project_identity",
+          "status": "supported",
+          "evidence": "Only those projects contribute memory and task\nevidence"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ02",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "project_identity",
+          "status": "partial",
+          "evidence": "Explicit project roots"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ02",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "project_identity",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ02",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "supported",
+          "evidence": "no scope permits global skill descriptions only"
+        },
+        {
+          "fact": "project_identity",
+          "status": "supported",
+          "evidence": "Project memory and task evidence require project identity"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ02",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "supported",
+          "evidence": "no scope permits global skill descriptions only"
+        },
+        {
+          "fact": "project_identity",
+          "status": "supported",
+          "evidence": "Project memory and task evidence require project identity"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ02",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "global_skills",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "project_identity",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "an alias assigned to two projects cannot combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance becomes an omission"
+        }
+      ],
+      "noise": 0,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "An alias assigned to two projects\nmust not be used to combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance is\nreported as an omission, not guessed from a directory basename"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "an alias assigned to two projects cannot combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance becomes an omission"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "an alias assigned to two projects cannot combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance becomes an omission"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "An alias assigned to two projects\nmust not be used to combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance is\nreported as an omission, not guessed from a directory basename"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ04",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "alias_collision",
+          "status": "supported",
+          "evidence": "An alias assigned to two projects\nmust not be used to combine their records"
+        },
+        {
+          "fact": "omission",
+          "status": "supported",
+          "evidence": "Missing or ambiguous provenance is\nreported as an omission, not guessed from a directory basename"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "partial",
+          "evidence": "stale-source checks"
+        },
+        {
+          "fact": "posted",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "supported",
+          "evidence": "changed or missing sources require new selection"
+        },
+        {
+          "fact": "posted",
+          "status": "supported",
+          "evidence": "Posted bodies cannot replace verified evidence"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "posted",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "supported",
+          "evidence": "changed or missing sources require new selection"
+        },
+        {
+          "fact": "posted",
+          "status": "supported",
+          "evidence": "Posted bodies cannot replace verified evidence"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "partial",
+          "evidence": "stale reference rejects the whole request"
+        },
+        {
+          "fact": "posted",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ06",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "stale",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "posted",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "skill-hub defaults to full"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "Its eight tools are"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "The `skill-hub` server starts with the **full** MCP tool profile by default"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "The minimal profile advertises these eight tools"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "skill-hub defaults to full"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "Its eight tools are"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "The `skill-hub` server starts with the **full** MCP tool profile by default"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "The minimal profile advertises these eight tools"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "skill-hub defaults to full"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "Its eight tools are"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ08",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "full_default",
+          "status": "supported",
+          "evidence": "The `skill-hub` server starts with the **full** MCP tool profile by default"
+        },
+        {
+          "fact": "minimal_eight",
+          "status": "supported",
+          "evidence": "The minimal profile advertises these eight tools"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "unknown, out-of-scope or stale reference rejects whole batch"
+        }
+      ],
+      "noise": 1,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "unknown, out-of-scope or stale reference rejects whole batch"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "unknown, out-of-scope or stale reference rejects whole batch"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "out-of-scope or stale reference rejects the whole request"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "out-of-scope or stale reference rejects the whole request"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ10",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "batch_limit",
+          "status": "supported",
+          "evidence": "one to six unique IDs"
+        },
+        {
+          "fact": "atomic",
+          "status": "supported",
+          "evidence": "out-of-scope or stale reference rejects the whole request"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "Advertised ID proves neither routability nor account eligibility"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "It saves/enables none"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "missing price does not imply free"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "An advertised ID does not\nestablish that it is routable or eligible for the configured account"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "Discovery\ndoes not save or enable models"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "a missing\nprice does not imply free access"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "Advertised ID proves neither routability nor account eligibility"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "It saves/enables none"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "missing price does not imply free"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "An advertised ID does not\nestablish that it is routable or eligible for the configured account"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "Discovery\ndoes not save or enable models"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "a missing\nprice does not imply free access"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "An advertised ID does not\nestablish that it is routable or eligible for the configured account"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "Discovery\ndoes not save or enable models"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "a missing\nprice does not imply free access"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ12",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "not_eligible",
+          "status": "supported",
+          "evidence": "Advertised ID proves neither routability nor account eligibility"
+        },
+        {
+          "fact": "not_enabled",
+          "status": "supported",
+          "evidence": "It saves/enables none"
+        },
+        {
+          "fact": "not_free",
+          "status": "supported",
+          "evidence": "missing price does not imply free"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "collapse only on recognized log-level input"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "counts are not exact recovery"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "original is not automatically stored"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "collapse only on recognized log-level input"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "counts are not exact recovery"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "original is not automatically stored"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "Only recognized log-level lines are eligible"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "a repetition count is not an exact recovery format"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "It does not automatically store the original"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "collapse only on recognized log-level input"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "counts are not exact recovery"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "original is not automatically stored"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "Only recognized log-level lines are eligible"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "a repetition count is not an exact recovery format"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "It does not automatically store the original"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ14",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "log_lines",
+          "status": "supported",
+          "evidence": "Only recognized log-level lines are eligible"
+        },
+        {
+          "fact": "not_exact",
+          "status": "supported",
+          "evidence": "a repetition count is not an exact recovery format"
+        },
+        {
+          "fact": "not_stored",
+          "status": "supported",
+          "evidence": "It does not automatically store the original"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "partial",
+          "evidence": "**M2 — per-index routing (preferred):**"
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy reads land in `memory:<plugin_name>` at level L2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy reads land in `memory:<plugin_name>` at level L2"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "supported",
+          "evidence": "Files embed into named namespace at declared level"
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy flat memory.reads routes to memory:<plugin_name> at L2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "supported",
+          "evidence": "Files embed into named namespace at declared level"
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy flat memory.reads routes to memory:<plugin_name> at L2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy reads land in `memory:<plugin_name>` at level L2"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ16",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "m2_named",
+          "status": "supported",
+          "evidence": "Files embed into named namespace at declared level"
+        },
+        {
+          "fact": "legacy_l2",
+          "status": "supported",
+          "evidence": "Legacy flat memory.reads routes to memory:<plugin_name> at L2"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "supported",
+          "evidence": "Sync handlers run with a 10-second timeout"
+        },
+        {
+          "fact": "async_output",
+          "status": "supported",
+          "evidence": "async handlers fire on a\nbackground thread and their output is discarded"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "supported",
+          "evidence": "Sync handlers run with a 10-second timeout"
+        },
+        {
+          "fact": "async_output",
+          "status": "supported",
+          "evidence": "async handlers fire on a\nbackground thread and their output is discarded"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "supported",
+          "evidence": "sync timeout 10s"
+        },
+        {
+          "fact": "async_output",
+          "status": "supported",
+          "evidence": "async background output discarded"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "async_output",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "supported",
+          "evidence": "sync timeout 10s"
+        },
+        {
+          "fact": "async_output",
+          "status": "supported",
+          "evidence": "async background output discarded"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ18",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "sync_timeout",
+          "status": "supported",
+          "evidence": "Sync handlers run with a 10-second timeout"
+        },
+        {
+          "fact": "async_output",
+          "status": "supported",
+          "evidence": "async handlers fire on a\nbackground thread and their output is discarded"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "memory_rag_full",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "partial",
+          "evidence": "keeping originals grows the database"
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "recall dropped **87 percentage points**"
+        },
+        {
+          "fact": "default",
+          "status": "supported",
+          "evidence": "Keep full-vector retrieval as\nthe default for RAG and wiki"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic\nneighbor agreement is not semantic relevance"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent. Retrieved benchmark chunk starts with recall loss and omits the preceding exact SQLite growth figure; do not infer 48.1% from recalled documents.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "memory_rag_fastrp128",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "partial",
+          "evidence": "keeping originals grows the database"
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "recall dropped **87 percentage points**"
+        },
+        {
+          "fact": "default",
+          "status": "supported",
+          "evidence": "Keep full-vector retrieval as\nthe default for RAG and wiki"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic\nneighbor agreement is not semantic relevance"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent. Retrieved benchmark chunk starts with recall loss and omits the preceding exact SQLite growth figure; do not infer 48.1% from recalled documents.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "supported",
+          "evidence": "retained backups grew storage 48.1%"
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "neighbor recall lost 87 percentage points"
+        },
+        {
+          "fact": "default",
+          "status": "partial",
+          "evidence": "Feature experimental/default off"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic neighbor agreement is not semantic/production relevance"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "memory_rag_fastrp256",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "missing",
+          "evidence": ""
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "recall dropped **87 percentage points**"
+        },
+        {
+          "fact": "default",
+          "status": "partial",
+          "evidence": "The feature remains experimental with default full vectors"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic\nneighbor agreement is not semantic relevance"
+        }
+      ],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent. Retrieved benchmark chunk starts with recall loss and omits the preceding exact SQLite growth figure; do not infer 48.1% from recalled documents.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "wiki_lexical",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "supported",
+          "evidence": "retained backups grew storage 48.1%"
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "neighbor recall lost 87 percentage points"
+        },
+        {
+          "fact": "default",
+          "status": "partial",
+          "evidence": "Feature experimental/default off"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic neighbor agreement is not semantic/production relevance"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Related constraint/direction is present but the complete required condition, scope, or exact quantity is absent.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ20",
+      "arm": "wiki_hybrid",
+      "facts": [
+        {
+          "fact": "storage",
+          "status": "supported",
+          "evidence": "retained backups grew storage 48.1%"
+        },
+        {
+          "fact": "recall",
+          "status": "supported",
+          "evidence": "neighbor recall lost 87 percentage points"
+        },
+        {
+          "fact": "default",
+          "status": "supported",
+          "evidence": "keep full-vector RAG/wiki default"
+        },
+        {
+          "fact": "not_semantic",
+          "status": "supported",
+          "evidence": "Synthetic neighbor agreement is not semantic/production relevance"
+        }
+      ],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": null,
+      "notes": "Required facts directly supported; ancillary context adds retrieval noise without a conflicting claim.",
+      "abstention_evidence": [],
+      "split": "holdout",
+      "answerable": true
+    },
+    {
+      "id": "MQ22",
+      "arm": "memory_rag_fastrp128",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "Historical schema estimates are not billing or current-client measurements"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ22",
+      "arm": "memory_rag_fastrp256",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "Historical schema estimates are not billing or current-client measurements"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ22",
+      "arm": "wiki_hybrid",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "not billing/current client usage"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ22",
+      "arm": "wiki_lexical",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "not billing/current client usage"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ22",
+      "arm": "memory_rag_full",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "Historical schema estimates are not billing or current-client measurements"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ22",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Historical schema percentage is a tempting distractor, explicitly separated from current-client usage; no current native whole-task median is established.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "status": "supported",
+          "evidence": "not billing/current client usage"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "wiki_hybrid",
+      "facts": [],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": false,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. No live model/effort value is supplied, but the packet does not explicitly establish the configured-default versus detected-model distinction. Abstention is prudent yet required supporting evidence is missing.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "memory_rag_full",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Example runtime JSON is explicitly an optional example, not live conversation evidence; configured default is explicitly not detection.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "supported",
+          "evidence": "a configured default is not a detected model"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "wiki_lexical",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": false,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. No live model/effort value is supplied, but the packet does not explicitly establish the configured-default versus detected-model distinction. Abstention is prudent yet required supporting evidence is missing.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "memory_rag_fastrp128",
+      "facts": [],
+      "noise": 3,
+      "contradictions": [],
+      "abstention_supported": false,
+      "notes": "Relevant policy facts absent from this retrieved packet; source references or interpage links alone do not supply them. No live model/effort value is supplied, but the packet does not explicitly establish the configured-default versus detected-model distinction. Abstention is prudent yet required supporting evidence is missing.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "missing",
+          "evidence": ""
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "wiki_relationship_one_hop",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Observation limitations explicitly support withholding a live conversation model/effort; none is supplied.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "supported",
+          "evidence": "configured default is not detection"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    },
+    {
+      "id": "MQ24",
+      "arm": "memory_rag_fastrp256",
+      "facts": [],
+      "noise": 2,
+      "contradictions": [],
+      "abstention_supported": true,
+      "notes": "Example runtime JSON is explicitly an optional example, not live conversation evidence; configured default is explicitly not detection.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "status": "supported",
+          "evidence": "a configured default is not a detected model"
+        }
+      ],
+      "split": "holdout",
+      "answerable": false
+    }
+  ]
+}

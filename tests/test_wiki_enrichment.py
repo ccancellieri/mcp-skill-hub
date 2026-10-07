@@ -22,7 +22,8 @@ def test_wiki_snippets_formats_results(tmp_path, monkeypatch):
         {"slug": "dekadal", "title": "Dekadal Calendar", "body": "10-day periods, D3 lengths."},
     ]})
     cfg = {"wiki_preload_enabled": True, "wiki_enabled": True,
-           "wiki_root": str(tmp_path), "wiki_private_scopes": {}}
+           "wiki_root": str(tmp_path), "wiki_private_scopes": {},
+           "memory_retrieval_backend": "wiki"}
     snips = cli._wiki_context_snippets(object(), cfg, "how do olap dims paginate", top_k=2)
     assert len(snips) == 2
     assert snips[0].startswith("Wiki [[olap-dims]] OLAP Dimensions:")
@@ -63,7 +64,8 @@ def test_wiki_snippets_works_with_one_arg_config_module(tmp_path, monkeypatch):
         {"slug": "olap-dims", "title": "OLAP Dimensions", "body": "Paginated cube dims."},
     ]})
     cfg = _ModuleCfg({"wiki_preload_enabled": True, "wiki_enabled": True,
-                      "wiki_root": str(tmp_path), "wiki_private_scopes": {}})
+                      "wiki_root": str(tmp_path), "wiki_private_scopes": {},
+                      "memory_retrieval_backend": "wiki"})
     snips = cli._wiki_context_snippets(object(), cfg, "olap dims", top_k=1)
     assert len(snips) == 1
     assert snips[0].startswith("Wiki [[olap-dims]] OLAP Dimensions:")
@@ -76,5 +78,6 @@ def test_wiki_snippets_swallows_query_error(tmp_path, monkeypatch):
         raise RuntimeError("embed backend down")
 
     monkeypatch.setattr(_wiki, "query", _boom)
-    cfg = {"wiki_preload_enabled": True, "wiki_enabled": True, "wiki_root": str(tmp_path)}
+    cfg = {"wiki_preload_enabled": True, "wiki_enabled": True, "wiki_root": str(tmp_path),
+           "memory_retrieval_backend": "wiki"}
     assert cli._wiki_context_snippets(object(), cfg, "q") == []

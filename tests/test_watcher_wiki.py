@@ -14,6 +14,12 @@ import pytest
 from skill_hub.watcher import _WikiVaultHandler, _MIN_REINDEX_INTERVAL, _IGNORE_PATH_PARTS
 
 
+@pytest.fixture(autouse=True)
+def _select_wiki_backend(monkeypatch):
+    monkeypatch.setattr("skill_hub.memory_routing.selected_memory_backend",
+                        lambda cfg=None: "wiki")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -255,3 +261,16 @@ def test_do_reindex_logs_failure_on_exception():
 
     assert not handler._busy, "_busy must be cleared even on failure"
     assert any("wiki reindex failed" in l for l in log_lines)
+
+
+def test_do_reindex_skips_when_raw_backend_selected(monkeypatch):
+    monkeypatch.setattr("skill_hub.memory_routing.selected_memory_backend",
+                        lambda cfg=None: "raw")
+    handler = _WikiVaultHandler(delay=0.01)
+    handler._pending_changed.add(Path("/wiki/page.md"))
+    called = []
+    with patch("skill_hub.wiki.reindex_paths", lambda *a, **k: called.append(True)):
+        with patch("skill_hub.store.SkillStore") as MockStore:
+            handler._do_reindex()
+    assert not called
+    MockStore.assert_not_called()

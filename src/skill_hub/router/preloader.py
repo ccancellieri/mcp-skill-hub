@@ -238,9 +238,12 @@ def _gather_context(
         # ── Source D: wiki knowledge layer ───────────────────────────────────
         # Query the hybrid wiki index for pages relevant to the thin prompt.
         # Injected as a compact title+snippet block; never raises (fail-open).
-        # Gated by wiki_preload_enabled (default True) and wiki_enabled.
+        # Gated by the selected backend and the existing wiki preload switches.
         try:
-            if cfg.get("wiki_preload_enabled", True) and cfg.get("wiki_enabled", True):
+            from ..memory_routing import selected_memory_backend
+            if (selected_memory_backend(cfg) == "wiki"
+                    and cfg.get("wiki_preload_enabled", True)
+                    and cfg.get("wiki_enabled", True)):
                 from pathlib import Path as _Path
                 from .. import wiki as _wiki
 

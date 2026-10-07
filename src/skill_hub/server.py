@@ -1843,6 +1843,13 @@ def search_context(
     show_all = "all" in cats
 
     parts: list[str] = ["<!-- search_context mode=vector -->"]
+    from .memory_routing import selected_memory_backend
+    memory_backend = selected_memory_backend(_cfg)
+    if memory_backend is None:
+        parts.append(
+            "## Project Memory Omitted\n\n"
+            "memory_retrieval_backend must be 'raw' or 'wiki'; neither source was queried."
+        )
 
     # 1. Open tasks
     if show_all or "tasks" in cats:
@@ -1906,8 +1913,9 @@ def search_context(
                             _wpath.home() / ".claude" / "mcp-skill-hub" / "wiki")
         _wiki_auth = _wiki_authorized_scopes()
         _wiki_ns = ["wiki"] + (["wiki-private"] if _wiki_auth else [])
-        _wiki_hits = _store.search_vectors(
-            query, namespaces=_wiki_ns, top_k=top_k * 2
+        _wiki_hits = (
+            _store.search_vectors(query, namespaces=_wiki_ns, top_k=top_k * 2)
+            if memory_backend == "wiki" else []
         )
         if _wiki_hits:
             # Promote index.md / slug=="index" hits to front.
@@ -1956,15 +1964,32 @@ def search_context(
     # Wiki namespaces are excluded here — they are surfaced in section 5 above.
     if include_plugin_memory:
         try:
-            # Namespaces that are NOT core ("skills") — everything else is plugin/memory.
-            all_rows = _store.search_vectors(query, namespaces=None, top_k=top_k * 2)
+            # Search only plugin-owned namespaces. Fetching every namespace and
+            # filtering afterward would still query the unselected memory store.
+            memory_namespaces: set[str] = set()
+            if memory_backend != "raw":
+                from .memory_index import declared_plugin_memory_namespaces
+                memory_namespaces = declared_plugin_memory_namespaces()
+            plugin_namespaces = [
+                row[0] for row in _store._conn.execute(
+                    "SELECT DISTINCT namespace FROM vectors"
+                ).fetchall()
+                if str(row[0]) != "skills"
+                and not str(row[0]).startswith(("user:", "habits:", "session:"))
+                and str(row[0]) not in ("wiki", "wiki-private")
+                and not (memory_backend != "raw" and (
+                    str(row[0]).startswith("memory:")
+                    or str(row[0]) in memory_namespaces
+                ))
+            ]
+            all_rows = (
+                _store.search_vectors(query, namespaces=plugin_namespaces,
+                                      top_k=top_k * 2)
+                if plugin_namespaces else []
+            )
             mem_rows = [
                 r for r in all_rows
-                if str(r.get("namespace", "")) != "skills"
-                and not str(r.get("namespace", "")).startswith("user:")
-                and not str(r.get("namespace", "")).startswith("habits:")
-                and not str(r.get("namespace", "")).startswith("session:")
-                and str(r.get("namespace", "")) not in ("wiki", "wiki-private")
+                if r.get("namespace") in plugin_namespaces
             ][:top_k]
             if mem_rows:
                 mem_lines = []

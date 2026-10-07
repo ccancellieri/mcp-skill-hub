@@ -300,6 +300,10 @@ class _WikiVaultHandler:
             from . import config as _cfg
             from . import wiki as _wiki
             from .store import SkillStore
+            from .memory_routing import selected_memory_backend
+
+            if selected_memory_backend(_cfg) != "wiki":
+                return
 
             wiki_root = Path(str(_cfg.get("wiki_root") or
                                  Path.home() / ".claude" / "mcp-skill-hub" / "wiki")).expanduser()

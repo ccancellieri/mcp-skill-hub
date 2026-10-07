@@ -2099,9 +2099,12 @@ def _wiki_context_snippets(store, cfg, query_text: str, *,
     ``wiki_preload_enabled`` + ``wiki_enabled``.
     """
     try:
+        from .memory_routing import selected_memory_backend
+
         # One-arg ``.get`` matches both call sites: ``_cfg`` is the config
         # module (one-arg ``get`` with _DEFAULTS-backed True), not a dict.
-        if not (cfg.get("wiki_preload_enabled") and cfg.get("wiki_enabled")):
+        if (selected_memory_backend(cfg) != "wiki"
+                or not (cfg.get("wiki_preload_enabled") and cfg.get("wiki_enabled"))):
             return []
         from pathlib import Path as _Path
 

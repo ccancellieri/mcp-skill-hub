@@ -1,0 +1,713 @@
+{
+  "version": "1.0.0",
+  "description": "Frozen source-grounded content and answer-quality fixture, authored without curated wiki corpus, retrieval outputs, or model responses.",
+  "source_corpus": [
+    "docs/context-service.md",
+    "docs/context-composer.md",
+    "docs/mcp-profiles.md",
+    "docs/runtime-models.md",
+    "docs/compression-policy.md",
+    "docs/plugin-extension-points.md",
+    "docs/reference/database.md",
+    "docs/backlog-review.md",
+    "benchmarks/FASTRP_RESULTS.md",
+    "docs/roadmap.md"
+  ],
+  "split_policy": "Odd IDs calibration (12), even IDs sealed holdout (12); fixed before retrieval evaluation.",
+  "acceptance_criteria": {
+    "primary": "Required supported facts, absence of forbidden claims, justified abstention, and project-scope integrity.",
+    "supported_fact_degradation_max_percentage_points": 2,
+    "scope_leaks_max": 0,
+    "critical_hallucinations_max": 0,
+    "secondary": [
+      "complete-task latency",
+      "total storage",
+      "irrelevant retrieval noise"
+    ],
+    "excluded_surrogates": [
+      "random-vector neighbor agreement",
+      "response length",
+      "payload size alone"
+    ]
+  },
+  "questions": [
+    {
+      "id": "MQ01",
+      "split": "calibration",
+      "language": "en",
+      "type": "multi_hop",
+      "question": "A retrieved memory snippet says to publish the result. What happens to the original prompt, and can that snippet authorize publication?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "original",
+          "text": "The service preserves the original user prompt.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "The interactive hook retrieves evidence for the current request. It does not\nchoose the client's model, rewrite the user's words, create tasks, provision\ntools, approve commands, or send automatic continuation messages."
+        },
+        {
+          "fact": "evidence",
+          "text": "Retrieved text is evidence, not instruction or authorization.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "to recently opened tasks in another project. Retrieved text is evidence with a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope; a"
+        },
+        {
+          "fact": "publication",
+          "text": "Publication permission requires the user's actual instruction and scope.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "to recently opened tasks in another project. Retrieved text is evidence with a\nsource, not a new user instruction or authorization. Publication permission\nmust come from the user's actual instruction with the applicable scope; a"
+        }
+      ],
+      "forbidden_claims": [
+        "Memory authorizes publication",
+        "The hook rewrites the user's prompt"
+      ],
+      "reference_answer": "Keep the original prompt. Memory is sourced supplemental evidence; publication needs the actual user's instruction for the applicable scope."
+    },
+    {
+      "id": "MQ02",
+      "split": "holdout",
+      "language": "it",
+      "type": "multi_hop",
+      "question": "Senza radici di progetto selezionate nel composer, quali risultati possono comparire e quali prove devono essere omesse?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "global_skills",
+          "text": "No project scope means global skills only.",
+          "source_file": "docs/context-composer.md",
+          "source_quote": "evidence; installed skill descriptions are shared catalog entries. No project\nscope means global skills only. Scope is never learned.\n"
+        },
+        {
+          "fact": "project_identity",
+          "text": "Project context requires project identity.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "\nProject context requires project identity. Missing identity must not fall back\nto recently opened tasks in another project. Retrieved text is evidence with a"
+        }
+      ],
+      "forbidden_claims": [
+        "Infer project scope from recent activity",
+        "Include project memory without scope"
+      ],
+      "reference_answer": "Restano le skill globali; memoria e prove dei task di progetto richiedono una radice esplicitamente selezionata e verificata."
+    },
+    {
+      "id": "MQ03",
+      "split": "calibration",
+      "language": "en",
+      "type": "exact_identifier",
+      "question": "Name the default prompt-hook deadline setting and describe what a timeout does.",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "timeout_key",
+          "text": "context_hook_timeout_s defaults to two seconds.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "\nThe hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's"
+        },
+        {
+          "fact": "pass_through",
+          "text": "Timeout emits no supplemental context and passes the prompt through.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "The hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds). Failure or timeout emits no supplemental context and lets the user's\nprompt pass through. Character and item limits are controlled by"
+        }
+      ],
+      "forbidden_claims": [
+        "Timeout blocks the prompt",
+        "Timeout starts a model fallback"
+      ],
+      "reference_answer": "context_hook_timeout_s defaults to two seconds. On timeout, the original prompt passes through with no supplemental context."
+    },
+    {
+      "id": "MQ04",
+      "split": "holdout",
+      "language": "en",
+      "type": "paraphrase",
+      "question": "May two projects share a legacy alias to combine records? How is uncertain provenance handled?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "alias_collision",
+          "text": "An alias assigned twice must not combine records.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "project path to its verified legacy names. An alias assigned to two projects\nmust not be used to combine their records. Missing or ambiguous provenance is\nreported as an omission, not guessed from a directory basename."
+        },
+        {
+          "fact": "omission",
+          "text": "Ambiguous provenance is an omission, not a basename guess.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "must not be used to combine their records. Missing or ambiguous provenance is\nreported as an omission, not guessed from a directory basename.\n"
+        }
+      ],
+      "forbidden_claims": [
+        "Combine the two projects",
+        "Guess from basename"
+      ],
+      "reference_answer": "No. A shared alias must not combine project records; ambiguous or missing provenance is reported as an omission."
+    },
+    {
+      "id": "MQ05",
+      "split": "calibration",
+      "language": "en",
+      "type": "freshness",
+      "question": "Does the broader SQLite skill shortlist and Qwen reranker currently run in the foreground hook, and did direct injection help?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "offline",
+          "text": "The broader shortlist and Qwen reranker are not enabled in foreground.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "\nThat broader shortlist and the Qwen reranker are not enabled in the foreground\nservice, hook, composer, or MCP server. Independent evaluation found that directly"
+        },
+        {
+          "fact": "negative_result",
+          "text": "Direct broader-list injection increased irrelevant context.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "service, hook, composer, or MCP server. Independent evaluation found that directly\ninjecting the broader list increased irrelevant context. The existing foreground\nretrieval remains in place. The experimental metadata scan costs more as the"
+        }
+      ],
+      "forbidden_claims": [
+        "Qwen reranks the live hook",
+        "Direct injection improved relevance"
+      ],
+      "reference_answer": "No. They remain outside the foreground hook; injecting the broader list increased irrelevant context."
+    },
+    {
+      "id": "MQ06",
+      "split": "holdout",
+      "language": "it",
+      "type": "multi_hop",
+      "question": "Se una sorgente indicizzata cambia dopo la bozza del composer, il corpo inviato dal client può convalidare la selezione?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "stale",
+          "text": "Changed or missing indexed sources require new selection.",
+          "source_file": "docs/context-composer.md",
+          "source_quote": "The server stores references and source fingerprints. Expansion and composition\nrevalidate indexed sources; changed or missing sources require a new selection.\nPosted source bodies cannot replace verified evidence. Refreshing a file on disk"
+        },
+        {
+          "fact": "posted",
+          "text": "Posted source bodies cannot replace verified evidence.",
+          "source_file": "docs/context-composer.md",
+          "source_quote": "revalidate indexed sources; changed or missing sources require a new selection.\nPosted source bodies cannot replace verified evidence. Refreshing a file on disk\nstill requires the existing indexing workflow before the index reflects it."
+        }
+      ],
+      "forbidden_claims": [
+        "Accept the posted body as verified",
+        "Use the stale snapshot"
+      ],
+      "reference_answer": "No. Serve una nuova selezione dopo la verifica della sorgente indicizzata; il corpo inviato non sostituisce la prova."
+    },
+    {
+      "id": "MQ07",
+      "split": "calibration",
+      "language": "en",
+      "type": "multi_hop",
+      "question": "Is JSON whitespace compaction equivalent in fidelity to selecting and truncating an excerpt?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "json_fidelity",
+          "text": "JSON compaction preserves strings, duplicate keys and numeric spelling.",
+          "source_file": "docs/context-composer.md",
+          "source_quote": "Exact duplicate removal and JSON whitespace compaction are deterministic.\nJSON compaction preserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic"
+        },
+        {
+          "fact": "excerpt_loss",
+          "text": "Passage selection and truncation are lossy.",
+          "source_file": "docs/context-composer.md",
+          "source_quote": "JSON compaction preserves strings, duplicate keys, and numeric spelling.\nPassage selection and budget truncation are marked as lossy; no semantic\nequivalence is claimed. A skill initially contributes its description rather"
+        },
+        {
+          "fact": "determinism",
+          "text": "Determinism does not imply losslessness.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "Selection, excerpts and truncation are also lossy even when deterministic.\nNever describe a transformation as lossless merely because it makes no model\ncall. A recovery marker is usable only if the corresponding original was"
+        }
+      ],
+      "forbidden_claims": [
+        "All deterministic transforms are lossless",
+        "An excerpt is equivalent to its full source"
+      ],
+      "reference_answer": "No. JSON whitespace compaction preserves lexical content, including strings, duplicate keys and numeric spelling. Excerpt selection and truncation are lossy."
+    },
+    {
+      "id": "MQ08",
+      "split": "holdout",
+      "language": "en",
+      "type": "exact_identifier",
+      "question": "Which MCP profile starts by default, and how many tools does minimal advertise?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "full_default",
+          "text": "Full is the server default.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "\nThe `skill-hub` server starts with the **full** MCP tool profile by default.\nExisting client configurations therefore keep their current tool surface."
+        },
+        {
+          "fact": "minimal_eight",
+          "text": "Minimal advertises eight tools.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "\nThe minimal profile advertises these eight tools:\n"
+        }
+      ],
+      "forbidden_claims": [
+        "Minimal starts by default",
+        "Minimal has 87 tools"
+      ],
+      "reference_answer": "Full starts by default; minimal advertises eight tools."
+    },
+    {
+      "id": "MQ09",
+      "split": "calibration",
+      "language": "en",
+      "type": "exact_identifier",
+      "question": "What does index_skills_text index, and does it embed or index project memory?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "skill_text",
+          "text": "The command scans SKILL.md files for keyword text search without an embedding call.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "Repeat `--skill-dir` to include additional directories. This command scans only\ntheir `SKILL.md` files, stores text for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers."
+        },
+        {
+          "fact": "no_memory",
+          "text": "The command does not index project memory.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "their `SKILL.md` files, stores text for keyword search, and makes no embedding\ncall. It does not index project memory, install hooks or modify providers.\nExisting vector-backed rows are not replaced with changed text and stale"
+        }
+      ],
+      "forbidden_claims": [
+        "It embeds project memory",
+        "It installs hooks"
+      ],
+      "reference_answer": "It indexes SKILL.md text from explicitly chosen skill directories for keyword search. It makes no embedding call and does not index project memory."
+    },
+    {
+      "id": "MQ10",
+      "split": "holdout",
+      "language": "it",
+      "type": "exact_identifier",
+      "question": "Per un batch a expand_context_candidate, quanti ID unici si possono chiedere e cosa accade se una sorgente è obsoleta?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "batch_limit",
+          "text": "The list accepts one to six unique IDs.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "\n`expand_context_candidate` accepts one ID or a list of one to six unique IDs.\nThe list form returns `{ \"draft_id\": \"...\", \"items\": [...] }`, in request"
+        },
+        {
+          "fact": "atomic",
+          "text": "A stale reference rejects the whole request.",
+          "source_file": "docs/mcp-profiles.md",
+          "source_quote": "compatible. Every source is revalidated before a batch is returned; an unknown,\nout-of-scope or stale reference rejects the whole request. Batches exceeding\n100,000 source-text characters are rejected with instructions to request fewer"
+        }
+      ],
+      "forbidden_claims": [
+        "Silently skip the stale source",
+        "No ID limit"
+      ],
+      "reference_answer": "Da uno a sei ID unici. Una fonte obsoleta fa rifiutare l'intera richiesta."
+    },
+    {
+      "id": "MQ11",
+      "split": "calibration",
+      "language": "en",
+      "type": "multi_hop",
+      "question": "The same model ID occurs under two providers. How should an explicit request choose one, and what if it is unavailable?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "qualified_id",
+          "text": "Ambiguous IDs need provider-name::model-id.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "\nUse `provider-name::model-id` when an ID occurs in multiple provider records.\nThe provider name selects endpoint and credentials; the stored model ID is sent"
+        },
+        {
+          "fact": "pinned_error",
+          "text": "An unavailable pinned backend errors instead of switching.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "overrides remain supported. An explicit model argument or provider-qualified\ntier value is pinned: an unavailable backend produces an error instead of\nsilently switching providers. Existing automatic escalation still applies to"
+        }
+      ],
+      "forbidden_claims": [
+        "Pick any provider silently",
+        "Silently switch providers for pinned request"
+      ],
+      "reference_answer": "Use provider-name::model-id; the provider selects endpoint and credentials. An unavailable explicitly pinned backend produces an error."
+    },
+    {
+      "id": "MQ12",
+      "split": "holdout",
+      "language": "en",
+      "type": "paraphrase",
+      "question": "Discover shows a gateway model with no price. Does that prove it is free, eligible, or enabled?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "not_eligible",
+          "text": "Advertised IDs do not establish routability or eligibility.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "then proposes IDs absent from its registry entry. An advertised ID does not\nestablish that it is routable or eligible for the configured account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing"
+        },
+        {
+          "fact": "not_enabled",
+          "text": "Discovery does not save or enable models.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "establish that it is routable or eligible for the configured account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and"
+        },
+        {
+          "fact": "not_free",
+          "text": "Missing price does not imply free access.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "does not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and\n256 KiB, with truncation reported."
+        }
+      ],
+      "forbidden_claims": [
+        "It is free",
+        "It is eligible",
+        "Discovery enabled it"
+      ],
+      "reference_answer": "No. Discovery previews an advertised ID but does not establish routability, eligibility or cost and does not save or enable it."
+    },
+    {
+      "id": "MQ13",
+      "split": "calibration",
+      "language": "it",
+      "type": "multi_hop",
+      "question": "Modello ed effort riportati dalla sessione del client cambiano il provider del server o concedono permessi?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "separate",
+          "text": "Connecting a client does not change server model setup or credentials.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "local models (L1) and remote API models (L2). Connecting Codex, Claude, Pi, or\nOpenClaw does not change the server's model configuration or supply API credentials.\nThe prompt hook remains deterministic and keeps its existing two-second deadline."
+        },
+        {
+          "fact": "reported",
+          "text": "Normal tool arguments are caller-reported evidence.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "\nNormal tool arguments are caller-reported evidence. MCP client information can\nidentify a client implementation, but does not establish the conversation's model"
+        },
+        {
+          "fact": "no_permission",
+          "text": "Observations are not permission decisions.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "Model changes discard stale display names, providers and effort values.\nThese observations are for display and diagnosis, never for permission decisions.\n"
+        }
+      ],
+      "forbidden_claims": [
+        "Session data switches server providers",
+        "Reported effort grants approval"
+      ],
+      "reference_answer": "No. Sono osservazioni del chiamante per visualizzazione e diagnosi; non cambiano configurazione o credenziali del server e non decidono i permessi."
+    },
+    {
+      "id": "MQ14",
+      "split": "holdout",
+      "language": "en",
+      "type": "paraphrase",
+      "question": "Can a repetition marker alone recover exact output after allow_lossy=True log-line collapse?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "log_lines",
+          "text": "Only recognized log-level lines are eligible for collapse.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "A caller can explicitly request repeated-log-line collapse with\n`allow_lossy=True`. Only recognized log-level lines are eligible; code-like,\nJSON-like and repetition-marker-bearing input is excluded. This transform is"
+        },
+        {
+          "fact": "not_exact",
+          "text": "A repetition count does not recover exact output.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "JSON-like and repetition-marker-bearing input is excluded. This transform is\nreported as `lossy=True`: a repetition count is not an exact recovery format.\nIt does not automatically store the original. Keep it disabled when exact"
+        },
+        {
+          "fact": "not_stored",
+          "text": "The transform does not automatically store the original.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "reported as `lossy=True`: a repetition count is not an exact recovery format.\nIt does not automatically store the original. Keep it disabled when exact\noutput is required or the caller has no original to recover."
+        }
+      ],
+      "forbidden_claims": [
+        "Marker is exact recovery",
+        "Original is automatically stored"
+      ],
+      "reference_answer": "No. The transformation is lossy; the count is not an exact recovery format and the original is not automatically stored."
+    },
+    {
+      "id": "MQ15",
+      "split": "calibration",
+      "language": "it",
+      "type": "multi_hop",
+      "question": "Quando una fonte testuale dovrebbe essere inviata come immagine invece che come testo?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "text_default",
+          "text": "Bounded verbatim text with metadata is the portable default.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "\nFor textual sources, select bounded, verbatim passages with source metadata and\nsend them as text. This is the portable default across providers and clients."
+        },
+        {
+          "fact": "image_condition",
+          "text": "Images fit inherently visual sources or measured provider-specific tradeoffs.",
+          "source_file": "docs/compression-policy.md",
+          "source_quote": "\nUse an image when the source is inherently visual, or when a comparison on the\nsame selected passages shows a useful accuracy/cost tradeoff for the specific"
+        }
+      ],
+      "forbidden_claims": [
+        "Rasterized text is default",
+        "Image byte size predicts billed tokens"
+      ],
+      "reference_answer": "Il testo verbatim con metadati è predefinito. L'immagine è giustificata per una fonte intrinsecamente visiva o da un confronto sugli stessi passaggi che mostri un utile compromesso accuratezza/costo per quel provider, modello e client."
+    },
+    {
+      "id": "MQ16",
+      "split": "holdout",
+      "language": "en",
+      "type": "multi_hop",
+      "question": "How does preferred plugin per-index memory routing differ from legacy flat reads?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "m2_named",
+          "text": "Each per-index entry embeds files in a named namespace at its declared level.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "\nEach index entry embeds its glob-matched files into a named namespace at the\ndeclared level. Chunk settings come from the matching `vector_index_config` row"
+        },
+        {
+          "fact": "legacy_l2",
+          "text": "Legacy reads land in memory:<plugin_name> at L2.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "\nLegacy reads land in `memory:<plugin_name>` at level L2.\n"
+        }
+      ],
+      "forbidden_claims": [
+        "Legacy reads preserve per-index levels",
+        "M2 ignores namespaces"
+      ],
+      "reference_answer": "Per-index routing assigns matched files a named namespace and declared level. Legacy flat reads go to memory:<plugin_name> at L2."
+    },
+    {
+      "id": "MQ17",
+      "split": "calibration",
+      "language": "it",
+      "type": "exact_identifier",
+      "question": "Nel database scoped del plugin, quale prefisso di tabella è richiesto e si possono modificare le tabelle core?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "prefix",
+          "text": "Schema tables must use plugin_{namespace}_*.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "`storage/schema.sql` must contain only\n`CREATE TABLE IF NOT EXISTS plugin_{namespace}_*` (and matching `CREATE INDEX`)\nstatements. Applied on first `store.plugin_db(\"mynamespace\")` call per-process;"
+        },
+        {
+          "fact": "core_write",
+          "text": "Writes to non-plugin tables raise PermissionError.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "rows = db.fetch_all(\"SELECT id, title FROM tasks WHERE status='open'\")\n# But writes to non-plugin_* tables raise PermissionError.\n```"
+        }
+      ],
+      "forbidden_claims": [
+        "Any prefix works",
+        "Core table writes are allowed"
+      ],
+      "reference_answer": "Le tabelle dello schema devono usare plugin_{namespace}_* con indici corrispondenti. Le tabelle core si possono leggere per correlazione, ma scriverle genera PermissionError."
+    },
+    {
+      "id": "MQ18",
+      "split": "holdout",
+      "language": "en",
+      "type": "exact_identifier",
+      "question": "What timeout applies to synchronous plugin hook handlers, and what happens to asynchronous output?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "sync_timeout",
+          "text": "Synchronous handlers time out after ten seconds.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "Each handler script receives a JSON payload on stdin and may emit JSON on\nstdout. Sync handlers run with a 10-second timeout; async handlers fire on a\nbackground thread and their output is discarded. Non-zero exits are logged"
+        },
+        {
+          "fact": "async_output",
+          "text": "Async handler output is discarded.",
+          "source_file": "docs/plugin-extension-points.md",
+          "source_quote": "stdout. Sync handlers run with a 10-second timeout; async handlers fire on a\nbackground thread and their output is discarded. Non-zero exits are logged\nbut never propagate. Kill-switch: `PLUGIN_HOOKS_DISABLED=1`. Dispatch is"
+        }
+      ],
+      "forbidden_claims": [
+        "Async output supplies vetoes",
+        "Sync handlers have no timeout"
+      ],
+      "reference_answer": "Synchronous handlers have a 10-second timeout. Async handlers run on a background thread and their output is discarded."
+    },
+    {
+      "id": "MQ19",
+      "split": "calibration",
+      "language": "en",
+      "type": "freshness",
+      "question": "The database reference lists an interceptions table. Does that mean automatic task interception still runs in the current prompt hook?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "historical_table",
+          "text": "The database reference lists an interceptions log table.",
+          "source_file": "docs/reference/database.md",
+          "source_quote": "| `interceptions` | Hook-intercepted command log for token profiling |"
+        },
+        {
+          "fact": "retired_hook",
+          "text": "Automatic task interception and session task creation hooks are retired.",
+          "source_file": "docs/context-service.md",
+          "source_quote": "Automatic task interception and session task creation hooks are also\nretired."
+        },
+        {
+          "fact": "roadmap_status",
+          "text": "The roadmap identifies generic task interception as retired behavior.",
+          "source_file": "docs/roadmap.md",
+          "source_quote": "Generic task interception, automatic continuation, inferred approvals and\nhook-driven model switching have been retired."
+        }
+      ],
+      "forbidden_claims": [
+        "The interceptions table proves the task hook is active.",
+        "The prompt hook still creates tasks automatically."
+      ],
+      "reference_answer": "No. The reference records an interceptions table for token profiling, but the current context-service and roadmap documents say automatic task interception has been retired."
+    },
+    {
+      "id": "MQ20",
+      "split": "holdout",
+      "language": "it",
+      "type": "multi_hop",
+      "question": "FastRP è ora la ricerca predefinita per memoria e wiki? Quale risultato del benchmark ha pesato sulla decisione?",
+      "answerable": true,
+      "required_facts": [
+        {
+          "fact": "storage",
+          "text": "Total SQLite storage grew 48.1 percent.",
+          "source_file": "benchmarks/FASTRP_RESULTS.md",
+          "source_quote": "Retrieval payload shrank **67.0%** and median latency fell **63.2%**. Total\nSQLite storage grew **48.1%** because full originals are retained. Neighbor\nrecall dropped **87 percentage points** on this high-dimensional stress"
+        },
+        {
+          "fact": "recall",
+          "text": "Neighbor recall dropped 87 percentage points.",
+          "source_file": "benchmarks/FASTRP_RESULTS.md",
+          "source_quote": "SQLite storage grew **48.1%** because full originals are retained. Neighbor\nrecall dropped **87 percentage points** on this high-dimensional stress\nfixture. Batch projection took about 3.5 ms; query timings include projection."
+        },
+        {
+          "fact": "default",
+          "text": "Full-vector retrieval remains default for RAG and wiki.",
+          "source_file": "docs/backlog-review.md",
+          "source_quote": "fixture loses substantial neighbor agreement. Keep full-vector retrieval as\nthe default for RAG and wiki. Canonical markdown and raw source text remain\nauthoritative. See [projection qualification](../benchmarks/FASTRP_RESULTS.md)."
+        },
+        {
+          "fact": "not_semantic",
+          "text": "Synthetic neighbor agreement is not semantic relevance.",
+          "source_file": "benchmarks/FASTRP_RESULTS.md",
+          "source_quote": "≥50% smaller total storage or <2 percentage points recall loss**. Synthetic\nneighbor agreement is not semantic relevance or a production-corpus result.\nTimings vary with hardware and system load. Repeat with representative,"
+        }
+      ],
+      "forbidden_claims": [
+        "FastRP is default",
+        "Synthetic recall proves answer quality",
+        "Total storage halved"
+      ],
+      "reference_answer": "No. La ricerca full-vector resta predefinita. Nel test sintetico lo storage SQLite è cresciuto del 48,1% e la recall dei vicini è diminuita di 87 punti percentuali; ciò non misura la qualità delle risposte."
+    },
+    {
+      "id": "MQ21",
+      "split": "calibration",
+      "language": "it",
+      "type": "unanswerable",
+      "question": "Qual è il prezzo esatto e l'idoneità attuale di un modello appena apparso nel catalogo del gateway configurato?",
+      "answerable": false,
+      "required_facts": [],
+      "forbidden_claims": [
+        "Invent exact price",
+        "Assume advertised means eligible or free"
+      ],
+      "reference_answer": "I documenti non stabiliscono prezzo esatto o idoneità attuale: il catalogo è solo un'anteprima.",
+      "abstention_evidence": [
+        {
+          "fact": "unknown",
+          "text": "Availability and cost remain unknown.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "establish that it is routable or eligible for the configured account. Discovery\ndoes not save or enable models. Availability and cost remain unknown; a missing\nprice does not imply free access. Catalogs are capped at 1,000 entries and"
+        }
+      ]
+    },
+    {
+      "id": "MQ22",
+      "split": "holdout",
+      "language": "en",
+      "type": "unanswerable",
+      "question": "What median total-task token reduction does minimal MCP achieve in the user's current native client?",
+      "answerable": false,
+      "required_facts": [],
+      "forbidden_claims": [
+        "Use historical schema-token reduction as task saving",
+        "Invent current-client median"
+      ],
+      "reference_answer": "The docs do not report that current native-client whole-task measurement.",
+      "abstention_evidence": [
+        {
+          "fact": "pending",
+          "text": "Current native-client whole-task evaluation remains pending.",
+          "source_file": "docs/backlog-review.md",
+          "source_quote": "| [#152](https://github.com/ccancellieri/mcp-skill-hub/issues/152) — Whole-task value | Tracked offline studies and bounded native qualification machinery retain negative results. | Preregistered real-task study meeting at least 15% median paired total-token reduction without correctness loss. Payload size and query latency cannot substitute for complete-task usage. |\n| [#156](https://github.com/ccancellieri/mcp-skill-hub/issues/156) — MCP overhead | Full and static minimal profiles are integrated. The frozen historical schema report measured 87 to 8 tools and 92.41% fewer serialized schema tokens. | Current native-client capability/selection checks and whole-task evaluation, including discovery overhead. Historical schema estimates are not billing or current-client measurements. |\n| [#157](https://github.com/ccancellieri/mcp-skill-hub/issues/157) — Compression fidelity | Lexical JSON compaction preserves duplicate members, numeric spellings, strings, and escapes; UTF-8 byte accounting is tested. | Update stale integration status and separately qualify any bounded recoverable command-output filter. That optional filter remains deferred. |"
+        }
+      ]
+    },
+    {
+      "id": "MQ23",
+      "split": "calibration",
+      "language": "en",
+      "type": "unanswerable",
+      "question": "What percentage change in answer correctness occurs in the user's current corpus after enabling 128-dimensional FastRP?",
+      "answerable": false,
+      "required_facts": [],
+      "forbidden_claims": [
+        "Convert synthetic neighbor recall to answer correctness",
+        "Invent project-corpus percentage"
+      ],
+      "reference_answer": "The docs do not measure answer correctness on the user's corpus under FastRP; they report synthetic neighbor recall.",
+      "abstention_evidence": [
+        {
+          "fact": "synthetic",
+          "text": "Synthetic neighbor agreement is not semantic relevance.",
+          "source_file": "benchmarks/FASTRP_RESULTS.md",
+          "source_quote": "≥50% smaller total storage or <2 percentage points recall loss**. Synthetic\nneighbor agreement is not semantic relevance or a production-corpus result.\nTimings vary with hardware and system load. Repeat with representative,"
+        }
+      ]
+    },
+    {
+      "id": "MQ24",
+      "split": "holdout",
+      "language": "it",
+      "type": "unanswerable",
+      "question": "Quale modello e quale effort usa proprio adesso il client Codex in questa conversazione?",
+      "answerable": false,
+      "required_facts": [],
+      "forbidden_claims": [
+        "Infer live model from server configuration",
+        "Treat example runtime JSON as live data"
+      ],
+      "reference_answer": "I documenti descrivono le osservazioni possibili, ma non riportano il modello o l'effort di questa conversazione.",
+      "abstention_evidence": [
+        {
+          "fact": "not_detected",
+          "text": "Configured default is not detected session model.",
+          "source_file": "docs/runtime-models.md",
+          "source_quote": "client, model, effort and the origin of those values. Missing metadata is shown as\n“Not reported”; a configured default is not a detected model. Effort names are\nkept in their native format instead of mapping them onto Claude tiers."
+        }
+      ]
+    }
+  ]
+}

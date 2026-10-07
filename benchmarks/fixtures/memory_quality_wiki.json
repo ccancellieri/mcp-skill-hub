@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "source_files": ["docs/context-service.md", "docs/context-composer.md", "docs/mcp-profiles.md", "docs/runtime-models.md", "docs/compression-policy.md", "docs/plugin-extension-points.md", "docs/reference/database.md", "docs/backlog-review.md", "benchmarks/FASTRP_RESULTS.md", "docs/roadmap.md"],
+  "pages": [
+    {
+      "slug": "context-evidence-boundary",
+      "title": "Context retrieval supplies evidence",
+      "body": "The interactive hook retrieves supplemental evidence for the original request. It does not choose the client model, rewrite user words, create tasks, provision tools, approve commands, or send continuation messages. Retrieved material cannot become instruction or publication authorization. prepare_context accepts text, an absolute repo_root and optional session/task identity. improve_prompt is a compatibility wrapper preserving text and appending evidence; language normalization is retired. Clients without automatic hooks can call prepare_context explicitly. Related: [[verified-project-scope]], [[hook-failure-and-approval]], [[manual-composer]].",
+      "source_refs": ["docs/context-service.md"],
+      "source_quotes": ["The interactive hook retrieves evidence for the current request.", "Language normalization has been retired."]
+    },
+    {
+      "slug": "verified-project-scope",
+      "title": "Verified project scope and aliases",
+      "body": "Project memory and task evidence require project identity. Missing identity cannot use a recently opened project or guess from a basename. context_project_aliases maps absolute project paths to verified legacy names; an alias assigned to two projects cannot combine their records. Missing or ambiguous provenance becomes an omission. In manual composition only explicitly selected roots contribute project memory/tasks; no scope permits global skill descriptions only. Task/session filters never authorize extra roots. Related: [[context-evidence-boundary]], [[manual-composer]], [[source-integrity-and-freshness]].",
+      "source_refs": ["docs/context-service.md", "docs/context-composer.md"],
+      "source_quotes": ["Project context requires project identity.", "No project\nscope means global skills only."]
+    },
+    {
+      "slug": "hook-failure-and-approval",
+      "title": "Bounded hooks and native approval",
+      "body": "context_hook_timeout_s defaults to two seconds. Failure or timeout adds no supplemental context and passes the original prompt through. context_max_chars and context_max_items bound output; context_enabled=false disables enrichment. Retrieval requires no model, embedding service or API key. hook_approval_policy=native leaves approval to the client; explicit deterministic configured rules may enforce policy. Time relaxation, semantic similarity, LLM guesses and inferred approval caches cannot grant permission. Related: [[retired-hook-behavior]], [[deployment-model-layers]].",
+      "source_refs": ["docs/context-service.md"],
+      "source_quotes": ["The hook has a configurable deadline (`context_hook_timeout_s`, default two\nseconds).", "Permission handling defaults to `hook_approval_policy=native`"]
+    },
+    {
+      "slug": "retired-hook-behavior",
+      "title": "Retired automation remains inactive",
+      "body": "Auto-proceed is a compatibility no-op even with old enabled settings. Automatic task interception and session task creation are retired; per-turn Stop memory maintenance is removed from the foreground, while session-close and explicit curation remain. Reinstallation updates managed hooks while preserving unrelated hooks. Legacy settings/history remain inspectable but do not reactivate hooks. Migration deletes no task, memory, skill source or historical record. Related: [[hook-failure-and-approval]], [[explicit-background-curation]].",
+      "source_refs": ["docs/context-service.md", "docs/roadmap.md"],
+      "source_quotes": ["The old auto-proceed hook is a compatibility no-op", "No task, memory, skill source or historical record is deleted by this migration."]
+    },
+    {
+      "slug": "retained-original-evidence",
+      "title": "Original memory and wiki text",
+      "body": "Memory/wiki relevance, ranking, preview, expansion and freshness checks use retained original indexed text rather than generated digests. Digest-only legacy rows are omitted with a recovery/reindex warning and are not deleted by retrieval. A digest alone cannot reconstruct an original. Verified raw source supplied by an existing indexing/retrieval path can rehydrate it; otherwise clear/rebuild the digest cache during reindexing for full expansion. Bounded memory searches the first 1600 characters and reports an unsearched longer tail; explicit composition searches the full indexed source. Historical task summaries may contain pollution despite project metadata. Related: [[source-integrity-and-freshness]], [[compression-lossy-and-recovery]], [[memory-cleanup-safety]].",
+      "source_refs": ["docs/context-service.md", "docs/context-composer.md", "docs/compression-policy.md"],
+      "source_quotes": ["The bounded memory path searches the first 1600 characters of each source", "Generated digests are not substituted for source evidence."]
+    },
+    {
+      "slug": "lexical-selector-experiment",
+      "title": "Lexical selection and unpromoted reranking",
+      "body": "Skills first contribute descriptions; full instructions are fetched explicitly. A separate offline shortlist scans SQLite names/full descriptions with token boundaries, accent and English plural normalization, and a small Italian artifact vocabulary. Explicit $name and $plugin:name references have priority, ties are stable, and at most 20 candidates have bounded snippets. This is lexical matching, not general multilingual semantics. Broader shortlist and Qwen reranker are absent from foreground hook/composer/MCP; injecting the broader list increased irrelevant context. The local selector evaluator has uncalibrated scores; smaller context or more abstention alone is not better selection. Related: [[task-value-promotion-gate]], [[minimal-tool-profile]].",
+      "source_refs": ["docs/context-service.md", "docs/runtime-models.md"],
+      "source_quotes": ["This is lexical matching,\nnot general multilingual semantic understanding.", "injecting the broader list increased irrelevant context."]
+    },
+    {
+      "slug": "manual-composer",
+      "title": "Manual reviewable context packets",
+      "body": "The normal /context workflow is manual: enter original prompt, explicitly select roots, inspect origin/update time/selection reason/cost, include or exclude candidates, expand or choose exact continuous passages, preview and copy. Preparing stores a local draft with prompt/source snapshots. Preview stores composition without training labels, task creation, client sending or model promotion. The normal web page has no training/feedback/automatic-selection controls. Token budgets are text estimates. skill-hub-dashboard --no-services skips automatic background startup only for that process and does not stop existing services. Related: [[verified-project-scope]], [[source-integrity-and-freshness]], [[composer-learning-compatibility]].",
+      "source_refs": ["docs/context-composer.md", "docs/mcp-profiles.md"],
+      "source_quotes": ["The normal workflow is manual.", "The option is local to that process and does not stop services already running."]
+    },
+    {
+      "slug": "source-integrity-and-freshness",
+      "title": "Verified source snapshots and stale rejection",
+      "body": "Composer stores references and source fingerprints. Expansion/composition revalidate indexed sources; changed or missing sources require new selection. Posted bodies cannot replace verified evidence. Disk edits require existing indexing before the index reflects them. Batch expansion rejects the entire request for unknown, out-of-scope or stale references. Issue #112 has scoped selection, retained originals, fingerprints and model/dimension checks integrated, but historical ingestion/source-fragment contamination and sanitized bilingual adversarial qualification remain. Originals must not be deleted to repair polluted summaries. Related: [[retained-original-evidence]], [[batch-source-recovery]], [[open-issue-qualification]].",
+      "source_refs": ["docs/context-composer.md", "docs/mcp-profiles.md", "docs/backlog-review.md"],
+      "source_quotes": ["Posted source bodies cannot replace verified evidence.", "Do not delete originals to repair polluted summaries."]
+    },
+    {
+      "slug": "composer-learning-compatibility",
+      "title": "Offline learning compatibility is separate",
+      "body": "Earlier Training, Automatic and Mixed modes and saved local data remain in the Python API for offline experiments/compatibility, outside normal web selection. Web learning, promotion, reset and outcome routes were removed without deleting drafts, labels, outcomes or model versions. Manual composition does not load/use a saved promoted selector. Learning-data deletion is separate from indexed memory/wiki sources. MCP exposes preparation, composition, expansion and explicit prompt optimization; client identity/model observations never select server credentials/providers. Related: [[manual-composer]], [[runtime-observation-provenance]], [[task-value-promotion-gate]].",
+      "source_refs": ["docs/context-composer.md"],
+      "source_quotes": ["Manual composition does not load or use a promoted\nselector, even if one is saved.", "deleting learning\ndata does not delete indexed project sources."]
+    },
+    {
+      "slug": "minimal-tool-profile",
+      "title": "Full and minimal MCP process profiles",
+      "body": "skill-hub defaults to full; select skill-hub --profile minimal explicitly. Profile is fixed per process and requires restart after command changes; unknown profiles exit with argument error. It is independent of saved plugin profiles, permissions and model providers. Minimal does not start dashboard, service reconciler, memory sweep or reindex sweep; it consumes existing local index. Its eight tools are prepare_context, prepare_composition, compose_context, expand_context_candidate, search_skills, get_skill_content, retrieve_compressed and optimize_prompt_deterministic. Removed tools are absent from tools/list and unavailable via tools/call. Related: [[minimal-search-and-composition]], [[text-only-indexing]], [[batch-source-recovery]].",
+      "source_refs": ["docs/mcp-profiles.md"],
+      "source_quotes": ["The profile is fixed for that server process.", "The minimal profile advertises these eight tools:"]
+    },
+    {
+      "slug": "minimal-search-and-composition",
+      "title": "Minimal profile rejects richer search and learning",
+      "body": "Minimal search_skills uses local keyword descriptions and get_skill_content references without embeddings, reranking or response compression. use_rerank=True and include_content=True are rejected. Minimal composition allows only mode=manual and rejects confirmed=True so it cannot create training feedback. Full retains the original search_skills full-content default and explicitly selected research composition modes. Selector learning stays offline outside the MCP surface. Both profiles preserve the original prompt and verified project scope. Related: [[minimal-tool-profile]], [[composer-learning-compatibility]], [[lexical-selector-experiment]].",
+      "source_refs": ["docs/mcp-profiles.md"],
+      "source_quotes": ["`use_rerank=True` and `include_content=True` are rejected.", "accepts only `mode=\"manual\"` and rejects `confirmed=True`"]
+    },
+    {
+      "slug": "text-only-indexing",
+      "title": "Model-free skill index preparation",
+      "body": "skill-hub-cli index_skills_text --skill-dir /absolute/path/to/skills scans only SKILL.md and stores keyword-search text without embedding calls. Repeat --skill-dir for more directories. It does not index project memory, install hooks or modify providers. Existing vector-backed rows cannot be replaced with changed text and stale vectors: full indexing is required and errors are reported. Invalid directories/indexing errors return nonzero. --db permits isolated checks; a normal server still uses its default store. Empty index means no matches and no model download/fallback. Related: [[minimal-tool-profile]], [[source-integrity-and-freshness]].",
+      "source_refs": ["docs/mcp-profiles.md"],
+      "source_quotes": ["This command scans only\ntheir `SKILL.md` files", "An empty index legitimately returns no\nmatches; it does not trigger a model download or fallback."]
+    },
+    {
+      "slug": "batch-source-recovery",
+      "title": "Index-first and batched source expansion",
+      "body": "prepare_composition detail=index returns titles/references, scope, freshness metadata, warnings and review state without body previews/ranking internals; detail=preview remains default. expand_context_candidate accepts one ID or one to six unique IDs. List responses have draft_id and items in request order. detail=compact retains exact original text/provenance without ranking diagnostics. Every source is revalidated; unknown, out-of-scope or stale reference rejects whole batch. More than 100,000 source-text characters is rejected with fewer-ID guidance, never silently truncated. Composer still retrieves full text internally. An index is not evidence that rules were read or authorization. Measure complete-task cost; short direct packets may be cheaper. Related: [[source-integrity-and-freshness]], [[task-value-promotion-gate]].",
+      "source_refs": ["docs/mcp-profiles.md"],
+      "source_quotes": ["one to six unique IDs.", "100,000 source-text characters", "no text is silently truncated."]
+    },
+    {
+      "slug": "deployment-model-layers",
+      "title": "L1 L2 L3 are deployment layers",
+      "body": "L1 is a local model, L2 a remote API model, L3 the client coding agent; these labels describe deployment rather than reasoning difficulty. Connecting Codex, Claude, Pi or OpenClaw supplies neither server model configuration nor API credentials. Interactive context uses no L1/L2; keep indexing/synthesis outside prompt path and do not recursively launch an L3 CLI or treat client subscription as API credential. Optional reranking needs a measured relevance comparison within fixed latency/token budget. Related: [[provider-qualified-routing]], [[runtime-observation-provenance]], [[hook-failure-and-approval]].",
+      "source_refs": ["docs/context-service.md", "docs/runtime-models.md"],
+      "source_quotes": ["These describe deployment, not reasoning\ndifficulty.", "Connecting Codex, Claude, Pi, or\nOpenClaw does not change the server's model configuration or supply API credentials."]
+    },
+    {
+      "slug": "provider-qualified-routing",
+      "title": "Pinned models and provider resolution",
+      "body": "Use provider-name::model-id for IDs present in multiple provider records. Provider chooses endpoint/credentials; stored ID is sent through its transport adapter. A plain ambiguous ID errors instead of choosing another provider; same applies to embedding models. Explicit embedding endpoint overrides remain supported. Explicit model argument or provider-qualified tier is pinned: unavailable backend errors instead of silently switching. Automatic escalation remains for unpinned service requests. Configured entries do not prove reachability, and unknown prices stay unknown. Diagnostics include operation/provider/requested and resolved model/outcome without prompts/credentials. Related: [[provider-catalog-discovery]], [[deployment-model-layers]].",
+      "source_refs": ["docs/runtime-models.md"],
+      "source_quotes": ["Use `provider-name::model-id` when an ID occurs in multiple provider records.", "Existing automatic escalation still applies to\nunpinned service requests."]
+    },
+    {
+      "slug": "provider-catalog-discovery",
+      "title": "Discovery is preview rather than endpoint qualification",
+      "body": "Providers Discover reads the configured OpenAI-compatible gateway catalog with its endpoint/credential and proposes IDs absent from registry. It saves/enables none. Advertised ID proves neither routability nor account eligibility; availability and cost stay unknown and missing price does not imply free. Catalog is capped at 1,000 entries and 256 KiB with truncation reported. Issue #164 still requires dedicated CLI, eligible endpoint/private-context qualification, frozen 12-case study and direct-provider versus gateway comparison. Catalog listing cannot prove zero-cost inference. Related: [[provider-qualified-routing]], [[open-issue-qualification]].",
+      "source_refs": ["docs/runtime-models.md", "docs/backlog-review.md"],
+      "source_quotes": ["Discovery\ndoes not save or enable models.", "Catalogs are capped at 1,000 entries and\n256 KiB"]
+    },
+    {
+      "slug": "runtime-observation-provenance",
+      "title": "Caller and adapter model observations",
+      "body": "prepare_context and JSON context CLI may accept runtime with client, session, model and effort. Missing object does not prevent context; observation failure does not suppress successful retrieval. Normal arguments are caller-reported. MCP client info identifies implementation, not conversation model/effort; server PID is not conversation ID and unrelated histories are not inspected. Pi/OpenClaw select --adapter-source outside JSON and label values adapter_reported; payload cannot promote itself to native evidence. Missing metadata displays Not reported, configured default is not detection, native effort names persist. Model/effort timestamps are separate and model changes discard stale display names/providers/effort. Observations affect diagnosis/display, never approvals or server providers. Related: [[deployment-model-layers]], [[client-qualification]].",
+      "source_refs": ["docs/runtime-models.md", "docs/roadmap.md"],
+      "source_quotes": ["A payload cannot promote itself to native evidence.", "Runtime\nobservation failures do not suppress an otherwise successful context result."]
+    },
+    {
+      "slug": "deterministic-json-compression",
+      "title": "Exact JSON whitespace compaction",
+      "body": "Default compression removes insignificant whitespace from valid JSON objects/arrays without parse-and-reserialize. Strings, escapes, duplicate keys and number spellings remain intact. Invalid JSON, prose, source code and unsupported formats pass unchanged. compress_payload and maybe_compress default allow_lossy=False, run locally with no model/optional dependency. Defaults: compression_enabled=True, compression_min_tokens=200 approximate minimum, compression_context_aware=True retained query plumbing; current transform does not rank content. Events/results report UTF-8 bytes, not tokenizer counts; historical events retain old values and minimum-size gate remains character/token estimate. Related: [[compression-lossy-and-recovery]], [[task-value-promotion-gate]].",
+      "source_refs": ["docs/compression-policy.md"],
+      "source_quotes": ["duplicate keys,\nnumber spellings, escapes and string contents remain intact.", "Both `compress_payload` and `maybe_compress` default to `allow_lossy=False`."]
+    },
+    {
+      "slug": "compression-lossy-and-recovery",
+      "title": "Lossy selection and recoverability",
+      "body": "allow_lossy=True explicitly enables repeated-log-line collapse only on recognized log-level input, excluding code-like, JSON-like and repetition-marker-bearing input. It reports lossy=True; counts are not exact recovery and original is not automatically stored. Selection, excerpts and truncation are lossy despite determinism. A marker is usable only when its stored original remains accessible. Optional kompress_prose uses a model in webfetch/search, may remove meaning-changing context, is separate from automatic hooks and does not revive #119 advanced compressor. Prompt compression is separate explicit conservative blank-line removal outside fenced code showing original/proposal/diff; no silent replacement. Related: [[deterministic-json-compression]], [[retained-original-evidence]].",
+      "source_refs": ["docs/compression-policy.md", "docs/context-composer.md"],
+      "source_quotes": ["It does not automatically store the original.", "Selection, excerpts and truncation are also lossy even when deterministic."]
+    },
+    {
+      "slug": "text-versus-image-transport",
+      "title": "Verbatim text is portable default",
+      "body": "Textual sources use bounded verbatim passages with metadata sent as text by default. Rasterizing text is an optional transport experiment: bytes do not predict billed tokens, image support/resizing/media/usage vary by provider/model/client. Use images for inherently visual sources or a same-passage comparison showing useful accuracy/cost tradeoff. Unknown capability or comparable usage means retain text. Keep identical source IDs/hashes for attribution. Retrieval does not grant outbound-data permission; operator policy/native approval are separate. Related: [[compression-lossy-and-recovery]], [[context-evidence-boundary]].",
+      "source_refs": ["docs/compression-policy.md"],
+      "source_quotes": ["image byte size does not predict billed tokens", "Preserve the same source IDs and content hashes"]
+    },
+    {
+      "slug": "plugin-storage-and-vectors",
+      "title": "Plugin scoped SQLite and namespaced vectors",
+      "body": "Top-level plugin.json storage declares schema and namespace. Schema only allows CREATE TABLE IF NOT EXISTS plugin_{namespace}_* and matching CREATE INDEX. store.plugin_db applies on first call per process and reapplies after sha256 change. Read-only core correlation is allowed; non-plugin writes raise PermissionError. A8 upsert_vector/search_vectors use shared vectors keyed by namespace/doc_id with model, vector, norm, metadata and indexed_at. vector_indexes registers per-namespace default level, recency half-life and chunk settings when index_plugins runs; missing rows use L2, 30d, 4000/400. Related: [[plugin-memory-routing]], [[fastrp-opt-in]], [[database-reference-status]].",
+      "source_refs": ["docs/plugin-extension-points.md"],
+      "source_quotes": ["writes to non-plugin_* tables raise PermissionError.", "(L2, 30d, 4000/400)."]
+    },
+    {
+      "slug": "plugin-memory-routing",
+      "title": "Plugin memory declarations and watchers",
+      "body": "Preferred memory.indexes entries declare name, level and reads globs. Files embed into named namespace at declared level; chunk config comes from matching vector_index_config row. Legacy flat memory.reads routes to memory:<plugin_name> at L2. search_context(include_plugin_memory=True) merges Plugin Memory; writes is advisory for audit/dashboard. Per-file cap is 200 kB; index_plugins calls index_plugin_memory. watch_paths dispatch index_doc(store,path) preferably or index_docs(store) fallback, with 2s debounce/120s shared cooldown. Related: [[plugin-storage-and-vectors]], [[memory-cleanup-safety]], [[fastrp-opt-in]].",
+      "source_refs": ["docs/plugin-extension-points.md"],
+      "source_quotes": ["Legacy reads land in `memory:<plugin_name>` at level L2.", "Size cap: 200 kB per file.", "Debounce 2s, cooldown 120s"]
+    },
+    {
+      "slug": "memory-levels-and-promotion",
+      "title": "Memory levels differ from model layers",
+      "body": "Memory level tags L0-L4 drive weighting/TTL: L0 ephemeral 6h weight .3; L1 session 7d .8; L2 working 30d 1.0; L3 stable 180d 1.1; L4 identity 10y 1.3. Documented score is cosine × level_weight × exp(-age_days / half_life). L1 age>7d/access≥2 can promote to L2; L2 age>30d/access≥5 to L3. promote_memory(dry_run=True) previews, False applies; enabling core promote_memory task schedules weekly. L4 is write-only through remember_identity(fact,tag), never auto-promoted/pruned. These memory tags are separate from deployment L1/L2/L3 model terminology. Related: [[deployment-model-layers]], [[explicit-background-curation]].",
+      "source_refs": ["docs/plugin-extension-points.md", "docs/context-service.md"],
+      "source_quotes": ["L4 is write-only via `remember_identity(fact, tag)`", "score = cosine × level_weight × exp(-age_days / half_life)"]
+    },
+    {
+      "slug": "explicit-background-curation",
+      "title": "Opt-in tasks and plugin curation",
+      "body": "scheduled_tasks declares cron templates; list_plugin_tasks inventories, enable_plugin_task materializes prompt, disable_plugin_task reverses enablement, plugin_task_state persists. All are opt-in: enabled_default true is suggestion rather than auto-enable. Plugin memory_optimizer declares roots, compaction_prompt and relevance_filter; optimize_plugin_memory(plugin,dry_run=True) uses embeddings.optimize_context and returns KEEP/PRUNE/COMPACT/MERGE decisions. exhaustion_save routes digests by namespace. Hook scripts receive stdin JSON; sync timeout 10s, async background output discarded, nonzero exits logged without propagating; PLUGIN_HOOKS_DISABLED=1 disables. These explicit/background features do not restore foreground model synthesis. Related: [[retired-hook-behavior]], [[plugin-memory-routing]].",
+      "source_refs": ["docs/plugin-extension-points.md", "docs/context-service.md"],
+      "source_quotes": ["All tasks are opt-in;", "Sync handlers run with a 10-second timeout"]
+    },
+    {
+      "slug": "fastrp-opt-in",
+      "title": "Optional Gaussian embedding projection",
+      "body": "fastrp extra supplies NumPy-backed FastRPIndexer, a seeded Gaussian linear projection of embeddings rather than graph FastRP, IVF-PQ or ANN. Namespaced vectors retain exact cosine scan; core skill/task/teaching engines and dimensions stay unchanged. vector_indexes or memory.indexes projection={type:fastrp,n_components:128,seed:42} opts in. Omission keeps existing config; unconfigured indexes are full. projection=full disables; invalid memory projection settings omit that index. configure_vector_projection sets namespace; upsert_vector fast_rp=True can opt in per write. Matrix is shared across batches/documents/queries; default seed 42, zero valid, variance 1/n_components preserves squared norms in expectation, not nearest-neighbor recall. Related: [[fastrp-provenance-and-fallback]], [[fastrp-negative-qualification]].",
+      "source_refs": ["docs/plugin-extension-points.md"],
+      "source_quotes": ["It is not graph FastRP, IVF-PQ, or an ANN index.", "seed defaults\nto 42; zero is valid"]
+    },
+    {
+      "slug": "fastrp-provenance-and-fallback",
+      "title": "Persisted transforms and retained vector originals",
+      "body": "Compressed rows save actual embedding model, original/output dimensions, seed, algorithm version and full original vector backup. Queries use row's saved spec after config changes/restart; dimension/seed changes affect future writes, reindex for old rows. Different embedding models never compare. embed fast_rp=True has provenance and distinct model identity. Explicit namespace disable searches originals without NumPy import. Missing NumPy or unsupported/corrupt spec falls back to compatible original; lacking one omits row. New compressed writes/standalone projection fail explicitly without dependency. Existing migrated rows have NULL projection fields. Mixed full/projected scores change calibration; use dedicated namespace and reindex complete corpus for relevance evaluation. Related: [[fastrp-opt-in]], [[fastrp-negative-qualification]], [[retained-original-evidence]].",
+      "source_refs": ["docs/plugin-extension-points.md"],
+      "source_quotes": ["Retrieval transforms queries with that row's saved specification", "Missing compatible\noriginals are omitted."]
+    },
+    {
+      "slug": "fastrp-negative-qualification",
+      "title": "Projection speed gain fails recall and storage gates",
+      "body": "The recorded synthetic stress fixture uses independent Gaussian 2,000 documents/20 queries, 384→128 dimensions, seed 42, recall@10, three repetitions. It times real SkillStore.search_vectors with fixed embedding fixtures, disabled level/recency weighting, warm-up, SQL/JSON/cosine/sort and query projection; insertion excluded. macOS Python 3.12.3/NumPy 2.5.0 result: full/projected median 175.29/64.48 ms, p95 185.73/70.59; retrieval JSON 15,844,145/5,226,150 bytes; database 17,031,168/25,223,168; recall .13. Payload fell 67%, median latency 63.2%; retained backups grew storage 48.1%, neighbor recall lost 87 percentage points. Fails ≥50% smaller total storage and <2pp recall loss. Synthetic neighbor agreement is not semantic/production relevance or proof at 100,000 docs/sublinear ANN. Feature experimental/default off; IVF-PQ/automatic corpus migration excluded. Related: [[memory-cleanup-safety]], [[task-value-promotion-gate]].",
+      "source_refs": ["benchmarks/FASTRP_RESULTS.md", "docs/roadmap.md"],
+      "source_quotes": ["Neighbor\nrecall dropped **87 percentage points**", "The feature remains experimental with default full vectors."]
+    },
+    {
+      "slug": "memory-cleanup-safety",
+      "title": "Safe derived-chunk cleanup does not replace memory paths",
+      "body": "Because projection fails storage/recall acceptance, keep full-vector RAG/wiki default and authoritative canonical markdown/raw sources. Wiki lexical backfill can mask vector ranking loss; disable restoring ranking without markdown changes is correctness evidence, not semantic-answer improvement. Derived obsolete chunks can be removed after successful source reindex with changed layout, scoped to that file and namespace, only after all replacement writes succeed. Failure retains prior evidence; unrelated files/source text remain intact. Smaller payload/faster scan cannot justify replacing either memory path or deleting original vectors/markdown. Related: [[fastrp-negative-qualification]], [[retained-original-evidence]], [[plugin-memory-routing]].",
+      "source_refs": ["docs/backlog-review.md", "docs/roadmap.md"],
+      "source_quotes": ["happen only after replacement writes succeed.", "Failed\nreindexing must retain the prior evidence"]
+    },
+    {
+      "slug": "task-value-promotion-gate",
+      "title": "Whole-task value is the promotion gate",
+      "body": "#152 requires at least 15% lower median paired total-task tokens without aggregate success degradation or new critical errors. Count auxiliary calls, rereads, corrections, cache and reasoning where exposed. Current evidence does not pass. Protocol payload reduction, synthetic retrieval, native smoke, query latency and text estimates are distinct from completed-task savings. Historical #156 frozen schema report measured 87→8 tools/92.41% fewer serialized schema tokens, not billing/current client usage. #163 requires frozen/reviewed five-arm representation contract, tests/expansion/observation import/bounded native calibration. Negative OpenJev/Rizzo/Qwen/Kev/Laya comparisons do not justify added automatic model layer. Related: [[client-qualification]], [[open-issue-qualification]], [[minimal-tool-profile]].",
+      "source_refs": ["docs/roadmap.md", "docs/backlog-review.md", "docs/context-composer.md"],
+      "source_quotes": ["at least 15% lower median total-task tokens", "The current evidence does not pass that gate.", "Historical schema estimates are not billing or current-client measurements."]
+    },
+    {
+      "slug": "client-qualification",
+      "title": "Adapter tests are not live native-client proof",
+      "body": "#129 distinguishes shared adapter/bounded deterministic context/optional hooks/installer cleanup integration from hook-free manual workflows and real client registration/trust/invocation evidence. Documentation runtime-models historical implementation check reports 1,819 Python tests with four skips and 12 Node tests plus isolated synthetic Codex/Pi browser observations; native-shaped event tests do not prove live Pi/OpenClaw connected, nor change installed providers. #128 common request dispatcher covers search summary, wiki file answers, fan-out synthesis, session memory creation/update and classifier; live configured-provider/endpoint smoke remains. Hooks are optional and fail to original-prompt pass-through. Related: [[runtime-observation-provenance]], [[provider-qualified-routing]], [[task-value-promotion-gate]].",
+      "source_refs": ["docs/runtime-models.md", "docs/backlog-review.md", "docs/roadmap.md"],
+      "source_quotes": ["Adapter tests do not establish native-client qualification.", "they do not establish that a\nlive Pi or OpenClaw installation was connected."]
+    },
+    {
+      "slug": "database-reference-status",
+      "title": "Database reference and separate offline maintenance",
+      "body": "Database reference describes a single SQLite persistent store with sqlite-vec for skills, embeddings, tasks, teachings, feedback, plugin data and session/triage/context logs. It documents skill hash-skip reindex and a unified core vec0 path; its 7.5× binary KNN speed/97.3% float32 rerank recall@5 are reference claims, not current FastRP measurements. Namespaced vectors use a separate exact scan. Reference gives online SQLite backup and restore examples. Current #131 maintenance is separate: stop service, back up live database, apply existing offline migration, restart and verify. Migration/schema-idempotence tests exist; review performed no live migration. It is never startup/context composition side effect. Related: [[plugin-storage-and-vectors]], [[fastrp-negative-qualification]], [[open-issue-qualification]].",
+      "source_refs": ["docs/reference/database.md", "docs/backlog-review.md", "docs/roadmap.md", "docs/plugin-extension-points.md"],
+      "source_quotes": ["Hash-skip", "No live database migration was performed in this review.", "It is not a\nstartup or context-composition side effect."]
+    },
+    {
+      "slug": "open-issue-qualification",
+      "title": "Implementation is separate from issue acceptance",
+      "body": "2026-10-07 review covers ten open issues: #112 source integrity, #128 routing, #129 clients, #131 schema maintenance, #152 whole-task value, #156 MCP overhead, #157 compression fidelity, #158 relevance/abstention, #163 compact representations, #164 free pre-client. None can close solely due to projection. #157 JSON lexical fidelity/UTF-8 accounting integrated; recoverable command-output filter deferred. #158 token matching repairs reviewed substring false positive but needs frozen bilingual holdout/calibration, no aggregate gain claimed. Follow-up order: integrity/relevance; clients/providers; task value/minimal; bounded #163/#164 protocol; separate maintenance. Roadmap records PR #159 integrated deterministic core, historical credential vault #30 removed in 324a544, no active keyring vault; credentials use provider config/environment/opencode, transitive keyring may remain. DwarfStar #121/preference controls #155 not planned. Related: [[task-value-promotion-gate]], [[client-qualification]], [[provider-catalog-discovery]], [[database-reference-status]].",
+      "source_refs": ["docs/backlog-review.md", "docs/roadmap.md"],
+      "source_quotes": ["None of these issues can be closed solely because optional vector\nprojection has been added.", "there is no active keyring-backed vault."]
+    }
+  ]
+}

@@ -83,7 +83,11 @@ def _wiki_reindex_nightly_handler() -> None:
     from .store import get_store
     from . import wiki as _wiki
     from . import config as _cfg
+    from .memory_routing import selected_memory_backend
     from pathlib import Path
+    if selected_memory_backend(_cfg) != "wiki":
+        _log.info("wiki_reindex_nightly: skipped; wiki is not the selected memory backend")
+        return
     store = get_store()
     wiki_root = Path(_cfg.get("wiki_root") or
                      Path.home() / ".claude" / "mcp-skill-hub" / "wiki")

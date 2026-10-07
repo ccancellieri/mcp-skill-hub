@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from . import config as _cfg
+from .memory_routing import selected_memory_backend
 
 log = logging.getLogger(__name__)
 
@@ -35,19 +36,31 @@ _sweep_lock = threading.Lock()
 _refresh_lock = threading.Lock()   # one refresh at a time (task-close bursts)
 
 
-def _read_last_run(state_file: Path | None = None) -> float:
+def _read_state(state_file: Path | None = None) -> dict:
     path = state_file or _STATE_FILE
     try:
-        return float(json.loads(path.read_text()).get("last_run", 0.0))
+        state = json.loads(path.read_text())
+        return state if isinstance(state, dict) else {}
     except (OSError, json.JSONDecodeError, ValueError, KeyError):
+        return {}
+
+
+def _read_last_run(state_file: Path | None = None) -> float:
+    try:
+        return float(_read_state(state_file).get("last_run", 0.0))
+    except (TypeError, ValueError):
         return 0.0
 
 
-def _write_last_run(ts: float, state_file: Path | None = None) -> None:
+def _write_last_run(ts: float, state_file: Path | None = None,
+                    backend: str | None = None) -> None:
     path = state_file or _STATE_FILE
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"last_run": ts}))
+        state = {"last_run": ts}
+        if backend in {"raw", "wiki"}:
+            state["memory_retrieval_backend"] = backend
+        path.write_text(json.dumps(state))
     except OSError as exc:
         log.warning("reindex_sweep: could not write state: %s", exc)
 
@@ -103,26 +116,50 @@ def run_refresh(store, *, wiki: bool | None = None,
         return result
 
     with _refresh_lock:
-        last_run = _read_last_run(state_file)
-        do_wiki = wiki if wiki is not None else wiki_stale_since(last_run)
+        state = _read_state(state_file)
+        try:
+            last_run = float(state.get("last_run", 0.0))
+        except (TypeError, ValueError):
+            last_run = 0.0
+        backend = selected_memory_backend(_cfg)
+        do_wiki = (
+            backend == "wiki"
+            and wiki is not False
+            and (wiki is True
+                 or state.get("memory_retrieval_backend") != "wiki"
+                 or wiki_stale_since(last_run))
+        )
         if do_wiki:
             try:
                 from . import wiki as _wiki_mod
                 counts = _wiki_mod.reindex(store, _wiki_root())
                 result["wiki_pages"] = counts.get("pages", 0)
                 result["wiki_vectors"] = counts.get("vectors", 0)
+                if counts.get("errors", 0):
+                    result["wiki_error"] = f"{counts['errors']} wiki indexing errors"
             except Exception as exc:  # noqa: BLE001
                 log.warning("reindex_sweep: wiki reindex failed: %s", exc)
                 result["wiki_error"] = str(exc)[:200]
         try:
             from .memory_index import index_plugin_memory, index_user_memory
-            result["user_memory_files"] = index_user_memory(store)
-            plugin_counts = index_plugin_memory(store)
-            result["plugin_memory_files"] = sum(plugin_counts.values())
+            if backend == "raw":
+                result["user_memory_files"] = index_user_memory(store)
+            elif backend is None:
+                result["memory_backend_error"] = (
+                    "memory_retrieval_backend must be 'raw' or 'wiki'; "
+                    "raw and wiki indexing were skipped"
+                )
+            if backend == "raw":
+                plugin_counts = index_plugin_memory(store)
+                result["plugin_memory_files"] = sum(plugin_counts.values())
         except Exception as exc:  # noqa: BLE001
             log.warning("reindex_sweep: memory reindex failed: %s", exc)
             result["memory_error"] = str(exc)[:200]
-        _write_last_run(time.time(), state_file)
+        if (backend is not None
+                and not (backend == "wiki" and (
+                    wiki is False or (do_wiki and "wiki_error" in result)
+                ))):
+            _write_last_run(time.time(), state_file, backend=backend)
     return result
 
 
@@ -165,11 +202,11 @@ def _run_sweep(state_file: Path | None = None, _reschedule: bool = True) -> None
             log.debug("reindex_sweep: skipping — machine not idle")
             return
 
-        # Cheap staleness pre-check: nothing changed → just advance the clock
-        # so the sweep doesn't re-probe every poll for a whole interval.
+        # Backend transitions can require a wiki rebuild even when no source
+        # page changed, so let run_refresh inspect freshness and backend state.
         if not wiki_stale_since(last_run):
             from .store import get_store
-            run_refresh(get_store(), wiki=False, state_file=state_file)
+            run_refresh(get_store(), state_file=state_file)
             return
 
         from .store import get_store

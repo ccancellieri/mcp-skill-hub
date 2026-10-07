@@ -528,6 +528,19 @@ class TestWikiReindex:
         ).fetchone()[0]
         assert count == 0
 
+    def test_reindex_reports_embedding_errors(self, store, wiki_root):
+        from skill_hub.wiki import reindex
+        self._seed_pages(wiki_root)
+
+        def fail_upsert(**kwargs):
+            raise RuntimeError("stub embedding failure")
+
+        store.upsert_vector = fail_upsert
+        with patch("skill_hub.wiki._check_dim_guard"):
+            result = reindex(store, wiki_root, dry_run=False)
+
+        assert result["errors"] > 0
+
     def test_status_after_reindex_shows_no_drift(self, store, wiki_root):
         from skill_hub.wiki import reindex, status
         self._seed_pages(wiki_root)

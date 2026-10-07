@@ -314,22 +314,30 @@ def index_all(store: SkillStore, embed_model: str = EMBED_MODEL,
         except Exception as exc:  # noqa: BLE001 — never break indexing
             errors.append(f"plugin vector_indexes register: {exc}")
 
-        # A4 — embed each plugin's declared memory.reads globs into namespaced
-        # vectors (memory:<plugin> or per-index under memory.indexes).
+        # A4 — embed plugin memory only when raw memory is selected.
         try:
             from .memory_index import index_plugin_memory
-            mem_counts = index_plugin_memory(store)
-            if mem_counts:
-                indexed += sum(mem_counts.values())
+            from .memory_routing import selected_memory_backend
+            if selected_memory_backend(_cfg) == "raw":
+                mem_counts = index_plugin_memory(store)
+                if mem_counts:
+                    indexed += sum(mem_counts.values())
         except Exception as exc:  # noqa: BLE001 — memory adapter must never break indexing
             errors.append(f"plugin memory index: {exc}")
 
         # S1.6 — embed Claude Code's per-project auto-memory into memory:user-project
         try:
             from .memory_index import index_user_memory
-            user_mem_count = index_user_memory(store)
-            if user_mem_count:
-                indexed += user_mem_count
+            from .memory_routing import selected_memory_backend
+            backend = selected_memory_backend(_cfg)
+            if backend == "raw":
+                user_mem_count = index_user_memory(store)
+                if user_mem_count:
+                    indexed += user_mem_count
+            elif backend is None:
+                errors.append(
+                    "warning: project memory indexing skipped; memory_retrieval_backend must be 'raw' or 'wiki'"
+                )
         except Exception as exc:  # noqa: BLE001 — user memory is best-effort
             errors.append(f"user memory index: {exc}")
 

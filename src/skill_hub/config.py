@@ -467,6 +467,9 @@ _DEFAULTS = {
     # the memory:user-project namespace so search_context surfaces user notes
     # alongside skills and tasks. Set to False to disable.
     "user_memory_enabled": True,
+    # Select one automatic memory evidence source. Raw memory stays the default
+    # until the wiki qualifies on representative user/plugin memory sources.
+    "memory_retrieval_backend": "raw",  # raw | wiki
 
     # Session memory compaction — background 6-section summary of each Claude
     # Code session (ported from anthropic/claude-cookbooks

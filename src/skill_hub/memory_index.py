@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable
 
-from .plugin_registry import iter_enabled_plugins
+from .plugin_registry import iter_all_plugins, iter_enabled_plugins
 
 _log = logging.getLogger(__name__)
 
@@ -182,6 +182,22 @@ def _embed_file(store: Any, f: Path, namespace: str, plugin_name: str,
         return False
 
 
+def declared_plugin_memory_namespaces() -> set[str]:
+    """Return namespaces owned by installed plugin memory declarations."""
+    namespaces: set[str] = set()
+    # Disabled plugins can leave indexed vectors behind; keep their declared
+    # namespaces classified as raw memory until those derived rows are removed.
+    for plugin in iter_all_plugins():
+        mem = plugin["manifest"].get("memory") or {}
+        if mem.get("reads"):
+            namespaces.add(f"memory:{plugin['name']}")
+        for idx in (mem.get("indexes") or []):
+            name = idx.get("name")
+            if isinstance(name, str) and name:
+                namespaces.add(name)
+    return namespaces
+
+
 def index_plugin_memory(store: Any) -> dict[str, int]:
     """Embed each enabled plugin's declared memory files.
 
@@ -198,6 +214,9 @@ def index_plugin_memory(store: Any) -> dict[str, int]:
 
     Returns ``{namespace: files_indexed}``. Never raises.
     """
+    from .memory_routing import selected_memory_backend
+    if selected_memory_backend() != "raw":
+        return {}
     counts: dict[str, int] = {}
     for plugin in iter_enabled_plugins():
         mem = plugin["manifest"].get("memory") or {}
@@ -290,6 +309,9 @@ def index_user_memory(store: Any) -> int:
 
     Returns the number of files successfully embedded. Never raises.
     """
+    from .memory_routing import selected_memory_backend
+    if selected_memory_backend() != "raw":
+        return 0
     try:
         from . import config as _cfg
         if not _cfg.get("user_memory_enabled"):

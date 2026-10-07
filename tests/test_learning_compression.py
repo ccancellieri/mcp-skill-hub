@@ -571,6 +571,7 @@ class TestGatherContextWikiSourceD:
             "wiki_enabled": True,
             "wiki_root": str(wiki_root),
             "wiki_private_scopes": {},
+            "memory_retrieval_backend": "wiki",
         }
 
     def test_wiki_hit_returned_when_sources_abc_empty(self, tmp_store, monkeypatch, tmp_path):

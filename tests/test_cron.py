@@ -210,6 +210,17 @@ def test_wiki_reindex_nightly_handler_registered():
     assert callable(_cron_mod._HANDLERS["wiki_reindex_nightly"])
 
 
+def test_wiki_reindex_nightly_skips_when_raw_backend_selected(monkeypatch):
+    import skill_hub.cron as cron
+    called = []
+    monkeypatch.setattr("skill_hub.memory_routing.selected_memory_backend",
+                        lambda cfg=None: "raw")
+    monkeypatch.setattr("skill_hub.store.get_store", lambda: called.append("store"))
+    monkeypatch.setattr("skill_hub.wiki.reindex", lambda *a, **k: called.append("wiki"))
+    cron._wiki_reindex_nightly_handler()
+    assert called == []
+
+
 def test_log_digest_snapshot_handler_registered():
     """_HANDLERS must contain 'log_digest_snapshot' after module import."""
     import importlib

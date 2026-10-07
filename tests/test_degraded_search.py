@@ -303,6 +303,51 @@ def test_search_context_vector_marker_when_embed_available(
     assert "mode=keyword-fts5" not in out
 
 
+@pytest.mark.parametrize("backend", ["raw", "wiki", []])
+def test_search_context_queries_only_selected_memory_backend(
+    server_with_store, monkeypatch, backend
+):
+    from skill_hub import config
+
+    server = server_with_store
+    monkeypatch.setattr(server, "embed_available", lambda: True)
+    monkeypatch.setattr(server, "embed", lambda q: [0.0] * 16)
+    original_load = config.load_config
+    monkeypatch.setattr(config, "load_config", lambda: {
+        **original_load(), "memory_retrieval_backend": backend,
+    })
+    monkeypatch.setattr(server, "_cfg", config)
+    for namespace in ("memory:user-project", "memory:plugin", "career:profile",
+                      "custom:profile", "wiki"):
+        server._store._conn.execute(
+            "INSERT OR IGNORE INTO vectors "
+            "(namespace, doc_id, vector, norm, metadata, level) "
+            "VALUES (?, ?, '[]', 0, '{}', 'L3')",
+            (namespace, namespace, ),
+        )
+    server._store._conn.commit()
+
+    calls = []
+    monkeypatch.setattr(server._store, "search_vectors", lambda *a, **kw: (
+        calls.append(kw.get("namespaces")) or []
+    ))
+    from skill_hub import memory_index
+    monkeypatch.setattr(memory_index, "declared_plugin_memory_namespaces",
+                        lambda: {"career:profile"})
+    out = server.search_context("routing probe", top_k=3)
+
+    explicit = [namespaces for namespaces in calls if namespaces is not None]
+    plugin_query = next((namespaces for namespaces in explicit
+                         if "custom:profile" in namespaces), [])
+    assert ("memory:user-project" in plugin_query) == (backend == "raw")
+    assert ("memory:plugin" in plugin_query) == (backend == "raw")
+    assert ("career:profile" in plugin_query) == (backend == "raw")
+    assert "custom:profile" in plugin_query
+    assert any("wiki" in namespaces for namespaces in explicit) == (backend == "wiki")
+    if backend not in ("raw", "wiki"):
+        assert "Project Memory Omitted" in out
+
+
 def test_search_skills_no_match_keyword_returns_helpful_message(
     server_with_store, monkeypatch
 ):

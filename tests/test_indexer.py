@@ -185,11 +185,16 @@ class _StubCfg:
     """Stand-in for skill_hub.config inside index_all — avoids any real
     config/HOME I/O for the two keys index_all reads directly."""
 
+    def __init__(self, backend="raw"):
+        self.backend = backend
+
     def get(self, key):
         if key == "extra_skill_dirs":
             return []
         if key == "local_skills_dir":
             return "/nonexistent/local-skills"
+        if key == "memory_retrieval_backend":
+            return self.backend
         return None
 
 
@@ -245,6 +250,47 @@ def test_index_all_dedupes_cache_vs_marketplace_double_index(index_env):
     assert "plugins:xlsx" not in ids
     assert sum(1 for i in ids if i.endswith(":xlsx")) == 1
     assert any("deduped" in e for e in errors)
+
+
+def test_index_all_skips_user_memory_when_wiki_is_selected(index_env, monkeypatch):
+    store, _, _ = index_env
+    import skill_hub.memory_index as memory_index
+
+    monkeypatch.setattr(indexer, "_cfg", _StubCfg("wiki"))
+    calls = []
+    monkeypatch.setattr(memory_index, "index_plugin_memory", lambda store: calls.append("plugin") or {"plugin": 1})
+    monkeypatch.setattr(memory_index, "index_user_memory", lambda store: calls.append("raw") or 2)
+
+    indexer.index_all(store)
+
+    assert calls == []
+
+
+def test_plugin_memory_indexing_is_disabled_for_wiki_backend(monkeypatch):
+    from skill_hub import memory_index
+
+    monkeypatch.setattr("skill_hub.memory_routing.selected_memory_backend",
+                        lambda cfg=None: "wiki")
+    monkeypatch.setattr(memory_index, "iter_enabled_plugins",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not scan plugin files")))
+    assert memory_index.index_plugin_memory(object()) == {}
+
+
+def test_declared_plugin_memory_namespaces_include_legacy_and_m2(monkeypatch):
+    from pathlib import Path
+    from skill_hub import memory_index
+
+    monkeypatch.setattr(memory_index, "iter_all_plugins", lambda: [
+        {"name": "legacy", "path": Path("/plugins/legacy"), "enabled": False, "manifest": {
+            "memory": {"reads": ["memory/**/*.md"]},
+        }},
+        {"name": "m2", "path": Path("/plugins/m2"), "enabled": False, "manifest": {
+            "memory": {"indexes": [{"name": "career:profile"}]},
+        }},
+    ])
+    assert memory_index.declared_plugin_memory_namespaces() == {
+        "memory:legacy", "career:profile",
+    }
 
 
 def test_index_all_fixes_unknown_version_dir_id(index_env):

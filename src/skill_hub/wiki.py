@@ -267,7 +267,7 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
     what the store expects, raises ``ValueError`` loudly rather than
     silently no-op'ing.
 
-    Returns counts: {pages, edges, vectors, dry_run}.
+    Returns counts: {pages, edges, vectors, errors, dry_run}.
     """
     wiki_root = Path(wiki_root)
 
@@ -344,6 +344,7 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
 
     # Extract and insert edges.
     edge_count = 0
+    error_count = 0
     for p in pages:
         raw_edges = extract_edges(p.slug, p.body)
         project = p.projects[0] if p.projects else None
@@ -369,6 +370,7 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
                 )
                 edge_count += cur.rowcount
             except Exception as exc:  # noqa: BLE001
+                error_count += 1
                 _log.warning("wiki: edge insert failed for %s→%s: %s",
                              p.slug, e.dst_raw, exc)
     conn.commit()
@@ -403,6 +405,7 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
                 )
                 vec_count += 1
             except Exception as exc:  # noqa: BLE001
+                error_count += 1
                 _log.warning("wiki: embed failed for %s %s: %s",
                              p.slug, doc_id, exc)
 
@@ -411,6 +414,7 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
         "pages": len(pages),
         "edges": edge_count,
         "vectors": vec_count,
+        "errors": error_count,
     }
 
 
