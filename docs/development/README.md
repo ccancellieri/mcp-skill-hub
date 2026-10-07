@@ -4,6 +4,9 @@ Use this guide for all changes to Skill Hub. It summarizes established
 context-service boundaries; read [the context-service design](../context-service.md)
 and the affected code and tests before changing behavior.
 
+Use [the current backlog](../backlog.md) for conclusions and remaining acceptance
+gates. Historical benchmark reports describe their frozen source revisions.
+
 ## Context Service
 
 - Preserve the original user prompt. Retrieved material is supplemental
