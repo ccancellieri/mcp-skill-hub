@@ -1245,6 +1245,16 @@ class SkillStore:
         )
         self._conn.commit()
 
+        # Optional projection keeps the original JSON vector for safe fallback.
+        projection_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(vectors)")}
+        for col, ddl in (("projection", "TEXT"), ("original_vector", "TEXT")):
+            if col not in projection_cols:
+                self._conn.execute(f"ALTER TABLE vectors ADD COLUMN {col} {ddl}")
+        config_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(vector_index_config)")}
+        if "projection" not in config_cols:
+            self._conn.execute("ALTER TABLE vector_index_config ADD COLUMN projection TEXT")
+        self._conn.commit()
+
         # Seed default vector_index_config rows (idempotent — INSERT OR IGNORE).
         for name, cfg in _DEFAULT_VECTOR_INDEXES.items():
             self._conn.execute(
@@ -4986,13 +4996,35 @@ class SkillStore:
     # Plugin extension-point: A8 — namespaced vector index
     # ------------------------------------------------------------------
 
+    def configure_vector_projection(self, namespace: str, *, fast_rp: bool = False,
+                                    n_components: int = 128, seed: int = 42) -> None:
+        """Configure future namespace writes; existing rows retain their transform.
+
+        Re-index source documents to change old rows. Disabling immediately uses
+        saved full vectors for retrieval without needing NumPy.
+        """
+        projection = json.dumps({"type": "full"})
+        if fast_rp:
+            from .fastrp import ProjectionSpec
+            spec = ProjectionSpec(n_components, n_components, seed)
+            projection = json.dumps({"n_components": spec.n_components, "seed": spec.seed})
+        self._conn.execute(
+            "INSERT INTO vector_index_config(name, projection) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET projection=excluded.projection, updated_at=datetime('now')",
+            (namespace, projection),
+        )
+        self._conn.commit()
+
     def upsert_vector(self, namespace: str, doc_id: str, text: str,
                       metadata: dict | None = None,
                       model: str | None = None,
                       level: str | None = None,
                       source: str | None = None,
                       project: str | None = None,
-                      tags: list[str] | None = None) -> None:
+                      tags: list[str] | None = None,
+                      *, fast_rp: bool | None = None,
+                      fast_rp_components: int = 128,
+                      fast_rp_seed: int = 42) -> None:
         """Embed ``text`` and upsert into the shared ``vectors`` table.
 
         Phase M1: ``level`` defaults to the namespace's ``default_level`` from
@@ -5008,6 +5040,24 @@ class SkillStore:
                 "vector embed result omitted model provenance; storing ambiguous row for %s/%s",
                 namespace, doc_id,
             )
+        if getattr(vec, "provenance", {}).get("projection"):
+            raise ValueError("upsert_vector requires full embeddings before namespace projection")
+        cfg_row = self._conn.execute(
+            "SELECT projection FROM vector_index_config WHERE name=?", (namespace,),
+        ).fetchone()
+        cfg = json.loads(cfg_row["projection"]) if cfg_row and cfg_row["projection"] else None
+        if cfg and cfg.get("type") == "full":
+            cfg = None
+        if fast_rp is not None:
+            cfg = {"n_components": fast_rp_components, "seed": fast_rp_seed} if fast_rp else None
+        projection = original = None
+        if cfg:
+            if not actual_model:
+                raise ValueError("projection requires actual embedding model provenance")
+            from .vector_sources import FastRPIndexer
+            original = json.dumps(vec)
+            vec, spec = FastRPIndexer(**cfg).project(vec)
+            projection = json.dumps(spec)
         norm = math.sqrt(sum(x * x for x in vec))
         meta_json = json.dumps(metadata) if metadata is not None else None
         tags_json = json.dumps(tags) if tags else None
@@ -5020,12 +5070,14 @@ class SkillStore:
         self._conn.execute(
             """
             INSERT INTO vectors (namespace, doc_id, model, vector, norm, metadata,
-                                 level, source, project, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 level, source, project, tags, projection, original_vector)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(namespace, doc_id) DO UPDATE SET
                 model      = excluded.model,
                 vector     = excluded.vector,
                 norm       = excluded.norm,
+                projection = excluded.projection,
+                original_vector = excluded.original_vector,
                 metadata   = excluded.metadata,
                 level      = excluded.level,
                 source     = COALESCE(excluded.source,  vectors.source),
@@ -5034,7 +5086,7 @@ class SkillStore:
                 indexed_at = datetime('now')
             """,
             (namespace, doc_id, actual_model, json.dumps(vec), norm, meta_json,
-             level, source, project, tags_json),
+             level, source, project, tags_json, projection, original),
         )
         self._conn.commit()
 
@@ -5074,7 +5126,8 @@ class SkillStore:
         if levels:
             where.append(f"level IN ({','.join('?' * len(levels))})")
             params.extend(levels)
-        sql = ("SELECT namespace, doc_id, model, vector, norm, metadata, level, indexed_at "
+        sql = ("SELECT namespace, doc_id, model, vector, norm, metadata, level, indexed_at, "
+               "projection "
                "FROM vectors")
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -5094,6 +5147,15 @@ class SkillStore:
             half_life_cache[key] = hl
             return hl
 
+        # Query transforms are keyed by persisted provenance, never live defaults.
+        projected_queries: dict[str, tuple[list[float], float] | None] = {}
+        disabled_namespaces = {
+            r["name"] for r in self._conn.execute(
+                "SELECT name FROM vector_index_config WHERE "
+                "CASE WHEN json_valid(projection) "
+                "THEN json_extract(projection, '$.type') END = 'full'",
+            )
+        }
         now_ts = _time.time()
         scored: list[tuple[float, dict]] = []
         omitted = 0
@@ -5101,15 +5163,43 @@ class SkillStore:
             if not row["model"] or row["model"] != query_model:
                 omitted += 1
                 continue
+            active_query, active_norm = qvec, qnorm
             snorm = row["norm"] or 0.0
-            if snorm == 0.0:
-                continue
             vec = json.loads(row["vector"])
-            if len(vec) != len(qvec):
+            if row["projection"]:
+                key = row["projection"]
+                if row["namespace"] in disabled_namespaces:
+                    transformed_query = None
+                elif key in projected_queries:
+                    transformed_query = projected_queries[key]
+                else:
+                    try:
+                        from .fastrp import ProjectionSpec
+                        spec = ProjectionSpec(**json.loads(key))
+                        transformed = spec.transform(qvec).tolist()
+                        projected_queries[key] = (transformed, math.sqrt(sum(x*x for x in transformed)))
+                    except (ImportError, ValueError, TypeError):
+                        projected_queries[key] = None
+                    transformed_query = projected_queries[key]
+                if transformed_query is None:
+                    backup = self._conn.execute(
+                        "SELECT original_vector FROM vectors WHERE namespace=? AND doc_id=?",
+                        (row["namespace"], row["doc_id"]),
+                    ).fetchone()
+                    if not backup or not backup["original_vector"]:
+                        omitted += 1
+                        continue
+                    vec = json.loads(backup["original_vector"])
+                    snorm = math.sqrt(sum(x*x for x in vec))
+                else:
+                    active_query, active_norm = transformed_query
+            if snorm == 0.0 or active_norm == 0.0:
+                continue
+            if len(vec) != len(active_query):
                 omitted += 1
                 continue
-            dot = sum(a * b for a, b in zip(qvec, vec))
-            raw = dot / (qnorm * snorm)
+            dot = sum(a * b for a, b in zip(active_query, vec))
+            raw = dot / (active_norm * snorm)
             if raw < similarity_threshold:
                 continue
             lvl = row["level"] or "L2"

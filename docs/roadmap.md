@@ -5,6 +5,8 @@
 The product goal is fewer total tokens per completed task at preserved quality.
 Smaller protocol payloads are useful evidence, but do not establish task savings.
 The [verified results](../benchmarks/VERIFIED_RESULTS.md) separate these measures.
+The [open issue review](backlog-review.md) records implementation and remaining
+acceptance for all ten issues open on 2026-10-07.
 
 | Work | Current implementation | Remaining qualification |
 | --- | --- | --- |
@@ -35,6 +37,17 @@ database, apply the existing offline migration and verify restart. It is not a
 startup or context-composition side effect.
 
 ## Experiments not promoted
+
+Optional seeded embedding projection is implemented for namespaced vectors,
+including plugin memory and wiki. It stays disabled by default: the synthetic
+qualification failed total-storage and recall targets. Smaller retrieval
+payload and faster scans do not justify replacing either memory path or
+deleting original vectors/markdown. See [measured projection results](../benchmarks/FASTRP_RESULTS.md).
+
+The reversible-representation study (#163) and free-only pre-client evaluation
+(#164) remain bounded research. Provider catalog discovery is preview-only;
+an advertised model is not an eligible free endpoint. Neither study promotes
+an automatic foreground model layer.
 
 The current OpenJev, Rizzo, Qwen, Kev and Laya comparisons do not justify an
 additional automatic model layer. Preserve their negative results. DwarfStar

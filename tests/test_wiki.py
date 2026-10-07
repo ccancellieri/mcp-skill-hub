@@ -2056,9 +2056,11 @@ class TestWikiFileAnswer:
         assert "alpha" in out["sources"]
         assert "alpha" in out["answer"].lower()
 
-    def test_fails_open_when_no_llm(self, store, wiki_root):
+    @pytest.mark.parametrize("response", ["runtime-error", "provider-error", "", "   ", "<think>thinking</think>"])
+    def test_fails_open_when_no_llm(self, store, wiki_root, response):
         from skill_hub.wiki import file_answer
         from skill_hub import embeddings as _emb
+        from skill_hub.llm import LLMError
 
         self._page(wiki_root, "pages/entity/beta.md", "beta", "Beta",
                    body="Beta is the second letter.")
@@ -2068,7 +2070,11 @@ class TestWikiFileAnswer:
 
         class _BrokenProv:
             def complete(self, *a, **kw):
-                raise RuntimeError("no LLM")
+                if response == "runtime-error":
+                    raise RuntimeError("no LLM")
+                if response == "provider-error":
+                    raise LLMError("no LLM")
+                return response
 
         with patch.object(_emb, "get_provider", return_value=_BrokenProv()):
             out = file_answer(store, wiki_root, "What is beta?", top_k=1)
@@ -2076,7 +2082,8 @@ class TestWikiFileAnswer:
         # Must not raise; raw hits are in the answer.
         assert out["query"] == "What is beta?"
         assert out["sources"] == ["beta"]
-        assert "beta" in out["answer"].lower() or "LLM unavailable" in out["answer"]
+        assert "LLM unavailable" in out["answer"]
+        assert "[[beta]]: Beta is the second letter." in out["answer"]
 
     def test_no_hits_returns_empty_answer(self, store, wiki_root):
         from skill_hub.wiki import file_answer

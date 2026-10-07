@@ -4,7 +4,7 @@ import json
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -135,15 +135,19 @@ class EmbeddingResult:
     vector: tuple[float, ...]
     model: str
     backend: str
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 class EmbeddingVector(list[float]):
     """List-compatible vector carrying per-result provenance."""
 
-    def __init__(self, values: list[float] | tuple[float, ...], *, model: str, backend: str) -> None:
+
+    def __init__(self, values: list[float] | tuple[float, ...], *, model: str, backend: str,
+                 provenance: dict[str, Any] | None = None) -> None:
         super().__init__(values)
         self.model = model
         self.backend = backend
+        self.provenance = provenance or {}
 
 
 def quantize_binary(vector: list[float]) -> bytes:
@@ -221,10 +225,28 @@ def embed_with_metadata(
     raise RuntimeError(f"all embedding backends failed: {'; '.join(errors)}")
 
 
-def embed(text: str, model: str | None = None, timeout: float = 15.0) -> list[float]:
-    """Return a list-compatible vector with actual model provenance attached."""
+def embed(
+    text: str, model: str | None = None, timeout: float = 15.0,
+    *, fast_rp: bool = False, fast_rp_components: int = 128,
+    fast_rp_seed: int = 42,
+) -> EmbeddingVector:
+    """Embed with actual model provenance; projection is explicitly opt-in.
+
+    Compressed results have a distinct model identity to prevent comparisons
+    with full vectors in callers that only inspect the model field.
+    """
     result = embed_with_metadata(text, model=model, timeout=timeout)
-    return EmbeddingVector(list(result.vector), model=result.model, backend=result.backend)
+    vector = list(result.vector)
+    provenance = dict(result.provenance)
+    actual_model = result.model
+    if fast_rp:
+        from .fastrp import ProjectionSpec
+        spec = ProjectionSpec(len(vector), fast_rp_components, fast_rp_seed)
+        vector = spec.transform(vector).tolist()
+        provenance.update(original_model=result.model, projection=spec.metadata())
+        actual_model = spec.model_identity(result.model)
+    return EmbeddingVector(vector, model=actual_model, backend=result.backend,
+                           provenance=provenance)
 
 
 def _embed_ollama(text: str, *, model: str, timeout: float = 15.0) -> list[float]:

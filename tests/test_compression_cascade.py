@@ -205,7 +205,7 @@ def test_get_compression_stats_accumulates_events(isolated_store):
 
 
 # ---------------------------------------------------------------------------
-# ML-model-gated fidelity smoke test (skipped when sentence-transformers absent)
+# Optional fidelity smoke test (requires locally cached model weights)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not _HAS_ST, reason="sentence-transformers not installed")
@@ -214,7 +214,10 @@ def test_embedding_fidelity_identical_texts():
     import numpy as np
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    try:
+        model = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
+    except OSError:
+        pytest.skip("all-MiniLM-L6-v2 weights are not cached locally")
     text = "The quick brown fox jumps over the lazy dog." * 5
     vecs = model.encode([text, text], normalize_embeddings=True)
     sim = float(np.dot(vecs[0], vecs[1]))

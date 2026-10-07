@@ -8,6 +8,20 @@ import pytest
 from skill_hub.store import Skill, SkillStore
 
 
+@pytest.mark.parametrize("prompt, source, expected", [
+    ("cat", "allocation", 0),
+    ("cache", "cached unrelated", 0),
+    ("migration", "migrazione", 0),
+    ("cache", "CACHE: migration", 1),
+    ("cache_key", "cache_key cache_keys", 1),
+    ("cache_key", "other_cache_key cache_keys", 0),
+])
+def test_relevance_matches_normalized_tokens_not_substrings(prompt, source, expected):
+    from skill_hub.context_service import _relevance
+
+    assert _relevance(prompt, source) == expected
+
+
 @pytest.fixture()
 def store(tmp_path):
     result = SkillStore(db_path=tmp_path / "skill_hub.db")
@@ -71,7 +85,7 @@ def test_context_is_scoped_to_cwd_and_preserves_prompt(store):
     )
     _insert_memory(store, project="/repos/alpha", doc_id="decision", text="Alpha migration uses expand/contract.")
     _insert_memory(store, project="/repos/beta", doc_id="secret", text="BETA SECRET must never leak.")
-    _insert_wiki(store, slug="postgres", project="/repos/alpha", text="Alpha wiki: migrations are additive.")
+    _insert_wiki(store, slug="postgres", project="/repos/alpha", text="Alpha wiki: migration changes are additive.")
     _insert_wiki(store, slug="foreign", project="/repos/beta", text="BETA WIKI SECRET.")
 
     prompt = "Please plan the PostgreSQL migration.\nKeep this exact line."

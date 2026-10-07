@@ -1866,6 +1866,7 @@ dependencies = [
 all = [
     { name = "headroom-ai", extra = ["ml"] },
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
+    { name = "numpy" },
     { name = "sentence-transformers" },
     { name = "voyageai" },
 ]
@@ -1874,6 +1875,9 @@ compression = [
 ]
 docs = [
     { name = "markitdown", extra = ["docx", "pdf", "pptx", "xlsx"] },
+]
+fastrp = [
+    { name = "numpy" },
 ]
 sentence-transformers = [
     { name = "sentence-transformers" },
@@ -1895,6 +1899,8 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.52" },
     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], marker = "extra == 'all'", specifier = ">=0.0.1" },
     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], marker = "extra == 'docs'", specifier = ">=0.0.1" },
+    { name = "numpy", marker = "extra == 'all'", specifier = ">=1.24,<3" },
+    { name = "numpy", marker = "extra == 'fastrp'", specifier = ">=1.24,<3" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -1906,7 +1912,7 @@ requires-dist = [
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.3.0" },
     { name = "watchdog", specifier = ">=4.0.0" },
 ]
-provides-extras = ["sentence-transformers", "docs", "voyage", "compression", "all"]
+provides-extras = ["fastrp", "sentence-transformers", "docs", "voyage", "compression", "all"]
 
 [[package]]
 name = "mdurl"

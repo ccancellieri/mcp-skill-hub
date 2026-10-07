@@ -313,3 +313,69 @@ Flagship example: see
 (seven skills, web sub-app with four routes, two hooks, OAuth integration,
 plugin-scoped SQL schema, namespaced vectors, watcher, scheduled tasks,
 memory optimizer with compaction + relevance prompts).
+
+## Optional FastRP namespace projection
+
+Install `pip install 'mcp-skill-hub[fastrp]'` to enable the NumPy-backed
+`FastRPIndexer` adapter. This is a seeded Gaussian linear projection of
+existing embeddings. It is not graph FastRP, IVF-PQ, or an ANN index. The
+namespaced `vectors` table uses its existing exact cosine scan; core skill,
+task, and teaching indexes retain their current engines and dimensions.
+
+Opt in through the existing vector-index registration extension:
+
+```json
+{
+  "vector_indexes": [
+    {"name": "example:docs", "projection": {
+      "type": "fastrp", "n_components": 128, "seed": 42
+    }}
+  ]
+}
+```
+
+The same `projection` object is supported in `memory.indexes[]`, beside
+`name`, `reads`, and `level`. Omitting it leaves the existing configuration
+unchanged; unconfigured indexes remain full. Set `projection` to `"full"`
+to explicitly disable compression. `index_plugin_memory` registers these
+settings before embedding files; invalid settings omit that memory index.
+
+Direct callers can configure a namespace or opt in for one write:
+
+```python
+store.configure_vector_projection("example:docs", fast_rp=True,
+                                  n_components=128, seed=42)
+store.upsert_vector("example:docs", "doc-1", "source text")
+store.upsert_vector("another:docs", "doc-2", "source text", fast_rp=True,
+                    fast_rp_components=128, fast_rp_seed=42)
+store.search_vectors("query", namespaces=["example:docs"])
+```
+
+Every compressed row saves its actual embedding model, original dimension,
+output dimension, seed, algorithm version, and full original vector backup.
+Retrieval transforms queries with that row's saved specification, even after
+a configuration change or restart. Changing dimensions/seed affects future
+writes; re-index the source files to update existing rows. Original and
+projected vectors from different embedding models are never compared.
+`embed(..., fast_rp=True)` also exposes projection provenance and a distinct
+model identity, preventing accidental mixing with full embeddings elsewhere.
+
+Explicitly disabling a namespace searches the saved originals without
+importing NumPy. Missing NumPy or an unsupported/corrupt projection
+specification falls back to a compatible original. Missing compatible
+originals are omitted. Standalone projection or new compressed writes fail
+explicitly if the optional dependency is absent. Existing rows migrate with
+NULL projection fields and retain their full-vector behavior.
+
+The matrix is shared across batches, documents, and queries (seed defaults
+to 42; zero is valid). Gaussian variance is `1 / n_components`, preserving
+squared norms in expectation, as described in the
+[scikit-learn random projection documentation](https://scikit-learn.org/stable/modules/random_projection.html).
+This does not guarantee nearest-neighbor recall on a particular corpus.
+Mixing full and projected rows also changes score calibration; use a dedicated
+namespace and re-index its complete corpus before evaluating relevance.
+
+Original backups are intentionally retained. Retrieval payload can shrink,
+but total database storage grows. See [benchmark results](../benchmarks/FASTRP_RESULTS.md)
+for measured latency, storage, and recall; compression remains experimental
+and disabled by default.

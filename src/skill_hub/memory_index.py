@@ -160,6 +160,22 @@ def _embed_file(store: Any, f: Path, namespace: str, plugin_name: str,
                               "chunk_index": i, "chunk_count": len(chunks)},
                     level=level, source=plugin_name,
                 )
+        # Remove obsolete derived chunks only after every replacement succeeds.
+        # Match the source metadata exactly: filenames can contain SQL wildcards.
+        current_ids = {str(f)} if len(chunks) == 1 else {
+            f"{f}#chunk-{i:03d}" for i in range(len(chunks))
+        }
+        existing = store._conn.execute(
+            "SELECT doc_id FROM vectors WHERE namespace=? AND "
+            "CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.path') END = ?",
+            (namespace, str(f)),
+        ).fetchall()
+        stale = [(namespace, row[0]) for row in existing if row[0] not in current_ids]
+        if stale:
+            store._conn.executemany(
+                "DELETE FROM vectors WHERE namespace=? AND doc_id=?", stale,
+            )
+            store._conn.commit()
         return True
     except Exception as exc:  # noqa: BLE001 — best-effort
         _log.warning("memory upsert_vector failed: %s (%s)", f, exc)
@@ -192,6 +208,22 @@ def index_plugin_memory(store: Any) -> dict[str, int]:
             reads = idx.get("reads") or []
             if not ns or not reads:
                 continue
+            if "projection" in idx:
+                projection = idx["projection"]
+                try:
+                    if projection is None or projection == "full":
+                        store.configure_vector_projection(ns, fast_rp=False)
+                    elif isinstance(projection, dict) and projection.get("type") == "fastrp":
+                        store.configure_vector_projection(
+                            ns, fast_rp=True,
+                            n_components=projection.get("n_components", 128),
+                            seed=projection.get("seed", 42),
+                        )
+                    else:
+                        raise ValueError("invalid memory projection declaration")
+                except Exception as exc:
+                    _log.warning("memory projection configuration failed: %s (%s)", ns, exc)
+                    continue
             level = idx.get("level")
             files = _expand_globs(plugin["path"], reads)
             indexed = 0

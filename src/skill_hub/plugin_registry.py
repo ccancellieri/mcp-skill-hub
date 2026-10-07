@@ -324,6 +324,18 @@ def register_plugin_vector_indexes(store: Any) -> int:
                     idx.get("summarizer_prompt"),
                 ),
             )
+            if "projection" in idx:
+                projection = idx["projection"]
+                if projection is None or projection == "full":
+                    store.configure_vector_projection(name, fast_rp=False)
+                elif isinstance(projection, dict) and projection.get("type") == "fastrp":
+                    store.configure_vector_projection(
+                        name, fast_rp=True,
+                        n_components=projection.get("n_components", 128),
+                        seed=projection.get("seed", 42),
+                    )
+                else:
+                    raise ValueError("projection must be full or a fastrp specification")
             n += 1
     conn.commit()
     return n

@@ -1,0 +1,38 @@
+{
+  "dataset_sha256": "973c5ca44676ef866800e6f5f67826cbb01870445cfa04e07b1c2b27a6284ceb",
+  "documents": 2000,
+  "queries": 20,
+  "input_dim": 384,
+  "components": 128,
+  "seed": 42,
+  "top_k": 10,
+  "repeats": 3,
+  "python": "3.12.3",
+  "numpy": "2.5.0",
+  "platform": "Darwin",
+  "projection_seconds": 0.00353741692379117,
+  "full": {
+    "median_ms": 175.29362509958446,
+    "p95_ms": 185.72852286742997,
+    "retrieval_vector_json_bytes": 15844145,
+    "database_bytes": 17031168
+  },
+  "projected_with_backup": {
+    "median_ms": 64.48329193517566,
+    "p95_ms": 70.58760829968378,
+    "retrieval_vector_json_bytes": 5226150,
+    "database_bytes": 25223168
+  },
+  "retrieval_payload_reduction_percent": 67.01526021126416,
+  "total_database_reduction_percent": -48.10004810004811,
+  "median_latency_improvement_percent": 63.21412607073267,
+  "recall_at_k_vs_full": 0.13,
+  "recall_drop_percentage_points": 87.0,
+  "criteria": {
+    "retrieval_payload_at_least_50_percent_smaller": true,
+    "total_database_at_least_50_percent_smaller": false,
+    "median_latency_at_least_30_percent_faster": true,
+    "recall_drop_under_2_percentage_points": false
+  },
+  "dataset": "synthetic-gaussian-stress"
+}

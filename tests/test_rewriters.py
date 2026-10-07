@@ -37,7 +37,7 @@ def test_builtin_context_uses_scoped_task_and_preserves_original_body(store):
         session_id="session-a",
         cwd="/projects/alpha",
     )
-    prompt = "Keep this exact line.\nAnd this one too."
+    prompt = "Keep this exact line.\nReview the Bandit MCP docs."
     result = rewriters.improve_prompt(
         prompt, store, rewriters=["add_recent_tasks"],
         cwd="/projects/alpha", session_id="session-a",
@@ -46,6 +46,22 @@ def test_builtin_context_uses_scoped_task_and_preserves_original_body(store):
     assert "Wire up bandit" in result.prompt
     assert result.original == prompt
     assert result.prompt.startswith(prompt + "\n\n")
+
+
+def test_builtin_context_abstains_from_unrelated_scoped_task(store):
+    from skill_hub.router import rewriters
+
+    store.save_task(
+        title="Wire up bandit", summary="Bandit MCP tools need docs",
+        vector=[0.0] * 8, session_id="session-a", cwd="/projects/alpha",
+    )
+    prompt = "Keep this exact line.\nAnd this one too."
+    result = rewriters.improve_prompt(
+        prompt, store, rewriters=["add_recent_tasks"],
+        cwd="/projects/alpha", session_id="session-a",
+    )
+    assert result.applied == []
+    assert result.prompt == result.original == prompt
 
 
 def test_unknown_rewriter_is_noted_not_raised(store):

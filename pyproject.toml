@@ -39,6 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+fastrp = ["numpy>=1.24,<3"]
 sentence_transformers = ["sentence-transformers>=2.7.0"]
 docs = ["markitdown[docx,pdf,pptx,xlsx]>=0.0.1"]
 voyage = ["voyageai>=0.3.0"]
@@ -46,7 +47,7 @@ voyage = ["voyageai>=0.3.0"]
 # collapse is dependency-free; this extra additionally enables the optional
 # headroom-ai-backed CCR compression store used by fetch_compressed/retrieve_compressed).
 compression = ["headroom-ai>=0.27,<1.0"]
-all = ["sentence-transformers>=2.7.0", "voyageai>=0.3.0", "headroom-ai[ml]>=0.27,<1.0", "markitdown[docx,pdf,pptx,xlsx]>=0.0.1"]
+all = ["numpy>=1.24,<3", "sentence-transformers>=2.7.0", "voyageai>=0.3.0", "headroom-ai[ml]>=0.27,<1.0", "markitdown[docx,pdf,pptx,xlsx]>=0.0.1"]
 
 [project.urls]
 Repository = "https://github.com/ccancellieri/mcp-skill-hub"

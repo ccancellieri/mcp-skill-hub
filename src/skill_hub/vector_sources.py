@@ -427,8 +427,8 @@ class NamespaceSource:
         ph = ",".join("?" * len(id_list))
         snapshot = [
             dict(row) for row in c.execute(
-                f"SELECT doc_id, namespace, level, metadata, vector, access_count, "
-                f"indexed_at, last_accessed FROM vectors "
+                f"SELECT doc_id, namespace, level, metadata, vector, model, norm, "
+                f"projection, original_vector, access_count, indexed_at, last_accessed FROM vectors "
                 f"WHERE namespace = ? AND doc_id IN ({ph})",
                 [self.namespace, *id_list],
             ).fetchall()
@@ -829,3 +829,20 @@ class VerdictSource:
     def draft_merge(self, items, tier, instruction): _reject("verdicts")
     def commit_merge(self, items, draft): _reject("verdicts")
 
+
+
+class FastRPIndexer:
+    """Optional namespace projection adapter used by the shared vector store.
+
+    Registration uses vector_indexes[].projection in plugin manifests, rather
+    than a separate class registry. NumPy is imported only on opted-in writes.
+    """
+
+    def __init__(self, n_components: int = 128, seed: int = 42) -> None:
+        self.n_components = n_components
+        self.seed = seed
+
+    def project(self, vector):
+        from .fastrp import ProjectionSpec
+        spec = ProjectionSpec(len(vector), self.n_components, self.seed)
+        return spec.transform(vector).tolist(), spec.metadata()

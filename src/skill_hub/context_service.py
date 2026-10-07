@@ -209,8 +209,8 @@ def _relevance(prompt: str, *parts: str) -> int:
     terms = _tokens(prompt)
     if not terms:
         return 0
-    haystack = " ".join(part or "" for part in parts).lower()
-    return sum(term in haystack for term in terms)
+    source_terms = _tokens(" ".join(part or "" for part in parts))
+    return len(terms & source_terms)
 
 
 def _item(kind: str, title: str, source: str, text: str, score: int,

@@ -1492,7 +1492,9 @@ def file_answer(
             raw_answer = _re.sub(
                 r"<think>.*?</think>", "", raw_answer, flags=_re.DOTALL
             ).strip()
-        answer = raw_answer or "(LLM returned empty response)"
+        if not raw_answer:
+            raise ValueError("LLM returned no usable answer")
+        answer = raw_answer
     except Exception as exc:  # noqa: BLE001
         _log.warning("wiki file_answer: LLM call failed: %s", exc)
         bodies_summary = "\n\n".join(
