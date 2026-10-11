@@ -52,7 +52,8 @@ class WikiPage:
     source_refs: list[str] = field(default_factory=list)
     created: str = ""                # ISO date string
     updated: str = ""                # ISO date string
-    source_hash: str = ""            # sha256 of the source text at last ingest
+    source_hash: str = ""            # hash of the most recently observed source text
+    ingest_hash: str = ""            # live canonical distillation receipt, not vector readiness
 
 
 @dataclass
@@ -138,6 +139,8 @@ def render_page(page: WikiPage) -> str:
         fm["source_refs"] = page.source_refs
     if page.source_hash:
         fm["source_hash"] = page.source_hash
+    if page.ingest_hash:
+        fm["ingest_hash"] = page.ingest_hash
 
     fm_text = yaml.dump(fm, default_flow_style=False, allow_unicode=True,
                         sort_keys=False)
@@ -241,16 +244,19 @@ def _load_page(path: Path) -> WikiPage | None:
     updated = str(fm.get("updated") or "")
     source_hash = str(fm.get("source_hash") or "")
 
-    # Derive scope from directory if not in frontmatter.
-    if not fm.get("scope") and "_private" in path.parts:
+    # Private disk placement overrides stale or malicious public metadata.
+    parts = path.resolve().parts
+    if "_private" in parts:
+        private_index = len(parts) - 1 - tuple(reversed(parts)).index("_private")
         scope = "private"
+        projects = [parts[private_index + 1]] if private_index + 2 < len(parts) else []
 
     return WikiPage(
         id=page_id, slug=slug, title=title, type=page_type,
         projects=list(projects), scope=scope, body=body,
         tags=list(tags), aliases=list(aliases),
         source_refs=list(source_refs), created=created, updated=updated,
-        source_hash=source_hash,
+        source_hash=source_hash, ingest_hash=str(fm.get("ingest_hash") or ""),
     )
 
 
@@ -307,13 +313,9 @@ def reindex(store: Any, wiki_root: Path, dry_run: bool = False) -> dict:
     # Load pages.
     pages: list[WikiPage] = []
     for path in all_files:
-        p = _load_page(path)
-        if p is None:
-            continue
-        # Infer scope from location if needed.
-        if "_private" in path.parts:
-            p.scope = "private"
-        pages.append(p)
+        p = _load_vault_page(wiki_root, path)
+        if p is not None:
+            pages.append(p)
 
     # Build slug → id and alias → slug lookup for edge resolution.
     slug_set: set[str] = {p.slug for p in pages}
@@ -511,11 +513,9 @@ def reindex_paths(
             if removed:
                 pages_deleted += 1
             continue
-        page = _load_page(chg_path)
+        page = _load_vault_page(wiki_root, chg_path)
         if page is None:
             continue
-        if "_private" in chg_path.parts:
-            page.scope = "private"
         vec_count += _index_pages(store, wiki_root, [page])
         pages_updated += 1
 
@@ -977,6 +977,42 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _canonical_write_path(wiki_root: Path, path: Path) -> bool:
+    """Require the intended vault location, rejecting directory/file aliases."""
+    try:
+        relative = path.absolute().relative_to(wiki_root.absolute())
+        expected = wiki_root.resolve() / relative
+        resolved = path.resolve()
+        return resolved.is_relative_to(wiki_root.resolve()) and resolved == expected
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _load_vault_page(wiki_root: Path, rel_path: str | Path) -> WikiPage | None:
+    """Load only a contained vault file, including containment after symlinks."""
+    path = wiki_root / rel_path
+    try:
+        if not path.resolve().is_relative_to(wiki_root.resolve()):
+            return None
+    except (OSError, ValueError):
+        return None
+    page = _load_page(path)
+    requested_parts = path.relative_to(wiki_root).parts
+    if page is not None and "_private" in requested_parts:
+        pos = requested_parts.index("_private")
+        if pos + 2 >= len(requested_parts) or page.projects != [requested_parts[pos + 1]]:
+            return None
+    return page
+
+
+def _page_authorized(page: WikiPage, authorized_scopes: list[str]) -> bool:
+    if page.scope == "public":
+        return True
+    return (page.scope == "private" and bool(page.projects)
+            and "_global" not in page.projects
+            and set(page.projects).issubset(set(authorized_scopes)))
+
+
 def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | None:
     """Locate an existing page by slug via the derived index, then disk fallback.
 
@@ -992,7 +1028,7 @@ def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | Non
         row = None
     if row:
         rel = row["rel_path"] if not isinstance(row, tuple) else row[0]
-        page = _load_page(wiki_root / rel)
+        page = _load_vault_page(wiki_root, rel)
         if page is not None and page.slug == slug:
             return page
 
@@ -1010,7 +1046,7 @@ def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | Non
         except (OSError, ValueError):
             continue
         if path.is_file():
-            page = _load_page(path)
+            page = _load_vault_page(wiki_root, path)
             if page is not None and page.slug == slug:
                 return page
     return None
@@ -1019,6 +1055,7 @@ def _find_page_by_slug(store: Any, wiki_root: Path, slug: str) -> WikiPage | Non
 def _build_candidate_context(
     store: Any, wiki_root: Path, source_text: str,
     namespaces: list[str], top_k: int = 15, char_budget: int = 14000,
+    authorized_scopes: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Deterministic candidate discovery: vector-search related pages, read bodies.
 
@@ -1045,8 +1082,8 @@ def _build_candidate_context(
         rel = meta.get("rel_path")
         if not slug or slug in slugs or not rel:
             continue
-        page = _load_page(wiki_root / rel)
-        if page is None:
+        page = _load_vault_page(wiki_root, rel)
+        if page is None or not _page_authorized(page, authorized_scopes or []):
             continue
         block = (f"## [[{page.slug}]] — {page.title} (type={page.type}, "
                  f"scope={page.scope})\n{page.body}\n")
@@ -1065,8 +1102,10 @@ def _page_from_update(
 ) -> WikiPage:
     """Build a WikiPage from an LLM page dict, preserving stable id/created/projects."""
     slug = upd.get("slug") or _slugify(upd.get("title") or "page")
-    scope = upd.get("scope") or (existing.scope if existing else target_scope)
+    scope = existing.scope if existing else target_scope
     ptype = upd.get("type") or (existing.type if existing else "entity")
+    if ptype not in {"entity", "concept", "source", "overview", "project"}:
+        ptype = "entity"
     title = upd.get("title") or (existing.title if existing else _humanize(slug))
     body = upd.get("new_body") or upd.get("body") or (existing.body if existing else "")
     projects = (existing.projects if existing and existing.projects
@@ -1075,22 +1114,29 @@ def _page_from_update(
     created = existing.created if (existing and existing.created) else today
     refs = source_refs if source_refs is not None else (
         existing.source_refs if existing else [])
+    if existing is not None and existing.type != "source" and source_refs is not None:
+        refs = list(dict.fromkeys([*existing.source_refs, *source_refs]))
     return WikiPage(
         id=page_id, slug=slug, title=title, type=ptype,
         projects=list(projects), scope=scope, body=body,
         source_refs=list(refs), created=created, updated=today,
         source_hash=source_hash or (existing.source_hash if existing else ""),
+        ingest_hash=existing.ingest_hash if existing else "",
     )
 
 
-def _backup_page(path: Path) -> None:
-    """Keep a single rolling backup of a page before overwrite."""
+def _backup_page(wiki_root: Path, path: Path) -> None:
+    """Keep a rolling backup only at its canonical location in this vault."""
     try:
         backup_dir = path.parent / ".backups"
+        backup_path = backup_dir / f"{path.name}.bak"
+        if (not _canonical_write_path(wiki_root, path)
+                or not _canonical_write_path(wiki_root, backup_path)):
+            _log.warning("wiki ingest: skipping noncanonical backup for %s", path)
+            return
         backup_dir.mkdir(parents=True, exist_ok=True)
-        (backup_dir / f"{path.name}.bak").write_text(
-            path.read_text(encoding="utf-8"), encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001
+        backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception as exc:
         _log.warning("wiki ingest: backup failed for %s: %s", path, exc)
 
 
@@ -1206,52 +1252,50 @@ def scan_candidates(store: Any, wiki_root: Path) -> list[dict]:
     Reads the vault from disk (works in ``no_llm_mode``). A source page is a
     candidate when it is:
     - **stale**: its underlying file (``source_refs[0]``) content hash differs
-      from the recorded ``source_hash``; or
-    - **undistilled**: no non-source page yet references any of its
-      ``source_refs`` (i.e. it has never been distilled into entity/concept
-      pages). This is the migration backfill set.
+      from the recorded observation or successful ``ingest_hash``; or
+    - **missing_source_hash**: legacy source observation is unknown; or
+    - **undistilled**: no successful live distillation receipt is recorded.
+      Shared references alone do not qualify legacy pages as distilled.
+      A receipt confirms canonical writes, not semantic fidelity or vector readiness.
 
     Returns ``[{slug, title, scope, reason, source_refs, est_calls}]`` ranked
     stale-before-undistilled, then alphabetically by slug.
     """
     wiki_root = Path(wiki_root)
     source_pages: list[WikiPage] = []
-    distilled_refs: set[str] = set()
-
     for md in wiki_root.rglob("*.md"):
-        if not md.is_file() or md.name == "index.md":
+        if not md.is_file() or md.name == "index.md" or ".backups" in md.parts:
             continue
-        page = _load_page(md)
-        if page is None:
-            continue
-        if page.type == "source":
+        page = _load_vault_page(wiki_root, md)
+        if page is not None and page.type == "source":
             source_pages.append(page)
-        else:
-            for r in page.source_refs:
-                distilled_refs.add(str(r))
 
     candidates: list[dict] = []
     for p in source_pages:
         reason: str | None = None
-        if p.source_hash and p.source_refs:
+        current_hash = p.source_hash
+        if p.source_refs:
             orig = Path(str(p.source_refs[0]))
             if orig.is_file():
                 try:
-                    if _hash_text(orig.read_text(encoding="utf-8")) != p.source_hash:
-                        reason = "stale"
+                    current_hash = _hash_text(orig.read_text(encoding="utf-8"))
                 except OSError:
                     pass
-        if reason is None:
-            refs = {str(r) for r in p.source_refs}
-            if not (refs & distilled_refs):
-                reason = "undistilled"
+        if p.source_hash and current_hash != p.source_hash:
+            reason = "stale"
+        elif not p.source_hash:
+            reason = "missing_source_hash"
+        elif not p.ingest_hash:
+            reason = "undistilled"
+        elif p.ingest_hash != current_hash:
+            reason = "stale"
         if reason:
             candidates.append({
                 "slug": p.slug, "title": p.title, "scope": p.scope,
                 "reason": reason, "source_refs": p.source_refs, "est_calls": 1,
             })
 
-    rank = {"stale": 0, "undistilled": 1}
+    rank = {"stale": 0, "missing_source_hash": 1, "undistilled": 2}
     candidates.sort(key=lambda c: (rank.get(c["reason"], 9), c["slug"]))
     return candidates
 
@@ -1262,7 +1306,9 @@ def scan_and_enqueue(store: Any, wiki_root: Path) -> dict:
     Idempotent: new candidates become ``pending``; an existing ``pending`` row
     refreshes its reason; a ``done``/``skipped`` row re-opens to ``pending``
     only when the source went ``stale`` (spec §14.2 — skipped stays skipped
-    until the source changes). ``approved`` rows are never disturbed.
+    until the source changes). Legacy ``done`` rows without a successful
+    receipt reopen for qualification; explicit skips are preserved unless stale.
+    ``approved`` rows are never disturbed.
 
     Returns a summary with queue totals and the current actionable rows.
     """
@@ -1286,11 +1332,11 @@ def scan_and_enqueue(store: Any, wiki_root: Path) -> dict:
                 "UPDATE wiki_queue SET title=?, scope=?, reason=? WHERE slug=?",
                 (c["title"], c["scope"], c["reason"], c["slug"]),
             )
-        elif status in ("done", "skipped") and c["reason"] == "stale":
+        elif (status == "done" or (status == "skipped" and c["reason"] == "stale")):
             conn.execute(
-                "UPDATE wiki_queue SET reason='stale', status='pending', decided_at=NULL "
+                "UPDATE wiki_queue SET reason=?, status='pending', decided_at=NULL "
                 "WHERE slug=?",
-                (c["slug"],),
+                (c["reason"], c["slug"]),
             )
             enqueued += 1
         # approved rows: leave untouched
@@ -1389,10 +1435,10 @@ def query(
         rel = meta.get("rel_path")
         if not slug or slug in seen or not rel:
             continue
-        page = _load_page(wiki_root / rel)
+        page = _load_vault_page(wiki_root, rel)
         if page is None:
             continue
-        if page.scope == "private" and not authorized_scopes:
+        if not _page_authorized(page, authorized_scopes):
             continue
         seen.add(slug)
         ranked.append({
@@ -1531,8 +1577,15 @@ def write_source_page(
     wiki_root = Path(wiki_root)
     today = today or date.today().isoformat()
     slug = "source-" + _slugify(source_id)
+    destination = page_path(wiki_root, WikiPage(
+        id="", slug=slug, title="", type="source", projects=[project], scope=scope, body=""))
+    if not _canonical_write_path(wiki_root, destination):
+        raise ValueError("source destination is not its canonical vault location")
     existing = _find_page_by_slug(store, wiki_root, slug)
     source_hash = _hash_text(body)
+    if existing is not None and (existing.scope != scope
+            or (existing.projects and project not in existing.projects)):
+        raise ValueError("source scope or project mismatch")
     if existing is not None and existing.source_hash == source_hash:
         return None  # unchanged — skip the write
 
@@ -1541,14 +1594,15 @@ def write_source_page(
         slug=slug, title=title or slug, type="source",
         projects=(existing.projects if existing and existing.projects
                   else [project or "_global"]),
-        scope=scope, body=body,
+        scope=existing.scope if existing else scope, body=body,
+        ingest_hash=existing.ingest_hash if existing else "",
         source_refs=[url] if url else [source_id],
         created=existing.created if (existing and existing.created) else today,
         updated=today, source_hash=source_hash,
     )
     path = page_path(wiki_root, page)
     if path.exists():
-        _backup_page(path)
+        _backup_page(wiki_root, path)
     _atomic_write_page(path, render_page(page))
     try:
         _index_pages(store, wiki_root, [page])
@@ -1694,8 +1748,11 @@ def ingest_source(
     denied. Unauthorized private *page_updates* proposed by the LLM are silently
     dropped rather than written.
 
-    Idempotence: the source page records a ``source_hash``; an unchanged source
-    skips the LLM call entirely.
+    Idempotence: only a matching successful ``ingest_hash`` receipt skips
+    the LLM call. Mechanical observations and legacy source_hash alone do not.
+    This receipt covers successful canonical page writes, not semantic fidelity
+    or vector readiness. Embedding remains fail-soft; reindex qualifies and
+    repairs the derived index without repeating paid source distillation.
 
     Returns a dict with ``status`` in {dry_run, ok, skipped, denied, llm_failed}.
     """
@@ -1722,8 +1779,29 @@ def ingest_source(
     source_slug = source_slug or (
         "source-" + _slugify(source_id or source_title or "untitled"))
     src_existing = _find_page_by_slug(store, wiki_root, source_slug)
-    if src_existing is not None and src_existing.source_hash == source_hash:
-        return {"status": "skipped", "reason": "unchanged source_hash",
+    if (target_scope not in {"public", "private"}
+            or Path(source_slug).name != source_slug
+            or (target_scope == "private" and (
+                Path(target_project).name != target_project
+                or target_project in {"_global", ".", ".."}))):
+        return {"status": "denied", "reason": "invalid source scope or slug", "pages": []}
+    target_dir = (wiki_root / "_private" / target_project
+                  if target_scope == "private" else wiki_root)
+    source_destination = page_path(wiki_root, WikiPage(
+        id="", slug=source_slug, title="", type="source", projects=[target_project],
+        scope=target_scope, body=""))
+    destinations = [target_dir, source_destination,
+                    target_dir / "log.md", target_dir / "inbox.md", target_dir / "index.md"]
+    if not all(_canonical_write_path(wiki_root, path) for path in destinations):
+        return {"status": "denied", "reason": "target destination is not its canonical vault location", "pages": []}
+    if src_existing is not None:
+        if not _page_authorized(src_existing, authorized_scopes):
+            return {"status": "denied", "reason": "source project not authorized", "pages": []}
+        if (src_existing.scope != target_scope
+                or (src_existing.projects and target_project not in src_existing.projects)):
+            return {"status": "denied", "reason": "source scope or project mismatch", "pages": []}
+    if src_existing is not None and src_existing.ingest_hash == source_hash:
+        return {"status": "skipped", "reason": "unchanged ingest_hash",
                 "source": source_id, "pages": []}
 
     # --- candidate discovery (deterministic, no LLM) ---
@@ -1731,7 +1809,8 @@ def ingest_source(
     if target_scope == "private" and target_project in authorized_scopes:
         namespaces.append("wiki-private")
     candidate_text, candidate_slugs = _build_candidate_context(
-        store, wiki_root, source_text, namespaces)
+        store, wiki_root, source_text, namespaces,
+        authorized_scopes=[target_project] if target_scope == "private" else [])
 
     # --- LLM distillation ---
     result = _emb.wiki_ingest(
@@ -1765,19 +1844,30 @@ def ingest_source(
         if not slug:
             continue
         existing = _find_page_by_slug(store, wiki_root, slug)
-        scope = upd.get("scope") or (existing.scope if existing else target_scope)
-        if scope == "private":
-            scope_name = (existing.projects[0] if existing and existing.projects
-                          else target_project)
-            if scope_name not in authorized_scopes:
-                _log.info("wiki ingest: dropping unauthorized private page %s", slug)
+        if slug == source_slug or Path(slug).name != slug:
+            continue
+        proposed_scope = upd.get("scope") or target_scope
+        if existing is not None:
+            if (not _page_authorized(existing, authorized_scopes)
+                    or existing.scope != target_scope
+                    or (existing.projects and target_project not in existing.projects
+                        and "_global" not in existing.projects)):
+                _log.info("wiki ingest: dropping page outside source scope/project %s", slug)
                 continue
+        elif proposed_scope != target_scope:
+            _log.info("wiki ingest: dropping proposed scope transition %s", slug)
+            continue
         page = _page_from_update(upd, existing, target_scope, target_project,
                                  today, source_refs=refs)
         pages_to_write.append(page)
         diffs.append({"slug": page.slug, "type": page.type, "scope": page.scope,
                       "action": "update" if existing else "create",
                       "title": page.title, "chars": len(page.body)})
+
+    if (not all(_canonical_write_path(wiki_root, path) for path in destinations)
+            or not all(_canonical_write_path(wiki_root, page_path(wiki_root, page))
+                       for page in pages_to_write)):
+        return {"status": "denied", "reason": "page destination is not its canonical vault location", "pages": []}
 
     log_line = (f"## [{today}] ingest | {source_title or source_id} "
                 f"({len(pages_to_write)} pages)")
@@ -1795,18 +1885,23 @@ def ingest_source(
     for p in pages_to_write:
         path = page_path(wiki_root, p)
         if path.exists():
-            _backup_page(path)
+            _backup_page(wiki_root, path)
         _atomic_write_page(path, render_page(p))
         written += 1
+    src_page.ingest_hash = source_hash
+    _atomic_write_page(page_path(wiki_root, src_page), render_page(src_page))
     vec = _index_pages(store, wiki_root, pages_to_write)
     _write_public_index(wiki_root)
     _write_private_indexes(wiki_root)
-    _append_log(wiki_root, today, "ingest", source_title or source_id, written)
-    _append_inbox(wiki_root, result.get("assumptions", []), today, source_id)
+    log_root = (wiki_root / "_private" / target_project
+                if target_scope == "private" else wiki_root)
+    _append_log(log_root, today, "ingest", source_title or source_id, written)
+    _append_inbox(log_root, result.get("assumptions", []), today, source_id)
 
     return {
         "status": "ok", "source": source_id, "pages": diffs,
         "written": written, "vectors": vec,
+        "ingest_receipt": "canonical_pages_written", "index_readiness": "unverified",
         "assumptions": result.get("assumptions", []),
     }
 
@@ -2048,6 +2143,7 @@ def migrate(
             source_refs=[str(source_path)],
             created=created_date,
             updated=updated_date,
+            source_hash=_hash_text(raw_text),
         )
 
         pages_to_write.append(page)
@@ -2148,17 +2244,10 @@ def _write_public_index(wiki_root: Path) -> None:
     for md_path in pages_root.rglob("*.md"):
         if not md_path.is_file():
             continue
-        try:
-            text = md_path.read_text(encoding="utf-8")
-        except OSError:
+        page = _load_vault_page(wiki_root, md_path)
+        if page is None or page.scope != "public":
             continue
-        fm, _ = parse_frontmatter(text)
-        slug = fm.get("slug") or md_path.stem
-        title = fm.get("title") or slug
-        page_type = fm.get("type") or "entity"
-        # Only public pages go in the shared index.
-        if (fm.get("scope") or "public") == "private":
-            continue
+        slug, title, page_type = page.slug, page.title, page.type
         by_type.setdefault(page_type, []).append((slug, title))
 
     lines = ["# Wiki Index\n"]
@@ -2169,6 +2258,8 @@ def _write_public_index(wiki_root: Path) -> None:
     lines.append("")
 
     index_path = wiki_root / "index.md"
+    if not _canonical_write_path(wiki_root, index_path):
+        return
     try:
         _atomic_write_page(index_path, "\n".join(lines))
     except Exception as exc:
@@ -2190,23 +2281,18 @@ def _write_private_indexes(wiki_root: Path) -> None:
         if not scope_dir.is_dir():
             continue
         scope_name = scope_dir.name
+        resolved = scope_dir.resolve()
+        if (not resolved.is_relative_to(wiki_root.resolve())
+                or resolved.parent != private_root.resolve() or resolved.name != scope_name):
+            continue
         entries: list[tuple[str, str]] = []
         for md_path in scope_dir.glob("*.md"):
-            if md_path.name == "index.md":
+            if md_path.name == "index.md" or not md_path.is_file():
                 continue
-            if not md_path.is_file():
+            page = _load_vault_page(wiki_root, md_path)
+            if page is None or page.scope != "private" or page.projects != [scope_name]:
                 continue
-            try:
-                text = md_path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            fm, _ = parse_frontmatter(text)
-            slug = fm.get("slug") or md_path.stem
-            title = fm.get("title") or slug
-            entries.append((slug, title))
-
-        if not entries:
-            continue
+            entries.append((page.slug, page.title))
 
         links_body = "\n".join(f"- [[{s}]] — {t}" for s, t in sorted(entries, key=lambda x: x[0]))
         index_slug = f"private-index-{_slugify(scope_name)}"
@@ -2222,6 +2308,8 @@ def _write_private_indexes(wiki_root: Path) -> None:
             updated=date.today().isoformat(),
         )
         index_path = scope_dir / "index.md"
+        if not _canonical_write_path(wiki_root, index_path):
+            continue
         try:
             _atomic_write_page(index_path, render_page(index_page))
         except Exception as exc:

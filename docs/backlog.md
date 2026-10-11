@@ -1,6 +1,6 @@
 # Current conclusions and remaining work
 
-Updated 2026-10-07. This is the current work list; the earlier
+Updated 2026-10-11. This is the current work list; the earlier
 [backlog review](backlog-review.md) remains a historical evidence snapshot.
 
 ## Conclusions
@@ -20,6 +20,17 @@ Updated 2026-10-07. This is the current work list; the earlier
 - Projection and one-hop graph traversal have no evidence sufficient for
   promotion. Keep the existing experimental capability outside the selected
   default; do not add another memory engine or claim whole-task savings.
+- The corrected live read-only audit includes private pages: 1,077 of 1,226
+  raw source paths are referenced, leaving 149 uncovered. There are 1,139
+  source pages without observation hashes and no source pages with a current
+  canonical ingestion receipt. These are migration gaps, not evidence of
+  answer quality. Receipt, queue and private-scope repairs make the preparation
+  path usable; they do not qualify global promotion or index deletion.
+- A separate [answer pilot](../benchmarks/MEMORY_ANSWER_PILOT.md) checks actual
+  generated content on twelve existing holdout questions: wiki answers fully
+  satisfy 22/24 required facts versus raw 18/24. Both abstain on the two unknown
+  questions. This single native-assisted public-document run does not qualify
+  live ingestion, the configured wiki provider or whole-task value.
 
 ## Active gates
 
@@ -45,5 +56,9 @@ for the six active gates above; do not expand them automatically.
 
 Current closure verification: 26 focused compression/fidelity/MCP-profile tests
 passed. The integrated code at `9317b78` passed 2,061 offline tests, with 18 skips.
+The October 11 integrity repair passed a 2,085-test offline run with 18 skips;
+after the final write/backup refinements, all 214 affected wiki, audit, route,
+watcher, enrichment and benchmark tests passed. Independent focused review
+found no remaining actionable defects in the examined paths.
 Protocol schema size, content fact support and completed-task value are separate
 measurements; preserve their negative and unknown results.

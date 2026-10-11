@@ -17,17 +17,36 @@ Keep raw selected until a wiki migration has passed those checks. Projection
 and graph traversal remain experimental and are not part of the selected wiki
 candidate.
 
+The later [answer pilot](../benchmarks/MEMORY_ANSWER_PILOT.md) evaluates generated
+answers and abstention on the existing public-document holdout. Wiki retains
+more required facts, but that single diagnostic does not qualify live ingestion
+or the configured answer provider.
+
 Run the read-only aggregate prerequisite audit:
 
 ```bash
 python benchmarks/audit_memory_backend.py
 ```
 
-It reports raw-source reference coverage, first-source hash freshness, and page
-availability without printing source paths or content. `reference_coverage_complete`
+It inspects both public and private page roots and reports raw-source reference
+coverage, source observation freshness, and canonical ingestion receipts without
+printing source paths or content. Generated listings and backups do not count as
+source coverage. `reference_coverage_complete`
 is a prerequisite only. A current first-source hash cannot verify every cited
 source or the meaning of a distilled page. `semantic_quality_qualified` stays
 false because this tool does not judge content.
+
+`source_hash` records the observed source. `ingest_hash` records a completed live
+distillation into canonical Markdown; migration and connector writes do not set
+it. An unchanged observation must still be distilled once. Legacy completed
+queue entries without a receipt return to review. A receipt establishes neither
+fact fidelity nor vector readiness: embeddings can fail independently, and a
+successful reindex remains a separate serving prerequisite.
+
+Private disk placement owns the project scope. Retrieval, candidate discovery,
+indexes and writes must respect that scope even when frontmatter or a symbolic
+link suggests another project. Private ingestion logs and assumptions remain in
+the private project directory.
 
 Before selecting wiki for an existing corpus, repair uncovered/stale pages,
 evaluate content and evidence-grounded answers on frozen representative queries,

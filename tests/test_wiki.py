@@ -1500,7 +1500,7 @@ class TestScanCandidates:
     """Deterministic source selection: undistilled + stale source pages."""
 
     def _write(self, wiki_root, rel, slug, ptype, body="x", scope="public",
-               source_refs=None, source_hash=""):
+               source_refs=None, source_hash="", ingest_hash=""):
         p = wiki_root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         fm = [f"---", f"slug: {slug}", f"title: {slug}", f"type: {ptype}",
@@ -1511,6 +1511,8 @@ class TestScanCandidates:
                 fm.append(f"- {r}")
         if source_hash:
             fm.append(f"source_hash: {source_hash}")
+        if ingest_hash:
+            fm.append(f"ingest_hash: {ingest_hash}")
         fm.append("---")
         p.write_text("\n".join(fm) + f"\n{body}\n", encoding="utf-8")
         return p
@@ -1522,17 +1524,17 @@ class TestScanCandidates:
         cands = scan_candidates(store, wiki_root)
         assert len(cands) == 1
         assert cands[0]["slug"] == "source-a"
-        assert cands[0]["reason"] == "undistilled"
+        assert cands[0]["reason"] == "missing_source_hash"
 
-    def test_distilled_source_not_candidate(self, store, wiki_root):
+    def test_shared_references_do_not_qualify_legacy_source(self, store, wiki_root):
         from skill_hub.wiki import scan_candidates
-        # A source page AND an entity page sharing the same source_ref → distilled.
+        # Shared references cannot establish a successful distillation receipt.
         self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
                     source_refs=["/orig/a.md"])
         self._write(wiki_root, "pages/entity/a.md", "a", "entity",
                     source_refs=["/orig/a.md"])
         cands = scan_candidates(store, wiki_root)
-        assert cands == []
+        assert cands[0]["reason"] == "missing_source_hash"
 
     def test_stale_source_is_candidate(self, store, wiki_root, tmp_path):
         from skill_hub.wiki import scan_candidates, _hash_text
@@ -1553,7 +1555,8 @@ class TestScanCandidates:
         orig = tmp_path / "a.md"
         orig.write_text("same", encoding="utf-8")
         self._write(wiki_root, "pages/source/source-a.md", "source-a", "source",
-                    source_refs=[str(orig)], source_hash=_hash_text("same"))
+                    source_refs=[str(orig)], source_hash=_hash_text("same"),
+                    ingest_hash=_hash_text("same"))
         self._write(wiki_root, "pages/entity/a.md", "a", "entity",
                     source_refs=[str(orig)])
         assert scan_candidates(store, wiki_root) == []
@@ -1567,7 +1570,7 @@ class TestScanCandidates:
         self._write(wiki_root, "pages/entity/s.md", "s", "entity",
                     source_refs=[str(orig)])
         self._write(wiki_root, "pages/source/source-u.md", "source-u", "source",
-                    source_refs=["/orig/u.md"])
+                    source_refs=["/orig/u.md"], source_hash=_hash_text("not distilled"))
         cands = scan_candidates(store, wiki_root)
         assert [c["reason"] for c in cands] == ["stale", "undistilled"]
 
@@ -2132,3 +2135,435 @@ class TestWikiFileAnswer:
         assert BACKEND_DB in spec.hard
         assert BACKEND_EMBED in spec.hard
         assert BACKEND_REASON_LLM in spec.hard
+
+
+class TestWikiDistillationReceipts:
+    def _isolate(self, monkeypatch, store, payload=None):
+        import skill_hub.embeddings as embeddings
+        import skill_hub.wiki as wiki
+        calls = []
+        result = payload or {
+            "source_page": {"body": "distilled source"},
+            "page_updates": [{"slug": "entity", "type": "entity", "new_body": "distilled entity"}],
+        }
+        monkeypatch.setattr(embeddings, "wiki_ingest", lambda **kwargs: calls.append(kwargs) or result)
+        monkeypatch.setattr(store, "search_vectors", lambda *args, **kwargs: [])
+        monkeypatch.setattr(wiki, "_index_pages", lambda *args, **kwargs: 0)
+        return calls
+
+    def test_mechanical_observation_is_distilled_once_and_receipt_round_trips(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        calls = self._isolate(monkeypatch, store)
+        wiki.write_source_page(store, wiki_root, source_id="raw", title="Raw", body="raw text")
+        source = wiki._find_page_by_slug(store, wiki_root, "source-raw")
+        assert source.source_hash == wiki._hash_text("raw text") and not source.ingest_hash
+        assert wiki.scan_candidates(store, wiki_root)[0]["reason"] == "undistilled"
+        args = dict(source_kind="discussion", source_id="raw", source_text="raw text", dry_run=False)
+        assert wiki.ingest_source(store, wiki_root, **args)["status"] == "ok"
+        source = wiki._find_page_by_slug(store, wiki_root, "source-raw")
+        assert source.ingest_hash == source.source_hash
+        assert wiki.ingest_source(store, wiki_root, **args)["status"] == "skipped"
+        assert len(calls) == 1
+        assert wiki.scan_candidates(store, wiki_root) == []
+
+    def test_dry_run_and_model_failure_never_set_receipt(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        self._isolate(monkeypatch, store)
+        wiki.write_source_page(store, wiki_root, source_id="raw", title="Raw", body="raw text")
+        args = dict(source_kind="discussion", source_id="raw", source_text="raw text")
+        assert wiki.ingest_source(store, wiki_root, **args)["status"] == "dry_run"
+        assert not wiki._find_page_by_slug(store, wiki_root, "source-raw").ingest_hash
+        self._isolate(monkeypatch, store, {"_fallback": True})
+        assert wiki.ingest_source(store, wiki_root, **args, dry_run=False)["status"] == "llm_failed"
+        assert not wiki._find_page_by_slug(store, wiki_root, "source-raw").ingest_hash
+
+    def test_page_write_failure_never_sets_success_receipt(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        self._isolate(monkeypatch, store)
+        wiki.write_source_page(store, wiki_root, source_id="raw", title="Raw", body="raw text")
+        original = wiki._atomic_write_page
+        def fail_entity(path, text):
+            if path.name == "entity.md":
+                raise OSError("fixture write failure")
+            return original(path, text)
+        monkeypatch.setattr(wiki, "_atomic_write_page", fail_entity)
+        with pytest.raises(OSError, match="fixture"):
+            wiki.ingest_source(store, wiki_root, source_kind="discussion", source_id="raw",
+                               source_text="raw text", dry_run=False)
+        assert not wiki._find_page_by_slug(store, wiki_root, "source-raw").ingest_hash
+
+    def test_observation_refresh_preserves_old_receipt_and_requeues(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        self._isolate(monkeypatch, store)
+        wiki.ingest_source(store, wiki_root, source_kind="discussion", source_id="raw",
+                           source_text="old", dry_run=False)
+        wiki.write_source_page(store, wiki_root, source_id="raw", title="Raw", body="changed")
+        page = wiki._find_page_by_slug(store, wiki_root, "source-raw")
+        assert page.source_hash == wiki._hash_text("changed")
+        assert page.ingest_hash == wiki._hash_text("old")
+        assert wiki.scan_candidates(store, wiki_root)[0]["reason"] == "stale"
+
+    def test_migration_records_observation_without_distillation_receipt(self, tmp_path, monkeypatch):
+        from skill_hub import wiki
+        _, root, _ = TestMigrateNonDryRun()._run_migrate(tmp_path, monkeypatch)
+        sources = [wiki._load_page(path) for path in root.rglob("*.md")]
+        sources = [page for page in sources if page and page.type == "source"]
+        assert sources
+        for page in sources:
+            assert page.source_hash == wiki._hash_text(Path(page.source_refs[0]).read_text())
+            assert page.ingest_hash == ""
+
+
+class TestWikiProjectPrivacy:
+    def _page(self, root, slug, *, disk_project=None, scope="public", projects=None, ptype="entity"):
+        from skill_hub import wiki
+        page = wiki.WikiPage(id=slug, slug=slug, title=slug, type=ptype,
+                             projects=projects or ["_global"], scope=scope, body=f"SECRET-{slug}")
+        path = (root / "_private" / disk_project / f"{slug}.md" if disk_project
+                else root / "pages" / ptype / f"{slug}.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(wiki.render_page(page))
+        return str(path.relative_to(root))
+
+    def _hits(self, monkeypatch, store, pages):
+        monkeypatch.setattr(store, "search_vectors", lambda *args, **kwargs: [
+            {"metadata": {"slug": slug, "rel_path": rel}, "score": 1} for slug, rel in pages])
+
+    def test_authorized_alpha_does_not_return_beta_or_public_alias_for_private(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        alpha = self._page(wiki_root, "alpha", disk_project="alpha", scope="private", projects=["alpha"])
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="public", projects=["alpha"])
+        self._hits(monkeypatch, store, [("beta", beta), ("alpha", alpha)])
+        result = wiki.query(store, wiki_root, "secret", authorized_scopes=["alpha"])
+        assert [page["slug"] for page in result["results"]] == ["alpha"]
+        assert wiki.query(store, wiki_root, "secret")["results"] == []
+        text, slugs = wiki._build_candidate_context(store, wiki_root, "secret", ["wiki-private"],
+                                                    authorized_scopes=["alpha"])
+        assert slugs == ["alpha"] and "SECRET-beta" not in text
+
+    def test_vector_paths_outside_vault_and_public_symlink_alias_cannot_leak(self, store, wiki_root, monkeypatch, tmp_path):
+        from skill_hub import wiki
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="public")
+        alias = wiki_root / "pages" / "entity" / "alias.md"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.symlink_to(wiki_root / beta)
+        outside = tmp_path / "outside.md"
+        outside.write_text("---\nslug: outside\ntype: entity\n---\nSECRET-OUTSIDE")
+        self._hits(monkeypatch, store, [("alias", "pages/entity/alias.md"), ("outside", str(outside))])
+        assert wiki.query(store, wiki_root, "secret", authorized_scopes=["alpha"])["results"] == []
+
+    def test_private_source_scope_spoof_denied_before_model_call(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        self._page(wiki_root, "source-secret", disk_project="beta", scope="public", projects=["alpha"], ptype="source")
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="secret",
+                                    source_text="private input", target_scope="public", authorized_scopes=["alpha"], dry_run=False)
+        assert result["status"] == "denied" and calls == []
+        assert not (wiki_root / "pages" / "source" / "source-secret.md").exists()
+
+    def test_private_ingest_filters_other_project_candidates_and_cannot_downgrade(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        alpha = self._page(wiki_root, "alpha", disk_project="alpha", scope="private", projects=["alpha"])
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="private", projects=["beta"])
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store, {
+            "source_page": {"body": "private source"},
+            "page_updates": [{"slug": "alpha", "scope": "public", "new_body": "updated alpha"},
+                             {"slug": "beta", "scope": "public", "new_body": "attack beta"}],
+            "assumptions": [{"claim": "SECRET-ASSUMPTION", "verify_by": "local"}],
+        })
+        self._hits(monkeypatch, store, [("beta", beta), ("alpha", alpha)])
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="input",
+                                    source_text="private input", target_scope="private", target_project="alpha",
+                                    authorized_scopes=["alpha"], dry_run=False)
+        assert result["status"] == "ok"
+        assert "SECRET-beta" not in calls[0]["candidate_pages"]
+        assert "SECRET-alpha" in calls[0]["candidate_pages"]
+        assert wiki._load_page(wiki_root / alpha).scope == "private"
+        assert wiki._load_page(wiki_root / alpha).body == "updated alpha"
+        assert wiki._load_page(wiki_root / beta).body == "SECRET-beta"
+        assert not (wiki_root / "pages" / "entity" / "alpha.md").exists()
+        assert not (wiki_root / "inbox.md").exists()
+        assert "SECRET-ASSUMPTION" in (wiki_root / "_private" / "alpha" / "inbox.md").read_text()
+
+    def test_public_ingest_cannot_promote_into_private_or_rewrite_unrelated_project(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        private = self._page(wiki_root, "private", disk_project="alpha", scope="private", projects=["alpha"])
+        beta = self._page(wiki_root, "beta", projects=["beta"])
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store, {
+            "source_page": {"body": "public source"},
+            "page_updates": [{"slug": "private", "scope": "public", "new_body": "attack"},
+                             {"slug": "beta", "scope": "public", "new_body": "attack"},
+                             {"slug": "new-private", "scope": "private", "new_body": "attack"}],
+        })
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="input",
+                                    source_text="public input", target_project="alpha", authorized_scopes=["alpha"], dry_run=False)
+        assert [page["slug"] for page in result["pages"]] == ["source-input"]
+        assert wiki._load_page(wiki_root / private).body == "SECRET-private"
+        assert wiki._load_page(wiki_root / beta).body == "SECRET-beta"
+
+    def test_mechanical_source_refresh_cannot_change_project_or_scope(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        self._page(wiki_root, "source-secret", disk_project="alpha", scope="private", projects=["alpha"], ptype="source")
+        with pytest.raises(ValueError, match="mismatch"):
+            wiki.write_source_page(store, wiki_root, source_id="secret", title="secret", body="public input")
+
+
+    def test_public_index_never_exports_private_symlink_alias(self, store, wiki_root):
+        from skill_hub import wiki
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="public")
+        alias = wiki_root / "pages" / "entity" / "alias.md"
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.symlink_to(wiki_root / beta)
+        wiki._write_public_index(wiki_root)
+        assert "beta" not in (wiki_root / "index.md").read_text()
+
+    def test_entity_rewrite_preserves_all_source_references(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        rel = self._page(wiki_root, "entity")
+        existing = wiki._load_page(wiki_root / rel)
+        existing.source_refs = ["original-source"]
+        (wiki_root / rel).write_text(wiki.render_page(existing))
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="another-source",
+                                    source_text="new material", dry_run=False)
+        assert result["status"] == "ok"
+        updated = wiki._load_page(wiki_root / rel)
+        assert updated.source_refs == ["original-source", "another-source"]
+
+
+    def test_model_page_type_cannot_escape_vault(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store, {
+            "source_page": {"body": "public source"},
+            "page_updates": [{"slug": "escape", "type": "../../outside", "new_body": "new content"}],
+        })
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="input",
+                                    source_text="public input", dry_run=False)
+        assert result["status"] == "ok"
+        assert (wiki_root / "pages" / "entity" / "escape.md").exists()
+        assert not (wiki_root.parent / "outside" / "escape.md").exists()
+
+
+    def test_private_index_cannot_export_another_project_through_symlink(self, store, wiki_root):
+        from skill_hub import wiki
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="private")
+        alpha_root = wiki_root / "_private" / "alpha"
+        alpha_root.mkdir()
+        (alpha_root / "leak.md").symlink_to(wiki_root / beta)
+        (alpha_root / "index.md").write_text("STALE-beta")
+        wiki._write_private_indexes(wiki_root)
+        assert "beta" not in (alpha_root / "index.md").read_text()
+        assert wiki._load_vault_page(wiki_root, alpha_root / "leak.md") is None
+
+    def test_reindex_never_imports_outside_vault_symlink_into_vectors(self, store, wiki_root, monkeypatch, tmp_path):
+        from skill_hub import wiki
+        outside = tmp_path / "outside.md"
+        outside.write_text(wiki.render_page(wiki.WikiPage(
+            id="outside", slug="outside", title="outside", type="entity",
+            scope="public", projects=["_global"], body="SECRET-OUTSIDE")))
+        alias = wiki_root / "pages" / "entity" / "alias.md"
+        alias.parent.mkdir(parents=True)
+        alias.symlink_to(outside)
+        calls = []
+        monkeypatch.setattr(wiki, "_check_dim_guard", lambda store: None)
+        monkeypatch.setattr(store, "upsert_vector", lambda **kwargs: calls.append(kwargs))
+        result = wiki.reindex(store, wiki_root, dry_run=False)
+        assert result["pages"] == 0 and calls == []
+        assert store._conn.execute("SELECT COUNT(*) FROM wiki_pages").fetchone()[0] == 0
+
+
+    def test_incremental_reindex_rejects_outside_and_other_project_aliases(self, store, wiki_root, monkeypatch, tmp_path):
+        from skill_hub import wiki
+        beta = self._page(wiki_root, "beta", disk_project="beta", scope="private")
+        alpha_root = wiki_root / "_private" / "alpha"
+        alpha_root.mkdir()
+        private_alias = alpha_root / "leak.md"
+        private_alias.symlink_to(wiki_root / beta)
+        outside = tmp_path / "outside.md"
+        outside.write_text("---\nslug: outside\n---\nSECRET-OUTSIDE")
+        public_alias = wiki_root / "pages" / "entity" / "alias.md"
+        public_alias.parent.mkdir(parents=True)
+        public_alias.symlink_to(outside)
+        calls = []
+        monkeypatch.setattr(wiki, "_check_dim_guard", lambda store: None)
+        monkeypatch.setattr(store, "upsert_vector", lambda **kwargs: calls.append(kwargs))
+        result = wiki.reindex_paths(store, wiki_root, changed={private_alias, public_alias})
+        assert result["pages_updated"] == 0 and calls == []
+
+    def test_distillation_receipt_does_not_claim_vector_readiness(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        args = dict(source_kind="memory", source_id="input", source_text="public input", dry_run=False)
+        result = wiki.ingest_source(store, wiki_root, **args)
+        assert result["status"] == "ok" and result["vectors"] == 0
+        assert result["ingest_receipt"] == "canonical_pages_written"
+        assert result["index_readiness"] == "unverified"
+        assert wiki.ingest_source(store, wiki_root, **args)["status"] == "skipped"
+        assert len(calls) == 1
+
+
+    @pytest.mark.parametrize("observed", [False, True])
+    def test_legacy_done_without_receipt_reopens_for_approval_but_skipped_is_preserved(self, store, wiki_root, monkeypatch, observed):
+        from skill_hub import wiki
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        wiki.write_source_page(store, wiki_root, source_id="legacy", title="Legacy", body="raw")
+        if not observed:
+            page = wiki._find_page_by_slug(store, wiki_root, "source-legacy")
+            page.source_hash = ""
+            wiki.page_path(wiki_root, page).write_text(wiki.render_page(page))
+        wiki.scan_and_enqueue(store, wiki_root)
+        store._conn.execute("UPDATE wiki_queue SET status='done' WHERE slug='source-legacy'")
+        store._conn.commit()
+        wiki.scan_and_enqueue(store, wiki_root)
+        row = store._conn.execute("SELECT status,reason FROM wiki_queue WHERE slug='source-legacy'").fetchone()
+        assert row["status"] == "pending"
+        assert row["reason"] == ("undistilled" if observed else "missing_source_hash")
+        assert wiki.ingest_queued(store, wiki_root, "source-legacy", dry_run=False)["status"] == "denied"
+        decision = wiki.queue_decision(store, "source-legacy", "approve")
+        assert decision["status"] == "ok" and decision["decision"] == "approved"
+        assert wiki.ingest_queued(store, wiki_root, "source-legacy", dry_run=False)["status"] == "ok"
+        store._conn.execute("UPDATE wiki_queue SET status='skipped' WHERE slug='source-legacy'")
+        store._conn.commit()
+        page = wiki._find_page_by_slug(store, wiki_root, "source-legacy")
+        page.ingest_hash = ""
+        wiki.page_path(wiki_root, page).write_text(wiki.render_page(page))
+        wiki.scan_and_enqueue(store, wiki_root)
+        assert store._conn.execute("SELECT status FROM wiki_queue WHERE slug='source-legacy'").fetchone()[0] == "skipped"
+
+
+    @pytest.mark.parametrize("alias_project,target_project", [("alpha", "beta"), ("beta", "alpha")])
+    def test_private_target_directory_alias_denied_before_model_and_mechanical_write(self, store, wiki_root, monkeypatch, alias_project, target_project):
+        from skill_hub import wiki
+        owner = wiki_root / "_private" / target_project
+        owner.mkdir(parents=True)
+        (wiki_root / "_private" / alias_project).symlink_to(owner, target_is_directory=True)
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="private input", target_scope="private", target_project=alias_project,
+                                    authorized_scopes=[alias_project], dry_run=False)
+        assert result["status"] == "denied" and calls == []
+        assert list(owner.iterdir()) == []
+        with pytest.raises(ValueError, match="canonical"):
+            wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="private input",
+                                   scope="private", project=alias_project)
+        assert list(owner.iterdir()) == []
+
+    def test_private_root_outside_alias_denied_without_model_or_writes(self, store, wiki_root, monkeypatch, tmp_path):
+        from skill_hub import wiki
+        outside = tmp_path / "outside-private"
+        outside.mkdir()
+        (wiki_root / "_private").symlink_to(outside, target_is_directory=True)
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="private input", target_scope="private", target_project="alpha",
+                                    authorized_scopes=["alpha"], dry_run=False)
+        assert result["status"] == "denied" and calls == [] and list(outside.iterdir()) == []
+        with pytest.raises(ValueError, match="canonical"):
+            wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="input",
+                                   scope="private", project="alpha")
+        assert list(outside.iterdir()) == []
+
+    @pytest.mark.parametrize("filename", ["source-new.md", "log.md", "inbox.md", "index.md"])
+    def test_private_target_file_alias_denied_before_model_or_write(self, store, wiki_root, monkeypatch, filename):
+        from skill_hub import wiki
+        alpha = wiki_root / "_private" / "alpha"
+        beta = wiki_root / "_private" / "beta"
+        alpha.mkdir(parents=True)
+        beta.mkdir()
+        victim = beta / filename
+        victim.write_text("SECRET-BETA")
+        (alpha / filename).symlink_to(victim)
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="private input", target_scope="private", target_project="alpha",
+                                    authorized_scopes=["alpha"], dry_run=False)
+        assert result["status"] == "denied" and calls == []
+        assert victim.read_text() == "SECRET-BETA"
+        assert [path.name for path in alpha.iterdir()] == [filename]
+        if filename == "source-new.md":
+            with pytest.raises(ValueError, match="canonical"):
+                wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="input",
+                                       scope="private", project="alpha")
+            assert victim.read_text() == "SECRET-BETA"
+
+    @pytest.mark.parametrize("outside", [False, True])
+    def test_public_source_directory_alias_denied_before_model_and_write(self, store, wiki_root, monkeypatch, tmp_path, outside):
+        from skill_hub import wiki
+        destination = tmp_path / "outside" if outside else wiki_root / "_private" / "beta"
+        destination.mkdir(parents=True)
+        pages = wiki_root / "pages"
+        pages.mkdir()
+        (pages / "source").symlink_to(destination, target_is_directory=True)
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="public input", dry_run=False)
+        assert result["status"] == "denied" and calls == [] and list(destination.iterdir()) == []
+        with pytest.raises(ValueError, match="canonical"):
+            wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="input")
+        assert list(destination.iterdir()) == []
+
+    def test_proposed_page_directory_alias_denies_whole_write_set(self, store, wiki_root, monkeypatch):
+        from skill_hub import wiki
+        victim = wiki_root / "_private" / "beta"
+        victim.mkdir(parents=True)
+        pages = wiki_root / "pages"
+        pages.mkdir()
+        (pages / "entity").symlink_to(victim, target_is_directory=True)
+        calls = TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="public input", dry_run=False)
+        assert result["status"] == "denied" and len(calls) == 1
+        assert not (wiki_root / "pages" / "source").exists()
+        assert not (wiki_root / "log.md").exists() and list(victim.iterdir()) == []
+
+
+    def test_index_generators_preserve_unrelated_symlink_targets(self, store, wiki_root, monkeypatch, tmp_path):
+        from skill_hub import wiki
+        self._page(wiki_root, "public")
+        self._page(wiki_root, "beta", disk_project="beta", scope="private")
+        public_victim, private_victim = tmp_path / "public-victim.md", tmp_path / "private-victim.md"
+        public_victim.write_text("PUBLIC-VICTIM")
+        private_victim.write_text("PRIVATE-VICTIM")
+        (wiki_root / "index.md").symlink_to(public_victim)
+        (wiki_root / "_private" / "beta" / "index.md").symlink_to(private_victim)
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                    source_text="private input", target_scope="private", target_project="alpha",
+                                    authorized_scopes=["alpha"], dry_run=False)
+        assert result["status"] == "ok"
+        assert public_victim.read_text() == "PUBLIC-VICTIM"
+        assert private_victim.read_text() == "PRIVATE-VICTIM"
+        assert (wiki_root / "index.md").is_symlink()
+        assert (wiki_root / "_private" / "beta" / "index.md").is_symlink()
+
+    @pytest.mark.parametrize("directory_alias", [False, True])
+    @pytest.mark.parametrize("mechanical", [False, True])
+    def test_private_backup_alias_never_copies_into_another_project(self, store, wiki_root, monkeypatch, directory_alias, mechanical):
+        from skill_hub import wiki
+        TestWikiDistillationReceipts()._isolate(monkeypatch, store)
+        wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="SECRET-ALPHA",
+                               scope="private", project="alpha")
+        alpha = wiki_root / "_private" / "alpha"
+        beta = wiki_root / "_private" / "beta"
+        beta.mkdir()
+        victim = beta / "source-new.md.bak"
+        if directory_alias:
+            (alpha / ".backups").symlink_to(beta, target_is_directory=True)
+        else:
+            victim.write_text("ORIGINAL-BETA")
+            (alpha / ".backups").mkdir()
+            (alpha / ".backups" / "source-new.md.bak").symlink_to(victim)
+        if mechanical:
+            wiki.write_source_page(store, wiki_root, source_id="new", title="new", body="UPDATED-ALPHA",
+                                   scope="private", project="alpha")
+        else:
+            result = wiki.ingest_source(store, wiki_root, source_kind="memory", source_id="new",
+                                        source_text="UPDATED-ALPHA", target_scope="private", target_project="alpha",
+                                        authorized_scopes=["alpha"], dry_run=False)
+            assert result["status"] == "ok"
+        if directory_alias:
+            assert not victim.exists()
+        else:
+            assert victim.read_text() == "ORIGINAL-BETA"
+        assert all("SECRET-ALPHA" not in path.read_text() for path in beta.glob("*.bak"))
