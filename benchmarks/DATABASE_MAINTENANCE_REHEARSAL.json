@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-11",
+  "live_migration_completed": false,
+  "method": "Consistent live SQLite snapshot; checked-in migration executed on offline copy only",
+  "retired_schema_removed": true,
+  "nonvirtual_nonretired_table_counts_preserved": true,
+  "nonvirtual_nonretired_tables_checked": 98,
+  "virtual_tables_not_queried": 10,
+  "integrity_check": "ok"
+}

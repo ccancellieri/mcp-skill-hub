@@ -46,13 +46,30 @@ Updated 2026-10-11. This is the current work list; the earlier
 Do memory integrity/relevance first, runtime qualification next, and task value
 after those qualify. Keep offline maintenance a separate operation.
 
-## Deferred research
+The [foreground skill qualification](../benchmarks/FOREGROUND_RELEVANCE_RESULTS.md)
+grades actual selected source IDs on 48 frozen public English/Italian cases.
+Holdout irrelevant injections fall from 9 to 1 in English and 7 to 1 in Italian;
+recall is 100% and 91.7%. Both languages abstain correctly on only five of six
+negative cases, below the fixed 90% requirement: #158 remains open. Independent
+review fixes protect operational requests and explicit invocations, including
+bounded lookup beyond description distractors. The post-review rerun is
+diagnostic after holdout inspection, not a new independent qualification.
+
+## Archived proposals
 
 [#163](https://github.com/ccancellieri/mcp-skill-hub/issues/163) (compressed
 representations) and [#164](https://github.com/ccancellieri/mcp-skill-hub/issues/164)
-(free pre-client/gateway) remain separate deferred studies. Neither has a
-successful native evaluation or product promotion. They are not prerequisites
-for the six active gates above; do not expand them automatically.
+(free pre-client/gateway) are closed as **not planned**. Their proposals and
+negative or unknown evidence remain available in the closed issues. This is a
+scope decision, not successful research or product promotion. Existing provider
+qualification belongs to #128 and complete-task value to #152.
+
+The [database maintenance rehearsal](../benchmarks/DATABASE_MAINTENANCE_REHEARSAL.json)
+applied the existing migration to a consistent copy of the live database:
+retired schema removed, all 98 ordinary nonretired table counts preserved and
+integrity check `ok`. Ten virtual tables were not queried by that runtime.
+The six migration tests pass. The live operation remains open in #131: active
+stdio MCP clients must be disconnected and subsequently restarted and verified.
 
 Current closure verification: 26 focused compression/fidelity/MCP-profile tests
 passed. The integrated code at `9317b78` passed 2,061 offline tests, with 18 skips.
@@ -62,3 +79,8 @@ watcher, enrichment and benchmark tests passed. Independent focused review
 found no remaining actionable defects in the examined paths.
 Protocol schema size, content fact support and completed-task value are separate
 measurements; preserve their negative and unknown results.
+
+The foreground repair passed a 2,138-test offline run with 18 skips; all 130
+affected tests passed after its final legacy-name lookup refinement. Final
+independent review passed 39 focused tests without an actionable defect in the
+examined paths. These checks do not replace the failed relevance gate.

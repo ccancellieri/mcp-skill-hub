@@ -253,22 +253,106 @@ def _clean_snippet(text: str) -> str:
     return text[:_SNIPPET_CHARS].rstrip()
 
 
+_SKILL_GENERIC = frozenset({
+    "apply", "check", "checked", "checking", "close", "closing", "continue",
+    "debug", "debugging", "design", "draw", "generate", "inspect", "issue",
+    "let", "manage", "next", "now", "prepare", "proceed", "result", "review",
+    "run", "step", "test", "tested", "testing", "tool", "verify", "work",
+    "adesso", "applica", "chiudendo", "continua", "controlla", "esegui",
+    "genera", "mantieni", "ottimizza", "prepara", "procedi", "progettiamo",
+    "progetta", "proseguiamo", "risultato", "riga", "testiamo", "usa", "verifica",
+})
+
+
+def _skill_terms(text: str) -> set[str]:
+    from .skill_retrieval import terms
+
+    # Retain underscore identifiers whole; artifact/plural normalization applies
+    # only to prose. Memory and task matching retain their existing token rules.
+    identifiers = set(re.findall(r"\b[a-z0-9]+(?:_[a-z0-9]+)+\b", text.lower()))
+    prose = re.sub(r"\b[a-z0-9]+(?:_[a-z0-9]+)+\b", " ", text.lower())
+    return (terms(prose) - _SKILL_GENERIC) | identifiers
+
+
+def _skill_definition_question(prompt: str) -> bool:
+    return bool(re.search(
+        r"\b(?:acronym|meaning|initials|sigla|significa|iniziali|pronounc\w*|pronuncia)\b"
+        r"|\bstand\s+for\b", prompt, re.IGNORECASE
+    )) and not re.search(
+        r"\b(?:create|build|design|implement|write|debug|test|review|generate|prepare|edit|fix|repair|"
+        r"crea|progetta|implementa|scrivi|genera|prepara|modifica|verifica)\b",
+        prompt, re.IGNORECASE,
+    )
+
+
 def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int,
                       include_full_text: bool = False) -> list[dict]:
-    terms = _tokens(prompt)
-    rows = _search_skills_text(conn, terms, top_k=100, include_content=include_full_text)
+    from .skill_retrieval import explicit_skill_ids
+
+    terms = set() if _skill_definition_question(prompt) else _skill_terms(prompt)
+    requested = re.findall(r"\$([\w:-]+)", prompt)
+    full_ids = re.findall(r"(?<![\w:-])([\w-]+(?::[\w-]+)+)(?![\w:-])", prompt)
+    # Exact IDs use the primary-key index, even when FTS matches are exhausted
+    # or a definition/generic-followup guard suppresses automatic suggestions.
+    by_id = {}
+    ids = sorted({name for name in requested + full_ids} |
+                 {name.lower() for name in requested + full_ids})[:100]
+    if ids:
+        content = ", content" if include_full_text else ""
+        exact = conn.execute(
+            "SELECT id, name, description, file_path, plugin, indexed_at" + content +
+            " FROM skills WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids,
+        ).fetchall()
+        by_id = {row["id"]: dict(row) for row in exact}
+    if requested and len(by_id) < 100:
+        names = sorted({name.rsplit(":", 1)[-1] for name in requested})[:100]
+        content = ", s.content" if include_full_text else ""
+        named = conn.execute(
+            "SELECT s.id, s.name, s.description, s.file_path, s.plugin, s.indexed_at" +
+            content + " FROM skills_fts f JOIN skills s ON s.id = f.skill_id "
+            "WHERE skills_fts MATCH ? AND s.name COLLATE NOCASE IN (" +
+            ",".join("?" for _ in names) + ") ORDER BY s.id LIMIT ?",
+            ('name : (' + " OR ".join(f'"{name}"' for name in names) + ')',
+             *names, 100 - len(by_id)),
+        ).fetchall()
+        named_rows = [dict(row) for row in named]
+        allowed = explicit_skill_ids(prompt, named_rows)
+        by_id.update({row["id"]: row for row in named_rows if row["id"] in allowed})
+        if len(by_id) < 100:
+            # Recover explicit leaf invocations of legacy unnamed rows before
+            # generic description matches consume the candidate ceiling. FTS
+            # supplies discovery; the leaf-ID condition and invocation check
+            # prevent instruction-body overlap from qualifying another skill.
+            legacy = conn.execute(
+                "SELECT s.id, s.name, s.description, s.file_path, s.plugin, s.indexed_at" +
+                content + " FROM skills_fts f JOIN skills s ON s.id = f.skill_id "
+                "WHERE skills_fts MATCH ? AND (s.name IS NULL OR s.name = '') AND (" +
+                " OR ".join("s.id LIKE ? ESCAPE '\\'" for _ in names) +
+                ") ORDER BY s.id LIMIT ?",
+                ('{description content} : (' + " OR ".join(f'"{name}"' for name in names) + ')',
+                 *("%:" + name.replace("_", "\\_") for name in names), 100 - len(by_id)),
+            ).fetchall()
+            legacy_rows = [dict(row) for row in legacy]
+            allowed = explicit_skill_ids(prompt, legacy_rows)
+            by_id.update({row["id"]: row for row in legacy_rows if row["id"] in allowed})
+    lookup_terms = terms | {term for name in requested for term in _tokens(name)}
+    rows = _search_skills_text(conn, lookup_terms, top_k=100,
+                               include_content=include_full_text)
+    by_id.update({row["id"]: row for row in rows if row["id"] not in by_id})
+    rows = list(by_id.values())[:100]
+    explicit = explicit_skill_ids(prompt, rows) | {
+        row["id"] for row in rows if row["id"].lower() in {name.lower() for name in full_ids}
+    }
     ranked: list[tuple[set[str], set[str], bool, bool, bool, dict, str]] = []
     for row in rows:
         description = row.get("description") or ""
         if not _usable_description(description):
             continue
         name = row.get("name") or row["id"].rsplit(":", 1)[-1]
-        name_terms = terms & _tokens(name)
-        description_terms = terms & _tokens(description)
-        explicit_id = ":" in row["id"] and bool(re.search(
-            rf"(?<![\w:-]){re.escape(row['id'])}(?![\w:-])", prompt, re.IGNORECASE
-        ))
-        namespace_terms = terms & _tokens(row["id"].rsplit(":", 1)[0]) if ":" in row["id"] else set()
+        name_terms = terms & _skill_terms(name)
+        description_terms = terms & _skill_terms(description)
+        explicit_id = row["id"] in explicit
+        namespace_terms = terms & _skill_terms(row["id"].rsplit(":", 1)[0]) if ":" in row["id"] else set()
         namespace_only = bool(namespace_terms) and not name_terms
         corroborated = namespace_only and bool(description_terms - namespace_terms)
         if not name_terms and not description_terms and not explicit_id:
@@ -292,7 +376,8 @@ def _skill_candidates(conn: sqlite3.Connection, prompt: str, max_items: int,
         bm25_bonus = min(99, max(0, int(-float(row.get("score") or 0) * 100)))
         items.append(_item(
             "skill", title, f"skill:{row['id']}",
-            description, 5_000 + len(name_terms) * 1_000 + len(description_terms) * 100 + bm25_bonus,
+            description, 5_000 + len(name_terms) * 1_000 + len(description_terms) * 100 + bm25_bonus
+            + (10_000 if explicit_id else 0),
             row.get("content") if include_full_text else None,
         ))
     return items
@@ -309,8 +394,24 @@ def _search_skills_text(conn: sqlite3.Connection, terms: set[str], top_k: int,
             "s.indexed_at, f.rank AS score "
             "FROM skills_fts f JOIN skills s ON s.id = f.skill_id "
             "WHERE skills_fts MATCH ? ORDER BY rank LIMIT ?",
-            (" OR ".join(f'"{term}"' for term in sorted(terms)), top_k),
+            # Prefix retrieval supports normalized English plurals; exact token
+            # intersection above still rejects substring and identifier matches.
+            ('{name description} : (' + " OR ".join(f'"{term}"*' for term in sorted(terms)) + ')', top_k),
         ).fetchall()
+        # Legacy unnamed skills have no searchable name metadata. Discover at
+        # most the remaining bounded rows through FTS, but ranking still requires
+        # the leaf ID or description to match; body text never qualifies a row.
+        if len(rows) < top_k:
+            unnamed = conn.execute(
+                "SELECT s.id, s.name, s.description" + content + ", s.file_path, s.plugin, "
+                "s.indexed_at, f.rank AS score "
+                "FROM skills_fts f JOIN skills s ON s.id = f.skill_id "
+                "WHERE skills_fts MATCH ? AND (s.name IS NULL OR s.name = '') "
+                "ORDER BY rank LIMIT ?",
+                (" OR ".join(f'"{term}"*' for term in sorted(terms)), top_k - len(rows)),
+            ).fetchall()
+            seen = {row["id"] for row in rows}
+            rows = list(rows) + [row for row in unnamed if row["id"] not in seen]
     except sqlite3.OperationalError:
         return []
     return [dict(row) for row in rows]
