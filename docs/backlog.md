@@ -84,3 +84,11 @@ The foreground repair passed a 2,138-test offline run with 18 skips; all 130
 affected tests passed after its final legacy-name lookup refinement. Final
 independent review passed 39 focused tests without an actionable defect in the
 examined paths. These checks do not replace the failed relevance gate.
+
+On October 12, a [local LM Studio smoke](../benchmarks/LOCAL_PROVIDER_SMOKE_RESULTS.md)
+reused existing small GGUF weights without starting Ollama. Seven actual helper
+paths were tested on public synthetic inputs with temporary configuration:
+DeepSeek-R1 1.5B passes 2/7 mechanical checks; Qwen 2.5 Coder 3B passes 6/7.
+Manual review still finds stale memory tasks, invented implementation details
+and a dangling proposed wiki citation. Keep #112/#128 open: neither model
+qualifies for memory/wiki synthesis, and live-service selection remains untested.

@@ -1,0 +1,479 @@
+{
+  "date": "2026-10-12",
+  "decision": "Local endpoint works; neither model qualifies for memory/wiki synthesis. Keep issues #112 and #128 open.",
+  "endpoint": "http://127.0.0.1:1234/v1",
+  "runtime": "LM Studio",
+  "existing_weights_reused": true,
+  "ollama_started": false,
+  "live_registry_changed": false,
+  "live_memory_or_wiki_written": false,
+  "source_revision": "fb6735239df5e23339c6f4bea65ab7d2fe4f5c24",
+  "harness_sha256": "28e03b4500169a9b88856ee305b77534254c04edafd10bd0b489d642e9280f7d",
+  "provenance": "Sequential exploratory synthetic public tests. Seven unchanged helper inputs/caps per model. Graders revised after the first run to detect stale tests and byte-level vault changes. Original first results retained; no independent sealed or whole-task qualification. Helper provider getters and complete model selection are injected; real common dispatch/adapter/HTTP completions are used. Live service selection and embedding retrieval are unqualified.",
+  "readiness": {
+    "model": "deepseek-r1:1.5b",
+    "finish_reason": "length",
+    "raw": "<think>\nOkay, so I need to figure out how to respond with \"LOCAL_OK.\" The user provided an example where they used it in a conversation about something local. Let me think through this step by step.\n\nFirst, I should understand what \"LOCAL_OK\" means. It seems like it's a command or phrase that indicates agreement or support for local issues. In the example, someone said, \"I agree with you on everything we do here.\" That makes sense because they're supporting local efforts and values.\n\nNow, how can I use this in my own response? I need to make sure my answer is concise and directly related",
+    "usage": {
+      "prompt_tokens": 9,
+      "completion_tokens": 128,
+      "total_tokens": 137
+    },
+    "passed": false
+  },
+  "runs": [
+    {
+      "status": "fail",
+      "model": "smoke-local::mcp-local-smoke",
+      "calls": [
+        {
+          "path": "search_summarization",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 220,
+          "duration_seconds": 3.14,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 187,
+            "prompt_tokens": 84,
+            "total_tokens": 271,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\nOrchid uses port 4321 and a retry limit of 3 for its public demo version."
+        },
+        {
+          "path": "wiki_file_answer",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 2.074,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 208,
+            "prompt_tokens": 156,
+            "total_tokens": 364,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\nThe Orchid system uses port 4321 and has a retry limit of 3.\n\nSources\n- [[orchid]]"
+        },
+        {
+          "path": "fanout_prompt",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 5.012,
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 512,
+            "prompt_tokens": 265,
+            "total_tokens": 777,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\n**Instruction Prompt for Claude Code Agent**\n\n1. **Scope**: This is an enhancement to add port 4321 and retry limit 3 with tests added.\n\n2. **Acceptance Criteria**:  \n   - Check if port 4321 exists.  \n   - Verify if retry limit 3 is present.  \n   - Ensure tests are added after these checks.\n\n3. **Files of Interest**:  \n   - Search in the specified GitHub repository.  \n   - Look for test.py and main.py files.  \n   - Consider adding tests to other relevant files.\n\n4."
+        },
+        {
+          "path": "session_memory_create",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 4.132,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 396,
+            "prompt_tokens": 451,
+            "total_tokens": 847,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\n1. User Intent: Build the public Orchid demo with port 4321.  \n2. Completed Work: Implemented port 4321; retry limit is 3.  \n3. Pending Tasks: Add tests.  \n4. Active Work: After retry limit was set, add tests.  \n5. Errors & Corrections: No errors or corrections were encountered.  \n6. Key References: Port 4321."
+        },
+        {
+          "path": "session_memory_update",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 4.06,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 385,
+            "prompt_tokens": 458,
+            "total_tokens": 843,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\n**User Intent**  \nOrchid port 4321, retry limit 3.\n\n---\n\n**Completed Work**  \nTests now pass.\n\n---\n\n**Errors & Corrections**  \nProblems hit: None.  \n\n---\n\n**Active Work**  \nAdd tests.\n\n---\n\n**Pending Tasks**  \nAdd README.\n\n---\n\n**Key References**  \nNone."
+        },
+        {
+          "path": "legacy_classifier",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 400,
+          "duration_seconds": 4.824,
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 293,
+            "total_tokens": 693,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\n{\n  \"classification\": {\n    \"complexity\": 0.5,\n    \"ambiguity\": 0.7,\n    \"scope\": \"single\",\n    \"domain_hints\": [\"python\"],\n    \"confidence\": 0.6\n  },\n  \"settings_opt\": {\n    \"key\": \"unit_test_for"
+        },
+        {
+          "path": "public_wiki_ingest",
+          "model": "openai/mcp-local-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 5.728,
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 512,
+            "prompt_tokens": 606,
+            "total_tokens": 1118,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "\n\n{\n  \"source_page\": {\n    \"slug\": \"orchid\",\n    \"title\": \"Orchid\",\n    \"body\": \"Orchid is a distributed computing platform designed to manage large-scale applications efficiently. It operates over port 4321, which allows for concurrent connections and processes. Orchid's retry limit of 3 ensures that any failed operations can be retried up to three times before the system must be shut down or reinitialized. The platform is built on a distributed architecture that minimizes overhead and maximizes performance. For more details, visit [https://orchid.org](https://orchid.org).\"\n  },\n  \"page_updates\": [\n    {\n      \"slug\": \"orchid\",\n      \"title\": \"Orchid\",\n      \"type\": \"entity\",\n      \"scope\": \"public\",\n      \"new_body\": \"Orchid is a distributed computing platform designed to manage large-scale applications efficiently. It operates over port 4321, which allows for concurrent connections and processes. Orchid's retry limit of 3 ensures that any failed operations can be retried"
+        }
+      ],
+      "checks": [
+        {
+          "path": "search_summarization",
+          "duration_seconds": 3.146,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "wiki_file_answer",
+          "duration_seconds": 2.075,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "citation": true,
+            "public_sources": true,
+            "no_fallback": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "fanout_prompt",
+          "duration_seconds": 5.014,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "tests_required": true,
+            "llm_quality": true
+          },
+          "passed": false,
+          "strict_transport_passed": false
+        },
+        {
+          "path": "session_memory_create",
+          "duration_seconds": 4.133,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "six_sections": false,
+            "pending_tests": true
+          },
+          "passed": false,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "session_memory_update",
+          "duration_seconds": 4.063,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "six_sections": false,
+            "readme_retained": true,
+            "tests_completed": true
+          },
+          "passed": false,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "legacy_classifier",
+          "duration_seconds": 4.825,
+          "content_checks": {
+            "raw_schema_valid": false,
+            "result_present": false,
+            "single_scope": false,
+            "testing_domain": false
+          },
+          "passed": false,
+          "strict_transport_passed": false
+        },
+        {
+          "path": "public_wiki_ingest",
+          "duration_seconds": 5.734,
+          "content_checks": {
+            "port_4321": false,
+            "retry_3": false,
+            "raw_schema_valid": false,
+            "dry_run": false,
+            "public_only": true,
+            "no_vault_write": true
+          },
+          "passed": false,
+          "strict_transport_passed": false
+        }
+      ],
+      "limits": [
+        "Synthetic public facts only; raw public completions retained for human review",
+        "Substring/schema checks are bounded checks, not a full answer-quality benchmark",
+        "Transport route intercept guards model calls; socket connections are not globally monkeypatched",
+        "7 integrated calls; hard transport cap 12",
+        "512 output tokens and 30 seconds each",
+        "Output truncation is failure",
+        "Wiki retrieval vectors are fixture hits; embedding quality is untested",
+        "No live registry or session-memory persistence",
+        "Wiki ingest dry-run; canonical write durability is untested"
+      ],
+      "model_weights": "deepseek-r1:1.5b",
+      "loaded_gib": 1.04,
+      "load_seconds": 12.72,
+      "revised_grader": false,
+      "executed_harness_sha256": "d439727298e6a7bd99baf70661fdd0243c697232d0fd5939bb2fe82d335ebdaa"
+    },
+    {
+      "status": "fail",
+      "model": "smoke-local::mcp-local-qwen-smoke",
+      "calls": [
+        {
+          "path": "search_summarization",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 220,
+          "duration_seconds": 1.763,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 29,
+            "prompt_tokens": 110,
+            "total_tokens": 139,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "Orchid uses port 4321 for its operations, and it has a retry limit of 3 times before giving up."
+        },
+        {
+          "path": "wiki_file_answer",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 0.645,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 28,
+            "prompt_tokens": 182,
+            "total_tokens": 210,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "Orchid uses port 4321 and has a retry limit of 3.\n\n## Sources\n- [[orchid]]"
+        },
+        {
+          "path": "fanout_prompt",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 3.764,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 223,
+            "prompt_tokens": 291,
+            "total_tokens": 514,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "**Agent Prompt**\n\n**Scope:** Implement port 4321 and retry limit 3 for Orchid validation, ensuring robustness against network issues.\n\n**Acceptance Criteria:**\n- **Port 4321 Implementation:** The code should establish a connection to port 4321 on the Orchid server.\n- **Retry Limit:** The connection attempt should include a retry mechanism with a maximum of three attempts before failing.\n- **Tests Added:** Unit tests should be written for both the connection establishment and retry logic, ensuring they cover all edge cases.\n\n**Files of Interest:**\n- `orchid/config.py`\n- `orchid/client.py`\n- `tests/orchid/test_client.py`\n\n**Constraints:**\n- Do not modify any files outside the isolated git worktree.\n- Ensure that only this worktree is used for development and testing.\n- Since the repo is NOT codegraph-indexed, use grep/glob to search for relevant code snippets.\n\n**Done-When:** The agent should report completion by indicating that all specified changes have been implemented and tests have been added."
+        },
+        {
+          "path": "session_memory_create",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 1.67,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 67,
+            "prompt_tokens": 477,
+            "total_tokens": 544,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "## User Intent\nBuild the public Orchid demo with port 4321.\n\n## Completed Work\nImplemented port 4321; retry limit is 3.\n\n## Errors & Corrections\nNone.\n\n## Active Work\nPending: add tests.\n\n## Pending Tasks\n- Add tests\n\n## Key References\nNone."
+        },
+        {
+          "path": "session_memory_update",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 1.044,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 57,
+            "prompt_tokens": 484,
+            "total_tokens": 541,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "## User Intent\nOrchid port 4321, retry limit 3.\n\n## Completed Work\nTests now pass.\n\n## Errors & Corrections\nNone.\n\n## Active Work\nNext add the README.\n\n## Pending Tasks\nAdd tests.\n\n## Key References\nNone."
+        },
+        {
+          "path": "legacy_classifier",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 400,
+          "duration_seconds": 1.931,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 100,
+            "prompt_tokens": 321,
+            "total_tokens": 421,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "{\n  \"classification\": {\n    \"complexity\": 0.5,\n    \"ambiguity\": 0.3,\n    \"scope\": \"single\",\n    \"domain_hints\": [\"testing\"],\n    \"confidence\": 0.8\n  },\n  \"settings_opt\": null,\n  \"compact_hint\": {\n    \"suggest_compact\": true,\n    \"reason\": \"Session is very short, suggesting a compact response.\"\n  },\n  \"subtasks\": []\n}"
+        },
+        {
+          "path": "public_wiki_ingest",
+          "model": "openai/mcp-local-qwen-smoke",
+          "max_tokens": 512,
+          "duration_seconds": 4.631,
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 251,
+            "prompt_tokens": 632,
+            "total_tokens": 883,
+            "completion_tokens_details": null,
+            "prompt_tokens_details": null
+          },
+          "raw": "```json\n{\n  \"source_page\": {\n    \"slug\": \"orchid-public-demo\",\n    \"title\": \"Orchid Public Demo\",\n    \"body\": \"Orchid uses port 4321. Its retry limit is 3.\"\n  },\n  \"page_updates\": [\n    {\n      \"slug\": \"orchid\",\n      \"title\": \"Orchid\",\n      \"type\": \"entity\",\n      \"scope\": \"public\",\n      \"new_body\": \"Orchid uses port 4321. Its retry limit is 3.\\n\\n[[orchid-public-demo]]\",\n      \"reason\": \"Updated the existing Orchid page to include the new source information.\",\n      \"is_new\": false\n    }\n  ],\n  \"index_entries\": [\n    {\n      \"slug\": \"orchid\",\n      \"title\": \"Orchid\",\n      \"one_line\": \"A content management system for static websites.\"\n    },\n    {\n      \"slug\": \"orchid-public-demo\",\n      \"title\": \"Orchid Public Demo\",\n      \"one_line\": \"Demonstration of Orchid's configuration and usage.\"\n    }\n  ],\n  \"assumptions\": []\n}\n```"
+        }
+      ],
+      "checks": [
+        {
+          "path": "search_summarization",
+          "duration_seconds": 1.769,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "wiki_file_answer",
+          "duration_seconds": 0.647,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "citation": true,
+            "public_sources": true,
+            "no_fallback": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "fanout_prompt",
+          "duration_seconds": 3.765,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "tests_required": true,
+            "llm_quality": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "session_memory_create",
+          "duration_seconds": 1.675,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "six_sections": true,
+            "pending_tests": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "session_memory_update",
+          "duration_seconds": 1.047,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "six_sections": true,
+            "readme_retained": true,
+            "tests_completed": false
+          },
+          "passed": false,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "legacy_classifier",
+          "duration_seconds": 1.931,
+          "content_checks": {
+            "raw_schema_valid": true,
+            "result_present": true,
+            "single_scope": true,
+            "testing_domain": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        },
+        {
+          "path": "public_wiki_ingest",
+          "duration_seconds": 4.637,
+          "content_checks": {
+            "port_4321": true,
+            "retry_3": true,
+            "raw_schema_valid": true,
+            "dry_run": true,
+            "public_only": true,
+            "no_vault_write": true
+          },
+          "passed": true,
+          "strict_transport_passed": true
+        }
+      ],
+      "limits": [
+        "Synthetic public facts only; raw public completions retained for human review",
+        "Substring/schema checks are bounded checks, not a full answer-quality benchmark",
+        "Transport route intercept guards model calls; socket connections are not globally monkeypatched",
+        "7 integrated calls; hard transport cap 12",
+        "512 output tokens and 30 seconds each",
+        "Output truncation is failure",
+        "Wiki retrieval vectors are fixture hits; embedding quality is untested",
+        "No live registry or session-memory persistence",
+        "Wiki ingest dry-run; canonical write durability is untested"
+      ],
+      "model_weights": "qwen2.5-coder:3b",
+      "loaded_gib": 1.8,
+      "load_seconds": 2.35,
+      "revised_grader": true,
+      "executed_harness_sha256": "2e4c87f560027b007d58f1479fb915bceade232a05115b1e99b466097b776e6a"
+    }
+  ],
+  "manual_review": {
+    "deepseek-r1:1.5b": [
+      "Search and wiki answer preserve the two source facts; wiki answer cites the supplied page.",
+      "Fanout and classifier truncate; classifier produces no result.",
+      "Memory creation omits required Markdown headings; update leaves completed tests active.",
+      "Wiki output invents distributed architecture, performance, a URL and shutdown behavior; invalid truncated JSON is rejected."
+    ],
+    "qwen2.5-coder:3b": [
+      "All seven completions stop normally; six mechanical checks pass.",
+      "Memory update retains Add tests under Pending Tasks after tests pass.",
+      "Fanout invents file paths and client connection behavior and changes retry limit 3 into maximum three attempts.",
+      "Wiki source body preserves facts, but raw index metadata invents a static-site CMS; index_entries are not consumed by current ingestion.",
+      "Proposed page-update body links orchid-public-demo while canonical source slug is source-synthetic-public-orchid; dangling citation is not detected by mechanical grader.",
+      "Wiki answer preserves facts and citation; memory creation preserves facts and required headings."
+    ]
+  },
+  "total_model_calls": 15,
+  "integrated_token_usage": {
+    "prompt_tokens": 4810,
+    "completion_tokens": 3355,
+    "total_tokens": 8165
+  },
+  "published_harness_difference": "Unused standard-library imports removed; prompts, helper calls, routing and grading unchanged from the revised executed harness."
+}
